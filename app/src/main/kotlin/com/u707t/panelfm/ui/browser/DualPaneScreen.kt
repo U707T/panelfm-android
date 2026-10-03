@@ -239,6 +239,20 @@ fun DualPaneScreen(
                         },
                     )
                     DropdownMenuItem(
+                        text = { Text("压缩到对面（zip）") },
+                        onClick = { showCrossMenu = false; controller.compressToOther() },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("进入压缩包") },
+                        onClick = {
+                            showCrossMenu = false
+                            val item = focused.selectedItems.firstOrNull()
+                                ?: focused.items.firstOrNull { com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(it.name) != null }
+                            if (item != null) controller.openArchiveInPane(ui.focused, item)
+                            else controller.showStatus("当前目录没有压缩包")
+                        },
+                    )
+                    DropdownMenuItem(
                         text = { Text("比较两个目录") },
                         onClick = {
                             showCrossMenu = false

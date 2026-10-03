@@ -19,6 +19,7 @@ import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsRegistry
 import com.u707t.panelfm.core.vfs.local.LocalVfs
 import com.u707t.panelfm.core.vfs.ftp.FtpVfsFactory
+import com.u707t.panelfm.core.vfs.archive.ArchiveVfs
 import com.u707t.panelfm.core.vfs.s3.S3Vfs
 import com.u707t.panelfm.core.vfs.sftp.SftpVfs
 import com.u707t.panelfm.core.vfs.smb.SmbVfs
@@ -90,6 +91,9 @@ class AppContainer(val app: Application) {
 
     private val mounted = ConcurrentHashMap<String, com.u707t.panelfm.core.vfs.VirtualFileSystem>()
 
+    /** 已挂载的压缩包（hostUri → ArchiveVfs） */
+    private val archives = ConcurrentHashMap<String, ArchiveVfs>()
+
     val planner = FileOperationPlanner(locator)
 
     val engine = TransferEngine(
@@ -140,6 +144,51 @@ class AppContainer(val app: Application) {
     }
 
     fun mountedOf(key: String): com.u707t.panelfm.core.vfs.VirtualFileSystem? = mounted[key]
+
+    fun archiveOf(hostUri: String): ArchiveVfs? = archives[hostUri]
+
+    /**
+     * 挂载压缩包：本地文件直接随机访问；远程文件先下载到 cache（zip 才支持随机访问，7z/tar 顺序读）。
+     */
+    suspend fun openArchive(host: com.u707t.panelfm.core.vfs.VfsUri): ArchiveVfs {
+        archives[host.toString()]?.let { return it }
+        val kind = ArchiveVfs.ArchiveKind.ofFileName(host.name)
+            ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("不支持的压缩格式：${host.name}")
+        val local = withContext(Dispatchers.IO) {
+            if (host.scheme == "local") {
+                val path = localVfs.absolutePath(host)
+                java.io.File(path)
+            } else {
+                val vfs = locator.find(host) ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("会话不可用")
+                val name = host.name.hashCode().toString(16) + "-" + host.name
+                val tmp = java.io.File(appDirs.tmpDir, name)
+                if (!tmp.exists() || tmp.length() != vfs.stat(host).size) {
+                    val reader = vfs.openRead(host)
+                    try {
+                        tmp.outputStream().use { out ->
+                            val buf = ByteArray(256 * 1024)
+                            while (true) {
+                                val n = reader.read(buf, 0, buf.size)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                            }
+                        }
+                    } finally {
+                        runCatching { reader.close() }
+                    }
+                }
+                tmp
+            }
+        }
+        val vfs = ArchiveVfs(host, kind, local, env)
+        vfs.connect()
+        archives[host.toString()] = vfs
+        return vfs
+    }
+
+    fun forgetArchive(host: String) {
+        archives.remove(host)?.let { runCatching { it.close() } }
+    }
 
     fun saveSecret(configId: Long, secret: String?) {
         scope.launch(Dispatchers.IO) { secretStore.put(connectionDao.secretRef(configId), secret) }

@@ -136,9 +136,60 @@ class BrowserController(private val container: AppContainer) {
         load(side)
     }
 
-    /** 点击列表项：目录进入，文件交预览 */
+    /** 点击列表项：目录进入；压缩包挂载后进入；其它文件交预览 */
     fun openItem(side: PaneSide, item: FileMetadata) {
-        if (item.isDirectory) open(side, item.uri) else _previewRequest.value = item.uri
+        if (item.isDirectory) {
+            open(side, item.uri)
+            return
+        }
+        val kind = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name)
+        if (kind != null) {
+            openArchiveInPane(side, item)
+            return
+        }
+        _previewRequest.value = item.uri
+    }
+
+    /** 把压缩包挂载成只读 VFS 并在当前窗格进入（MT 的「进入压缩包」体验） */
+    fun openArchiveInPane(side: PaneSide, item: FileMetadata) {
+        container.scope.launch {
+            try {
+                val archive = container.openArchive(item.uri)
+                val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, archive.kind)
+                open(side, inner, connectionId = null, label = "${item.name} · ${archive.kind.label}")
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "无法打开压缩包：${e.message}")
+            }
+        }
+    }
+
+    /** 压缩到对面窗格（zip） */
+    fun compressToOther(side: PaneSide = _state.value.focused) {
+        val st = _state.value
+        val srcPane = st.pane(side)
+        val dstPane = st.pane(side.other)
+        val sources = targetSources(side)
+        if (sources.isEmpty()) {
+            showStatus("当前目录没有可压缩的项")
+            return
+        }
+        val name = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources)
+        val dest = dstPane.uri.child(name)
+        update { it.copy(highlight = true, status = "压缩 ${sources.size} 项 → ${dest.displayPath}") }
+        container.scope.launch {
+            kotlinx.coroutines.delay(1200)
+            update { it.copy(highlight = false) }
+            try {
+                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
+                    .compress(sources, dest) { done, _ ->
+                        // 进度节流由 UI 侧省略；这里只在结束时提示
+                    }
+                showStatus("已压缩为 ${name}")
+                load(side.other)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "压缩失败：${e.message}")
+            }
+        }
     }
 
     fun back(side: PaneSide) {
@@ -158,8 +209,22 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun up(side: PaneSide) {
-        val parent = pane(side).uri.parent ?: return
-        open(side, parent)
+        val uri = pane(side).uri
+        // 压缩包内部：回到压缩包所在目录
+        if (uri.scheme == "archive") {
+            val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(uri.path)
+            if (inner.isEmpty() || !inner.contains('/')) {
+                val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(uri.path)
+                val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
+                val parent = host?.parent
+                if (parent != null) {
+                    open(side, parent, pane(side).tab.connectionId, pane(side).tab.label)
+                    return
+                }
+            }
+        }
+        val parent = uri.parent ?: return
+        open(side, parent, pane(side).tab.connectionId, pane(side).tab.label)
     }
 
     // ------------------------------------------------------------------ 标签页

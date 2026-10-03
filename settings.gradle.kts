@@ -38,6 +38,7 @@ include(
     ":core:vfs-sftp",
     ":core:vfs-smb",
     ":core:vfs-s3",
+    ":core:vfs-archive",
     ":core:transfer",
     ":core:data",
     ":core:ui",

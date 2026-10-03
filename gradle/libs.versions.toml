@@ -13,6 +13,8 @@ okhttp = "5.4.0"
 commonsNet = "3.13.0"
 sshd = "2.20.0"
 smbj = "0.13.0"
+commonsCompress = "1.27.1"
+xz = "1.10"
 slf4j = "2.0.20"
 
 [libraries]
@@ -41,6 +43,8 @@ sshd-core = { module = "org.apache.sshd:sshd-core", version.ref = "sshd" }
 sshd-sftp = { module = "org.apache.sshd:sshd-sftp", version.ref = "sshd" }
 slf4j-nop = { module = "org.slf4j:slf4j-nop", version.ref = "slf4j" }
 smbj = { module = "com.hierynomus:smbj", version.ref = "smbj" }
+commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
+xz = { module = "org.tukaani:xz", version.ref = "xz" }
 
 junit = { module = "junit:junit", version = "4.13.2" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }

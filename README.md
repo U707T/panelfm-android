@@ -5,7 +5,7 @@ MT 管理器风格的**双窗格文件管理器**，Android 原生实现（Kotli
 
 策划与架构文档：[`docs/策划.md`](docs/策划.md)（含完整接口草图、协议要点、里程碑与风险对策）
 
-## 已完成（M0–M6，UI 对齐 MT 管理器）
+## 已完成（M0–M8，UI 对齐 MT 管理器）
 
 - **双列浏览**：左右窗格完全独立——各自标签页、前进/后退历史栈、排序（名称/大小/时间/类型）、
   隐藏文件开关、焦点态、目录统计与可用空间；分隔条点击切换焦点。
@@ -28,6 +28,9 @@ MT 管理器风格的**双窗格文件管理器**，Android 原生实现（Kotli
   | **SMB2/3** | **SMBJ** | 自动协商 3.1.1→3.0.2→2.1、NTLMv2（域/工作组）、共享访问、**偏移读写**（断点续传 + 局域网流媒体）、服务端 rename、共享容量 |
   | **S3 兼容** | **自研 SigV4**（OkHttp） | AWS S3 / R2 / COS / OSS / MinIO：ListBuckets 一键选择、ListObjectsV2 分页、path-style、Range 读、**Multipart 8MB 分片**、服务端 CopyObject、自动 Content-Type、自定义下载域名；**签名与 AWS 官方测试向量逐字节一致** |
 - **局域网扫描**：并发 TCP 探测 + banner 识别（SSH/FTP/SMB/WebDAV 端口），命中即可一键建连接。
+- **压缩包**：zip / jar / 7z / tar / tar.gz **挂载为只读 VFS** —— 直接进入压缩包逐层浏览、预览里面的文件、
+  `⇄` 复制到对面窗格即**解压**；`⇄ → 压缩到对面（zip）` 把选中项打成 zip 写到另一个窗格（支持压缩到网络位置）。
+  （按需求**不包含 APK 内部浏览**；Hex 仅保留只读查看，不做编辑。）
 - **预览**：文本（编码自动识别 UTF-8/GBK/UTF-16+BOM，可切换 Hex/图片）、图片、Hex（只读，前 8 KB 窗口）、
   外部应用打开（FileProvider）。
 - **权限**：`MANAGE_EXTERNAL_STORAGE` 引导、**Android 17 `ACCESS_LOCAL_NETWORK` 局域网授权**（未授权会直接超时）、

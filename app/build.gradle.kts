@@ -22,8 +22,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 3
-        versionName = "0.3.0"
+        versionCode = 4
+        versionName = "0.4.0"
     }
 
     signingConfigs {
@@ -96,6 +96,7 @@ dependencies {
     implementation(project(":core:vfs-sftp"))
     implementation(project(":core:vfs-smb"))
     implementation(project(":core:vfs-s3"))
+    implementation(project(":core:vfs-archive"))
     implementation(project(":core:transfer"))
     implementation(project(":core:data"))
     implementation(project(":core:ui"))

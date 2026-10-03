@@ -10,6 +10,12 @@ class SessionLocator(private val container: AppContainer) : VfsLocator {
 
     override fun find(uri: VfsUri): VirtualFileSystem? {
         if (uri.scheme == "local") return container.localVfs
+        if (uri.scheme == "archive") {
+            // archive://zip/<encoded host>!/inner → 找回已挂载的压缩包 VFS
+            val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(uri.path) ?: return null
+            val host = VfsUri.decodeHost(encoded)
+            return container.archiveOf(host)
+        }
 
         container.connectionOf(VfsUris.connectionId(uri))?.let { config ->
             container.registry.peek(config)?.let { return it }
