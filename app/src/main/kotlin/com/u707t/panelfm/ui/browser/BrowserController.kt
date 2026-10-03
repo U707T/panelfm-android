@@ -518,7 +518,55 @@ class BrowserController(private val container: AppContainer) {
         return if (pane.hasSelection) pane.selectedItems.map { it.uri } else pane.items.map { it.uri }
     }
 
-    fun deleteSelected(side: PaneSide) {
+    /** 统计本地目录内的条目数（用于「极速删除」提示，最多数到 cap 就返回） */
+    suspend fun countLocalEntries(uri: VfsUri, cap: Int = 1200): Int {
+        if (uri.scheme != "local") return 0
+        var count = 0
+        suspend fun walk(dir: java.io.File) {
+            if (count >= cap) return
+            val children = dir.listFiles() ?: return
+            for (child in children) {
+                count++
+                if (count >= cap) return
+                if (child.isDirectory) walk(child)
+            }
+        }
+        return withContext(container.dispatchers.io) {
+            walk(java.io.File(container.localVfs.absolutePath(uri)))
+            count
+        }
+    }
+
+    /** 交换两个选中项的文件名（MT 的「交换文件名」，本地与网络都支持） */
+    fun swapSelectedNames(side: PaneSide) {
+        val picked = pane(side).selectedItems
+        if (picked.size != 2) {
+            showStatus("请正好选中 2 个文件再交换文件名")
+            return
+        }
+        container.scope.launch {
+            try {
+                val a = picked[0]
+                val b = picked[1]
+                val vfs = container.locator.find(a.uri) ?: throw VfsException.Unsupported("会话不可用")
+                val tmpName = ".panelfm.swap.${System.currentTimeMillis()}"
+                val tmp = a.uri.parent?.child(tmpName) ?: throw VfsException.ProtocolError("无法交换")
+                val targetA = a.uri.parent?.child(b.name) ?: throw VfsException.ProtocolError("无法交换")
+                withContext(container.dispatchers.vfs) {
+                    vfs.rename(a.uri, tmp)
+                    vfs.rename(b.uri, targetA)
+                    vfs.rename(tmp, b.uri.parent?.child(a.name) ?: tmp)
+                }
+                showStatus("已交换「${a.name}」与「${b.name}」")
+                clearSelection(side)
+                load(side)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "交换失败：${e.message}")
+            }
+        }
+    }
+
+    fun deleteSelected(side: PaneSide, fastDelete: Boolean = false) {
         val pane = pane(side)
         val sources = targetSources(side)
         if (sources.isEmpty()) {
@@ -527,9 +575,9 @@ class BrowserController(private val container: AppContainer) {
         }
         container.scope.launch {
             try {
-                // 本地文件优先进回收站（可还原）；网络位置直接删除
-                val localOnly = sources.filter { it.scheme == "local" }
-                val remoteOnly = sources.filter { it.scheme != "local" }
+                // 本地文件优先进回收站（可还原）；网络位置或「极速删除」直接删除
+                val localOnly = if (fastDelete) emptyList() else sources.filter { it.scheme == "local" }
+                val remoteOnly = if (fastDelete) sources else sources.filter { it.scheme != "local" }
                 var trashed = 0
                 if (localOnly.isNotEmpty()) trashed = container.trash.moveToTrash(localOnly)
                 if (remoteOnly.isNotEmpty()) {
@@ -537,8 +585,11 @@ class BrowserController(private val container: AppContainer) {
                     withContext(container.dispatchers.vfs) { vfs.delete(remoteOnly) }
                 }
                 showStatus(
-                    if (trashed > 0) "已移入回收站 $trashed 项（可还原）"
-                    else "已删除 ${remoteOnly.size} 项"
+                    when {
+                        fastDelete -> "已极速删除 ${sources.size} 项"
+                        trashed > 0 -> "已移入回收站 $trashed 项（可还原）"
+                        else -> "已删除 ${remoteOnly.size} 项"
+                    }
                 )
                 clearSelection(side)
                 load(side)

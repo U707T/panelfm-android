@@ -237,9 +237,10 @@ fun PaneView(
                                     }
                                 },
                                 onLongClick = {
+                                    // MT：长按直接弹出动作菜单（同时把该项纳入选择，菜单作用于选中项）
                                     controller.focus(side)
                                     if (!pane.hasSelection) controller.enterSelectionMode(side, item)
-                                    else controller.toggleSelection(side, item.uri)
+                                    onRowAction(item)
                                 },
                                 onMore = {
                                     controller.focus(side)

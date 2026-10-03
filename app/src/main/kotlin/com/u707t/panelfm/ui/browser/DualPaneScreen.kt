@@ -117,6 +117,14 @@ fun DualPaneScreen(
 
     val focused = ui.focusedPane
     val focusSide = ui.focused
+    // 返回手势：多选 → 取消选择；否则返回上一级；已在根目录则交给外层（主页/退出）
+    androidx.activity.compose.BackHandler(enabled = true) {
+        when {
+            focused.hasSelection -> controller.clearSelection(focusSide)
+            focused.uri.parent != null || focused.uri.scheme == "archive" -> controller.up(focusSide)
+            else -> onOpenHome()
+        }
+    }
     val target: FileMetadata? = remember(rowAction, focused.selection.size) {
         rowAction ?: focused.selectedItems.firstOrNull() ?: focused.items.firstOrNull()
     }
@@ -436,6 +444,8 @@ fun DualPaneScreen(
     rowAction?.let { item ->
         val multi = focused.selection.size
         val subject = if (multi > 1) "已选 $multi 项" else item.name
+        // MT 置灰规则：选中项含文件夹时，分享 / 打开方式 不可用（系统不支持分享文件夹）
+        val anyDirectory = focused.selectedItems.ifEmpty { listOf(item) }.any { it.isDirectory }
         MtActionSheet(
             title = subject,
             actions = listOf(
@@ -447,8 +457,8 @@ fun DualPaneScreen(
                 MtAction("compress", "压缩", "⬇"),
                 MtAction("diff", "文件对比", "⇄", enabled = multi >= 1),
                 MtAction("properties", "属性", "ⓘ", enabled = multi <= 1),
-                MtAction("share", "分享", "⇪"),
-                MtAction("open_with", "打开方式…", "✓", enabled = !item.isDirectory),
+                MtAction("share", "分享", "⇪", enabled = !anyDirectory),
+                MtAction("open_with", "打开方式…", "✓", enabled = !anyDirectory),
                 MtAction("bookmark", "添加书签", "🔖"),
             ),
             onAction = { id ->
@@ -502,6 +512,12 @@ fun DualPaneScreen(
                 MtAction("md5", "校验值 MD5", "#"),
                 MtAction("sha256", "校验值 SHA-256", "#"),
                 MtAction("chmod", "修改权限", "🔒", enabled = !item.isDirectory.not()),
+                MtAction(
+                    "swap_name",
+                    "交换文件名",
+                    "⇄",
+                    enabled = focused.selection.size == 2,
+                ),
                 MtAction("select_all", "全选", "☑"),
                 MtAction("invert", "反选", "☐"),
                 MtAction("same_type", "类选", "▣"),
@@ -521,6 +537,7 @@ fun DualPaneScreen(
                         message = "SHA-256" to (r ?: "计算失败")
                     }
                     "chmod" -> permissionFor = item
+                    "swap_name" -> controller.swapSelectedNames(focusSide)
                     "select_all" -> controller.selectAll(focusSide)
                     "invert" -> controller.invertSelection(focusSide)
                     "same_type" -> controller.selectSameType(focusSide)
@@ -705,12 +722,41 @@ fun DualPaneScreen(
         )
     }
     deleting?.let { item ->
-        ConfirmDialog(
-            title = "删除",
-            message = "确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else "",
-            confirmText = "删除",
-            onConfirm = { controller.deleteSelected(focusSide) },
-            onDismiss = { deleting = null },
+        var bigCount by remember { mutableStateOf(-1) }
+        LaunchedEffect(item.uri) {
+            bigCount = if (item.isDirectory && item.uri.scheme == "local") controller.countLocalEntries(item.uri) else -1
+        }
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("删除") },
+            text = {
+                Column {
+                    Text("确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else "")
+                    if (bigCount > 1000) {
+                        Text(
+                            "该目录含 $bigCount+ 个文件：可用「极速删除」直接清理（不进回收站，秒级完成）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Row {
+                    if (bigCount > 1000) {
+                        TextButton(onClick = {
+                            controller.deleteSelected(focusSide, fastDelete = true)
+                            deleting = null
+                        }) { Text("极速删除") }
+                    }
+                    TextButton(onClick = {
+                        controller.deleteSelected(focusSide)
+                        deleting = null
+                    }) { Text("删除") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("取消") } },
         )
     }
     if (creatingFolder) {

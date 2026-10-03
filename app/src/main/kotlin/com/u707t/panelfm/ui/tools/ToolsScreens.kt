@@ -10,11 +10,14 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +30,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
@@ -205,9 +209,30 @@ private suspend fun exportApk(
 
 @Composable
 fun TerminalScreen(cwd: String = "/sdcard", onBack: () -> Unit) {
-    var input by remember { mutableStateOf("ls " + cwd) }
-    var output by remember { mutableStateOf("PanelFM 终端（非 root）：输入命令后回车执行\n") }
     val scope = rememberCoroutineScope()
+    val session = remember { ShellSession() }
+    var input by remember { mutableStateOf("") }
+    var output by remember { mutableStateOf("") }
+    var fontSize by remember { mutableStateOf(12) }
+    val history = remember { mutableListOf<String>() }
+    var historyIndex by remember { mutableStateOf(-1) }
+
+    LaunchedEffect(Unit) {
+        session.start(scope) { chunk -> output += chunk }
+        session.exec("cd " + cwd.replace("'", ""))
+    }
+    DisposableEffect(Unit) { onDispose { session.close() } }
+
+    fun run(cmd: String) {
+        val text = cmd.trim()
+        if (text.isEmpty()) return
+        history.add(text)
+        historyIndex = history.size
+        output += "\n$ " + text + "\n"
+        session.exec(text)
+        input = ""
+        if (text == "clear" || text == "cls") output = ""
+    }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -218,15 +243,35 @@ fun TerminalScreen(cwd: String = "/sdcard", onBack: () -> Unit) {
         ) {
             TextButton(onClick = onBack) { Text("← 返回") }
             Text("终端模拟器", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            TextButton(onClick = { output = "" }) { Text("清屏") }
+            TextButton(onClick = { fontSize = (fontSize - 1).coerceAtLeast(8) }) { Text("A-") }
+            TextButton(onClick = { fontSize = (fontSize + 1).coerceAtMost(22) }) { Text("A+") }
+            TextButton(onClick = { output = ""; session.exec("clear") }) { Text("清屏") }
         }
+        Text(
+            "免 root 的 sh 会话：支持 cd / 管道 / 重定向（环境为应用沙箱，可访问 /sdcard 与所有文件访问权限内的路径）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 12.dp),
+        )
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 12.dp, vertical = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
+            TextButton(onClick = {
+                if (history.isNotEmpty()) {
+                    historyIndex = (historyIndex - 1).coerceAtLeast(0)
+                    input = history.getOrElse(historyIndex) { "" }
+                }
+            }) { Text("↑") }
+            TextButton(onClick = {
+                if (history.isNotEmpty()) {
+                    historyIndex = (historyIndex + 1).coerceAtMost(history.size)
+                    input = history.getOrNull(historyIndex) ?: ""
+                }
+            }) { Text("↓") }
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
@@ -234,36 +279,59 @@ fun TerminalScreen(cwd: String = "/sdcard", onBack: () -> Unit) {
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = {
-                val cmd = input.trim()
-                if (cmd.isNotEmpty()) {
-                    scope.launch {
-                        val result = withContext(Dispatchers.IO) { runShell(cmd) }
-                        output += "\n$ $cmd\n$result"
-                    }
-                }
-            }) { Text("执行") }
+            TextButton(onClick = { run(input) }) { Text("执行") }
         }
         Column(
             Modifier
                 .fillMaxSize()
-                .padding(12.dp),
+                .padding(12.dp)
+                .verticalScroll(rememberScrollState()),
         ) {
             Text(
-                output,
-                style = MaterialTheme.typography.labelSmall,
+                output.ifBlank { "（终端就绪）" },
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = fontSize.sp),
                 fontFamily = FontFamily.Monospace,
             )
         }
     }
 }
 
-private fun runShell(cmd: String): String = runCatching {
-    val process = ProcessBuilder("sh", "-c", cmd).redirectErrorStream(true).start()
-    val text = process.inputStream.bufferedReader().readText()
-    process.waitFor()
-    text.ifBlank { "(无输出)" }
-}.getOrElse { "执行失败：${it.message}" }
+/** 持久 shell 会话：一个 sh 进程贯穿整个界面（因此 cd 之后的下一条命令仍在同一目录） */
+private class ShellSession {
+    private var process: Process? = null
+    private var writer: java.io.Writer? = null
+
+    fun start(scope: kotlinx.coroutines.CoroutineScope, onOutput: (String) -> Unit) {
+        if (process != null) return
+        val p = runCatching { ProcessBuilder("sh").redirectErrorStream(true).start() }.getOrNull() ?: return
+        process = p
+        writer = p.outputStream.bufferedWriter()
+        scope.launch(Dispatchers.IO) {
+            val reader = p.inputStream.bufferedReader()
+            val buf = CharArray(1024)
+            while (true) {
+                val n = runCatching { reader.read(buf) }.getOrDefault(-1)
+                if (n < 0) break
+                val chunk = String(buf, 0, n)
+                withContext(Dispatchers.Main) { onOutput(chunk) }
+            }
+        }
+    }
+
+    fun exec(cmd: String) {
+        runCatching {
+            writer?.write(cmd + "\n")
+            writer?.flush()
+        }
+    }
+
+    fun close() {
+        runCatching { writer?.write("exit\n"); writer?.flush() }
+        runCatching { process?.destroy() }
+        process = null
+        writer = null
+    }
+}
 
 // ---------------------------------------------------------------------------
 // 远程管理（内置只读 HTTP 服务：电脑浏览器直接浏览/下载当前窗格目录）
