@@ -26,6 +26,8 @@ data class AppSettings(
     val useSingleColumn: Boolean = false,
     val userAgent: String = "PanelFM/0.1 (Android)",
     val trustSelfSigned: Boolean = false,
+    /** 「设为首页」的路径（URI 字符串），空 = 内部存储根 */
+    val homePath: String? = null,
     val skipThumbsWhileScrolling: Boolean = true,
 )
 
@@ -45,6 +47,7 @@ class PrefsStore(private val context: Context) {
         val singleColumn = booleanPreferencesKey("single_column")
         val userAgent = stringPreferencesKey("user_agent")
         val trustSelfSigned = booleanPreferencesKey("trust_self_signed")
+        val homePath = stringPreferencesKey("home_path")
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -60,6 +63,7 @@ class PrefsStore(private val context: Context) {
             useSingleColumn = p[Keys.singleColumn] ?: false,
             userAgent = p[Keys.userAgent] ?: "PanelFM/0.1 (Android)",
             trustSelfSigned = p[Keys.trustSelfSigned] ?: false,
+            homePath = p[Keys.homePath],
         )
     }
 
@@ -76,4 +80,8 @@ class PrefsStore(private val context: Context) {
     suspend fun setSingleColumn(on: Boolean) = context.panelDataStore.edit { it[Keys.singleColumn] = on }
     suspend fun setUserAgent(ua: String) = context.panelDataStore.edit { it[Keys.userAgent] = ua }
     suspend fun setTrustSelfSigned(on: Boolean) = context.panelDataStore.edit { it[Keys.trustSelfSigned] = on }
+
+    suspend fun setHomePath(uri: String?) = context.panelDataStore.edit { prefs ->
+        if (uri == null) prefs.remove(Keys.homePath) else prefs[Keys.homePath] = uri
+    }
 }

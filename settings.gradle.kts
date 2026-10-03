@@ -36,6 +36,8 @@ include(
     ":core:vfs-webdav",
     ":core:vfs-ftp",
     ":core:vfs-sftp",
+    ":core:vfs-smb",
+    ":core:vfs-s3",
     ":core:transfer",
     ":core:data",
     ":core:ui",

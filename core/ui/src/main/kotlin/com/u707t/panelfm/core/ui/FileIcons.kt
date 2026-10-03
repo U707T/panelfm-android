@@ -5,25 +5,105 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.common.MimeTypes
 
-/** 按类型着色的方形图标（MT 风格的文件图标，无需外部资源）。 */
-private fun colorOf(name: String, isDirectory: Boolean): Pair<Color, String> {
-    if (isDirectory) return Color(0xFFFFB74D) to ""
+/**
+ * MT 风格图标：
+ *  - 文件夹 = 实心文件夹轮廓（跟随主题前景色，浅色近黑 / 深色近白）
+ *  - 文件 = 圆角色块 + 类型缩写（按类型着色），与 MT 的彩色小图标观感一致
+ */
+@Composable
+fun FileIcon(
+    name: String,
+    isDirectory: Boolean,
+    modifier: Modifier = Modifier,
+    size: Dp = 40.dp,
+    alpha: Float = 1f,
+) {
+    if (isDirectory) {
+        MtFolderGlyph(
+            modifier = modifier.size(size),
+            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f * alpha),
+            size = size,
+        )
+        return
+    }
+    val (bg, label) = colorOf(name)
+    Box(
+        modifier = modifier
+            .size(size * 0.86f)
+            .clip(RoundedCornerShape(size * 0.16f))
+            .background(bg.copy(alpha = bg.alpha * alpha)),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            color = Color.White.copy(alpha = alpha),
+            fontSize = (size.value * 0.26f).sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+        )
+    }
+}
+
+/** MT 式实心文件夹（带顶部小页签） */
+@Composable
+fun MtFolderGlyph(
+    modifier: Modifier = Modifier,
+    color: Color = MaterialTheme.colorScheme.onSurface,
+    size: Dp = 40.dp,
+) {
+    Canvas(modifier = modifier) {
+        val w = this.size.width
+        val h = this.size.height
+        val tabH = h * 0.18f
+        val radius = w * 0.12f
+
+        val body = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    rect = androidx.compose.ui.geometry.Rect(
+                        offset = Offset(w * 0.06f, h * 0.30f),
+                        size = Size(w * 0.88f, h * 0.60f),
+                    ),
+                    cornerRadius = CornerRadius(radius, radius),
+                )
+            )
+        }
+        drawPath(body, color = color)
+
+        val tab = Path().apply {
+            addRoundRect(
+                RoundRect(
+                    rect = androidx.compose.ui.geometry.Rect(
+                        offset = Offset(w * 0.06f, h * 0.12f + tabH * 0.4f),
+                        size = Size(w * 0.46f, h * 0.24f),
+                    ),
+                    cornerRadius = CornerRadius(radius * 0.8f, radius * 0.8f),
+                )
+            )
+        }
+        drawPath(tab, color = color)
+    }
+}
+
+private fun colorOf(name: String): Pair<Color, String> {
     val ext = name.substringAfterLast('.', "").lowercase()
     return when (MimeTypes.kindOf(ext)) {
         MimeTypes.Kind.IMAGE -> Color(0xFF4CAF50) to "IMG"
@@ -33,74 +113,8 @@ private fun colorOf(name: String, isDirectory: Boolean): Pair<Color, String> {
         MimeTypes.Kind.APK -> Color(0xFF3DDC84) to "APK"
         MimeTypes.Kind.FONT -> Color(0xFF00BCD4) to "FNT"
         MimeTypes.Kind.PDF -> Color(0xFFF44336) to "PDF"
-        MimeTypes.Kind.CODE -> Color(0xFF2196F3) to (ext.uppercase().take(4).ifEmpty { "TXT" })
-        MimeTypes.Kind.TEXT -> Color(0xFF90A4AE) to (ext.uppercase().take(4).ifEmpty { "TXT" })
-        MimeTypes.Kind.OTHER -> Color(0xFF607D8B) to (ext.uppercase().take(4).ifEmpty { "DAT" })
-    }
-}
-
-@Composable
-fun FileIcon(
-    name: String,
-    isDirectory: Boolean,
-    modifier: Modifier = Modifier,
-    size: Dp = 36.dp,
-) {
-    if (isDirectory) {
-        FolderGlyph(modifier = modifier.size(size), size = size)
-        return
-    }
-    val (bg, label) = colorOf(name, false)
-    Box(
-        modifier = modifier
-            .size(size)
-            .clip(RoundedCornerShape(size * 0.18f))
-            .background(bg),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            text = label,
-            color = Color.White,
-            fontSize = (size.value * 0.26f).sp,
-            fontWeight = FontWeight.Bold,
-            maxLines = 1,
-        )
-    }
-}
-
-@Composable
-fun FolderGlyph(modifier: Modifier = Modifier, size: Dp = 36.dp, color: Color = Color(0xFFFFB74D)) {
-    Canvas(modifier = modifier) {
-        val w = this.size.width
-        val h = this.size.height
-        val tabW = w * 0.42f
-        val tabH = h * 0.16f
-        val body = Path().apply {
-            moveTo(w * 0.06f, h * 0.24f)
-            lineTo(tabW, h * 0.24f)
-            lineTo(tabW + w * 0.08f, h * 0.34f)
-            lineTo(w * 0.94f, h * 0.34f)
-            lineTo(w * 0.94f, h * 0.82f)
-            lineTo(w * 0.06f, h * 0.82f)
-            close()
-        }
-        drawPath(body, color = color)
-        drawRect(
-            color = color.copy(alpha = 0.75f),
-            topLeft = Offset(w * 0.06f, h * 0.30f),
-            size = Size(w * 0.88f, h * 0.10f),
-        )
-        drawPath(
-            path = body,
-            color = Color.Black.copy(alpha = 0.18f),
-            style = Stroke(width = 1f),
-        )
-        // 双列暗示：中间竖线
-        drawLine(
-            color = Color(0xFF232A31),
-            start = Offset(w * 0.5f, h * 0.34f),
-            end = Offset(w * 0.5f, h * 0.82f),
-            strokeWidth = w * 0.03f,
-        )
+        MimeTypes.Kind.CODE -> Color(0xFF2196F3) to ext.uppercase().take(4).ifEmpty { "TXT" }
+        MimeTypes.Kind.TEXT -> Color(0xFF78909C) to ext.uppercase().take(4).ifEmpty { "TXT" }
+        MimeTypes.Kind.OTHER -> Color(0xFF607D8B) to ext.uppercase().take(4).ifEmpty { "FILE" }
     }
 }

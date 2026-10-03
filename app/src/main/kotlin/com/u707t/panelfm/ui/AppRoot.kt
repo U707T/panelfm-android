@@ -17,6 +17,7 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.ui.browser.DualPaneScreen
 import com.u707t.panelfm.ui.connections.ConnectionEditScreen
+import com.u707t.panelfm.ui.bookmarks.BookmarksScreen
 import com.u707t.panelfm.ui.connections.LanScanScreen
 import com.u707t.panelfm.ui.home.HomeScreen
 import com.u707t.panelfm.ui.preview.PreviewScreen
@@ -35,6 +36,7 @@ sealed interface Screen {
         val prefillPort: Int? = null,
     ) : Screen
     data object LanScan : Screen
+    data object Bookmarks : Screen
     data class Preview(val uri: VfsUri) : Screen
 }
 
@@ -69,6 +71,7 @@ fun AppRoot(container: AppContainer) {
                 onAddConnection = { push(Screen.ConnectionEdit(null)) },
                 onEditConnection = { id -> push(Screen.ConnectionEdit(id)) },
                 onScanLan = { push(Screen.LanScan) },
+                onOpenBookmarks = { push(Screen.Bookmarks) },
             )
 
             Screen.Browser -> DualPaneScreen(
@@ -76,6 +79,8 @@ fun AppRoot(container: AppContainer) {
                 onOpenHome = pop,
                 onOpenTasks = { push(Screen.Tasks) },
                 onOpenSettings = { push(Screen.Settings) },
+                onOpenBookmarks = { push(Screen.Bookmarks) },
+                onOpenLanScan = { push(Screen.LanScan) },
                 onOpenPreview = { push(Screen.Preview(it)) },
             )
 
@@ -87,6 +92,11 @@ fun AppRoot(container: AppContainer) {
                 onBack = pop,
                 prefillHost = current.prefillHost,
                 prefillPort = current.prefillPort,
+            )
+            Screen.Bookmarks -> BookmarksScreen(
+                container = container,
+                onBack = pop,
+                onOpen = { stack = listOf(Screen.Home, Screen.Browser) },
             )
             Screen.LanScan -> LanScanScreen(
                 container = container,

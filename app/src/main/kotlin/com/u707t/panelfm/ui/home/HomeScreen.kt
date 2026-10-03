@@ -7,6 +7,7 @@ import android.os.Environment
 import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -17,13 +18,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Snackbar
@@ -39,25 +39,30 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.LocalNetwork
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.transfer.TaskState
-import com.u707t.panelfm.core.ui.FileIcon
+import com.u707t.panelfm.core.ui.IconTextButton
+import com.u707t.panelfm.core.ui.MtFolderGlyph
+import com.u707t.panelfm.core.ui.MtListRow
 import com.u707t.panelfm.core.ui.SectionHeader
+import com.u707t.panelfm.core.ui.UsageBar
+import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVolumes
 import kotlinx.coroutines.launch
 
 /**
- * 主页四段：本地 / 网络 / 后台 / 工具（MT 语义）。
- * 点击任意存储 → 在当前聚焦窗格打开并进入双列页。
+ * 主页（对齐 MT 管理器）：
+ * 标题栏（图标 + 名称 + 副标题 + 主题切换 + ⋮） / 本地（带占用条） / 网络 / 工具，分组可折叠。
  */
 @Composable
 fun HomeScreen(
@@ -65,24 +70,27 @@ fun HomeScreen(
     onOpenBrowser: () -> Unit,
     onOpenTasks: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenBookmarks: () -> Unit,
+    onScanLan: () -> Unit,
     onAddConnection: () -> Unit,
     onEditConnection: (Long) -> Unit,
-    onScanLan: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val connections by container.connections.collectAsState()
+    val settings by container.settings.collectAsState()
     val tasks by container.engine.tasks.collectAsState()
+
     var status by remember { mutableStateOf<String?>(null) }
     var connecting by remember { mutableStateOf<Long?>(null) }
     var menuFor by remember { mutableStateOf<ConnectionConfig?>(null) }
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
+    var showTopMenu by remember { mutableStateOf(false) }
 
     var storageGranted by remember {
         mutableStateOf(if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true)
     }
     var localNetGranted by remember { mutableStateOf(LocalNetwork.isGranted(context)) }
-
     val requestStorage = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         storageGranted = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true
     }
@@ -90,8 +98,33 @@ fun HomeScreen(
         localNetGranted = it
     }
 
+    var expandLocal by remember { mutableStateOf(true) }
+    var expandNet by remember { mutableStateOf(true) }
+    var expandTools by remember { mutableStateOf(true) }
+    var spaces by remember { mutableStateOf<Map<String, SpaceInfo>>(emptyMap()) }
+
+    val volumes = remember { LocalVolumes.volumes(context) }
+
     LaunchedEffect(Unit) {
         container.reloadConnections()
+    }
+    LaunchedEffect(volumes) {
+        val map = mutableMapOf<String, SpaceInfo>()
+        volumes.forEach { volume ->
+            runCatching { container.localVfs.space(LocalVolumes.uri(volume, "/")) }
+                .getOrNull()?.let { map[volume.authority] = it }
+        }
+        spaces = map
+    }
+
+    fun openVolume(authority: String, label: String, path: String = "/") {
+        container.browser.open(
+            container.browser.state.value.focused,
+            VfsUri.of("local", authority, path),
+            connectionId = null,
+            label = label,
+        )
+        onOpenBrowser()
     }
 
     Scaffold(
@@ -108,146 +141,191 @@ fun HomeScreen(
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
-            // 顶栏
+            // ---------------- 标题栏
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 4.dp),
+                    .padding(start = 18.dp, end = 8.dp, top = 16.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Column(Modifier.weight(1f)) {
-                    Text("PanelFM", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Box(
+                    Modifier
+                        .size(42.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    MtFolderGlyph(size = 26.dp, color = MaterialTheme.colorScheme.onSurface)
+                }
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .padding(start = 12.dp),
+                ) {
+                    Text("PanelFM", style = MaterialTheme.typography.titleLarge)
                     Text(
-                        "双列文件管理器 · 本地 / SFTP / FTP / FTPS / WebDAV（SMB·S3 在 M5–M6 接入）",
+                        when (settings.themeMode) {
+                            ThemeMode.SYSTEM -> "主题跟随系统"
+                            ThemeMode.LIGHT -> "浅色主题"
+                            ThemeMode.DARK -> "深色主题"
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                TextButton(onClick = { onOpenTasks() }) { Text("任务") }
-                IconButton(onClick = onOpenSettings) { Text("⚙", style = MaterialTheme.typography.titleMedium) }
+                IconTextButton(if (settings.themeMode == ThemeMode.DARK) "☀" else "☾") {
+                    scope.launch {
+                        container.prefs.setTheme(if (settings.themeMode == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK)
+                    }
+                }
+                Box {
+                    IconTextButton("⋮") { showTopMenu = true }
+                    DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(if (settings.themeMode == ThemeMode.SYSTEM) "主题跟随系统 ✓" else "主题跟随系统") },
+                            onClick = {
+                                showTopMenu = false
+                                scope.launch { container.prefs.setTheme(ThemeMode.SYSTEM) }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("动态取色：" + if (settings.dynamicColor) "开" else "关") },
+                            onClick = {
+                                showTopMenu = false
+                                scope.launch { container.prefs.setDynamicColor(!settings.dynamicColor) }
+                            },
+                        )
+                        DropdownMenuItem(text = { Text("添加网络存储") }, onClick = { showTopMenu = false; onAddConnection() })
+                        DropdownMenuItem(
+                            text = { Text("添加本地存储") },
+                            onClick = { showTopMenu = false; status = "已自动枚举：根目录 / 内部存储 / 应用目录 / 外置卡（SAF 授权在 M9 接入）" },
+                        )
+                        DropdownMenuItem(text = { Text("局域网扫描") }, onClick = { showTopMenu = false; onScanLan() })
+                        DropdownMenuItem(text = { Text("设置") }, onClick = { showTopMenu = false; onOpenSettings() })
+                    }
+                }
             }
 
-            // 授权提示
+            // ---------------- 权限提示
             if (!storageGranted) {
                 PermissionCard(
                     title = "需要「所有文件访问」权限",
-                    detail = "Android 11+ 必须授予后才能完整浏览 /storage/emulated/0（否则只能用应用私有目录）。",
+                    detail = "Android 11+ 必须授予后才能完整浏览 /storage/emulated/0。",
                     actionLabel = "去授权",
                     onAction = {
-                        val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                            .setData(Uri.parse("package:${context.packageName}"))
-                        runCatching { requestStorage.launch(intent) }
+                        runCatching {
+                            requestStorage.launch(
+                                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                                    .setData(Uri.parse("package:${context.packageName}"))
+                            )
+                        }
                     },
                 )
             }
             if (!localNetGranted) {
                 PermissionCard(
                     title = "需要「局域网访问」权限（Android 17）",
-                    detail = "未授权时访问 NAS / Alist / SMB 会直接超时，且不会有任何提示。",
+                    detail = "未授权时访问 NAS / Alist / SMB 会直接超时。",
                     actionLabel = "去授权",
                     onAction = { runCatching { requestLocalNet.launch(LocalNetwork.PERMISSION) } },
                 )
             }
 
-            // ---- 本地
-            SectionHeader("本地")
-            val volumes = remember { LocalVolumes.volumes(context) }
-            volumes.forEach { volume ->
-                HomeRow(
-                    title = volume.label,
-                    subtitle = volume.path,
-                    isDirectory = true,
-                    onClick = {
-                        container.browser.open(
-                            container.browser.state.value.focused,
-                            LocalVolumes.uri(volume, "/"),
-                            connectionId = null,
-                            label = volume.label,
-                        )
-                        onOpenBrowser()
-                    },
-                )
-            }
-
-            // ---- 网络
-            SectionHeader("网络存储")
-            if (connections.isEmpty()) {
-                HomeRow(
-                    title = "还没有网络存储",
-                    subtitle = "点右下角 ＋ 添加 FTP / FTPS / WebDAV",
-                    isDirectory = false,
-                    onClick = onAddConnection,
-                )
-            }
-            connections.forEach { config ->
-                HomeRow(
-                    title = config.name.ifBlank { config.host },
-                    subtitle = "${config.type.label} · ${config.host}:${config.port}${config.basePath.takeIf { it != "/" } ?: ""}",
-                    isDirectory = false,
-                    trailing = if (connecting == config.id) "连接中…" else "",
-                    onClick = {
-                        connecting = config.id
-                        scope.launch {
-                            try {
-                                container.openConnection(config)
-                                val uri = VfsUri.of(
-                                    config.scheme,
-                                    "${config.host}:${config.port}",
-                                    config.basePath.ifBlank { "/" },
-                                    "c=${config.id}",
+            // ---------------- 本地
+            SectionHeader("本地", expanded = expandLocal, onToggle = { expandLocal = !expandLocal })
+            if (expandLocal) {
+                volumes.forEach { volume ->
+                    val space = spaces[volume.authority]
+                    MtListRow(
+                        title = volume.label,
+                        subtitle = space?.let { "${Fmt.size(it.total - it.free)}已用，${Fmt.size(it.free)}可用" }
+                            ?: volume.path,
+                        icon = {
+                            Box(
+                                Modifier
+                                    .size(42.dp)
+                                    .clip(CircleShape)
+                                    .background(MaterialTheme.colorScheme.onSurface),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    if (volume.authority == "root") "📱" else if (volume.authority == "app") "🗂" else "💾",
+                                    style = MaterialTheme.typography.bodyMedium,
                                 )
-                                container.browser.open(container.browser.state.value.focused, uri, config.id, config.name)
-                                connecting = null
-                                onOpenBrowser()
-                            } catch (e: Exception) {
-                                connecting = null
-                                status = (e as? VfsException)?.userMessage ?: (e.message ?: "连接失败")
                             }
-                        }
-                    },
-                    onMore = { menuFor = config },
-                )
-            }
-
-            // ---- 后台
-            SectionHeader("后台任务")
-            val active = tasks.filter {
-                val s = it.state.value
-                s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
-            }
-            if (active.isEmpty()) {
-                HomeRow(title = "没有进行中的任务", subtitle = "双列页里 ⇄ 复制/移动会出现在这里", isDirectory = false, onClick = onOpenTasks)
-            } else {
-                active.take(3).forEach { task ->
-                    val s = task.state.value
-                    val subtitle = when (s) {
-                        is TaskState.Running -> "${s.currentName} · ${Fmt.transferred(s.doneBytes, s.totalBytes)} · ${Fmt.speed(s.speedBps)}"
-                        is TaskState.Paused -> "已暂停"
-                        is TaskState.WaitingConflict -> "等待冲突选择"
-                        TaskState.Queued -> "排队中"
-                        else -> ""
-                    }
-                    HomeRow(title = task.title, subtitle = subtitle, isDirectory = false, onClick = onOpenTasks)
+                        },
+                        onClick = { openVolume(volume.authority, volume.label, "/") },
+                        extraBelow = space?.let {
+                            {
+                                UsageBar(used = it.total - it.free, total = it.total, modifier = Modifier.padding(top = 6.dp, end = 24.dp))
+                            }
+                        },
+                    )
                 }
             }
 
-            // ---- 工具
-            SectionHeader("工具")
-            HomeRow(
-                title = "局域网扫描",
-                subtitle = "扫网段找 SSH / FTP / SMB / WebDAV 服务，一键建连接",
-                isDirectory = false,
-                onClick = onScanLan,
-            )
-            HomeRow(title = "设置", subtitle = "主题 / 排序 / 并发 / User-Agent", isDirectory = false, onClick = onOpenSettings)
-            HomeRow(title = "传输任务", subtitle = "取消 / 暂停 / 重试", isDirectory = false, onClick = onOpenTasks)
-            HomeRow(
-                title = "关于",
-                subtitle = "PanelFM 0.1.0 · 仅文件管理与预览，不含任何逆向功能",
-                isDirectory = false,
-                onClick = { status = "复刻 MT 管理器的「文件管理 + 预览 + 双列 + 多协议」，不含逆向能力" },
-            )
-            Box(Modifier.padding(bottom = 90.dp))
+            // ---------------- 网络
+            SectionHeader("网络", expanded = expandNet, onToggle = { expandNet = !expandNet })
+            if (expandNet) {
+                if (connections.isEmpty()) {
+                    MtListRow(
+                        title = "还没有网络存储",
+                        subtitle = "点右下角 ＋ 添加 SFTP / FTP / FTPS / WebDAV",
+                        icon = { NetworkBadge("＋") },
+                        onClick = onAddConnection,
+                    )
+                }
+                connections.forEach { config ->
+                    MtListRow(
+                        title = config.name.ifBlank { config.host },
+                        subtitle = buildString {
+                            append(config.type.label).append("  ")
+                            append(if (config.type.scheme == "dav") "http://" else "")
+                            append(config.host).append(":").append(config.port)
+                            if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
+                        },
+                        icon = { NetworkBadge(config.type.label.take(3).uppercase()) },
+                        onClick = {
+                            connecting = config.id
+                            scope.launch {
+                                try {
+                                    container.openConnection(config)
+                                    val uri = VfsUri.of(
+                                        config.scheme,
+                                        "${config.host}:${config.port}",
+                                        config.basePath.ifBlank { "/" },
+                                        "c=${config.id}",
+                                    )
+                                    container.browser.open(container.browser.state.value.focused, uri, config.id, config.name)
+                                    connecting = null
+                                    onOpenBrowser()
+                                } catch (e: Exception) {
+                                    connecting = null
+                                    status = (e as? VfsException)?.userMessage ?: (e.message ?: "连接失败")
+                                }
+                            }
+                        },
+                        trailing = { if (connecting == config.id) Text("连接中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) },
+                        onLongClick = { menuFor = config },
+                    )
+                }
+            }
+
+            // ---------------- 工具
+            SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
+            if (expandTools) {
+                val active = tasks.count {
+                    val s = it.state.value
+                    s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
+                }
+                ToolRow("局域网扫描", "🧭") { onScanLan() }
+                ToolRow("书签", "🔖") { onOpenBookmarks() }
+                ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇") { onOpenTasks() }
+                ToolRow("设置", "⚙") { onOpenSettings() }
+                ToolRow("关于", "ℹ") { status = "PanelFM 0.3.0 · 双列文件管理器（本地 / SFTP / FTP / FTPS / WebDAV / SMB / S3），不含逆向功能" }
+            }
+
+            Box(Modifier.padding(bottom = 96.dp))
         }
     }
 
@@ -273,9 +351,9 @@ fun HomeScreen(
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        container.scope.launch { container.registry.closeAll(); container.reloadConnections() }
+                        scope.launch { container.registry.closeAll() }
                         menuFor = null
-                        status = "已断开该连接的会话"
+                        status = "已断开会话"
                     }) { Text("断开") }
                     TextButton(onClick = { deleteTarget = config; menuFor = null }) { Text("删除") }
                 }
@@ -303,53 +381,47 @@ fun HomeScreen(
 }
 
 @Composable
-private fun PermissionCard(title: String, detail: String, actionLabel: String, onAction: () -> Unit) {
-    Column(
+private fun NetworkBadge(text: String) {
+    Box(
         Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 6.dp)
-            .clickable { onAction() }
-            .padding(2.dp),
+            .size(42.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.onSurface),
+        contentAlignment = Alignment.Center,
     ) {
-        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error)
-        Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        Text(actionLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
+        Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.surface, fontWeight = FontWeight.Bold)
     }
 }
 
 @Composable
-private fun HomeRow(
-    title: String,
-    subtitle: String,
-    isDirectory: Boolean,
-    onClick: () -> Unit,
-    onMore: (() -> Unit)? = null,
-    trailing: String = "",
-) {
-    Row(
+private fun ToolRow(title: String, emoji: String, onClick: () -> Unit) {
+    MtListRow(
+        title = title,
+        subtitle = null,
+        icon = {
+            Box(
+                Modifier
+                    .size(42.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.onSurface),
+                contentAlignment = Alignment.Center,
+            ) { Text(emoji, style = MaterialTheme.typography.bodyMedium) }
+        },
+        onClick = onClick,
+    )
+}
+
+@Composable
+private fun PermissionCard(title: String, detail: String, actionLabel: String, onAction: () -> Unit) {
+    Column(
         Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+            .clickable { onAction() }
+            .padding(horizontal = 18.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
-        FileIcon(name = title, isDirectory = isDirectory, size = 38.dp)
-        Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
-            if (subtitle.isNotBlank()) {
-                Text(
-                    subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        if (trailing.isNotBlank()) Text(trailing, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-        if (onMore != null) {
-            IconButton(onClick = onMore, modifier = Modifier.size(28.dp)) {
-                Text("⋮", style = MaterialTheme.typography.titleMedium)
-            }
-        }
+        Text(title, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error)
+        Text(detail, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(actionLabel, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.primary)
     }
 }

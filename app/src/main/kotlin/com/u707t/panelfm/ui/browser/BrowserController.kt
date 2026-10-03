@@ -82,8 +82,16 @@ class BrowserController(private val container: AppContainer) {
             try {
                 val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("未连接：${uri.authority}（请先在主页添加/打开该存储）")
                 vfs.connect()
-                val options = ListOptions(sort = pane.sort, showHidden = pane.showHidden)
-                val items = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
+                val options = ListOptions(
+                    sort = pane.sort,
+                    showHidden = pane.showHidden,
+                    filter = pane.search.takeIf { it.isNotBlank() },
+                )
+                val listed = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
+                val items = pane.filterKind?.let { kindName ->
+                    listed.filter { it.isDirectory || it.extension.isEmpty() ||
+                        com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kindName }
+                } ?: listed
                 val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
                 updatePane(side) { it.copy(items = items, loading = false, error = null, space = space) }
                 runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
@@ -192,6 +200,77 @@ class BrowserController(private val container: AppContainer) {
     fun selectAll(side: PaneSide) = updatePane(side) { it.copy(selection = it.items.map { item -> item.uri.toString() }.toSet()) }
 
     fun clearSelection(side: PaneSide) = updatePane(side) { it.copy(selection = emptySet()) }
+
+    fun setSearch(side: PaneSide, query: String) {
+        updatePane(side) { it.copy(search = query) }
+    }
+
+    /** MT 的「过滤」：按类型筛选当前目录（客户端过滤，立即生效） */
+    fun setFilter(side: PaneSide, kind: String?) {
+        updatePane(side) { it.copy(filterKind = kind) }
+    }
+
+    // ------------------------------------------------------------------ 书签 / 首页
+
+    fun bookmarks(): List<com.u707t.panelfm.core.data.Bookmark> =
+        runCatching { container.bookmarkDao.all() }.getOrDefault(emptyList())
+
+    fun addBookmark(side: PaneSide) {
+        val pane = pane(side)
+        val name = pane.uri.name.ifEmpty { pane.tab.label }
+        runCatching {
+            container.bookmarkDao.add(
+                com.u707t.panelfm.core.data.Bookmark(
+                    id = 0,
+                    connectionId = pane.tab.connectionId,
+                    uri = pane.uri,
+                    name = name,
+                    createdAt = System.currentTimeMillis(),
+                )
+            )
+        }
+        showStatus("已添加书签：${pane.uri.displayPath}")
+    }
+
+    fun removeBookmark(id: Long) {
+        runCatching { container.bookmarkDao.delete(id) }
+        showStatus("已删除书签")
+    }
+
+    /** 打开书签：网络路径若未挂载则自动重连 */
+    fun openBookmark(bookmark: com.u707t.panelfm.core.data.Bookmark) {
+        val side = _state.value.focused
+        container.scope.launch {
+            try {
+                val uri = bookmark.uri
+                if (uri.scheme != "local" && container.locator.find(uri) == null) {
+                    val config = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+                        ?: container.connectionByAuthority(uri.scheme, uri.authority)
+                        ?: throw VfsException.Unsupported("找不到该连接：${uri.authority}")
+                    container.openConnection(config)
+                    open(side, uri, config.id, config.name)
+                } else {
+                    open(side, uri, bookmark.connectionId, bookmark.name)
+                }
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "打开书签失败：${e.message}")
+            }
+        }
+    }
+
+    /** MT 的「设为首页」 */
+    fun setAsHome(side: PaneSide) {
+        val uri = pane(side).uri.toString()
+        container.scope.launch { container.prefs.setHomePath(uri) }
+        showStatus("已设为首页：${pane(side).uri.displayPath}")
+    }
+
+    /** 打开应用启动时进入的目录 */
+    fun openHomeIfConfigured() {
+        val home = container.settings.value.homePath ?: return
+        val uri = runCatching { VfsUri.parse(home) }.getOrNull() ?: return
+        if (container.locator.find(uri) != null) open(PaneSide.LEFT, uri)
+    }
 
     fun setSort(side: PaneSide, sort: com.u707t.panelfm.core.model.SortSpec) {
         updatePane(side) { it.copy(sort = sort) }

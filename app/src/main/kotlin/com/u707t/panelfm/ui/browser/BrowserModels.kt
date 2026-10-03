@@ -30,12 +30,17 @@ data class PaneState(
     val showHidden: Boolean = false,
     val scrollIndex: Int = 0,
     val space: com.u707t.panelfm.core.vfs.SpaceInfo? = null,
+    /** 目录内搜索关键字（MT 的「搜索」） */
+    val search: String = "",
+    /** 类型过滤（MT 的「过滤」）：null = 全部 */
+    val filterKind: String? = null,
 ) {
     val tab: PaneTab get() = tabs.getOrElse(activeTab) { tabs.first() }
     val uri: VfsUri get() = tab.uri
     val hasSelection: Boolean get() = selection.isNotEmpty()
     val dirCount: Int get() = items.count { it.isDirectory }
     val fileCount: Int get() = items.size - dirCount
+    val filtered: Boolean get() = search.isNotBlank() || filterKind != null
     val selectedItems: List<FileMetadata> get() = items.filter { selection.contains(it.uri.toString()) }
 }
 

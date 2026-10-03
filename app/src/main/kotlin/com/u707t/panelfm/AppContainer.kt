@@ -19,7 +19,9 @@ import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsRegistry
 import com.u707t.panelfm.core.vfs.local.LocalVfs
 import com.u707t.panelfm.core.vfs.ftp.FtpVfsFactory
+import com.u707t.panelfm.core.vfs.s3.S3Vfs
 import com.u707t.panelfm.core.vfs.sftp.SftpVfs
+import com.u707t.panelfm.core.vfs.smb.SmbVfs
 import com.u707t.panelfm.core.vfs.webdav.WebDavVfsFactory
 import com.u707t.panelfm.ui.browser.BrowserController
 import kotlinx.coroutines.CoroutineScope
@@ -77,6 +79,8 @@ class AppContainer(val app: Application) {
             put("ftp", FtpVfsFactory("ftp"))
             put("ftps", FtpVfsFactory("ftps"))
             put("sftp", SftpVfs.Factory(hostKeyDao))
+            put("smb", SmbVfs.Factory())
+            put("s3", S3Vfs.Factory())
         },
         env = env,
         scope = scope,

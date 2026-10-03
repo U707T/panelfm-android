@@ -36,7 +36,9 @@ import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.s3.S3Config
 import com.u707t.panelfm.core.vfs.sftp.SftpAuth
+import com.u707t.panelfm.core.vfs.smb.SmbConfig
 import com.u707t.panelfm.core.vfs.sftp.SftpConfig
 import com.u707t.panelfm.core.vfs.sftp.SftpSecrets
 import com.u707t.panelfm.core.vfs.sftp.SshKeys
@@ -90,6 +92,14 @@ fun ConnectionEditScreen(
     var jumpUser by remember { mutableStateOf(existing?.option(SftpConfig.OPT_JUMP_USER).orEmpty()) }
     var jumpPassword by remember { mutableStateOf(storedSecrets.jumpPassword ?: "") }
 
+    // SMB
+    var smbDomain by remember { mutableStateOf(existing?.option(SmbConfig.OPT_DOMAIN).orEmpty()) }
+    var smbShare by remember { mutableStateOf(existing?.option(SmbConfig.OPT_SHARE).orEmpty()) }
+    // S3
+    var s3Region by remember { mutableStateOf(existing?.option(S3Config.OPT_REGION) ?: "us-east-1") }
+    var s3PathStyle by remember { mutableStateOf(existing?.option(S3Config.OPT_PATH_STYLE)?.toBoolean() ?: true) }
+    var s3Domain by remember { mutableStateOf(existing?.option(S3Config.OPT_DOWNLOAD_DOMAIN).orEmpty()) }
+    var s3Bucket by remember { mutableStateOf(existing?.option(S3Config.OPT_BUCKET).orEmpty()) }
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var publicKeyLine by remember { mutableStateOf<String?>(null) }
@@ -131,6 +141,16 @@ fun ConnectionEditScreen(
         if (trustSelfSigned) put(ConnectionConfig.OPT_TRUST_SELF_SIGNED, "true")
         if (implicitTls) put(ConnectionConfig.OPT_IMPLICIT_TLS, "true")
         if (!passive) put(ConnectionConfig.OPT_PASSIVE, "false")
+        if (type == ConnectionType.SMB) {
+            if (smbDomain.isNotBlank()) put(SmbConfig.OPT_DOMAIN, smbDomain.trim())
+            if (smbShare.isNotBlank()) put(SmbConfig.OPT_SHARE, smbShare.trim())
+        }
+        if (type == ConnectionType.S3) {
+            put(S3Config.OPT_REGION, s3Region.trim().ifBlank { "us-east-1" })
+            put(S3Config.OPT_PATH_STYLE, s3PathStyle.toString())
+            if (s3Domain.isNotBlank()) put(S3Config.OPT_DOWNLOAD_DOMAIN, s3Domain.trim())
+            if (s3Bucket.isNotBlank()) put(S3Config.OPT_BUCKET, s3Bucket.trim())
+        }
         if (type == ConnectionType.SFTP) {
             put(SftpConfig.OPT_AUTH, sftpAuth.name)
             if (sftpAuth == SftpAuth.KEY && keyPath.isNotBlank()) put(SftpConfig.OPT_KEY_PATH, keyPath)
@@ -143,6 +163,7 @@ fun ConnectionEditScreen(
     }
 
     fun buildSecret(): String? = when (type) {
+        ConnectionType.S3 -> if (password.isNotBlank() || user.isNotBlank()) "$user:$password" else null
         ConnectionType.SFTP -> SftpSecrets(
             password = password.ifEmpty { null },
             keyPassphrase = keyPassphrase.ifEmpty { null },
@@ -175,7 +196,10 @@ fun ConnectionEditScreen(
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-            listOf(ConnectionType.SFTP, ConnectionType.WEBDAV, ConnectionType.FTP, ConnectionType.FTPS).forEach { t ->
+            listOf(
+                ConnectionType.SFTP, ConnectionType.SMB, ConnectionType.S3,
+                ConnectionType.WEBDAV, ConnectionType.FTP, ConnectionType.FTPS,
+            ).forEach { t ->
                 TextButton(onClick = { type = t }) {
                     Text(
                         t.label,
@@ -185,7 +209,7 @@ fun ConnectionEditScreen(
             }
         }
         Text(
-            "SMB / S3 在 M5–M6 接入（接口与引擎已就绪）",
+            "全部协议免费开放；SFTP 支持私钥与跳板机，S3 支持 R2/COS/OSS/MinIO 等兼容端点。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -269,8 +293,37 @@ fun ConnectionEditScreen(
             )
         }
 
+        // ---------------- SMB 专属
+        if (type == ConnectionType.SMB) {
+            OutlinedTextField(value = smbShare, onValueChange = { smbShare = it }, label = { Text("共享名（如 public / media）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = smbDomain, onValueChange = { smbDomain = it }, label = { Text("域 / 工作组（可留空）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Text(
+                "支持 SMB2/3（自动协商 3.1.1 → 3.0.2 → 2.1），NTLMv2 认证；\"所有文件访问\"外的路径无需额外授权。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // ---------------- S3 专属
+        if (type == ConnectionType.S3) {
+            OutlinedTextField(value = user, onValueChange = { user = it }, label = { Text("Access Key（AK）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = password, onValueChange = { password = it }, label = { Text("Secret Key（SK，Keystore 加密保存）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = s3Region, onValueChange = { s3Region = it }, label = { Text("Region（AWS 必填；R2 填 auto）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = s3Bucket, onValueChange = { s3Bucket = it }, label = { Text("默认 Bucket（可留空，进目录后选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = s3Domain, onValueChange = { s3Domain = it }, label = { Text("自定义下载域名（可选，如 cdn.example.com）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Checkbox(checked = s3PathStyle, onCheckedChange = { s3PathStyle = it })
+                Text("路径样式（path-style，自建 MinIO/Alist 建议开启）", style = MaterialTheme.typography.bodySmall)
+            }
+            Text(
+                "新建连接时主机填端点（如 s3.amazonaws.com / xxx.r2.cloudflarestorage.com / 192.168.1.9:9000），协议选 http/https 由上面「端口 + HTTPS」决定。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
         // ---------------- WebDAV / FTP 选项
-        if (type == ConnectionType.WEBDAV) {
+        if (type == ConnectionType.WEBDAV || type == ConnectionType.S3) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Checkbox(checked = secure, onCheckedChange = { secure = it })
                 Text("使用 HTTPS/TLS", style = MaterialTheme.typography.bodySmall)
