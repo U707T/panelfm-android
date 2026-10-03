@@ -60,6 +60,33 @@ object Fmt {
         return sb.toString()
     }
 
+    /**
+     * 完整权限串（MT 属性样式）：类型字符 + 9 位权限 + setuid/setgid/sticky 特殊位。
+     * 例：`drwxrws---` / `-rw-r--r--` / `lrwxrwxrwx`
+     */
+    fun modeLong(mode: Int, isDirectory: Boolean, isLink: Boolean = false, isSocket: Boolean = false, isFifo: Boolean = false): String {
+        val sb = StringBuilder()
+        sb.append(
+            when {
+                isLink -> 'l'
+                isDirectory -> 'd'
+                isSocket -> 's'
+                isFifo -> 'p'
+                else -> '-'
+            }
+        )
+        val rwx = "rwxrwxrwx"
+        for (i in 0 until 9) {
+            val bit = 1 shl (8 - i)
+            sb.append(if (mode and bit != 0) rwx[i] else '-')
+        }
+        // 特殊位（位于 mode 高位）：setuid 0x800 / setgid 0x400 / sticky 0x200
+        if (mode and 0x800 != 0) sb[3] = if (mode and 0x40 != 0) 's' else 'S'
+        if (mode and 0x400 != 0) sb[6] = if (mode and 0x8 != 0) 's' else 'S'
+        if (mode and 0x200 != 0) sb[9] = if (mode and 0x1 != 0) 't' else 'T'
+        return sb.toString()
+    }
+
     /** 传输速率的人话描述（用于任务行副标题） */
     fun transferred(done: Long, total: Long): String = when {
         total > 0 -> "${size(done)} / ${size(total)}"

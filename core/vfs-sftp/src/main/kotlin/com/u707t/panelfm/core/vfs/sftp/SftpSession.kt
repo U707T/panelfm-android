@@ -15,7 +15,6 @@ import org.apache.sshd.common.SshException
 import org.apache.sshd.common.util.net.SshdSocketAddress
 import org.apache.sshd.sftp.client.SftpClient
 import org.apache.sshd.sftp.client.SftpClientFactory
-import java.net.InetSocketAddress
 import java.net.SocketAddress
 import java.security.PublicKey
 import java.time.Duration
@@ -84,23 +83,26 @@ internal class SftpSession(
             jumpSession = js
 
             // 本地端口转发：127.0.0.1:随机端口 → 目标主机:端口（等价 ssh -L）
+            // 注意：必须真正 break（早先误用 return@repeat，会连开 5 个转发并泄漏）
             var tracker: ExplicitPortForwardingTracker? = null
             var lastError: Exception? = null
-            repeat(5) {
+            for (attempt in 0 until 5) {
                 val port = Random.nextInt(30000, 60000)
                 try {
                     tracker = js.createLocalPortForwardingTracker(
                         SshdSocketAddress("127.0.0.1", port),
                         SshdSocketAddress(cfg.host, cfg.port),
                     )
-                    return@repeat
+                    break
                 } catch (e: Exception) {
                     lastError = e
                 }
             }
             val active = tracker ?: throw VfsException.ProtocolError("跳板机端口转发失败：${lastError?.message}")
             jumpTracker = active
-            val boundPort = (active.localAddress as? InetSocketAddress)?.port ?: cfg.port
+            // 注意：localAddress 是 MINA 的 SshdSocketAddress（不是 java.net.InetSocketAddress），
+            // 之前 as? InetSocketAddress 永远失败 → 回落到 cfg.port，跳板机连不上
+            val boundPort = active.localAddress?.port ?: cfg.port
             targetHost = "127.0.0.1"
             targetPort = boundPort
             Logx.i("SftpSession", "jump host ready: 127.0.0.1:$boundPort → ${cfg.host}:${cfg.port} via ${jump.host}")

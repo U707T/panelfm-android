@@ -6,8 +6,7 @@ import android.system.OsConstants
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
@@ -110,7 +109,7 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
                 .filter { filter.isNullOrBlank() || it.name.contains(filter, ignoreCase = true) }
                 .map { meta(uri, it) }
                 .toList()
-            sort(items, options.sort)
+            sortFileItems(items, options.sort)
         }
 
     override suspend fun stat(uri: VfsUri): FileMetadata = withContext(env.dispatchers.io) {
@@ -122,8 +121,11 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     private fun meta(parentUri: VfsUri, file: File): FileMetadata {
         val uri = parentUri.child(file.name)
         val attrs = runCatching { Os.stat(file.absolutePath) }.getOrNull()
+        // lstat 才能识别符号链接（Os.stat 会跟随链接）
+        val linkAttrs = runCatching { Os.lstat(file.absolutePath) }.getOrNull()
         val isDir = attrs?.let { OsConstants.S_ISDIR(it.st_mode) } ?: file.isDirectory
-        val isLink = attrs?.let { OsConstants.S_ISLNK(it.st_mode) } ?: false
+        val isLink = linkAttrs?.let { OsConstants.S_ISLNK(it.st_mode) }
+            ?: runCatching { Files.isSymbolicLink(file.toPath()) }.getOrDefault(false)
         val ext = file.name.substringAfterLast('.', "").lowercase()
         return FileMetadata(
             uri = uri,
@@ -133,23 +135,12 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
             size = if (isDir) -1L else runCatching { file.length() }.getOrDefault(-1L),
             lastModified = runCatching { file.lastModified() }.getOrDefault(-1L),
             mimeType = if (isDir) null else MimeTypes.of(ext),
-            permissions = attrs?.let { it.st_mode and 0x1FF },
+            // 0xFFF：9 位权限 + setuid/setgid/sticky（属性面板显示 drwxrws---(2770) 需要特殊位）
+            permissions = attrs?.let { it.st_mode and 0xFFF },
             owner = attrs?.let { it.st_uid.toString() },
             group = attrs?.let { it.st_gid.toString() },
             symlinkTarget = if (isLink) runCatching { Files.readSymbolicLink(file.toPath()).toString() }.getOrNull() else null,
         )
-    }
-
-    private fun sort(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val ordered = items.sortedWith(cmp)
-        val withDir = if (spec.dirsFirst) ordered.sortedByDescending { it.isDirectory } else ordered
-        return if (spec.ascending) withDir else withDir.reversed()
     }
 
     // ------------------------------------------------------------------ 写操作
@@ -202,11 +193,24 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean = withContext(env.dispatchers.io) {
         val src = toFile(from)
         val dst = toFile(to)
-        if (src.isDirectory) return@withContext false
         if (dst.exists()) throw VfsException.Conflict(to)
         runCatching {
             dst.parentFile?.mkdirs()
-            Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            if (src.isDirectory) {
+                // 目录：递归复制（本地秒级，无需走「读流→写流」慢路径）
+                java.nio.file.Files.walk(src.toPath()).use { stream ->
+                    stream.forEach { p ->
+                        val target = dst.toPath().resolve(src.toPath().relativize(p))
+                        if (java.nio.file.Files.isDirectory(p)) {
+                            java.nio.file.Files.createDirectories(target)
+                        } else {
+                            java.nio.file.Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING)
+                        }
+                    }
+                }
+            } else {
+                java.nio.file.Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
             true
         }.getOrDefault(false)
     }
@@ -304,6 +308,8 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         init {
             if (startOffset > 0) {
                 raf.seek(startOffset)
+                // 断点续传：截掉偏移之后的残留尾巴，避免最终文件比源文件长
+                if (raf.length() > startOffset) runCatching { raf.setLength(startOffset) }
                 written = startOffset
             } else {
                 raf.setLength(0)

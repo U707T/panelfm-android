@@ -4,12 +4,15 @@ import android.app.Activity
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -19,8 +22,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
@@ -106,7 +111,6 @@ fun DualPaneScreen(
     onOpenPreview: (VfsUri) -> Unit,
     onOpenEditor: (VfsUri) -> Unit,
     onOpenDiff: (VfsUri, VfsUri) -> Unit,
-    onOpenTerminal: (String) -> Unit,
 ) {
     val ui by container.browser.state.collectAsState()
     val controller = container.browser
@@ -124,6 +128,7 @@ fun DualPaneScreen(
     var showMoreMenu by remember { mutableStateOf(false) }
     var hiddenSub by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
+    var sortManage by remember { mutableStateOf(false) }
     var gotoPath by remember { mutableStateOf(false) }
     var filterInput by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
@@ -173,10 +178,11 @@ fun DualPaneScreen(
         scope.launch {
             try {
                 container.openConnection(config)
+                // WebDAV：进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 basePath / 初始路径
                 val uri = VfsUri.of(
                     config.scheme,
                     "${config.host}:${config.port}",
-                    config.basePath.ifBlank { "/" },
+                    config.openPath,
                     "c=${config.id}",
                 )
                 controller.open(controller.state.value.focused, uri, config.id, config.name)
@@ -209,6 +215,11 @@ fun DualPaneScreen(
                     connectingId = connecting,
                     onOpenVolume = { openVolumeInActivePane(it) },
                     onOpenConnection = { openConnectionInActivePane(it) },
+                    onOpenRecentPath = { uri ->
+                        closeDrawer()
+                        val conn = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+                        controller.open(focusSide, uri, conn?.id, conn?.name)
+                    },
                     onEditConnection = { id -> closeDrawer(); onEditConnection(id) },
                     onOpenTrash = { closeDrawer(); onOpenTrash() },
                     onOpenApps = { closeDrawer(); onOpenApps() },
@@ -218,7 +229,6 @@ fun DualPaneScreen(
                         if (item != null) onOpenEditor(item.uri)
                         else controller.showStatus("在列表中点击文本文件即可用内置编辑器打开（或先选中一个文件）")
                     },
-                    onOpenTerminal = { closeDrawer(); onOpenTerminal(focused.uri.displayPath.ifEmpty { "/" }) },
                     onOpenRemote = { closeDrawer(); onOpenRemote() },
                     onOpenBookmarks = { closeDrawer(); onOpenBookmarks() },
                     onOpenTasks = { closeDrawer(); onOpenTasks() },
@@ -487,10 +497,6 @@ fun DualPaneScreen(
             MtMenuItem("▣", "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
             MtMenuItem("▽", "过滤") { showMoreMenu = false; filterInput = true }
             MtMenuItem("⇅", "排序方式") { showMoreMenu = false; showSortDialog = true }
-            MtMenuItem(">_", "打开终端") {
-                showMoreMenu = false
-                onOpenTerminal(focused.uri.displayPath.ifEmpty { "/" })
-            }
             MtMenuItem("👁", "隐藏文件", trailing = "▶") { hiddenSub = true }
             MtMenuItem("🔖", "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
             MtMenuItem("🏠", "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
@@ -677,22 +683,35 @@ fun DualPaneScreen(
     // MT 的搜索：文件名 + 搜索子目录 + 高级搜索（内容 / 大小范围）
     if (showSearch) {
         MtSearchDialog(
-            initialName = focused.search,
-            onSearch = { name, recursive, content, minSize, maxSize ->
-                if (!recursive && content.isBlank() && minSize < 0 && maxSize < 0) {
-                    // 仅当前目录：等价于目录内文件名过滤
-                    controller.setSearch(focusSide, name)
-                } else {
-                    searching = true
-                    searchResults = emptyList()
-                    scope.launch {
-                        val r = runCatching {
-                            controller.searchTree(focusSide, name, recursive, content, minSize, maxSize)
-                        }.onFailure {
-                            controller.showStatus((it as? VfsException)?.userMessage ?: "搜索失败：${it.message}")
-                        }.getOrDefault(emptyList())
-                        searching = false
-                        searchResults = r
+            initialQuery = focused.search,
+            history = container.settings.value.searchHistory,
+            onSearch = { q, field, recursive, minSize, maxSize ->
+                val hasSizeFilter = minSize >= 0 || maxSize >= 0
+                when {
+                    // 仅当前目录 + 无大小条件：等价于目录内过滤（沿用 /regex、!text 语法）
+                    !recursive && !hasSizeFilter && field == SearchField.NAME -> controller.setSearch(focusSide, q)
+                    !recursive && !hasSizeFilter && field == SearchField.REGEX -> controller.setSearch(focusSide, "/$q")
+                    else -> {
+                        searching = true
+                        searchResults = emptyList()
+                        scope.launch {
+                            container.prefs.addSearchQuery(q)
+                            val r = runCatching {
+                                controller.searchTree(
+                                    side = focusSide,
+                                    nameQuery = if (field == SearchField.CONTENT) "" else q,
+                                    recursive = recursive,
+                                    contentQuery = if (field == SearchField.CONTENT) q else "",
+                                    minSize = minSize,
+                                    maxSize = maxSize,
+                                    nameRegex = field == SearchField.REGEX,
+                                )
+                            }.onFailure {
+                                controller.showStatus((it as? VfsException)?.userMessage ?: "搜索失败：${it.message}")
+                            }.getOrDefault(emptyList())
+                            searching = false
+                            searchResults = r
+                        }
                     }
                 }
             },
@@ -805,6 +824,8 @@ fun DualPaneScreen(
         val kind = MimeTypes.kindOf(item.extension)
         OpenWithDialog(
             fileName = item.name,
+            mimeType = item.mimeType,
+            localFile = item.uri.scheme == "local",
             options = listOf(
                 OpenWithOption(PreviewMode.TEXT, available = kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER),
                 OpenWithOption(PreviewMode.EDITOR, available = kind != MimeTypes.Kind.IMAGE && kind != MimeTypes.Kind.AUDIO && kind != MimeTypes.Kind.VIDEO),
@@ -826,6 +847,10 @@ fun DualPaneScreen(
                 } else {
                     controller.openWith(item, mode)
                 }
+            },
+            onPickSystem = { app ->
+                openWithFor = null
+                openWithSystemApp(container, context, item, app) { msg -> controller.showStatus(msg) }
             },
             onSetDefault = { mode ->
                 controller.setDefaultOpenMode(item, mode)
@@ -931,32 +956,25 @@ fun DualPaneScreen(
         )
     }
 
-    // ---------------- 排序对话框
+    // ---------------- 排序对话框（复刻 MT：单选项 + 仅应用于此文件夹 / 逆向排序 + 管理/取消/确定）
     if (showSortDialog) {
-        AlertDialog(
-            onDismissRequest = { showSortDialog = false },
-            title = { Text("排序方式") },
-            text = {
-                Column {
-                    SortBy.entries.forEach { by ->
-                        TextButton(onClick = {
-                            val asc = if (focused.sort.by == by) !focused.sort.ascending else true
-                            controller.setSort(focusSide, SortSpec(by, asc, focused.sort.dirsFirst))
-                            showSortDialog = false
-                        }) {
-                            Text(
-                                sortLabel(by) + if (focused.sort.by == by) (if (focused.sort.ascending) " ↑" else " ↓") else "",
-                                color = if (focused.sort.by == by) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-                    TextButton(onClick = {
-                        controller.setSort(focusSide, focused.sort.copy(dirsFirst = !focused.sort.dirsFirst))
-                        showSortDialog = false
-                    }) { Text(if (focused.sort.dirsFirst) "文件夹置顶：开" else "文件夹置顶：关") }
-                }
+        MtSortDialog(
+            paneLabel = if (focusSide == PaneSide.LEFT) "左窗口" else "右窗口",
+            initial = focused.sort,
+            folderRuleExists = controller.hasFolderSortRule(focused.uri),
+            onManage = { showSortDialog = false; sortManage = true },
+            onConfirm = { spec, folderOnly ->
+                showSortDialog = false
+                controller.applySort(focusSide, spec, folderOnly)
             },
-            confirmButton = { TextButton(onClick = { showSortDialog = false }) { Text("关闭") } },
+            onDismiss = { showSortDialog = false },
+        )
+    }
+    if (sortManage) {
+        MtSortManageDialog(
+            rules = controller.folderSortRules(),
+            onClear = { controller.clearFolderSorts(); sortManage = false },
+            onDismiss = { sortManage = false },
         )
     }
 
@@ -1005,7 +1023,7 @@ fun DualPaneScreen(
         )
     }
     ui.property?.let { item ->
-        PropertiesDialog(item, space = focused.space?.let { Fmt.transferred(it.total - it.free, it.total) }) {
+        PropertiesDialog(container, item) {
             controller.dismissProperties()
         }
     }
@@ -1123,8 +1141,123 @@ private fun MtMenuItem(icon: String, label: String, trailing: String? = null, on
 private fun sortLabel(by: SortBy): String = when (by) {
     SortBy.NAME -> "按名称"
     SortBy.SIZE -> "按大小"
-    SortBy.TIME -> "按时间"
+    SortBy.TIME -> "按日期"
     SortBy.TYPE -> "按类型"
+}
+
+// --------------------------------------------------------------------------- MT 排序对话框
+
+/** 复刻 MT「排序方式 - 窗口名」：2×2 单选项 + 仅应用于此文件夹 / 逆向排序 + 管理/取消/确定 */
+@Composable
+private fun MtSortDialog(
+    paneLabel: String,
+    initial: SortSpec,
+    folderRuleExists: Boolean,
+    onManage: () -> Unit,
+    onConfirm: (SortSpec, Boolean) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var by by remember { mutableStateOf(initial.by) }
+    var reverse by remember { mutableStateOf(!initial.ascending) }
+    var folderOnly by remember { mutableStateOf(folderRuleExists) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("排序方式 - $paneLabel") },
+        text = {
+            Column {
+                Row(Modifier.fillMaxWidth()) {
+                    SortChoice("按名称", SortBy.NAME, by) { by = it }
+                    SortChoice("按大小", SortBy.SIZE, by) { by = it }
+                }
+                Row(Modifier.fillMaxWidth()) {
+                    SortChoice("按日期", SortBy.TIME, by) { by = it }
+                    SortChoice("按类型", SortBy.TYPE, by) { by = it }
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickableNoRipple { folderOnly = !folderOnly }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = folderOnly, onCheckedChange = { folderOnly = it })
+                    Text("仅应用于此文件夹", style = MaterialTheme.typography.bodyMedium)
+                }
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickableNoRipple { reverse = !reverse }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = reverse, onCheckedChange = { reverse = it })
+                    Text("逆向排序", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        },
+        dismissButton = { TextButton(onClick = onManage) { Text("管理") } },
+        confirmButton = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onDismiss) { Text("取消") }
+                TextButton(onClick = {
+                    onConfirm(initial.copy(by = by, ascending = !reverse), folderOnly)
+                }) { Text("确定") }
+            }
+        },
+    )
+}
+
+@Composable
+private fun RowScope.SortChoice(label: String, value: SortBy, current: SortBy, onPick: (SortBy) -> Unit) {
+    Row(
+        Modifier
+            .weight(1f)
+            .clickableNoRipple { onPick(value) }
+            .padding(vertical = 2.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = current == value, onClick = { onPick(value) })
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+    }
+}
+
+/** MT「排序 - 管理」：查看/清除「仅应用于此文件夹」记住的规则 */
+@Composable
+private fun MtSortManageDialog(
+    rules: Map<String, String>,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("排序管理") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                if (rules.isEmpty()) {
+                    Text("还没有「仅应用于此文件夹」的排序记录。", style = MaterialTheme.typography.bodySmall)
+                } else {
+                    Text("已记住 ${rules.size} 个文件夹的排序：", style = MaterialTheme.typography.bodySmall)
+                    rules.entries.take(12).forEach { (key, value) ->
+                        val path = runCatching { VfsUri.parse(key).displayPath }.getOrDefault(key)
+                        val desc = decodeSortSpec(value)?.let { s ->
+                            sortLabel(s.by) + if (s.ascending) "·升序" else "·降序"
+                        } ?: value
+                        Text(
+                            "• $path — $desc",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    if (rules.size > 12) Text("…", style = MaterialTheme.typography.labelSmall)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onClear, enabled = rules.isNotEmpty()) { Text("清除全部") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
 }
 
 /** 分享：本地文件走 FileProvider（可分享给任何应用） */
@@ -1157,6 +1290,40 @@ internal fun shareItem(
     }
     runCatching { context.startActivity(Intent.createChooser(intent, "分享 ${item.name}")) }
         .onFailure { onMessage("没有可用的分享目标") }
+}
+
+/** 打开方式：直接交给指定的系统应用（MT 网格里点具体某个应用） */
+internal fun openWithSystemApp(
+    container: AppContainer,
+    context: android.content.Context,
+    item: FileMetadata,
+    app: com.u707t.panelfm.ui.preview.SystemOpenApp,
+    onMessage: (String) -> Unit,
+) {
+    if (item.uri.scheme != "local") {
+        onMessage("网络文件请先复制到本地再打开")
+        return
+    }
+    val file = File(container.localVfs.absolutePath(item.uri))
+    if (!file.exists()) {
+        onMessage("文件不存在")
+        return
+    }
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull() ?: return onMessage("无法生成打开链接")
+    val intent = Intent(app.action).apply {
+        setClassName(app.packageName, app.activityName)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        if (app.action == Intent.ACTION_VIEW) {
+            setDataAndType(uri, item.mimeType ?: "*/*")
+        } else {
+            type = item.mimeType ?: "*/*"
+            putExtra(Intent.EXTRA_STREAM, uri)
+        }
+    }
+    runCatching { context.startActivity(intent) }
+        .onFailure { onMessage("打开失败：${it.message}") }
 }
 
 /** 打开方式：交给系统选择器 */

@@ -3,8 +3,7 @@ package com.u707t.panelfm.core.vfs.sftp
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.HostKeyStore
 import com.u707t.panelfm.core.vfs.ListOptions
@@ -100,7 +99,7 @@ class SftpVfs(
                     .filter { filter.isNullOrBlank() || it.filename.contains(filter, ignoreCase = true) }
                     .map { toMeta(uri.child(it.filename), it.filename, it.attributes) }
                     .toList()
-                    .let { sortItems(it, options.sort) }
+                    .let { sortFileItems(it, options.sort) }
             }
         }
 
@@ -145,18 +144,6 @@ class SftpVfs(
             owner = runCatching { attrs.owner }.getOrNull(),
             group = runCatching { attrs.group }.getOrNull(),
         )
-    }
-
-    private fun sortItems(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val sorted = items.sortedWith(cmp)
-        val withDirs = if (spec.dirsFirst) sorted.sortedByDescending { it.isDirectory } else sorted
-        return if (spec.ascending) withDirs else withDirs.reversed()
     }
 
     // ------------------------------------------------------------------ 写操作

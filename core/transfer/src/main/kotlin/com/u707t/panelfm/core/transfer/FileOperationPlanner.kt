@@ -31,13 +31,16 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         for (src in request.sources) {
             val vfs = locator.find(src) ?: throw VfsException.Unsupported("源位置不可用：${src.authority}")
             val meta = vfs.stat(src)
-            val destRoot = request.destDir.child(if (request.wholeDirectory) meta.name else meta.name)
+            val destRoot = request.destDir.child(meta.name)
             if (meta.isDirectory) {
                 collectDir(vfs = vfs, src = src, dest = destRoot, depth = 0,
                     items = items,
-                    onFile = { size -> files++; bytes += size },
-                    onDir = { dirs++ },
-                    onScan = onScan)
+                    onFile = { size ->
+                        files++
+                        bytes += size
+                        if (files % 32 == 0) onScan(files, bytes)
+                    },
+                    onDir = { dirs++ })
             } else {
                 items += PlanItem(src, destRoot, isDirectory = false, size = meta.size.coerceAtLeast(0), depth = 0)
                 files++
@@ -59,7 +62,6 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         items: MutableList<PlanItem>,
         onFile: (Long) -> Unit,
         onDir: () -> Unit,
-        onScan: (Int, Long) -> Unit,
     ) {
         if (depth > MAX_DEPTH) throw VfsException.ProtocolError("目录层级过深（> $MAX_DEPTH），疑似软链接环")
         onDir()
@@ -68,11 +70,10 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         for (child in children) {
             val childDest = dest.child(child.name)
             if (child.isDirectory && !child.isSymlink) {
-                collectDir(vfs, child.uri, childDest, depth + 1, items, onFile, onDir, onScan)
+                collectDir(vfs, child.uri, childDest, depth + 1, items, onFile, onDir)
             } else if (!child.isDirectory) {
                 items += PlanItem(child.uri, childDest, isDirectory = false, size = child.size.coerceAtLeast(0), depth = depth + 1)
                 onFile(child.size.coerceAtLeast(0))
-                if (items.size % 32 == 0) onScan(items.size, items.sumOf { it.size.coerceAtLeast(0) })
             }
         }
         if (items.size > MAX_ITEMS) throw VfsException.ProtocolError("文件数超过 $MAX_ITEMS，建议分批操作")

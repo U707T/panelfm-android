@@ -5,6 +5,8 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.model.ConflictDecision
 import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.model.SortBy
+import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.transfer.FileOperationPlanner
 import com.u707t.panelfm.core.transfer.TaskState
@@ -15,6 +17,7 @@ import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.VfsUris
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -50,13 +53,16 @@ class BrowserController(private val container: AppContainer) {
         val (lastLeft, lastRight) = if (settings.rememberLastPath) container.prefs.lastPaths() else (null to null)
         val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
         val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+        val defaultSort = SortSpec(settings.sortBy, settings.sortAscending, settings.dirsFirst)
         update {
             it.copy(
                 splitRatio = settings.splitRatio,
-                left = if (leftUri != null && container.locator.find(leftUri) != null)
-                    it.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority))) else it.left,
-                right = if (rightUri != null && container.locator.find(rightUri) != null)
-                    it.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority))) else it.right,
+                left = (if (leftUri != null && container.locator.find(leftUri) != null)
+                    it.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority))) else it.left)
+                    .copy(sort = defaultSort),
+                right = (if (rightUri != null && container.locator.find(rightUri) != null)
+                    it.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority))) else it.right)
+                    .copy(sort = defaultSort),
             )
         }
         load(PaneSide.LEFT)
@@ -98,7 +104,7 @@ class BrowserController(private val container: AppContainer) {
         }
     }
 
-    fun focus(side: PaneSide) = update { it.copy(focused = side) }
+    fun focus(side: PaneSide) = update { if (it.focused == side) it else it.copy(focused = side) }
 
     fun toggleSinglePane() = update { it.copy(singlePane = !it.singlePane) }
 
@@ -114,13 +120,17 @@ class BrowserController(private val container: AppContainer) {
         loadJobs[side]?.cancel()
         val pane = pane(side)
         val uri = pane.uri
+        // MT「仅应用于此文件夹」：该路径有记忆排序 → 覆盖当前窗格排序
+        val ruleSort = container.settings.value.folderSorts[VfsUris.stripped(uri).toString()]?.let { decodeSortSpec(it) }
+        val effSort = ruleSort ?: pane.sort
+        if (effSort != pane.sort) updatePane(side) { it.copy(sort = effSort) }
         updatePane(side) { it.copy(loading = true, error = null) }
         loadJobs[side] = container.scope.launch {
             try {
                 val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("未连接：${uri.authority}（请先在主页添加/打开该存储）")
                 vfs.connect()
                 val options = ListOptions(
-                    sort = pane.sort,
+                    sort = effSort,
                     showHidden = pane.showHidden,
                     filter = null,      // 关键字过滤统一在客户端做（支持 /regex、!/regex、!text）
                 )
@@ -501,10 +511,39 @@ class BrowserController(private val container: AppContainer) {
         if (container.locator.find(uri) != null) open(PaneSide.LEFT, uri)
     }
 
-    fun setSort(side: PaneSide, sort: com.u707t.panelfm.core.model.SortSpec) {
+    fun setSort(side: PaneSide, sort: SortSpec) {
         updatePane(side) { it.copy(sort = sort) }
         load(side)
     }
+
+    /**
+     * MT 排序对话框「确定」：
+     *  - folderOnly = 「仅应用于此文件夹」→ 只给当前路径记一条规则；
+     *  - 否则写全局默认排序，并清掉该文件夹的专属规则。
+     */
+    fun applySort(side: PaneSide, spec: SortSpec, folderOnly: Boolean) {
+        val key = VfsUris.stripped(pane(side).uri).toString()
+        updatePane(side) { it.copy(sort = spec) }
+        load(side)
+        container.scope.launch {
+            if (folderOnly) {
+                container.prefs.setFolderSort(key, encodeSortSpec(spec))
+            } else {
+                container.prefs.setFolderSort(key, null)
+                container.prefs.setSort(spec.by, spec.ascending)
+                container.prefs.setDirsFirst(spec.dirsFirst)
+            }
+        }
+    }
+
+    /** 当前目录是否已有「仅应用于此文件夹」的排序规则 */
+    fun hasFolderSortRule(uri: VfsUri): Boolean =
+        container.settings.value.folderSorts.containsKey(VfsUris.stripped(uri).toString())
+
+    /** 已记忆的全部文件夹排序（排序管理对话框用） */
+    fun folderSortRules(): Map<String, String> = container.settings.value.folderSorts
+
+    fun clearFolderSorts() = container.scope.launch { container.prefs.clearFolderSorts() }
 
     fun toggleHidden(side: PaneSide) {
         updatePane(side) { it.copy(showHidden = !it.showHidden) }
@@ -744,6 +783,7 @@ class BrowserController(private val container: AppContainer) {
         contentQuery: String = "",
         minSize: Long = -1L,
         maxSize: Long = -1L,
+        nameRegex: Boolean = false,
         limit: Int = 300,
         scanCap: Int = 8000,
     ): List<FileMetadata> {
@@ -751,6 +791,13 @@ class BrowserController(private val container: AppContainer) {
         val vfs = container.locator.find(root) ?: throw VfsException.Unsupported("会话不可用")
         val out = ArrayList<FileMetadata>()
         var scanned = 0
+
+        // MT 搜索类型：文件名（包含 / 正则）
+        val nameOk: (FileMetadata) -> Boolean = when {
+            nameQuery.isBlank() -> { _ -> true }
+            nameRegex -> { item -> runCatching { Regex(nameQuery).containsMatchIn(item.name) }.getOrDefault(false) }
+            else -> { item -> matchesSearch(item.name, nameQuery) }
+        }
 
         fun sizeOk(item: FileMetadata): Boolean =
             (minSize < 0 || item.size >= minSize) && (maxSize < 0 || item.size <= maxSize)
@@ -791,7 +838,7 @@ class BrowserController(private val container: AppContainer) {
             for (item in items) {
                 if (out.size >= limit) return
                 if (!item.isDirectory &&
-                    matchesSearch(item.name, nameQuery) &&
+                    nameOk(item) &&
                     sizeOk(item) &&
                     contentOk(item)
                 ) {
@@ -1285,4 +1332,21 @@ fun VirtualFileSystem.kindLabel(): String = when (scheme) {
 /** 供计划器复用的工具 */
 object BrowserOps {
     fun plannerOf(container: AppContainer): FileOperationPlanner = container.planner
+}
+
+// --------------------------------------------------------------------------- MT 排序规则编解码
+
+/** "By|asc|dirs" ⇄ SortSpec（用于「仅应用于此文件夹」的记忆规则） */
+internal fun encodeSortSpec(spec: com.u707t.panelfm.core.model.SortSpec): String =
+    "${spec.by.name}|${spec.ascending}|${spec.dirsFirst}"
+
+internal fun decodeSortSpec(line: String): com.u707t.panelfm.core.model.SortSpec? {
+    val parts = line.split('|')
+    if (parts.size != 3) return null
+    val by = runCatching { com.u707t.panelfm.core.model.SortBy.valueOf(parts[0]) }.getOrNull() ?: return null
+    return com.u707t.panelfm.core.model.SortSpec(
+        by = by,
+        ascending = parts[1].toBooleanStrictOrNull() ?: true,
+        dirsFirst = parts[2].toBooleanStrictOrNull() ?: true,
+    )
 }

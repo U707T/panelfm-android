@@ -116,7 +116,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}（原生 Kotlin / Compose）\n" +
                     "已实现：双列浏览（打开即双列）、MT 侧边栏抽屉、本地/SFTP(跳板机)/FTP·FTPS/WebDAV/SMB/S3、\n" +
                     "压缩包挂载解压压缩、任务引擎（进度/暂停/冲突/续传）、文本编辑器（语法高亮/查找替换/大文件分段浏览）、\n" +
-                    "图片/音视频/Hex(只读) 预览、回收站/远程管理/已安装应用/终端、MT 式搜索（递归 + 高级搜索）。\n" +
+                    "图片/音视频/Hex(只读) 预览、回收站/远程管理/已安装应用；MT 式搜索（正则/内容/历史）、排序按文件夹记忆、打开方式网格、属性统计。\n" +
                     "交互按 MT 管理器官方手册 + 截图复刻（v0.13.0 起：滑动多选 / 长按菜单 / 箭头跟随目标窗口；\n" +
                     "无障碍朗读覆盖顶栏 / 底栏 / 文件列表）。\n" +
                     "本项目不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",

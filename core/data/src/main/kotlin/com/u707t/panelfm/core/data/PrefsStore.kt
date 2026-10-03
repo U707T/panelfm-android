@@ -39,6 +39,10 @@ data class AppSettings(
     /** 底部工具栏额外下边距（全面屏手势下的舒适区，0=自动） */
     val bottomBarPaddingDp: Int = 8,
     val skipThumbsWhileScrolling: Boolean = true,
+    /** 按文件夹记忆的排序（MT「仅应用于此文件夹」）：key = 去 query 的 uri 字符串，值 = "by|asc|dirs" */
+    val folderSorts: Map<String, String> = emptyMap(),
+    /** 搜索历史（最近在前，最多 10 条） */
+    val searchHistory: List<String> = emptyList(),
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -65,6 +69,8 @@ class PrefsStore(private val context: Context) {
         val bottomPad = intPreferencesKey("bottom_bar_padding")
         val lastLeft = stringPreferencesKey("last_left")
         val lastRight = stringPreferencesKey("last_right")
+        val folderSorts = androidx.datastore.preferences.core.stringSetPreferencesKey("folder_sorts")
+        val searchHistory = stringPreferencesKey("search_history")
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -86,6 +92,13 @@ class PrefsStore(private val context: Context) {
             splitRatio = p[Keys.splitRatio] ?: 0.5f,
             bookmarkSwipe = p[Keys.bookmarkSwipe] ?: true,
             bottomBarPaddingDp = p[Keys.bottomPad] ?: 8,
+            folderSorts = (p[Keys.folderSorts] ?: emptySet())
+                .mapNotNull { line ->
+                    val parts = line.split('|')
+                    if (parts.size == 4) parts[0] to "${parts[1]}|${parts[2]}|${parts[3]}" else null
+                }
+                .toMap(),
+            searchHistory = (p[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() },
         )
     }
 
@@ -108,6 +121,21 @@ class PrefsStore(private val context: Context) {
     suspend fun setSplitRatio(ratio: Float) = context.panelDataStore.edit { it[Keys.splitRatio] = ratio }
     suspend fun setBookmarkSwipe(on: Boolean) = context.panelDataStore.edit { it[Keys.bookmarkSwipe] = on }
     suspend fun setBottomBarPadding(dp: Int) = context.panelDataStore.edit { it[Keys.bottomPad] = dp.coerceIn(0, 28) }
+
+    /** 按文件夹记忆排序：value == null 表示清除该文件夹的规则 */
+    suspend fun setFolderSort(key: String, value: String?) = context.panelDataStore.edit { prefs ->
+        val cleaned = (prefs[Keys.folderSorts] ?: emptySet()).filterNot { it.startsWith("$key|") }
+        prefs[Keys.folderSorts] = if (value == null) cleaned.toSet() else (cleaned + "$key|$value").toSet()
+    }
+
+    suspend fun clearFolderSorts() = context.panelDataStore.edit { it[Keys.folderSorts] = emptySet() }
+
+    suspend fun addSearchQuery(query: String) = context.panelDataStore.edit { prefs ->
+        val q = query.trim()
+        if (q.isEmpty()) return@edit
+        val old = (prefs[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() }
+        prefs[Keys.searchHistory] = (listOf(q) + old.filterNot { it == q }).take(10).joinToString("\n")
+    }
 
     suspend fun saveLastPaths(left: String?, right: String?) = context.panelDataStore.edit { prefs ->
         if (left == null) prefs.remove(Keys.lastLeft) else prefs[Keys.lastLeft] = left

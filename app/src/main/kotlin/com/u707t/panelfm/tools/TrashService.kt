@@ -107,14 +107,35 @@ class TrashService(
     suspend fun restore(entry: Entry): Boolean = withContext(Dispatchers.IO) {
         val src = File(dir, entry.trashName)
         if (!src.exists()) return@withContext false
-        val dest = File(entry.originalPath)
+        var dest = File(entry.originalPath)
         dest.parentFile?.mkdirs()
-        val ok = runCatching {
-            if (dest.exists()) dest.deleteRecursively()
-            src.renameTo(dest)
-        }.getOrDefault(false)
+        // 原位置已有同名文件时**不要覆盖**（旧实现会先删掉再还原，等于静默销毁用户数据）；
+        // 改为还原成「name (1).ext」保留两者
+        if (dest.exists()) dest = uniqueSibling(dest)
+        val ok = runCatching { src.renameTo(dest) }.getOrDefault(false) ||
+            runCatching {
+                src.copyRecursively(dest, overwrite = true)
+                src.deleteRecursively()
+                true
+            }.getOrDefault(false)
         if (ok) save(list().filterNot { it.id == entry.id })
         ok
+    }
+
+    /** 为还原生成一个不冲突的兄弟文件名（name (1).ext） */
+    private fun uniqueSibling(file: File): File {
+        val parent = file.parentFile ?: return file
+        val name = file.name
+        val dot = name.lastIndexOf('.')
+        val base = if (dot > 0) name.substring(0, dot) else name
+        val ext = if (dot > 0) name.substring(dot) else ""
+        var i = 1
+        while (i < 1000) {
+            val candidate = File(parent, "$base ($i)$ext")
+            if (!candidate.exists()) return candidate
+            i++
+        }
+        return File(parent, "$base (${System.currentTimeMillis()})$ext")
     }
 
     suspend fun purge(entry: Entry) = withContext(Dispatchers.IO) {

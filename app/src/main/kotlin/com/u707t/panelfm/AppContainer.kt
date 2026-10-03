@@ -98,6 +98,9 @@ class AppContainer(val app: Application) {
 
     private val mounted = ConcurrentHashMap<String, com.u707t.panelfm.core.vfs.VirtualFileSystem>()
 
+    /** 应用级持有的会话租约：只要 App 还引用着该连接，就不被空闲回收器关掉 */
+    private val heldLeases = ConcurrentHashMap<String, com.u707t.panelfm.core.vfs.VfsLease>()
+
     /** 已挂载的压缩包（hostUri → ArchiveVfs） */
     private val archives = ConcurrentHashMap<String, ArchiveVfs>()
 
@@ -166,17 +169,37 @@ class AppContainer(val app: Application) {
     fun connectionByAuthority(scheme: String, authority: String): ConnectionConfig? =
         connections.value.firstOrNull { it.scheme == scheme && "${it.host}:${it.port}" == authority }
 
-    /** 打开（或复用）一个网络连接，返回可用的 VFS 实例 */
-    suspend fun openConnection(config: ConnectionConfig): com.u707t.panelfm.core.vfs.VirtualFileSystem {
-        val secret = withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(config.id)) }
+    /** 打开（或复用）一个网络连接，返回可用的 VFS 实例；secretOverride 用于「测试连接」尚未落库的口令 */
+    suspend fun openConnection(
+        config: ConnectionConfig,
+        secretOverride: String? = null,
+    ): com.u707t.panelfm.core.vfs.VirtualFileSystem {
+        val secret = secretOverride
+            ?: withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(config.id)) }
         val lease = registry.acquire(config, secret)
         val vfs = lease.use()
-        lease.close()
+        // 关键：应用要一直持有租约，否则 5 分钟空闲回收会把正在浏览的会话关掉
+        heldLeases.put(config.sessionKey, lease)?.let { runCatching { it.close() } }
         mounted[config.sessionKey] = vfs
         mounted["${config.scheme}://${config.host}:${config.port}"] = vfs
         vfs.connect()
         withContext(Dispatchers.IO) { connectionDao.touch(config.id) }
         return vfs
+    }
+
+    /** 断开单个连接（侧边栏「断开」/ 删除连接）：释放租约、摘掉挂载表并立即关闭会话 */
+    fun disconnectConnection(config: ConnectionConfig) {
+        heldLeases.remove(config.sessionKey)?.let { runCatching { it.close() } }
+        mounted.remove(config.sessionKey)
+        mounted.remove("${config.scheme}://${config.host}:${config.port}")
+        scope.launch { registry.closeSession(config.sessionKey) }
+    }
+
+    /** 断开全部连接（保留连接配置，仅关会话） */
+    fun disconnectAll() {
+        heldLeases.keys.toList().forEach { key -> heldLeases.remove(key)?.let { runCatching { it.close() } } }
+        mounted.clear()
+        scope.launch { registry.closeAll() }
     }
 
     fun mountedOf(key: String): com.u707t.panelfm.core.vfs.VirtualFileSystem? = mounted[key]
@@ -234,7 +257,7 @@ class AppContainer(val app: Application) {
 
     fun close() {
         runCatching { remote.stop() }
-        scope.launch { registry.closeAll() }
+        disconnectAll()
         Logx.i("AppContainer", "closed")
     }
 }

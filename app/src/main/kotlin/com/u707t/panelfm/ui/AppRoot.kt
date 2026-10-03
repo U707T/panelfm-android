@@ -41,7 +41,6 @@ import com.u707t.panelfm.ui.tasks.TasksScreen
 import com.u707t.panelfm.ui.tools.TextDiffScreen
 import com.u707t.panelfm.ui.tools.AppsScreen
 import com.u707t.panelfm.ui.tools.RemoteScreen
-import com.u707t.panelfm.ui.tools.TerminalScreen
 import com.u707t.panelfm.ui.tools.TrashScreen
 
 /** 简单屏幕栈（不引入 navigation-compose：单人项目减少依赖，行为完全可控）。 */
@@ -57,7 +56,6 @@ sealed interface Screen {
     data object Trash : Screen
     data object Apps : Screen
     data object Remote : Screen
-    data class Terminal(val cwd: String = "/sdcard") : Screen
     data class ConnectionEdit(
         val connectionId: Long?,
         val prefillHost: String? = null,
@@ -221,7 +219,6 @@ fun AppRoot(container: AppContainer) {
                     )
                 },
                 onOpenDiff = { l, r -> push(Screen.TextDiff(l, r)) },
-                onOpenTerminal = { cwd -> push(Screen.Terminal(cwd)) },
             )
 
             Screen.Home -> HomeScreen(
@@ -236,7 +233,6 @@ fun AppRoot(container: AppContainer) {
                 onOpenTrash = { push(Screen.Trash) },
                 onOpenApps = { push(Screen.Apps) },
                 onOpenRemote = { push(Screen.Remote) },
-                onOpenTerminal = { push(Screen.Terminal("/sdcard")) },
                 onOpenEditor = { push(Screen.Browser) },
             )
 
@@ -250,7 +246,6 @@ fun AppRoot(container: AppContainer) {
             Screen.Trash -> TrashScreen(container = container, onBack = pop)
             Screen.Apps -> AppsScreen(container = container, onBack = pop)
             Screen.Remote -> RemoteScreen(container = container, onBack = pop)
-            is Screen.Terminal -> TerminalScreen(cwd = current.cwd, onBack = pop)
             Screen.LanScan -> LanScanScreen(
                 container = container,
                 onBack = pop,

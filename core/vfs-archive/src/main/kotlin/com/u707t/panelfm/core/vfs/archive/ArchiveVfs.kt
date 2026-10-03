@@ -3,8 +3,7 @@ package com.u707t.panelfm.core.vfs.archive
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.Resumability
@@ -228,19 +227,7 @@ class ArchiveVfs(
                 )
             }
         }
-        return sortItems(items.distinctBy { it.name }, options.sort)
-    }
-
-    private fun sortItems(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val sorted = items.sortedWith(cmp)
-        val withDirs = if (spec.dirsFirst) sorted.sortedByDescending { it.isDirectory } else sorted
-        return if (spec.ascending) withDirs else withDirs.reversed()
+        return sortFileItems(items.distinctBy { it.name }, options.sort)
     }
 
     override suspend fun stat(uri: VfsUri): FileMetadata {
@@ -326,8 +313,9 @@ class ArchiveVfs(
         }
 
         private suspend fun ensureOpen() {
-            if (stream != null && pos == start) return
-            runCatching { stream?.close() }
+            // 顺序读：只要流还开着就继续读（之前用 `pos == start` 判断，
+            // 导致每读一块都重开流并 skip 到当前位置 → 大文件 O(n²) 灾难）
+            if (stream != null) return
             stream = withContext(env.dispatchers.io) { openEntryStream(path, pos) }
         }
 

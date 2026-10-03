@@ -2,8 +2,7 @@ package com.u707t.panelfm.core.vfs.webdav
 
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
@@ -25,6 +24,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import okhttp3.Call
 import okhttp3.HttpUrl
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
@@ -98,7 +98,7 @@ class WebDavVfs(
             val items = propfind(uri, depth = 1)
                 .filter { options.showHidden || !it.name.startsWith(".") }
                 .filter { options.filter.isNullOrBlank() || it.name.contains(options.filter!!, ignoreCase = true) }
-            sortItems(items, options.sort)
+            sortFileItems(items, options.sort)
         }
 
     override suspend fun stat(uri: VfsUri): FileMetadata = withContext(env.dispatchers.vfs) {
@@ -112,11 +112,16 @@ class WebDavVfs(
         resp.use { r ->
             if (r.code == 404) throw VfsException.NotFound(uri)
             if (!r.isSuccessful) throw httpError(r, uri)
-            val parsed = DavXml.parseMultiStatus(DavXml.newParser().apply { setInput(r.body.byteStream(), null) }, uri, cfg.basePath)
+            // stat：保留「自身」节点（skipSelf = false），才能拿到文件的类型与大小
+            val parsed = DavXml.parseMultiStatus(
+                DavXml.newParser().apply { setInput(r.body.byteStream(), null) },
+                uri,
+                cfg.basePath,
+                skipSelf = false,
+            )
             val self = parsed.firstOrNull() ?: FileMetadata(
                 uri = uri, name = uri.name.ifEmpty { "/" }, isDirectory = true,
             )
-            // stat 时以自身为准（有些服务器不返回 self 节点）
             if (self.uri.path == uri.path) self else self.copy(uri = uri.copy(path = self.uri.path), name = self.name)
         }
     }
@@ -148,18 +153,6 @@ class WebDavVfs(
 
     private fun ensureAuthority(child: VfsUri, parent: VfsUri): VfsUri =
         child.copy(scheme = parent.scheme, authority = parent.authority, query = parent.query)
-
-    private fun sortItems(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val sorted = items.sortedWith(cmp)
-        val withDirs = if (spec.dirsFirst) sorted.sortedByDescending { it.isDirectory } else sorted
-        return if (spec.ascending) withDirs else withDirs.reversed()
-    }
 
     // ------------------------------------------------------------------ 写操作
 
@@ -234,7 +227,14 @@ class WebDavVfs(
 
     override suspend fun openWrite(uri: VfsUri, size: Long?, offset: Long): VfsWriter {
         if (offset > 0L) throw VfsException.Unsupported("WebDAV 当前版本不支持按偏移续传上传")
-        return DavWriter(http, DavHttp.url(cfg, uri.path), scope, env.dispatchers.vfs, size)
+        return DavWriter(
+            http = http,
+            partUrl = DavHttp.url(cfg, partPathOf(uri.path)),
+            finalUrl = DavHttp.url(cfg, uri.path),
+            scope = scope,
+            dispatcher = env.dispatchers.vfs,
+            expectedSize = size,
+        )
     }
 
     override fun close() {
@@ -272,6 +272,13 @@ class WebDavVfs(
     }
 
     companion object {
+        /** 同目录临时名：`.name.panelfm.part`（PUT 完成后 MOVE 成正式名，失败/取消不留半成品） */
+        internal fun partPathOf(filePath: String): String {
+            val idx = filePath.lastIndexOf('/')
+            val dir = if (idx >= 0) filePath.substring(0, idx + 1) else "/"
+            return dir + "." + filePath.substring(idx + 1) + ".panelfm.part"
+        }
+
         private val XML: MediaType = "application/xml; charset=utf-8".toMediaType()
         private val BODY_PROPFIND = """
             <?xml version="1.0" encoding="utf-8"?>
@@ -379,10 +386,12 @@ class WebDavVfs(
         override fun close() = closeStream()
     }
 
-    /** 流式上传：write() 写入管道，OkHttp 在另一协程读管道发 HTTP（背压天然生效）。 */
+    /** 流式上传：write() 写入管道，OkHttp 在另一协程读管道发 HTTP（背压天然生效）。
+     *  先 PUT 到同目录 `.name.panelfm.part`，commit 时 MOVE 成正式名（原子替换）。 */
     private class DavWriter(
         private val http: OkHttpClient,
-        private val url: HttpUrl,
+        private val partUrl: HttpUrl,
+        private val finalUrl: HttpUrl,
         scope: CoroutineScope,
         private val dispatcher: kotlinx.coroutines.CoroutineDispatcher,
         private val expectedSize: Long?,
@@ -391,7 +400,13 @@ class WebDavVfs(
         private val pipeIn = PipedInputStream(PIPE_BUFFER)
         private val pipeOut = PipedOutputStream(pipeIn)
         private var written = 0L
+
+        @Volatile
         private var finished = false
+
+        /** 当前 PUT 的 OkHttp Call：取消 / 失败清理时用它立即中止 HTTP（管道关闭不可靠） */
+        @Volatile
+        private var call: Call? = null
 
         private val upload: Deferred<Response> = scope.async(Dispatchers.IO) {
             val body = object : RequestBody() {
@@ -410,7 +425,13 @@ class WebDavVfs(
                     }
                 }
             }
-            http.newCall(Request.Builder().url(url).put(body).build()).execute()
+            val c = http.newCall(Request.Builder().url(partUrl).put(body).build())
+            call = c
+            try {
+                c.execute()
+            } finally {
+                call = null
+            }
         }
 
         override val writtenBytes: Long get() = written
@@ -433,9 +454,16 @@ class WebDavVfs(
             if (finished) return
             finished = true
             runCatching { pipeOut.close() }
-            val resp = upload.await()
+            val resp = try {
+                upload.await()
+            } catch (e: Exception) {
+                // PUT 中途失败（网络断 / 取消）：清掉半成品再抛
+                runCatching { deletePart() }
+                throw e
+            }
             resp.use { r ->
                 if (!r.isSuccessful) {
+                    runCatching { deletePart() }
                     throw when (r.code) {
                         401, 403 -> VfsException.Auth("上传被拒绝（${r.code}）", r.code)
                         507 -> VfsException.Quota("服务器空间不足（507）")
@@ -443,17 +471,65 @@ class WebDavVfs(
                     }
                 }
             }
-            Logx.d("WebDavVfs", "uploaded ${url.encodedPath} ($written bytes)")
+            // 原子落位：MOVE part → 目标；个别服务器不支持 MOVE 时退化为 COPY + DELETE
+            val moved = movePart(overwrite = true)
+            if (!moved) {
+                val copied = copyPart(overwrite = true)
+                if (!copied) {
+                    runCatching { deletePart() }
+                    throw VfsException.ProtocolError("保存失败：服务器不支持 MOVE/COPY")
+                }
+                runCatching { deletePart() }
+            }
+            Logx.d("WebDavVfs", "uploaded ${finalUrl.encodedPath} ($written bytes)")
+        }
+
+        private fun movePart(overwrite: Boolean): Boolean = try {
+            http.newCall(
+                Request.Builder().url(partUrl).method("MOVE", null)
+                    .header("Destination", finalUrl.toString())
+                    .header("Overwrite", if (overwrite) "T" else "F")
+                    .build()
+            ).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+
+        private fun copyPart(overwrite: Boolean): Boolean = try {
+            http.newCall(
+                Request.Builder().url(partUrl).method("COPY", null)
+                    .header("Destination", finalUrl.toString())
+                    .header("Overwrite", if (overwrite) "T" else "F")
+                    .build()
+            ).execute().use { it.isSuccessful }
+        } catch (e: Exception) {
+            false
+        }
+
+        private fun deletePart() {
+            runCatching {
+                http.newCall(Request.Builder().url(partUrl).delete().build()).execute().close()
+            }
         }
 
         override suspend fun abort() {
             finished = true
             runCatching { pipeOut.close() }
-            runCatching { upload.cancel() }
             runCatching { pipeIn.close() }
+            runCatching { call?.cancel() }          // 立即中止 HTTP，不等管道
+            upload.cancel()
+            runCatching { kotlinx.coroutines.withTimeoutOrNull(2000) { upload.join() } }
+            deletePart()
         }
 
-        override fun close() = Unit
+        override fun close() {
+            // 传输中途失败（非取消）：取消请求并清掉半成品 .part；成功 / 已取消路径无需处理
+            if (!finished) {
+                finished = true
+                runCatching { call?.cancel() }
+                deletePart()
+            }
+        }
 
         companion object {
             private const val PIPE_BUFFER = 512 * 1024

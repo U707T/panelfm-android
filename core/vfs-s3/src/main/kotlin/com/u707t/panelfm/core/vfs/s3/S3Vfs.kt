@@ -3,8 +3,7 @@ package com.u707t.panelfm.core.vfs.s3
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
@@ -99,7 +98,7 @@ class S3Vfs(
                 val items = buckets.map { name ->
                     FileMetadata.dir(VfsUri.of(scheme, name, "/"), name)
                 }
-                return@withContext sortItems(items, options.sort)
+                return@withContext sortFileItems(items, options.sort)
             }
             val prefix = keyOf(uri).let { if (it.isEmpty()) "" else "$it/" }
             val result = client.listObjects(bucket = bucket, prefix = prefix, delimiter = "/")
@@ -128,20 +127,8 @@ class S3Vfs(
                     )
                 }
             }
-            sortItems(items, options.sort)
+            sortFileItems(items, options.sort)
         }
-    }
-
-    private fun sortItems(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val sorted = items.sortedWith(cmp)
-        val withDirs = if (spec.dirsFirst) sorted.sortedByDescending { it.isDirectory } else sorted
-        return if (spec.ascending) withDirs else withDirs.reversed()
     }
 
     override suspend fun stat(uri: VfsUri): FileMetadata = mutex.withLock {

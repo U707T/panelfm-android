@@ -159,6 +159,18 @@ class TransferTask internal constructor(
                 }
             }
 
+            // ---- 慢路径收尾：MOVE 时清理源目录骨架（只删「已经空了」的目录；
+            //      失败/跳过的文件会让目录保持非空 → 原样保留，避免误删）
+            if (request.op == TransferOp.MOVE && plan.fastPath == FastPath.NONE) {
+                val dirs = plan.items.filter { it.isDirectory }.sortedByDescending { it.depth }
+                for (dir in dirs) {
+                    runCatching {
+                        val vfs = locator.find(dir.source) ?: return@runCatching
+                        if (vfs.list(dir.source).isEmpty()) vfs.delete(listOf(dir.source))
+                    }
+                }
+            }
+
             _state.value = TaskState.Done(
                 ok = ok,
                 skipped = skipped,
@@ -221,8 +233,15 @@ class TransferTask internal constructor(
         val waiter = CompletableDeferred<ConflictDecision>()
         conflictWaiter = waiter
         _state.value = TaskState.WaitingConflict(info)
-        val decision = waiter.await()
-        conflictWaiter = null
+        // 用户「取消任务」会 cancel() 这个 Deferred → 转成 VfsException.Cancelled，
+        // 让任务状态显示「已取消」而不是「失败」
+        val decision = try {
+            waiter.await()
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw VfsException.Cancelled()
+        } finally {
+            conflictWaiter = null
+        }
         return decision.policy
     }
 

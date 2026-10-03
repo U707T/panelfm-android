@@ -17,8 +17,7 @@ import com.hierynomus.smbj.share.File
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
@@ -164,7 +163,9 @@ class SmbVfs(
         connectIfNeeded()
         val (shareName, rel) = split(uri)
         withContext(env.dispatchers.vfs) {
-            if (rel.isEmpty() && cfg.defaultShare == null) {
+            // 只有「真正的连接根（没有任何共享名）」才需要提醒填写共享名；
+            // /共享名 这种路径本身已带共享名，不该被拦
+            if (isRoot(uri) && cfg.defaultShare == null) {
                 throw VfsException.Unsupported("请在连接设置里填写「共享名」（如 public / media / 共享），或在地址里用 /共享名 进入")
             }
             val share = shareOf(shareName)
@@ -180,7 +181,7 @@ class SmbVfs(
                 .filter { filter.isNullOrBlank() || it.fileName.contains(filter, ignoreCase = true) }
                 .map { toMeta(uri, it) }
                 .toList()
-                .let { sortItems(it, options.sort) }
+                .let { sortFileItems(it, options.sort) }
         }
     }
 
@@ -198,18 +199,6 @@ class SmbVfs(
             mimeType = if (isDir) null else MimeTypes.of(info.fileName.substringAfterLast('.', "")),
             extra = if (isHidden) mapOf("hidden" to "true") else emptyMap(),
         )
-    }
-
-    private fun sortItems(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val sorted = items.sortedWith(cmp)
-        val withDirs = if (spec.dirsFirst) sorted.sortedByDescending { it.isDirectory } else sorted
-        return if (spec.ascending) withDirs else withDirs.reversed()
     }
 
     // ------------------------------------------------------------------ 元数据
@@ -510,7 +499,11 @@ class SmbVfs(
                 connectIfNeeded()
                 val (shareName, partPath) = partRel
                 withContext(env.dispatchers.vfs) {
-                    file = openHandle(shareOf(shareName), partPath, write = true)
+                    val share = shareOf(shareName)
+                    // 从头开始写（startOffset == 0）时先删掉可能残留的旧 .part，
+                    // 否则 FILE_OPEN_IF 不会截断 → 最终文件尾部带旧数据
+                    if (startOffset == 0L) runCatching { share.rm(partPath) }
+                    file = openHandle(share, partPath, write = true)
                 }
             }
         }

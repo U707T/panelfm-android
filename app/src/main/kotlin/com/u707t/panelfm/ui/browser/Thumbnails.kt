@@ -122,6 +122,12 @@ fun rememberThumb(
 ): ImageBitmap? {
     val isImage = !item.isDirectory && MimeTypes.kindOf(item.extension) == MimeTypes.Kind.IMAGE
     if (!isImage || skip) return null
+    // 连接级开关：编辑连接 → 缩略图选项 → 关闭后该连接不加载缩略图
+    if (item.uri.scheme != "local") {
+        val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(item.uri))
+            ?: container.connectionByAuthority(item.uri.scheme, item.uri.authority)
+        if (cfg?.option(com.u707t.panelfm.core.model.ConnectionConfig.OPT_LOAD_THUMBS) == "false") return null
+    }
     val state = produceState<ImageBitmap?>(initialValue = null, item.uri.toString(), skip) {
         val allowRemote = container.settings.value.thumbnailsOnMobile || true
         value = ThumbCache.load(container, item, targetPx, allowRemote)?.asImageBitmap()

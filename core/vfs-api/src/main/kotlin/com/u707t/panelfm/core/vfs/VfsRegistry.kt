@@ -87,6 +87,15 @@ class VfsRegistry(
         }
         all.forEach { runCatching { it.vfs.close() } }
     }
+
+    /** 立即关闭某个会话（「断开」/删除连接）：从注册表移除并 close()，不等空闲回收。 */
+    suspend fun closeSession(sessionKey: String) {
+        val holder = mutex.withLock { holders.remove(sessionKey) }
+        holder?.let {
+            runCatching { it.vfs.close() }
+            Logx.i("VfsRegistry", "close session ${it.config.name}")
+        }
+    }
 }
 
 /** 使用引用计数的会话租约：use { } 结束后归还。 */

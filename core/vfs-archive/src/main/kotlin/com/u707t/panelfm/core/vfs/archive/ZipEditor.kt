@@ -44,8 +44,8 @@ class ZipEditor(
                     src.use { zf ->
                         zf.entries.asSequence().forEach { entry ->
                             val name = entry.name
-                            if (name in remove) return@forEach
-                            val target = rename[name] ?: name
+                            if (matchesPrefix(name, remove)) return@forEach
+                            val target = applyRename(name, rename)
                             if (entry.isDirectory) {
                                 out.putArchiveEntry(ZipArchiveEntry("${target.trimEnd('/')}/").apply { time = entry.time })
                                 out.closeArchiveEntry()
@@ -94,6 +94,37 @@ class ZipEditor(
         } finally {
             runCatching { tmp.delete() }
         }
+    }
+
+    /** 删除要能作用到「目录及其所有子项」：条目名 == 键 或 以 键+"/" 开头 */
+    private fun matchesPrefix(name: String, keys: Set<String>): Boolean {
+        if (name in keys) return true
+        val normalized = name.trimEnd('/')
+        return keys.any { key ->
+            val k = key.trimEnd('/')
+            k.isNotEmpty() && (normalized == k || normalized.startsWith("$k/"))
+        }
+    }
+
+    /**
+     * 重命名同样作用于整个子树（压缩包内改父目录 = 移动目录）：
+     * `rename["olddir"] = "newdir"` 会把 `olddir/` 及其下所有条目一起改名。
+     */
+    private fun applyRename(name: String, rename: Map<String, String>): String {
+        val normalized = name.trimEnd('/')
+        val trailingSlash = name.endsWith("/")
+        for ((from, to) in rename) {
+            val f = from.trimEnd('/')
+            if (f.isEmpty()) continue
+            val t = to.trimEnd('/')
+            val renamed = when {
+                normalized == f -> t
+                normalized.startsWith("$f/") -> t + "/" + normalized.removePrefix("$f/")
+                else -> null
+            } ?: continue
+            return if (trailingSlash) "$renamed/" else renamed
+        }
+        return name
     }
 
     private suspend fun addEntry(

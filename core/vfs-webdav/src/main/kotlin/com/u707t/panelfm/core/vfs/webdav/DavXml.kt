@@ -12,10 +12,14 @@ import java.time.format.DateTimeFormatter
 /** WebDAV 207 Multi-Status 解析（兼容 Alist / Nextcloud / nginx-dav 的命名空间差异）。 */
 object DavXml {
 
+    /**
+     * @param skipSelf 列目录时跳过「自身」节点（true）；stat 时保留自身（false）
+     */
     fun parseMultiStatus(
         parser: XmlPullParser,
         requested: VfsUri,
         basePath: String,
+        skipSelf: Boolean = true,
     ): List<FileMetadata> {
         val out = mutableListOf<FileMetadata>()
 
@@ -44,9 +48,12 @@ object DavXml {
 
                 XmlPullParser.END_TAG -> when (parser.name.lowercase()) {
                     "response" -> {
-                        val path = href?.let { normalizeHref(it, basePath) }
-                        if (path != null && path != requested.path) {
-                            val name = path.trimEnd('/').substringAfterLast('/')
+                        val rawPath = href?.let { normalizeHref(it, basePath) }
+                        // 目录 href 常带尾斜杠（AList 等）：统一去掉，避免 "/sub/" 与 "/sub" 两套形式导致
+                        // 「上一级只跳半格」及把自身目录当成子项列出
+                        val path = rawPath?.let { normalizeDirPath(it) }
+                        if (path != null && shouldInclude(path, requested.path, skipSelf)) {
+                            val name = path.substringAfterLast('/')
                             if (name.isNotEmpty()) {
                                 out += FileMetadata(
                                     uri = VfsUri.of(requested.scheme, requested.authority, path),
@@ -70,6 +77,13 @@ object DavXml {
     fun newParser() = Xml.newPullParser().apply {
         setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)
     }
+
+    /** 目录路径规范化：href 尾斜杠统一去掉（根 "/" 保持不变） */
+    internal fun normalizeDirPath(path: String): String = if (path.length > 1) path.trimEnd('/') else path
+
+    /** 该节点是否应加入列表：列目录时跳过「自身」；stat 时保留自身 */
+    internal fun shouldInclude(path: String, requestedPath: String, skipSelf: Boolean): Boolean =
+        !(skipSelf && normalizeDirPath(path) == normalizeDirPath(requestedPath))
 
     private fun normalizeHref(raw: String, basePath: String): String? {
         val decoded = runCatching {

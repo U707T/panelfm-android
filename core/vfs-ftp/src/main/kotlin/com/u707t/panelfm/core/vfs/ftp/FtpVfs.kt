@@ -3,8 +3,7 @@ package com.u707t.panelfm.core.vfs.ftp
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
@@ -94,9 +93,12 @@ class FtpVfs(
         return c
     }
 
-    private suspend fun connected(): FTPClient = controlMutex.withLock {
-        client?.takeIf { it.isConnected }?.let { return@withLock it }
-        withContext(env.dispatchers.vfs) {
+    private suspend fun connected(): FTPClient = controlMutex.withLock { ensureClientLocked() }
+
+    /** 建立/复用连接（**调用方必须已持有 controlMutex**，否则会死锁） */
+    private suspend fun ensureClientLocked(): FTPClient {
+        client?.takeIf { it.isConnected }?.let { return it }
+        return withContext(env.dispatchers.vfs) {
             val c = newClient()
             try {
                 c.connect(cfg.host, cfg.port)
@@ -104,7 +106,7 @@ class FtpVfs(
                 if (c is FTPSClient) {
                     c.execPBSZ(0)
                     c.execPROT("P")
-                    c.execCCC()
+                    runCatching { c.execCCC() }   // CCC 非必需，部分服务器不支持
                 }
                 if (!c.login(cfg.user, cfg.password ?: "")) {
                     throw VfsException.Auth("登录失败（${c.replyCode} ${c.replyString}）")
@@ -174,7 +176,7 @@ class FtpVfs(
                 .filter { options.showHidden || !it.name.startsWith(".") }
                 .filter { options.filter.isNullOrBlank() || it.name.contains(options.filter!!, ignoreCase = true) }
                 .map { toMeta(uri, it) }
-            sortItems(items, options.sort)
+            sortFileItems(items, options.sort)
         }
     }
 
@@ -234,18 +236,6 @@ class FtpVfs(
         if (f.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.WRITE_PERMISSION)) mode = mode or 0b000_000_010
         if (f.hasPermission(FTPFile.WORLD_ACCESS, FTPFile.EXECUTE_PERMISSION)) mode = mode or 0b000_000_001
         return mode
-    }
-
-    private fun sortItems(items: List<FileMetadata>, spec: SortSpec): List<FileMetadata> {
-        val cmp: Comparator<FileMetadata> = when (spec.by) {
-            SortBy.NAME -> compareBy<FileMetadata> { it.name.lowercase() }
-            SortBy.SIZE -> compareBy<FileMetadata> { if (it.isDirectory) -1L else it.size }
-            SortBy.TIME -> compareBy<FileMetadata> { it.lastModified }
-            SortBy.TYPE -> compareBy<FileMetadata> { it.extension.ifEmpty { it.name.lowercase() } }
-        }
-        val sorted = items.sortedWith(cmp)
-        val withDirs = if (spec.dirsFirst) sorted.sortedByDescending { it.isDirectory } else sorted
-        return if (spec.ascending) withDirs else withDirs.reversed()
     }
 
     // ------------------------------------------------------------------ 写
@@ -389,7 +379,7 @@ class FtpVfs(
             controlMutex.lock()
             locked = true
             val c = try {
-                connected()
+                ensureClientLocked()   // 已持锁：必须用 Locked 版本（connected() 会再上锁 → 自死锁）
             } catch (e: Exception) {
                 release()
                 throw e
@@ -419,9 +409,10 @@ class FtpVfs(
         }
 
         override fun close() {
+            val hadStream = stream != null
             runCatching { stream?.close() }
             stream = null
-            client?.let { c -> runCatching { c.completePendingCommand() } }
+            if (hadStream) client?.let { c -> runCatching { c.completePendingCommand() } }
             release()
         }
     }
@@ -441,7 +432,7 @@ class FtpVfs(
             controlMutex.lock()
             locked = true
             val c = try {
-                connected()
+                ensureClientLocked()   // 已持锁：必须用 Locked 版本（connected() 会再上锁 → 自死锁）
             } catch (e: Exception) {
                 release()
                 throw e

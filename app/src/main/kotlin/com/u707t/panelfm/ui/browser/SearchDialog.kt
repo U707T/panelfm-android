@@ -13,6 +13,8 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -32,34 +34,109 @@ import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 
 /**
- * MT 的「搜索」对话框：
- * 文件名输入框 + ☐搜索子目录 + 高级搜索（按内容搜索 / 文件大小范围）。
- * 文件名语法与过滤一致：普通文本=包含，`!文本`=否定，`/正则`，`!/正则`。
+ * MT 的「搜索」对话框（截图复刻）：
+ *  - 标题右侧 🕘 = 搜索历史；输入框右侧 ▾ 也可调出历史
+ *  - 搜索类型下拉：文件名包含的文本 / 文件名匹配正则 / 文件内容包含的文本
+ *  - ☐搜索子目录（递归）+ ☐高级搜索（文件大小范围）
  */
+enum class SearchField(val label: String) {
+    NAME("文件名包含的文本"),
+    REGEX("文件名匹配正则"),
+    CONTENT("文件内容包含的文本"),
+}
+
 @Composable
 fun MtSearchDialog(
-    initialName: String,
-    onSearch: (name: String, recursive: Boolean, content: String, minSize: Long, maxSize: Long) -> Unit,
+    initialQuery: String,
+    history: List<String>,
+    onSearch: (query: String, field: SearchField, recursive: Boolean, minSize: Long, maxSize: Long) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var name by remember { mutableStateOf(initialName) }
+    var field by remember { mutableStateOf(SearchField.NAME) }
+    var query by remember { mutableStateOf(initialQuery) }
     var recursive by remember { mutableStateOf(false) }
     var advanced by remember { mutableStateOf(false) }
-    var content by remember { mutableStateOf("") }
     var minSizeText by remember { mutableStateOf("") }
     var maxSizeText by remember { mutableStateOf("") }
+    var fieldMenu by remember { mutableStateOf(false) }
+    var historyMenu by remember { mutableStateOf(false) }
+    var fieldHistoryMenu by remember { mutableStateOf(false) }
+
+    @Composable
+    fun HistoryMenu(expanded: Boolean, close: () -> Unit) {
+        DropdownMenu(expanded = expanded, onDismissRequest = close) {
+            if (history.isEmpty()) {
+                DropdownMenuItem(
+                    text = { Text("（暂无搜索历史）", style = MaterialTheme.typography.labelSmall) },
+                    onClick = close,
+                    enabled = false,
+                )
+            } else {
+                history.forEach { q ->
+                    DropdownMenuItem(
+                        text = { Text(q, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                        onClick = { query = q; close() },
+                    )
+                }
+            }
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("搜索") },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("搜索", modifier = Modifier.weight(1f))
+                Box {
+                    TextButton(onClick = { historyMenu = true }) {
+                        Text("🕘", style = MaterialTheme.typography.titleMedium)
+                    }
+                    HistoryMenu(historyMenu) { historyMenu = false }
+                }
+            }
+        },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
+                // 搜索类型下拉（MT：「文件名包含的文本 ▾」）
+                Box {
+                    TextButton(onClick = { fieldMenu = true }) {
+                        Text(field.label + "  ▾", color = MaterialTheme.colorScheme.onSurface)
+                    }
+                    DropdownMenu(expanded = fieldMenu, onDismissRequest = { fieldMenu = false }) {
+                        SearchField.entries.forEach { f ->
+                            DropdownMenuItem(
+                                text = {
+                                    Text(
+                                        f.label,
+                                        color = if (f == field) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                    )
+                                },
+                                onClick = { field = f; fieldMenu = false },
+                            )
+                        }
+                    }
+                }
                 OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("文件名") },
-                    placeholder = { Text("支持 !否定 与 /正则") },
+                    value = query,
+                    onValueChange = { query = it },
+                    label = {
+                        Text(
+                            when (field) {
+                                SearchField.NAME -> "文件名"
+                                SearchField.REGEX -> "正则表达式"
+                                SearchField.CONTENT -> "文件内容"
+                            }
+                        )
+                    },
                     singleLine = true,
+                    trailingIcon = {
+                        Box {
+                            Box(Modifier.clickable { fieldHistoryMenu = true }.padding(horizontal = 10.dp)) {
+                                Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            HistoryMenu(fieldHistoryMenu) { fieldHistoryMenu = false }
+                        }
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Row(
@@ -70,20 +147,19 @@ fun MtSearchDialog(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Checkbox(checked = recursive, onCheckedChange = { recursive = it })
-                    Text("搜索子目录（递归）", style = MaterialTheme.typography.bodyMedium)
+                    Text("搜索子目录", style = MaterialTheme.typography.bodyMedium)
                 }
-                TextButton(onClick = { advanced = !advanced }) {
-                    Text(if (advanced) "收起高级搜索 ⌃" else "高级搜索 ⌄")
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { advanced = !advanced }
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Checkbox(checked = advanced, onCheckedChange = { advanced = it })
+                    Text("高级搜索", style = MaterialTheme.typography.bodyMedium)
                 }
                 if (advanced) {
-                    OutlinedTextField(
-                        value = content,
-                        onValueChange = { content = it },
-                        label = { Text("按内容搜索（可选）") },
-                        placeholder = { Text("仅匹配 ≤2MB 的文本类文件") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                     Row(
                         Modifier
                             .fillMaxWidth()
@@ -119,18 +195,18 @@ fun MtSearchDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = name.isNotBlank() || content.isNotBlank(),
+                enabled = query.isNotBlank(),
                 onClick = {
                     onSearch(
-                        name.trim(),
+                        query.trim(),
+                        field,
                         recursive,
-                        content.trim(),
                         parseSizeText(minSizeText),
                         parseSizeText(maxSizeText),
                     )
                     onDismiss()
                 },
-            ) { Text("搜索") }
+            ) { Text("确定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

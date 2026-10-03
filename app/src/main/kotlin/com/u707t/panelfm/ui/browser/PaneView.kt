@@ -34,6 +34,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -55,6 +56,9 @@ import kotlin.math.abs
 
 private val ROW_HEIGHT = 56.dp
 
+/** 右滑进入多选的最小距离（超过系统 touchSlop，保证「滑动一段距离才触发」） */
+private val SWIPE_ENTRY = 24.dp
+
 /** 行手势的判定阶段 */
 private enum class RowGestureMode { UNDECIDED, SWEEP, LONG_PRESS }
 
@@ -75,9 +79,10 @@ private class RowGestures(
  * 单个窗格（对齐 MT 管理器）：
  *  - 顶部一行：路径（中间省略）+ 统计
  *  - 列表首行 `..`；行高固定
- *  - **左右滑动任意项 = 进入多选**（继续滑过行间 = 连续区间选择，MT 同款）
- *  - **长按后松手 = MT 动作菜单**（带 ● 的项支持长按触发单窗口操作）
+ *  - **向右滑动一段距离（≥ 24dp 且横向占优）= 进入多选**；继续滑过行间 = 区间选择（替换语义）
+ *  - **长按后松手 = MT 动作菜单**（该项自动选中；带 ● 的项支持长按触发单窗口操作）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
+ *  - 任何触摸都会先把本窗格设为活动窗口（同一时间只有一个窗口激活）
  *  - 跨窗格操作用动作菜单「复制 -> / 移动 ->」或底栏 `⇄`（长按拖动跨窗格已按需求移除）
  */
 @Composable
@@ -109,7 +114,17 @@ fun PaneView(
     /** 本次滑动选择的锚点（按下的那一行）；-1 = 未开始 */
     var swipeAnchor by remember { mutableStateOf(-1) }
 
-    Column(modifier.fillMaxSize()) {
+    Column(
+        modifier
+            .fillMaxSize()
+            // 任何触摸都先激活本窗格（同一时间只有一个窗口是活动窗口；不消费事件、不影响子组件）
+            .pointerInput(Unit) {
+                awaitEachGesture {
+                    awaitFirstDown(requireUnconsumed = false)
+                    controller.focus(side)
+                }
+            },
+    ) {
         // ---- 窗格信息行
         Column(
             Modifier
@@ -117,7 +132,7 @@ fun PaneView(
                 .background(
                     when {
                         highlight -> MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
-                        focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.07f)
+                        focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
                         else -> Color.Transparent
                     }
                 )
@@ -184,7 +199,11 @@ fun PaneView(
                     if (canGoUp) {
                         item(key = "__parent__") { ParentRow(onClick = { controller.up(side) }) }
                     }
-                    items(pane.items, key = { it.uri.toString() }) { item ->
+                    items(
+                        pane.items,
+                        key = { it.uri.toString() },
+                        contentType = { if (it.isDirectory) "dir" else "file" },
+                    ) { item ->
                         MtFileRow(
                             container = container,
                             skipThumb = listState.isScrollInProgress,
@@ -268,7 +287,8 @@ private fun MtFileRow(
     onSweepTo: (Int) -> Unit,
     onLongPress: () -> Unit,
 ) {
-    val alpha = if (dimmed) 0.62f else 1f
+    val alpha = if (dimmed) 0.55f else 1f
+    val swipeEntrySlop = with(LocalDensity.current) { SWIPE_ENTRY.toPx() }
     val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
     val haptic = LocalHapticFeedback.current
     // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）
@@ -292,14 +312,16 @@ private fun MtFileRow(
             // ------------------------------------------------------------------
             // 行手势（MT 语义，统一由单个识别器处理，避免多个识别器互相抢事件）：
             //   · 单击              = 打开 / 预览（多选态 = 切换选中）
-            //   · 左右滑动          = 进入多选；滑过行间 = 连续区间选择（替换语义）
-            //   · 长按后松手        = 动作菜单（带 ● 的项可长按触发单窗口操作）
-            //   · 纵向拖动（未越阈值）= 交给列表滚动（不消费事件）
+            //   · 向右滑动 ≥ 24dp    = 进入多选（震动确认）；继续滑过行间 = 区间选择（替换语义）
+            //   · 长按后松手        = 动作菜单（该项自动选中；带 ● 的项可长按触发单窗口操作）
+            //   · 纵向拖动          = 交给列表滚动（不消费事件）
+            //   · 小幅度拖动后松手  = 不触发点击（避免滑动误开文件）
             //   （跨窗格复制用动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已按需求移除）
             // ------------------------------------------------------------------
             .pointerInput(item.uri.toString()) {
                 val touchSlop = viewConfiguration.touchSlop
                 val longPressTimeout = viewConfiguration.longPressTimeoutMillis
+                val entrySlop = swipeEntrySlop
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
@@ -318,9 +340,13 @@ private fun MtFileRow(
 
                         if (mode == RowGestureMode.UNDECIDED) {
                             when {
-                                // 松手：短按 = 点击；超过长按阈值 = 动作菜单
+                                // 松手：真正的轻点 = 点击；长按 = 动作菜单；拖过一段距离后松手 = 什么都不做
                                 !change.pressed -> {
-                                    if (elapsed >= longPressTimeout) gestures.onLongPress() else gestures.onTap()
+                                    val dragged = abs(dx) > touchSlop || abs(dy) > touchSlop
+                                    when {
+                                        elapsed >= longPressTimeout -> gestures.onLongPress()
+                                        !dragged -> gestures.onTap()
+                                    }
                                     change.consume()
                                     break
                                 }
@@ -329,14 +355,15 @@ private fun MtFileRow(
                                     mode = RowGestureMode.LONG_PRESS
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
-                                // 横向为主且越过阈值 → 进入滑动多选
-                                downIndex >= 0 && abs(dx) > touchSlop && abs(dx) > abs(dy) -> {
+                                // 纵向为主 → 列表滚动，不消费事件（先判断，避免斜向滚动被误判成滑动选择）
+                                abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
+                                // 向右滑动一段距离（≥ 24dp 且横向占优）→ 进入多选
+                                downIndex >= 0 && dx > entrySlop && dx > abs(dy) -> {
                                     mode = RowGestureMode.SWEEP
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     gestures.onSwipeSelect(downIndex)
                                     change.consume()
                                 }
-                                // 纵向为主 → 列表滚动，不消费事件
-                                abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
                             }
                         }
 

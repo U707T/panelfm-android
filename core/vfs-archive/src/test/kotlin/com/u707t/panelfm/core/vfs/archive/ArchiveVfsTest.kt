@@ -210,6 +210,36 @@ class ArchiveVfsTest {
         assertTrue("重命名应生效：${dirList.map { it.name }}", dirList.any { it.name == "renamed.bin" })
     }
 
+    @Test
+    fun `ZIP 删除目录与改父目录（子树操作）`() = runTest {
+        val dir = Files.createTempDirectory("zipmove").toFile()
+        val zip = makeZip(dir)
+        val host = VfsUri.of("mem", "one", "/${zip.name}")
+        val mem = MemoryVfs()
+        val locator = object : VfsLocator {
+            override fun find(uri: VfsUri): VirtualFileSystem? = if (uri.authority == "one") mem else null
+        }
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, zip, env())
+        vfs.connect()
+        // 1) 删除目录 dir —— 应连同 dir/ 下全部子项一起删除；
+        // 2) a.txt → new/a.txt —— 改父目录（压缩包内的「移动」）
+        ZipEditor(vfs, locator).rewrite(
+            remove = setOf("dir"),
+            rename = mapOf("a.txt" to "new/a.txt"),
+        )
+        val rewritten = mem.content("/${zip.name}")
+        assertTrue("重写结果非空", rewritten.isNotEmpty())
+        val out = File(dir, "moved.zip").apply { writeBytes(rewritten) }
+        val check = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, out, env())
+        check.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        val root = check.list(VfsUri.of("archive", "zip", base))
+        assertTrue("dir 及其子项应全部删除：${root.map { it.name }}", root.none { it.name == "dir" })
+        assertTrue("new 目录应存在：${root.map { it.name }}", root.any { it.name == "new" && it.isDirectory })
+        val newList = check.list(VfsUri.of("archive", "zip", base + "new"))
+        assertTrue("a.txt 应移动到 new/：${newList.map { it.name }}", newList.any { it.name == "a.txt" })
+    }
+
     /** 极简内存 VFS：只实现压缩测试所需的能力 */
     private class MemoryVfs : VirtualFileSystem {
         override val id = "mem"

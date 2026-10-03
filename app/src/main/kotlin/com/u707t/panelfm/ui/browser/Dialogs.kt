@@ -2,7 +2,6 @@ package com.u707t.panelfm.ui.browser
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -22,13 +21,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,6 +39,9 @@ import com.u707t.panelfm.core.model.ConflictInfo
 import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /** 移动二次确认（需求：移动必须确认，且写明跨协议中转语义） */
 @Composable
@@ -150,28 +155,119 @@ fun ConfirmDialog(title: String, message: String, confirmText: String = "确定"
     )
 }
 
-/** 属性面板 */
+/**
+ * 属性面板（复刻 MT）：名称 / 目录 / 类型 / 大小（含字节数）/ 修改时间 / 权限（drwxrws---(2770)）/
+ * 所有者 / 用户组 / 文件数 / 文件夹数；「更多」展开位置、ETag、链接指向、可用空间与「复制路径」。
+ * 打开时异步补全最新元数据；文件夹自动统计子项。
+ */
 @Composable
-fun PropertiesDialog(item: FileMetadata, space: String?, onDismiss: () -> Unit) {
+fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetadata, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var meta by remember(item.uri) { mutableStateOf(item) }
+    var spaceText by remember(item.uri) { mutableStateOf<String?>(null) }
+    var files by remember(item.uri) { mutableStateOf(-1) }
+    var dirs by remember(item.uri) { mutableStateOf(-1) }
+    var bytes by remember(item.uri) { mutableStateOf(-1L) }
+    var more by remember(item.uri) { mutableStateOf(false) }
+
+    LaunchedEffect(item.uri) {
+        val vfs = container.locator.find(item.uri)
+        val fresh = withContext(Dispatchers.IO) { runCatching { vfs?.stat(item.uri) }.getOrNull() }
+        fresh?.let { meta = it }
+        val isDir = fresh?.isDirectory ?: item.isDirectory
+        val space = withContext(Dispatchers.IO) { runCatching { vfs?.space(item.uri) }.getOrNull() }
+        spaceText = space?.let { "${Fmt.transferred(it.total - it.free, it.total)} / ${Fmt.size(it.total)}" }
+        if (isDir) {
+            val (f, d, b) = folderSummary(vfs, item.uri)
+            files = f
+            dirs = d
+            bytes = b
+        }
+    }
+
+    val conn = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(meta.uri))
+        ?: container.connectionByAuthority(meta.uri.scheme, meta.uri.authority)
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(item.name.ifEmpty { "属性" }) },
+        title = { Text("属性") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                InfoRow("路径", item.uri.displayPath)
-                InfoRow("协议", item.uri.scheme)
-                InfoRow("类型", if (item.isDirectory) "文件夹" else (item.mimeType ?: "未知"))
-                if (!item.isDirectory) InfoRow("大小", Fmt.size(item.size))
-                if (item.lastModified > 0) InfoRow("修改时间", Fmt.fullTime(item.lastModified))
-                item.permissions?.let { InfoRow("权限", "${Fmt.mode(it)} (${Integer.toOctalString(it)})") }
-                item.owner?.let { InfoRow("属主", it) }
-                item.etag?.let { InfoRow("ETag", it) }
-                item.symlinkTarget?.let { InfoRow("链接指向", it) }
-                space?.let { InfoRow("可用空间", it) }
+                InfoRow("名称", meta.name.ifEmpty { "/" })
+                InfoRow(
+                    "目录",
+                    (meta.uri.parent?.displayPath ?: "/").let { if (it.endsWith("/")) it else "$it/" },
+                )
+                InfoRow("类型", if (meta.isDirectory) "文件夹" else (meta.mimeType ?: "未知类型"))
+                if (meta.isDirectory) {
+                    InfoRow("大小", if (bytes >= 0) "${Fmt.size(bytes)} (${bytes})" else "统计中…")
+                    InfoRow("文件数", if (files >= 0) files.toString() else "统计中…")
+                    InfoRow("文件夹数", if (dirs >= 0) dirs.toString() else "统计中…")
+                } else {
+                    InfoRow("大小", if (meta.size >= 0) "${Fmt.size(meta.size)} (${meta.size})" else "—")
+                }
+                InfoRow("修改时间", if (meta.lastModified > 0) Fmt.fullTime(meta.lastModified) else "—")
+                InfoRow(
+                    "权限",
+                    meta.permissions?.let {
+                        "${Fmt.modeLong(it, meta.isDirectory, meta.isSymlink)}(${Integer.toOctalString(it and 0xFFF)})"
+                    } ?: "—",
+                )
+                InfoRow("所有者", meta.owner ?: "—")
+                InfoRow("用户组", meta.group ?: "—")
+                if (more) {
+                    InfoRow(
+                        "位置",
+                        buildString {
+                            append(meta.uri.scheme)
+                            conn?.name?.takeIf { it.isNotBlank() }?.let { append(" · ").append(it) }
+                            if (meta.uri.authority.isNotBlank()) append(" · ").append(meta.uri.authority)
+                        },
+                    )
+                    meta.etag?.let { InfoRow("ETag", it) }
+                    meta.symlinkTarget?.let { InfoRow("链接指向", it) }
+                    InfoRow("可用空间", spaceText ?: "—")
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = {
+                            clipboard.setText(androidx.compose.ui.text.AnnotatedString(meta.uri.toString()))
+                        }) { Text("复制路径") }
+                    }
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = {
+            TextButton(onClick = { more = !more }) { Text(if (more) "收起" else "更多") }
+        },
     )
+}
+
+/** 递归统计文件夹：文件数 / 文件夹数 / 总字节（最多 5 万项，防超大目录卡界面） */
+private suspend fun folderSummary(
+    vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem?,
+    uri: VfsUri,
+): Triple<Int, Int, Long> = withContext(Dispatchers.IO) {
+    if (vfs == null) return@withContext Triple(0, 0, 0L)
+    var files = 0
+    var dirs = 0
+    var bytes = 0L
+    var seen = 0
+    val queue = ArrayDeque<VfsUri>().apply { add(uri) }
+    while (queue.isNotEmpty() && seen < 50_000) {
+        val dir = queue.removeFirst()
+        val children = runCatching { vfs.list(dir) }.getOrDefault(emptyList())
+        for (child in children) {
+            seen++
+            if (child.isDirectory) {
+                dirs++
+                queue.add(child.uri)
+            } else {
+                files++
+                bytes += child.size.coerceAtLeast(0)
+            }
+        }
+    }
+    Triple(files, dirs, bytes)
 }
 
 // ---------------------------------------------------------------------------

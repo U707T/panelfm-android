@@ -46,6 +46,23 @@ data class ConnectionConfig(
 
     fun option(key: String): String? = options[key]
 
+    /**
+     * 打开连接时进入的初始路径（修复 WebDAV「/dav/dav」双前缀 bug）：
+     *  - WebDAV：basePath 是服务挂载点，URI 以**虚拟根 "/"** 为界（请求时才拼回 basePath），
+     *    可选的「初始路径」进入挂载点下的子目录；
+     *  - 其余协议：basePath 即起始绝对路径，「初始路径」相对它追加。
+     */
+    val openPath: String
+        get() {
+            val initial = option(OPT_INITIAL_PATH).orEmpty().trim().trim('/')
+            return if (type == ConnectionType.WEBDAV) {
+                if (initial.isEmpty()) "/" else "/$initial"
+            } else {
+                val base = basePath.ifBlank { "/" }.trimEnd('/')
+                if (initial.isEmpty()) base.ifEmpty { "/" } else "$base/$initial"
+            }
+        }
+
     companion object {
         const val OPT_TRUST_SELF_SIGNED = "trustSelfSigned"
         const val OPT_USER_AGENT = "userAgent"
@@ -55,5 +72,14 @@ data class ConnectionConfig(
         const val OPT_PATH_STYLE = "pathStyle"
         const val OPT_DOWNLOAD_DOMAIN = "downloadDomain"
         const val OPT_JUMP_HOST = "jumpHost"
+
+        /** 打开连接后进入的子目录（相对根路径 / WebDAV 挂载点） */
+        const val OPT_INITIAL_PATH = "initialPath"
+
+        /** 不在侧边栏（≡ 抽屉）显示该地址 */
+        const val OPT_HIDDEN_IN_DRAWER = "hiddenInDrawer"
+
+        /** "false" = 该连接不加载缩略图（缺省加载） */
+        const val OPT_LOAD_THUMBS = "loadThumbs"
     }
 }

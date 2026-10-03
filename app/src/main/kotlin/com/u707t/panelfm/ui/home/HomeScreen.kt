@@ -75,7 +75,6 @@ fun HomeScreen(
     onOpenTrash: () -> Unit,
     onOpenApps: () -> Unit,
     onOpenRemote: () -> Unit,
-    onOpenTerminal: () -> Unit,
     onOpenEditor: () -> Unit,
     onAddConnection: () -> Unit,
     onEditConnection: (Long) -> Unit,
@@ -298,10 +297,11 @@ fun HomeScreen(
                             scope.launch {
                                 try {
                                     container.openConnection(config)
+                                    // WebDAV：进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 basePath / 初始路径
                                     val uri = VfsUri.of(
                                         config.scheme,
                                         "${config.host}:${config.port}",
-                                        config.basePath.ifBlank { "/" },
+                                        config.openPath,
                                         "c=${config.id}",
                                     )
                                     container.browser.open(container.browser.state.value.focused, uri, config.id, config.name)
@@ -330,7 +330,6 @@ fun HomeScreen(
                 ToolRow("远程管理", "🖥") { onOpenRemote() }
                 ToolRow("已安装应用", "📦") { onOpenApps() }
                 ToolRow("文本编辑器", "📄") { onOpenEditor() }
-                ToolRow("终端模拟器", "⌨") { onOpenTerminal() }
                 ToolRow("局域网扫描", "🧭") { onScanLan() }
                 ToolRow("书签", "🔖") { onOpenBookmarks() }
                 ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇") { onOpenTasks() }
@@ -382,6 +381,7 @@ fun HomeScreen(
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch {
+                        container.disconnectConnection(config)
                         container.connectionDao.delete(config.id)
                         container.reloadConnections()
                     }

@@ -19,6 +19,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -46,6 +47,7 @@ import com.u707t.panelfm.core.ui.UsageBar
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.local.LocalVolume
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * MT 管理器侧边栏（截图复刻）：
@@ -53,7 +55,7 @@ import kotlinx.coroutines.launch
  *    添加本地存储 / 添加网络分组 / 管理工具分组 / 设置）
  *  - 「本地」：根目录 / 内部存储 / 应用目录，每行带「xx已用，xx可用」+ 蓝色占用条
  *  - 「网络」：已添加的网络存储；点击在活动窗口打开，长按编辑/删除
- *  - 「工具」：回收站 / 已安装应用 / 文本编辑器 / 终端模拟器 / 远程管理 / 书签 /
+ *  - 「工具」：回收站 / 已安装应用 / 文本编辑器 / 远程管理 / 书签 /
  *    传输任务 / 局域网扫描 / 更多工具
  * 点击本地 / 网络节点 → 在**活动窗口**打开（MT 语义）。
  */
@@ -65,11 +67,12 @@ fun MtSideDrawer(
     connectingId: Long?,
     onOpenVolume: (LocalVolume) -> Unit,
     onOpenConnection: (ConnectionConfig) -> Unit,
+    /** 「后台」段：最近访问路径（点击在活动窗口打开） */
+    onOpenRecentPath: (com.u707t.panelfm.core.vfs.VfsUri) -> Unit,
     onEditConnection: (Long) -> Unit,
     onOpenTrash: () -> Unit,
     onOpenApps: () -> Unit,
     onOpenEditor: () -> Unit,
-    onOpenTerminal: () -> Unit,
     onOpenRemote: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenTasks: () -> Unit,
@@ -89,6 +92,19 @@ fun MtSideDrawer(
     var menuFor by remember { mutableStateOf<ConnectionConfig?>(null) }
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
     val systemDark = isSystemInDarkTheme()
+
+    // ===== 后台：最近访问路径（MT 抽屉的「后台」段）
+    val browserUi by container.browser.state.collectAsState()
+    var recentPaths by remember { mutableStateOf<List<com.u707t.panelfm.core.vfs.VfsUri>>(emptyList()) }
+    LaunchedEffect(browserUi.left.uri, browserUi.right.uri) {
+        recentPaths = withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching { container.bookmarkDao.recentPaths(40) }.getOrDefault(emptyList())
+        }.filter { uri ->
+            uri.toString() != browserUi.left.uri.toString() &&
+                uri.toString() != browserUi.right.uri.toString() &&
+                container.locator.find(uri) != null
+        }.distinctBy { it.toString() }.take(6)
+    }
 
     Column(Modifier.fillMaxWidth()) {
         // ---------------- 头部（MT：图标 + 名称 + ⋮）
@@ -246,9 +262,10 @@ fun MtSideDrawer(
                 )
             }
 
-            // ===== 网络
+            // ===== 网络（「在侧拉栏隐藏地址」的连接不在这里显示）
             SectionHeader("网络")
-            if (connections.isEmpty()) {
+            val drawerConnections = connections.filter { it.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) != "true" }
+            if (drawerConnections.isEmpty()) {
                 MtListRow(
                     title = "还没有网络存储",
                     subtitle = "右上角 ⋮ → 添加网络存储（SFTP / FTP / WebDAV / SMB / S3）",
@@ -256,7 +273,7 @@ fun MtSideDrawer(
                     onClick = { onAddConnection(ConnectionType.SFTP) },
                 )
             }
-            connections.forEach { config ->
+            drawerConnections.forEach { config ->
                 MtListRow(
                     title = config.name.ifBlank { config.host },
                     subtitle = buildString {
@@ -285,6 +302,37 @@ fun MtSideDrawer(
                 )
             }
 
+            // ===== 后台（最近访问；点击在活动窗口打开）
+            if (recentPaths.isNotEmpty()) {
+                SectionHeader("后台")
+                recentPaths.forEach { uri ->
+                    val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+                        ?: container.connectionByAuthority(uri.scheme, uri.authority)
+                    MtListRow(
+                        title = cfg?.name?.ifBlank { null } ?: when (uri.scheme) {
+                            "local" -> "本地存储"
+                            else -> uri.scheme.uppercase()
+                        },
+                        subtitle = uri.displayPath.ifEmpty { "/" },
+                        icon = {
+                            RoundIconBox(size = 42.dp) {
+                                Text(
+                                    when (uri.scheme) {
+                                        "local" -> "本地"
+                                        "dav" -> "DAV"
+                                        else -> uri.scheme.take(3).uppercase()
+                                    },
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.surface,
+                                    fontWeight = FontWeight.Bold,
+                                )
+                            }
+                        },
+                        onClick = { onOpenRecentPath(uri) },
+                    )
+                }
+            }
+
             // ===== 工具（MT：回收站 / 已安装应用 / 文本编辑器 / … / 更多工具）
             SectionHeader("工具")
             val active = tasks.count {
@@ -294,7 +342,6 @@ fun MtSideDrawer(
             DrawerTool("回收站", "🗑", onOpenTrash)
             DrawerTool("已安装应用", "📦", onOpenApps)
             DrawerTool("文本编辑器", "📄", onOpenEditor)
-            DrawerTool("终端模拟器", "⌨", onOpenTerminal)
             DrawerTool("远程管理", "🖥", onOpenRemote)
             DrawerTool("书签", "🔖", onOpenBookmarks)
             DrawerTool("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇", onOpenTasks)
@@ -322,9 +369,9 @@ fun MtSideDrawer(
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        scope.launch { container.registry.closeAll() }
+                        container.disconnectConnection(config)
                         menuFor = null
-                        showStatus("已断开会话")
+                        showStatus("已断开会话：${config.name.ifBlank { config.host }}")
                     }) { Text("断开") }
                     TextButton(onClick = { deleteTarget = config; menuFor = null }) { Text("删除") }
                 }
@@ -339,6 +386,7 @@ fun MtSideDrawer(
             confirmButton = {
                 TextButton(onClick = {
                     scope.launch {
+                        container.disconnectConnection(config)
                         container.connectionDao.delete(config.id)
                         container.reloadConnections()
                     }

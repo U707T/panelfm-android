@@ -5,6 +5,7 @@ import okhttp3.Credentials
 import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import okhttp3.Response
 import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
@@ -45,7 +46,9 @@ data class DavConfig(
 
 /**
  * 自研重定向拦截器：
- *  - 301/302/303 才降级为 GET；307/308 必须保留原方法与请求体（WebDAV 常见于反向代理）；
+ *  - 307/308 必须保留原方法与请求体（WebDAV 常见于反向代理）；
+ *  - 301/302/303 对 **非 GET/HEAD 方法同样保留方法**（多数 WebDAV 服务器用 301 给集合补
+ *    「/」尾斜杠，若降级为 GET 会直接破坏 PROPFIND 等请求）；仅 GET/HEAD 保持 GET；
  *  - 跨主机跳转剥离 Authorization，避免凭据泄露；
  *  - 最多 10 跳。
  */
@@ -57,18 +60,9 @@ class DavRedirectInterceptor : Interceptor {
         var hops = 0
         while (response.isRedirect && hops < MAX_HOPS) {
             hops++
-            val location = response.header("Location") ?: break
-            val newUrl = response.request.url.resolve(location) ?: break
-            val sameHost = newUrl.host == request.url.host
-            val code = response.code
-            val builder = request.newBuilder().url(newUrl)
-            if (!sameHost) builder.removeHeader("Authorization")
-            when (code) {
-                307, 308 -> builder.method(request.method, request.body) // 保方法保 body
-                else -> builder.method("GET", null)                       // 301/302/303 降级
-            }
+            val next = redirectRequest(request, response) ?: break
             response.close()
-            request = builder.build()
+            request = next
             response = chain.proceed(request)
         }
         return response
@@ -76,6 +70,20 @@ class DavRedirectInterceptor : Interceptor {
 
     companion object {
         private const val MAX_HOPS = 10
+
+        /** 计算一次重定向后的请求；返回 null = 不再跟随（无 Location / 无法解析） */
+        internal fun redirectRequest(request: Request, response: Response): Request? {
+            val location = response.header("Location") ?: return null
+            val newUrl = response.request.url.resolve(location) ?: return null
+            val sameHost = newUrl.host == request.url.host
+            val builder = request.newBuilder().url(newUrl)
+            if (!sameHost) builder.removeHeader("Authorization")
+            return when {
+                response.code == 307 || response.code == 308 -> builder.method(request.method, request.body) // 保方法保 body
+                request.method == "GET" || request.method == "HEAD" -> builder.method(request.method, null)
+                else -> builder.method(request.method, request.body)                                        // WebDAV：保方法保 body
+            }.build()
+        }
     }
 }
 
@@ -115,10 +123,15 @@ object DavHttp {
             }
         if (cfg.user.isNotEmpty()) {
             builder.addInterceptor { chain ->
-                val req = chain.request().newBuilder()
-                    .header("Authorization", Credentials.basic(cfg.user, cfg.password ?: "", Charsets.UTF_8))
-                    .build()
-                chain.proceed(req)
+                // 只给本主机发凭据（跨主机跳转后不泄露）
+                if (chain.request().url.host != cfg.host) {
+                    chain.proceed(chain.request())
+                } else {
+                    val req = chain.request().newBuilder()
+                        .header("Authorization", Credentials.basic(cfg.user, cfg.password ?: "", Charsets.UTF_8))
+                        .build()
+                    chain.proceed(req)
+                }
             }
         }
         if (cfg.secure && cfg.trustSelfSigned) {
@@ -128,11 +141,17 @@ object DavHttp {
         return builder.build()
     }
 
-    /** 拼接请求 URL：basePath + 虚拟路径（逐段编码，正确处理空格/中文） */
+    /** 拼接请求 URL：basePath + 虚拟路径（逐段编码，正确处理空格/中文；虚拟根保留尾斜杠） */
     fun url(cfg: DavConfig, path: String): HttpUrl {
         val full = (cfg.basePath.trimEnd('/') + "/" + path.trimStart('/')).let { if (it.startsWith("/")) it else "/$it" }
         val builder = HttpUrl.Builder().scheme(cfg.scheme).host(cfg.host).port(cfg.port)
         full.split('/').filter { it.isNotEmpty() }.forEach { builder.addPathSegment(it) }
-        return builder.build()
+        val url = builder.build()
+        // 根 / 空路径保留尾斜杠（部分服务器对集合根要求 "/" 结尾，缺省会 301 甚至 404）
+        return if (full.endsWith("/") && url.encodedPath.length > 1 && !url.encodedPath.endsWith("/")) {
+            url.newBuilder().encodedPath(url.encodedPath + "/").build()
+        } else {
+            url
+        }
     }
 }
