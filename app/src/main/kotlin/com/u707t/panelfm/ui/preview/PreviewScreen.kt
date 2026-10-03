@@ -54,6 +54,7 @@ fun PreviewScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var mode by remember { mutableStateOf("auto") }
+    var editing by remember { mutableStateOf(false) }
 
     LaunchedEffect(uri) {
         try {
@@ -80,6 +81,7 @@ fun PreviewScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 modifier = Modifier.weight(1f),
             )
             TextButton(onClick = { mode = "text" }) { Text("文本") }
+            TextButton(onClick = { editing = true }) { Text("编辑") }
             TextButton(onClick = { mode = "hex" }) { Text("Hex") }
             TextButton(onClick = { mode = "image" }) { Text("图片") }
             TextButton(onClick = {
@@ -113,9 +115,11 @@ fun PreviewScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                         else -> if (item.size in 1..MAX_TEXT_SIZE) "text" else "hex"
                     }
                 }
-                when (effective) {
-                    "image" -> ImagePreview(container, item)
-                    "text" -> TextPreview(container, item)
+                when {
+                    kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO ->
+                        MediaScreen(container, item.uri, item.name, onBack = onBack)
+                    effective == "image" -> ImagePreview(container, item)
+                    effective == "text" || editing -> com.u707t.panelfm.ui.editor.EditorScreen(container, item.uri, onBack = onBack)
                     else -> HexPreview(container, item)
                 }
             }

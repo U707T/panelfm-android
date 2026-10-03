@@ -564,6 +564,47 @@ class BrowserController(private val container: AppContainer) {
 
     fun cancelMove() = update { it.copy(pendingMove = null) }
 
+    // ------------------------------------------------------------------ 目录对比（M9）
+
+    fun compareDirectories() {
+        val st = _state.value
+        container.scope.launch {
+            showStatus("正在对比两个目录…")
+            runCatching { FolderDiffEngine.compare(container, st.left.uri, st.right.uri) }
+                .onSuccess { result ->
+                    update { it.copy(diff = result) }
+                    showStatus("对比完成：相同 ${result.identical} / 不同 ${result.different}")
+                }
+                .onFailure { showStatus("对比失败：${it.message}") }
+        }
+    }
+
+    fun dismissDiff() = update { it.copy(diff = null) }
+
+    /** 仅把「只在左侧」的项复制到右侧 */
+    fun copyDiffOnlyLeft() {
+        val diff = _state.value.diff ?: return
+        val sources = diff.onlyLeftEntries.mapNotNull { it.left?.uri }
+        if (sources.isEmpty()) {
+            showStatus("没有仅左侧的项")
+            return
+        }
+        container.engine.enqueue(TransferRequest(sources, diff.rightDir, TransferOp.COPY, ConflictPolicy.ASK))
+        showStatus("已开始复制 ${sources.size} 项到右侧")
+    }
+
+    /** 只把左侧较新的项覆盖到右侧 */
+    fun copyDiffNewer() {
+        val diff = _state.value.diff ?: return
+        val sources = diff.newerOnLeft.mapNotNull { it.left?.uri }
+        if (sources.isEmpty()) {
+            showStatus("没有较新的项")
+            return
+        }
+        container.engine.enqueue(TransferRequest(sources, diff.rightDir, TransferOp.COPY, ConflictPolicy.OVERWRITE))
+        showStatus("已开始同步 ${sources.size} 个较新项")
+    }
+
     /** 长按「复制/移动 ->」= 单窗口操作：目标仍在本窗格内 */
     fun copyWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.COPY, destDir)
 

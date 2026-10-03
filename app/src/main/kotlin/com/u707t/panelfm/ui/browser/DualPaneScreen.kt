@@ -149,6 +149,7 @@ fun DualPaneScreen(
             val showRight = !ui.singlePane || ui.focused == PaneSide.RIGHT
             if (showLeft) {
                 PaneView(
+                    container = container,
                     side = PaneSide.LEFT,
                     pane = ui.left,
                     focused = ui.focused == PaneSide.LEFT,
@@ -167,6 +168,7 @@ fun DualPaneScreen(
             }
             if (showRight) {
                 PaneView(
+                    container = container,
                     side = PaneSide.RIGHT,
                     pane = ui.right,
                     focused = ui.focused == PaneSide.RIGHT,
@@ -258,7 +260,7 @@ fun DualPaneScreen(
                         )
                         DropdownMenuItem(
                             text = { Text("比较两个目录") },
-                            onClick = { showCrossMenu = false; controller.showStatus("目录比较：M9 计划（差异对比引擎已占位）") },
+                            onClick = { showCrossMenu = false; controller.compareDirectories() },
                         )
                     }
                 }
@@ -594,6 +596,14 @@ fun DualPaneScreen(
     }
     ui.conflict?.let { info ->
         ConflictDialog(info) { policy, applyAll -> controller.resolveConflict(policy, applyAll) }
+    }
+    ui.diff?.let { diff ->
+        FolderDiffDialog(
+            result = diff,
+            onCopyOnlyLeft = { controller.copyDiffOnlyLeft() },
+            onCopyNewer = { controller.copyDiffNewer() },
+            onDismiss = { controller.dismissDiff() },
+        )
     }
     ui.property?.let { item ->
         PropertiesDialog(item, space = focused.space?.let { Fmt.transferred(it.total - it.free, it.total) }) {

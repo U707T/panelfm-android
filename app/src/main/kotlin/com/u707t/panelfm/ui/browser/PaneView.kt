@@ -47,6 +47,7 @@ import kotlin.math.abs
  */
 @Composable
 fun PaneView(
+    container: com.u707t.panelfm.AppContainer,
     side: PaneSide,
     pane: PaneState,
     focused: Boolean,
@@ -174,6 +175,8 @@ fun PaneView(
                         }
                         items(pane.items, key = { it.uri.toString() }) { item ->
                             MtFileRow(
+                                container = container,
+                                skipThumb = listState.isScrollInProgress,
                                 item = item,
                                 selected = pane.selection.contains(item.uri.toString()),
                                 dimmed = !focused,
@@ -231,6 +234,8 @@ private fun ParentRow(onClick: () -> Unit) {
 
 @Composable
 private fun MtFileRow(
+    container: com.u707t.panelfm.AppContainer,
+    skipThumb: Boolean,
     item: FileMetadata,
     selected: Boolean,
     dimmed: Boolean,
@@ -258,7 +263,19 @@ private fun MtFileRow(
             .padding(start = 14.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FileIcon(name = item.name, isDirectory = item.isDirectory, size = 40.dp, alpha = alpha)
+        val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
+        if (thumb != null) {
+            androidx.compose.foundation.Image(
+                bitmap = thumb,
+                contentDescription = null,
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+            )
+        } else {
+            FileIcon(name = item.name, isDirectory = item.isDirectory, size = 40.dp, alpha = alpha)
+        }
         Column(
             Modifier
                 .weight(1f)

@@ -67,6 +67,7 @@ data class BrowserUiState(
     val property: FileMetadata? = null,
     val tasks: List<TransferTaskSnapshot> = emptyList(),
     val singlePane: Boolean = false,
+    val diff: DiffResult? = null,
 ) {
     fun pane(side: PaneSide): PaneState = if (side == PaneSide.LEFT) left else right
     val focusedPane: PaneState get() = pane(focused)

@@ -26,7 +26,10 @@ import com.u707t.panelfm.core.vfs.smb.SmbVfs
 import com.u707t.panelfm.core.vfs.webdav.WebDavVfsFactory
 import com.u707t.panelfm.tools.RemoteHttpServer
 import com.u707t.panelfm.tools.TrashService
+import com.u707t.panelfm.service.TransferService
 import com.u707t.panelfm.ui.browser.BrowserController
+import com.u707t.panelfm.ui.browser.ThumbCache
+import com.u707t.panelfm.ui.preview.VfsDataSourceFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -114,9 +117,32 @@ class AppContainer(val app: Application) {
     /** 远程管理：内置只读 HTTP 服务 */
     val remote = RemoteHttpServer(locator)
 
+    /** Media3 播放用的统一 VFS 数据源（本地/SFTP/WebDAV/SMB/S3 通吃） */
+    val vfsDataSourceFactory = VfsDataSourceFactory(locator)
+
     init {
+        ThumbCache.init(appDirs.thumbsDir)
         scope.launch {
             prefs.settings.collect { _settings.value = it }
+        }
+        // 任务运行时启用前台服务通知（M9）
+        scope.launch {
+            var foregound = false
+            engine.tasks.collect { tasks ->
+                val active = tasks.any {
+                    val st = it.state.value
+                    st !is com.u707t.panelfm.core.transfer.TaskState.Done &&
+                        st !is com.u707t.panelfm.core.transfer.TaskState.Cancelled &&
+                        st !is com.u707t.panelfm.core.transfer.TaskState.Failed
+                }
+                if (active && !foregound) {
+                    foregound = true
+                    TransferService.start(app)
+                } else if (!active && foregound) {
+                    foregound = false
+                    TransferService.stop(app)
+                }
+            }
         }
         scope.launch { reloadConnections() }
         // 定期回收空闲网络会话
