@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -40,6 +41,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.u707t.panelfm.AppContainer
@@ -53,6 +55,10 @@ import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.vfs.FileMetadata
+import com.u707t.panelfm.ui.preview.OpenWithDialog
+import com.u707t.panelfm.ui.preview.OpenWithManageDialog
+import com.u707t.panelfm.ui.preview.OpenWithOption
+import com.u707t.panelfm.ui.preview.PreviewMode
 import com.u707t.panelfm.core.vfs.VfsUri
 import java.io.File
 import kotlinx.coroutines.launch
@@ -74,6 +80,7 @@ fun DualPaneScreen(
     onOpenLanScan: () -> Unit,
     onOpenPreview: (VfsUri) -> Unit,
     onOpenEditor: (VfsUri) -> Unit,
+    onOpenDiff: (VfsUri, VfsUri) -> Unit,
 ) {
     val ui by container.browser.state.collectAsState()
     val controller = container.browser
@@ -97,6 +104,9 @@ fun DualPaneScreen(
     var singleWindowOp by remember { mutableStateOf<TransferOp?>(null) }
     var permissionFor by remember { mutableStateOf<FileMetadata?>(null) }
     var message by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var openWithFor by remember { mutableStateOf<FileMetadata?>(null) }
+    var openWithManage by remember { mutableStateOf(false) }
+    var batchRenameFor by remember { mutableStateOf<List<FileMetadata>?>(null) }
 
     val focused = ui.focusedPane
     val focusSide = ui.focused
@@ -343,6 +353,7 @@ fun DualPaneScreen(
                 MtAction("rename", "重命名", "✎", enabled = multi <= 1),
                 MtAction("tools", "工具", "🔧"),
                 MtAction("compress", "压缩", "⬇"),
+                MtAction("diff", "文件对比", "⇄", enabled = multi >= 1),
                 MtAction("properties", "属性", "ⓘ", enabled = multi <= 1),
                 MtAction("share", "分享", "⇪"),
                 MtAction("open_with", "打开方式…", "✓", enabled = !item.isDirectory),
@@ -354,12 +365,16 @@ fun DualPaneScreen(
                     "copy_to" -> controller.copyToOther(focusSide)
                     "move_to" -> controller.moveToOther(focusSide)
                     "delete" -> deleting = item
-                    "rename" -> renaming = item
+                    "rename" -> {
+                        val picked = focused.selectedItems
+                        if (picked.size > 1) batchRenameFor = picked else renaming = item
+                    }
+                    "diff" -> controller.startFileDiff(focusSide)
                     "tools" -> toolsFor = item
                     "compress" -> controller.compressHere(focusSide)
                     "properties" -> controller.showProperties(item)
                     "share" -> shareItem(container, context, item) { msg -> controller.showStatus(msg) }
-                    "open_with" -> openWithSystem(container, context, item) { msg -> controller.showStatus(msg) }
+                    "open_with" -> openWithFor = item
                     "bookmark" -> {
                         controller.addBookmark(focusSide)
                     }
@@ -482,6 +497,74 @@ fun DualPaneScreen(
     message?.let { (title, body) ->
         MessageDialog(title, body) { message = null }
     }
+    // 打开方式（MT：内置打开方式列表 + 长按设为默认 + 管理）
+    openWithFor?.let { item ->
+        val kind = MimeTypes.kindOf(item.extension)
+        OpenWithDialog(
+            fileName = item.name,
+            options = listOf(
+                OpenWithOption(PreviewMode.TEXT, available = kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER),
+                OpenWithOption(PreviewMode.EDITOR, available = kind != MimeTypes.Kind.IMAGE && kind != MimeTypes.Kind.AUDIO && kind != MimeTypes.Kind.VIDEO),
+                OpenWithOption(PreviewMode.HEX, available = true),
+                OpenWithOption(PreviewMode.IMAGE, available = kind == MimeTypes.Kind.IMAGE),
+                OpenWithOption(PreviewMode.MEDIA, available = kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO),
+                OpenWithOption(
+                    PreviewMode.ARCHIVE,
+                    available = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name) != null,
+                ),
+                OpenWithOption(PreviewMode.FONT, available = kind == MimeTypes.Kind.FONT),
+                OpenWithOption(PreviewMode.SYSTEM, available = item.uri.scheme == "local"),
+            ),
+            defaultMode = controller.defaultOpenMode(item),
+            onPick = { mode ->
+                openWithFor = null
+                if (mode == PreviewMode.SYSTEM) {
+                    openWithSystem(container, context, item) { msg -> controller.showStatus(msg) }
+                } else {
+                    controller.openWith(item, mode)
+                }
+            },
+            onSetDefault = { mode ->
+                controller.setDefaultOpenMode(item, mode)
+            },
+            onManage = { openWithManage = true },
+            onDismiss = { openWithFor = null },
+        )
+    }
+    if (openWithManage) {
+        var entries by remember { mutableStateOf(controller.openModes()) }
+        OpenWithManageDialog(
+            entries = entries,
+            onDelete = { ext -> controller.clearOpenMode(ext); entries = controller.openModes() },
+            onDismiss = { openWithManage = false },
+        )
+    }
+    // 批量重命名（MT 表达式）
+    batchRenameFor?.let { items ->
+        BatchRenameDialog(
+            items = items,
+            onConfirm = { expression ->
+                scope.launch {
+                    var ok = 0
+                    items.forEachIndexed { index, fm ->
+                        val newName = BatchRename.newName(expression, fm, index)
+                        if (newName != fm.name && newName.isNotBlank()) {
+                            val target = fm.uri.parent?.child(newName)
+                            val vfs = container.locator.find(fm.uri)
+                            if (target != null && vfs != null) {
+                                val done = runCatching { vfs.rename(fm.uri, target) }.getOrDefault(false)
+                                if (done) ok++
+                            }
+                        }
+                    }
+                    controller.showStatus("批量重命名完成：$ok / ${items.size}")
+                    controller.clearSelection(focusSide)
+                    controller.refreshAll()
+                }
+            },
+            onDismiss = { batchRenameFor = null },
+        )
+    }
     renaming?.let { item ->
         TextInputDialog(
             title = "重命名",
@@ -574,6 +657,33 @@ fun DualPaneScreen(
             },
             confirmButton = { TextButton(onClick = { showFilterDialog = false }) { Text("关闭") } },
         )
+    }
+
+    // ---------------- 拖拽幽灵与落点提示
+    ui.drag?.let { drag ->
+        Box(Modifier.fillMaxSize()) {
+            ui.dropHint?.let { hint ->
+                Text(
+                    hint,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .padding(top = 60.dp)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+            Text(
+                if (drag.sources.size > 1) "${drag.sources.size} 项" else (drag.sources.firstOrNull()?.name ?: "拖拽中"),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White,
+                modifier = Modifier
+                    .offset { androidx.compose.ui.unit.IntOffset(drag.x.toInt() - 40, drag.y.toInt() - 30) }
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        }
     }
 
     // ---------------- 状态提示

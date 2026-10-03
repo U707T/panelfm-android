@@ -35,6 +35,7 @@ import com.u707t.panelfm.ui.home.HomeScreen
 import com.u707t.panelfm.ui.preview.PreviewScreen
 import com.u707t.panelfm.ui.settings.SettingsScreen
 import com.u707t.panelfm.ui.tasks.TasksScreen
+import com.u707t.panelfm.ui.tools.TextDiffScreen
 import com.u707t.panelfm.ui.tools.AppsScreen
 import com.u707t.panelfm.ui.tools.RemoteScreen
 import com.u707t.panelfm.ui.tools.TerminalScreen
@@ -59,7 +60,8 @@ sealed interface Screen {
         val prefillHost: String? = null,
         val prefillPort: Int? = null,
     ) : Screen
-    data class Preview(val uri: VfsUri) : Screen
+    data class Preview(val request: com.u707t.panelfm.ui.preview.PreviewRequest) : Screen
+    data class TextDiff(val left: VfsUri, val right: VfsUri) : Screen
 }
 
 @Composable
@@ -72,11 +74,18 @@ fun AppRoot(container: AppContainer) {
     BackHandler(enabled = stack.size > 1) { pop() }
 
     // 预览请求（点击文件）由控制器发起
-    val previewUri by container.browser.previewRequest.collectAsState()
-    LaunchedEffect(previewUri) {
-        previewUri?.let {
+    val previewRequest by container.browser.previewRequest.collectAsState()
+    LaunchedEffect(previewRequest) {
+        previewRequest?.let {
             container.browser.dismissPreviewRequest()
             push(Screen.Preview(it))
+        }
+    }
+    val diffRequest by container.browser.diffRequest.collectAsState()
+    LaunchedEffect(diffRequest) {
+        diffRequest?.let { (l, r) ->
+            container.browser.dismissDiffRequest()
+            push(Screen.TextDiff(l, r))
         }
     }
 
@@ -183,8 +192,20 @@ fun AppRoot(container: AppContainer) {
                 onOpenSettings = { push(Screen.Settings) },
                 onOpenBookmarks = { push(Screen.Bookmarks) },
                 onOpenLanScan = { push(Screen.LanScan) },
-                onOpenPreview = { push(Screen.Preview(it)) },
-                onOpenEditor = { push(Screen.Preview(it)) },
+                onOpenPreview = { uri ->
+                    push(Screen.Preview(com.u707t.panelfm.ui.preview.PreviewRequest(uri)))
+                },
+                onOpenEditor = { uri ->
+                    push(
+                        Screen.Preview(
+                            com.u707t.panelfm.ui.preview.PreviewRequest(
+                                uri,
+                                com.u707t.panelfm.ui.preview.PreviewMode.EDITOR,
+                            )
+                        )
+                    )
+                },
+                onOpenDiff = { l, r -> push(Screen.TextDiff(l, r)) },
             )
 
             Screen.Home -> HomeScreen(
@@ -228,7 +249,13 @@ fun AppRoot(container: AppContainer) {
             )
             is Screen.Preview -> PreviewScreen(
                 container = container,
-                uri = current.uri,
+                request = current.request,
+                onBack = pop,
+            )
+            is Screen.TextDiff -> TextDiffScreen(
+                container = container,
+                left = current.left,
+                right = current.right,
                 onBack = pop,
             )
         }

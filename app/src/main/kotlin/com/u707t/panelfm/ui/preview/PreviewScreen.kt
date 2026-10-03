@@ -49,12 +49,13 @@ import java.io.File
  * 未知类型给出「用其他应用打开」。大文件按窗口读取（本轮先支持首段窗口，分块编辑器在 M7）。
  */
 @Composable
-fun PreviewScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
+fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -> Unit) {
+    val uri = request.uri
     val context = LocalContext.current
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
-    var mode by remember { mutableStateOf("auto") }
-    var editing by remember { mutableStateOf(false) }
+    var effective by remember { mutableStateOf(request.mode) }
+    var editing by remember { mutableStateOf(request.mode == PreviewMode.EDITOR) }
 
     LaunchedEffect(uri) {
         try {
@@ -80,10 +81,10 @@ fun PreviewScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = { mode = "text" }) { Text("文本") }
+            TextButton(onClick = { effective = PreviewMode.TEXT; editing = false }) { Text("文本") }
             TextButton(onClick = { editing = true }) { Text("编辑") }
-            TextButton(onClick = { mode = "hex" }) { Text("Hex") }
-            TextButton(onClick = { mode = "image" }) { Text("图片") }
+            TextButton(onClick = { effective = PreviewMode.HEX; editing = false }) { Text("Hex") }
+            TextButton(onClick = { effective = PreviewMode.FONT; editing = false }) { Text("字体") }
             TextButton(onClick = {
                 val file = File(container.localVfs.absolutePath(uri))
                 if (uri.scheme == "local" && file.exists()) {
@@ -107,20 +108,29 @@ fun PreviewScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             else -> {
                 val item = meta!!
                 val kind = MimeTypes.kindOf(item.extension)
-                var effective = mode
-                if (effective == "auto") {
-                    effective = when (kind) {
-                        MimeTypes.Kind.IMAGE -> "image"
-                        MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> "text"
-                        else -> if (item.size in 1..MAX_TEXT_SIZE) "text" else "hex"
+                var resolved = effective
+                if (editing) resolved = PreviewMode.EDITOR
+                if (resolved == PreviewMode.AUTO) {
+                    resolved = when (kind) {
+                        MimeTypes.Kind.IMAGE -> PreviewMode.IMAGE
+                        MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO -> PreviewMode.MEDIA
+                        MimeTypes.Kind.FONT -> PreviewMode.FONT
+                        MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
+                        else -> if (item.size in 1..MAX_TEXT_SIZE) PreviewMode.TEXT else PreviewMode.HEX
                     }
                 }
-                when {
-                    kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO ->
+                when (resolved) {
+                    PreviewMode.MEDIA -> MediaScreen(container, item.uri, item.name, onBack = onBack)
+                    PreviewMode.IMAGE -> ImagePreview(container, item)
+                    PreviewMode.EDITOR -> com.u707t.panelfm.ui.editor.EditorScreen(container, item.uri, onBack = onBack)
+                    PreviewMode.FONT -> FontScreen(container, item.uri, onBack = onBack)
+                    PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
+                    PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
+                    else -> if (kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO) {
                         MediaScreen(container, item.uri, item.name, onBack = onBack)
-                    effective == "image" -> ImagePreview(container, item)
-                    effective == "text" || editing -> com.u707t.panelfm.ui.editor.EditorScreen(container, item.uri, onBack = onBack)
-                    else -> HexPreview(container, item)
+                    } else {
+                        HexPreview(container, item)
+                    }
                 }
             }
         }

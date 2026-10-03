@@ -35,11 +35,13 @@ fun FileIcon(
     modifier: Modifier = Modifier,
     size: Dp = 40.dp,
     alpha: Float = 1f,
+    /** 文件夹颜色：MT 里未聚焦窗格是浅灰、聚焦窗格近黑 */
+    folderColor: Color? = null,
 ) {
     if (isDirectory) {
         MtFolderGlyph(
             modifier = modifier.size(size),
-            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.88f * alpha),
+            color = (folderColor ?: MaterialTheme.colorScheme.onSurface).copy(alpha = alpha),
             size = size,
         )
         return

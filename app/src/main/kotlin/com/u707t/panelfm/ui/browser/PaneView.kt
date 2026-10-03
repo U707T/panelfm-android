@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -22,28 +23,38 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 import kotlin.math.abs
 
+private val ROW_HEIGHT = 56.dp
+
 /**
  * 单个窗格（对齐 MT 管理器）：
- *  - 顶部一行：路径 + 统计（聚焦窗格高亮）
- *  - 列表首行是 `..`（返回上级）
- *  - 行高固定 56dp；**左右滑动任意文件即进入多选**（MT 手册）
- *  - 多选状态下，手指在行间滑动 = 连续选中（区间选择）
+ *  - 顶部一行：路径（中间省略）+ 统计
+ *  - 列表首行 `..`；行高固定
+ *  - **左右滑动任意文件 = 进入多选**；多选下手指滑过行 = 连续选中
+ *  - **长按拖拽到另一窗格**：落在文件行 = 复制，落在目录空白 = 移动（MT/需求同款语义）
  */
 @Composable
 fun PaneView(
@@ -57,10 +68,11 @@ fun PaneView(
     onRowAction: (FileMetadata) -> Unit,
 ) {
     val listState = rememberLazyListState()
-    val rowHeightPx = with(androidx.compose.ui.platform.LocalDensity.current) { ROW_HEIGHT.toPx() }
+    val density = LocalDensity.current
+    val rowHeightPx = with(density) { ROW_HEIGHT.toPx() }
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
 
-    /** 手指 Y 坐标 → 列表项下标（-1 表示未命中；父目录行算 0） */
+    /** 手指 Y → 列表项下标（-1 = 未命中） */
     fun indexAt(y: Float): Int {
         val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { y >= it.offset && y <= it.offset + it.size }
             ?: return -1
@@ -84,7 +96,7 @@ fun PaneView(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = middleEllipsis(pane.uri.displayPath.ifEmpty { "/" }),
+                    middleEllipsis(pane.uri.displayPath.ifEmpty { "/" }),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (focused) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -110,27 +122,37 @@ fun PaneView(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
-                if (pane.tabs.size > 1) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                        pane.tabs.forEachIndexed { index, _ ->
-                            Box(
-                                Modifier
-                                    .size(if (index == pane.activeTab) 8.dp else 6.dp)
-                                    .clip(RoundedCornerShape(50))
-                                    .background(
-                                        if (index == pane.activeTab) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.outline
-                                    )
-                                    .clickableNoRipple { controller.switchTab(side, index) }
-                            )
-                        }
-                    }
+                pane.space?.let {
+                    Text(
+                        "${(if (it.total > 0) (it.total - it.free) * 100 / it.total else 0)}%",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
                 }
             }
         }
 
         // ---- 列表
-        Box(Modifier.weight(1f)) {
+        Box(
+            Modifier
+                .weight(1f)
+                .onGloballyPositioned { coords ->
+                    val bounds = coords.boundsInRoot()
+                    controller.setGeometry(
+                        side,
+                        PaneGeometry(
+                            left = bounds.left,
+                            top = bounds.top,
+                            width = bounds.width,
+                            height = bounds.height,
+                            listTop = bounds.top,
+                            rowHeightPx = rowHeightPx,
+                            hasParentRow = canGoUp,
+                            itemCount = pane.items.size,
+                        )
+                    )
+                }
+        ) {
             when {
                 pane.loading && pane.items.isEmpty() -> LoadingState()
                 pane.error != null -> ErrorState(
@@ -138,7 +160,7 @@ fun PaneView(
                     actionLabel = "重试",
                     onAction = { controller.refresh(side) },
                 )
-                pane.items.isEmpty() && !canGoUp -> com.u707t.panelfm.core.ui.EmptyState(
+                pane.items.isEmpty() && !canGoUp -> EmptyState(
                     if (pane.filtered) "没有匹配的项" else "空目录",
                     if (pane.filtered) "试试清除搜索或过滤条件" else "底部 ＋ 新建，或 ⇄ 从对面复制进来",
                 )
@@ -147,7 +169,6 @@ fun PaneView(
                         .fillMaxSize()
                         .then(
                             if (pane.hasSelection) {
-                                // 多选状态下：手指滑过即连续选中（MT 的区间选择）
                                 Modifier.pointerInput(pane.items.size, canGoUp) {
                                     awaitPointerEventScope {
                                         while (true) {
@@ -158,7 +179,7 @@ fun PaneView(
                                                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
                                                 if (!change.pressed) break
                                                 val idx = indexAt(change.position.y)
-                                                if (anchor >= 0 && idx >= 0) controller.selectRange(side, anchor, idx)
+                                                if (anchor >= 0 && idx >= 0) controller.setSelectionRange(side, anchor, idx)
                                                 change.consume()
                                             }
                                         }
@@ -167,11 +188,29 @@ fun PaneView(
                             } else Modifier
                         )
                 ) {
-                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .onGloballyPositioned { coords ->
+                                val b = coords.boundsInRoot()
+                                controller.setGeometry(
+                                    side,
+                                    PaneGeometry(
+                                        left = b.left,
+                                        top = b.top,
+                                        width = b.width,
+                                        height = b.height,
+                                        listTop = b.top,
+                                        rowHeightPx = rowHeightPx,
+                                        hasParentRow = canGoUp,
+                                        itemCount = pane.items.size,
+                                    )
+                                )
+                            },
+                    ) {
                         if (canGoUp) {
-                            item(key = "__parent__") {
-                                ParentRow(onClick = { controller.up(side) })
-                            }
+                            item(key = "__parent__") { ParentRow(onClick = { controller.up(side) }) }
                         }
                         items(pane.items, key = { it.uri.toString() }) { item ->
                             MtFileRow(
@@ -180,9 +219,15 @@ fun PaneView(
                                 item = item,
                                 selected = pane.selection.contains(item.uri.toString()),
                                 dimmed = !focused,
+                                rowHeightPx = rowHeightPx,
                                 onSwipeSelect = {
                                     controller.focus(side)
-                                    controller.toggleSelection(side, item.uri)
+                                    if (!pane.hasSelection) {
+                                        val idx = pane.items.indexOfFirst { it.uri == item.uri }
+                                        controller.startSelectionDrag(side, idx)
+                                    } else {
+                                        controller.toggleSelection(side, item.uri)
+                                    }
                                 },
                                 onClick = {
                                     if (pane.hasSelection) controller.toggleSelection(side, item.uri)
@@ -200,6 +245,20 @@ fun PaneView(
                                     controller.focus(side)
                                     onRowAction(item)
                                 },
+                                onDragStart = { rootOffset ->
+                                    val sources = if (pane.hasSelection) {
+                                        pane.selectedItems.map { it.uri }
+                                    } else listOf(item.uri)
+                                    controller.startDrag(
+                                        side = side,
+                                        sources = sources,
+                                        label = pane.uri.displayPath,
+                                        x = rootOffset.x,
+                                        y = rootOffset.y,
+                                    )
+                                },
+                                onDrag = { x, y -> controller.updateDrag(x, y) },
+                                onDragEnd = { controller.endDrag() },
                             )
                         }
                     }
@@ -208,8 +267,6 @@ fun PaneView(
         }
     }
 }
-
-private val ROW_HEIGHT = 56.dp
 
 /** `..` 返回上级（MT 列表首行） */
 @Composable
@@ -222,12 +279,16 @@ private fun ParentRow(onClick: () -> Unit) {
             .padding(start = 14.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FileIcon(name = "", isDirectory = true, size = 40.dp)
+        FileIcon(
+            name = "",
+            isDirectory = true,
+            size = 40.dp,
+            folderColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Text(
             "..",
             style = MaterialTheme.typography.bodyLarge,
             modifier = Modifier.padding(start = 12.dp),
-            color = MaterialTheme.colorScheme.onSurface,
         )
     }
 }
@@ -239,12 +300,20 @@ private fun MtFileRow(
     item: FileMetadata,
     selected: Boolean,
     dimmed: Boolean,
+    rowHeightPx: Float,
     onSwipeSelect: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMore: () -> Unit,
+    onDragStart: (Offset) -> Unit,
+    onDrag: (Float, Float) -> Unit,
+    onDragEnd: () -> Unit,
 ) {
     val alpha = if (dimmed) 0.62f else 1f
+    val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
+    // 行在根坐标系中的位置（拖拽落点判定需要绝对坐标）
+    var rootOffset by remember { mutableStateOf(Offset.Zero) }
+
     Row(
         Modifier
             .fillMaxWidth()
@@ -260,10 +329,27 @@ private fun MtFileRow(
                     }
                 }
             }
+            .onGloballyPositioned { coords -> rootOffset = coords.boundsInRoot().topLeft }
+            .pointerInput(item.uri.toString()) {
+                // 长按拖拽 → 跨窗格（落在对面行 = 复制，落在对面空白 = 移动）
+                var current = Offset.Zero
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { local ->
+                        current = local + rootOffset
+                        onDragStart(current)
+                    },
+                    onDrag = { change, drag ->
+                        current += drag
+                        onDrag(current.x, current.y)
+                        change.consume()
+                    },
+                    onDragEnd = { onDragEnd() },
+                    onDragCancel = { onDragEnd() },
+                )
+            }
             .padding(start = 14.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
         if (thumb != null) {
             androidx.compose.foundation.Image(
                 bitmap = thumb,
@@ -274,7 +360,14 @@ private fun MtFileRow(
                     .clip(RoundedCornerShape(8.dp)),
             )
         } else {
-            FileIcon(name = item.name, isDirectory = item.isDirectory, size = 40.dp, alpha = alpha)
+            FileIcon(
+                name = item.name,
+                isDirectory = item.isDirectory,
+                size = 40.dp,
+                alpha = alpha,
+                folderColor = if (dimmed) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface,
+            )
         }
         Column(
             Modifier

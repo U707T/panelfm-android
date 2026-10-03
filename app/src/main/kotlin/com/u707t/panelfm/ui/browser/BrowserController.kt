@@ -32,9 +32,15 @@ class BrowserController(private val container: AppContainer) {
     private val _state = MutableStateFlow(BrowserUiState())
     val state: StateFlow<BrowserUiState> = _state
 
-    /** 请求打开预览（由 AppRoot 观察后跳转） */
-    private val _previewRequest = MutableStateFlow<VfsUri?>(null)
-    val previewRequest: StateFlow<VfsUri?> = _previewRequest
+    /** 请求打开预览（由 AppRoot 观察后跳转），带「打开方式」模式 */
+    private val _previewRequest = MutableStateFlow<com.u707t.panelfm.ui.preview.PreviewRequest?>(null)
+    val previewRequest: StateFlow<com.u707t.panelfm.ui.preview.PreviewRequest?> = _previewRequest
+
+    /** 文件对比请求（左/右两个文件） */
+    private val _diffRequest = MutableStateFlow<Pair<VfsUri, VfsUri>?>(null)
+    val diffRequest: StateFlow<Pair<VfsUri, VfsUri>?> = _diffRequest
+
+    fun dismissDiffRequest() { _diffRequest.value = null }
 
     private val loadJobs = mutableMapOf<PaneSide, Job>()
 
@@ -139,18 +145,80 @@ class BrowserController(private val container: AppContainer) {
         load(side)
     }
 
-    /** 点击列表项：目录进入；压缩包挂载后进入；其它文件交预览 */
+    /**
+     * 点击列表项（对齐 MT 的「打开方式」逻辑）：
+     *  - 目录 → 进入
+     *  - 该扩展名设置了默认打开方式 → 直接用它
+     *  - 压缩包（未设置默认）→ 进入压缩包内部浏览
+     *  - 其它 → 预览（自动识别）
+     */
     fun openItem(side: PaneSide, item: FileMetadata) {
         if (item.isDirectory) {
             open(side, item.uri)
             return
         }
-        val kind = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name)
-        if (kind != null) {
+        val pref = runCatching { container.previewPrefDao.get(item.extension) }.getOrNull()
+        val mode = com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(pref)
+        when {
+            mode == com.u707t.panelfm.ui.preview.PreviewMode.ARCHIVE -> {
+                openArchiveInPane(side, item)
+                return
+            }
+            mode != null -> {
+                openWith(item, mode)
+                return
+            }
+        }
+        val isArchive = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name) != null
+        if (isArchive) {
             openArchiveInPane(side, item)
             return
         }
-        _previewRequest.value = item.uri
+        _previewRequest.value = com.u707t.panelfm.ui.preview.PreviewRequest(item.uri, com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
+    }
+
+    /** 用指定方式打开（打开方式对话框 / 默认值都走这里） */
+    fun openWith(item: FileMetadata, mode: com.u707t.panelfm.ui.preview.PreviewMode) {
+        when (mode) {
+            com.u707t.panelfm.ui.preview.PreviewMode.ARCHIVE -> openArchiveInPane(_state.value.focused, item)
+            else -> _previewRequest.value = com.u707t.panelfm.ui.preview.PreviewRequest(item.uri, mode)
+        }
+    }
+
+    fun setDefaultOpenMode(item: FileMetadata, mode: com.u707t.panelfm.ui.preview.PreviewMode) {
+        if (item.extension.isBlank()) {
+            showStatus("没有后缀的文件不能设置默认打开方式")
+            return
+        }
+        container.scope.launch {
+            container.previewPrefDao.set(item.extension, mode.handlerId)
+            showStatus(".${item.extension} 的默认打开方式已设为「${mode.label}」")
+        }
+    }
+
+    fun clearOpenMode(ext: String) {
+        container.scope.launch {
+            container.previewPrefDao.clear(ext)
+            showStatus("已删除 .$ext 的默认打开方式")
+        }
+    }
+
+    fun openModes(): List<Pair<String, String>> = runCatching { container.previewPrefDao.all() }.getOrDefault(emptyList())
+
+    fun defaultOpenMode(item: FileMetadata): com.u707t.panelfm.ui.preview.PreviewMode? =
+        com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(runCatching { container.previewPrefDao.get(item.extension) }.getOrNull())
+
+    /** 文件对比（对齐 MT：两个文件才能在长按菜单里对比） */
+    fun startFileDiff(side: PaneSide) {
+        val st = _state.value
+        val mine = st.pane(side).selectedItems
+        val other = st.pane(side.other).selectedItems
+        val candidates = mine + other
+        if (candidates.size != 2) {
+            showStatus("请分别在两个窗格各选中 1 个文件（或同一窗格选中恰好 2 个）")
+            return
+        }
+        _diffRequest.value = candidates[0].uri to candidates[1].uri
     }
 
     /** 把压缩包挂载成只读 VFS 并在当前窗格进入（MT 的「进入压缩包」体验） */
@@ -282,6 +350,19 @@ class BrowserController(private val container: AppContainer) {
             else !it.isDirectory && com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kind
         }.map { it.uri.toString() }.toSet()
         pane.copy(selection = pane.selection + same)
+    }
+
+    /** 区间选择（替换语义）：手指从锚点滑到当前行，选中这段连续区间（MT 手册） */
+    fun setSelectionRange(side: PaneSide, anchorIndex: Int, currentIndex: Int) = updatePane(side) { pane ->
+        val lo = minOf(anchorIndex, currentIndex).coerceAtLeast(0)
+        val hi = maxOf(anchorIndex, currentIndex).coerceAtMost(pane.items.lastIndex)
+        if (hi < lo) pane else pane.copy(selection = pane.items.subList(lo, hi + 1).map { it.uri.toString() }.toSet())
+    }
+
+    /** 左右滑动进入多选：以该行为锚点开始区间选择 */
+    fun startSelectionDrag(side: PaneSide, index: Int) = updatePane(side) { pane ->
+        if (index !in pane.items.indices) pane
+        else pane.copy(selection = setOf(pane.items[index].uri.toString()))
     }
 
     /** 选中区间（MT：从第一个滑到最后一个即连续选中） */
@@ -563,6 +644,69 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun cancelMove() = update { it.copy(pendingMove = null) }
+
+    // ------------------------------------------------------------------ 拖拽（M9）
+
+    fun setGeometry(side: PaneSide, geometry: PaneGeometry) {
+        update { it.copy(geometry = it.geometry + (side to geometry)) }
+    }
+
+    /** 长按开始拖拽（MT/需求：拖到另一窗格目录区域 = 移动，拖到文件行 = 复制） */
+    fun startDrag(side: PaneSide, sources: List<VfsUri>, label: String, x: Float, y: Float) {
+        focus(side)
+        update { it.copy(drag = DragState(side, sources, label, x, y, x, y), dropHint = null) }
+    }
+
+    fun updateDrag(x: Float, y: Float) {
+        val drag = _state.value.drag ?: return
+        val target = drag.from.other
+        val geo = _state.value.geometry[target]
+        val hint = when {
+            geo == null || !geo.contains(x, y) -> null
+            geo.rowIndexAt(y) >= 0 -> "复制到「${pane(target).uri.name.ifEmpty { "/" }}」"
+            else -> "移动到「${pane(target).uri.name.ifEmpty { "/" }}」"
+        }
+        update { it.copy(drag = drag.copy(x = x, y = y), dropHint = hint) }
+    }
+
+    fun endDrag() {
+        val st = _state.value
+        val drag = st.drag ?: return
+        val targetSide = drag.from.other
+        val geo = st.geometry[targetSide]
+        val dest = pane(targetSide).uri
+        update { it.copy(drag = null, dropHint = null) }
+
+        if (geo == null || !geo.contains(drag.x, drag.y)) {
+            showStatus("已取消拖拽（松手位置不在另一窗格）")
+            return
+        }
+        val overRow = geo.rowIndexAt(drag.y) >= 0
+        if (overRow) {
+            // 落在文件行上 → 复制
+            container.engine.enqueue(
+                TransferRequest(sources = drag.sources, destDir = dest, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
+            )
+            showStatus("拖拽复制 ${drag.sources.size} 项 → ${dest.displayPath}")
+        } else {
+            // 落在目录空白区域 → 移动（需二次确认）
+            update {
+                it.copy(
+                    pendingMove = PendingMove(
+                        sources = drag.sources,
+                        destDir = dest,
+                        count = drag.sources.size,
+                        bytes = 0,
+                        crossVfs = container.locator.find(drag.sources.first()) !== container.locator.find(dest),
+                        fromLabel = drag.label,
+                        toLabel = dest.displayPath,
+                    )
+                )
+            }
+        }
+    }
+
+    fun cancelDrag() = update { it.copy(drag = null, dropHint = null) }
 
     // ------------------------------------------------------------------ 目录对比（M9）
 

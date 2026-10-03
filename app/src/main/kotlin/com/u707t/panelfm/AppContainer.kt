@@ -10,6 +10,7 @@ import com.u707t.panelfm.core.data.ConnectionDao
 import com.u707t.panelfm.core.data.HostKeyDao
 import com.u707t.panelfm.core.data.PanelDb
 import com.u707t.panelfm.core.data.PrefsStore
+import com.u707t.panelfm.core.data.PreviewPrefDao
 import com.u707t.panelfm.core.data.ResumeDao
 import com.u707t.panelfm.core.data.SecretStore
 import com.u707t.panelfm.core.model.ConnectionConfig
@@ -66,6 +67,7 @@ class AppContainer(val app: Application) {
     val bookmarkDao = BookmarkDao(db)
     val resumeDao = ResumeDao(db)
     val secretStore = SecretStore(db)
+    val previewPrefDao = PreviewPrefDao(db)
     val hostKeyDao = HostKeyDao(db)
     val prefs = PrefsStore(app)
 
