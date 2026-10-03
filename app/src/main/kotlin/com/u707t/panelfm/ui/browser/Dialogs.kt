@@ -175,7 +175,7 @@ fun PropertiesDialog(item: FileMetadata, space: String?, onDismiss: () -> Unit) 
 }
 
 // ---------------------------------------------------------------------------
-// MT 的动作菜单：两列网格 + 带 ● 的项支持长按（单窗口操作）
+// MT 的动作菜单（截图复刻）：顶部提示条（带 ● 说明 + ✕）+ 两列网格 + 带 ● 的项支持长按
 // ---------------------------------------------------------------------------
 
 data class MtAction(
@@ -187,36 +187,64 @@ data class MtAction(
     val enabled: Boolean = true,
 )
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun MtActionSheet(
-    title: String,
     actions: List<MtAction>,
     onAction: (String) -> Unit,
     onLongAction: (String) -> Unit,
     onDismiss: () -> Unit,
+    /** 子菜单（如「工具」）可传标题；主动作菜单按 MT 截图只显示提示条 */
+    title: String? = null,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Text("✕", style = MaterialTheme.typography.titleMedium, modifier = Modifier.clickable { onDismiss() })
-            }
-        },
-        text = {
-            Column {
-                Text(
-                    "带 ● 的菜单表示可以长按触发单窗口操作",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
+    val showTip = actions.any { it.singleWindow }
+    androidx.compose.material3.BasicAlertDialog(onDismissRequest = onDismiss) {
+        androidx.compose.material3.Surface(
+            shape = androidx.compose.material3.AlertDialogDefaults.shape,
+            color = androidx.compose.material3.AlertDialogDefaults.containerColor,
+            tonalElevation = androidx.compose.material3.AlertDialogDefaults.TonalElevation,
+        ) {
+            Column(Modifier.padding(horizontal = 18.dp, vertical = 14.dp)) {
+                // 顶部：MT 的提示条（带 ● 的菜单表示可以长按触发单窗口操作）+ ✕
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (showTip) {
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .clip(CircleShape)
+                                .background(MaterialTheme.colorScheme.primary),
+                        )
+                        Text(
+                            "带 ● 的菜单表示可以长按触发单窗口操作",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 6.dp),
+                        )
+                    } else {
+                        Text(
+                            title.orEmpty(),
+                            style = MaterialTheme.typography.titleSmall,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f),
+                        )
+                    }
+                    Text(
+                        "✕",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .clickable { onDismiss() }
+                            .padding(4.dp),
+                    )
+                }
+                androidx.compose.foundation.layout.Spacer(Modifier.padding(vertical = 6.dp))
+                // 两列网格（MT 截图2 布局）
                 actions.chunked(2).forEach { row ->
                     Row(Modifier.fillMaxWidth()) {
                         row.forEach { action ->
@@ -226,9 +254,8 @@ fun MtActionSheet(
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
-    )
+        }
+    }
 }
 
 @Composable

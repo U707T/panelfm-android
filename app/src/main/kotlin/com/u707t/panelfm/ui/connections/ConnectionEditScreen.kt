@@ -55,6 +55,8 @@ fun ConnectionEditScreen(
     onBack: () -> Unit,
     prefillHost: String? = null,
     prefillPort: Int? = null,
+    /** 从侧边栏「添加网络存储 ▶」进入时预选协议 */
+    initialType: ConnectionType? = null,
 ) {
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
@@ -65,7 +67,7 @@ fun ConnectionEditScreen(
         existing?.let { SftpSecrets.parse(container.loadSecret(it.id)) } ?: SftpSecrets()
     }
 
-    var type by remember { mutableStateOf(existing?.type ?: ConnectionType.SFTP) }
+    var type by remember { mutableStateOf(existing?.type ?: initialType ?: ConnectionType.SFTP) }
     var name by remember { mutableStateOf(existing?.name ?: "") }
     var host by remember { mutableStateOf(existing?.host ?: prefillHost ?: "") }
     var port by remember { mutableStateOf((existing?.port ?: prefillPort ?: type.defaultPort).toString()) }

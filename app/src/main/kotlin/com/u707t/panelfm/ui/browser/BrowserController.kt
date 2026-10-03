@@ -266,7 +266,11 @@ class BrowserController(private val container: AppContainer) {
     }
 
     /** 压缩到对面窗格（zip） */
-    fun compressToOther(side: PaneSide = _state.value.focused) {
+    fun compressToOther(
+        side: PaneSide = _state.value.focused,
+        format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format =
+            com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP,
+    ) {
         val st = _state.value
         val srcPane = st.pane(side)
         val dstPane = st.pane(side.other)
@@ -275,7 +279,8 @@ class BrowserController(private val container: AppContainer) {
             showStatus("当前目录没有可压缩的项")
             return
         }
-        val name = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources)
+        val base = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
+        val name = "$base.${format.ext}"
         val dest = dstPane.uri.child(name)
         update { it.copy(highlight = true, status = "压缩 ${sources.size} 项 → ${dest.displayPath}") }
         container.scope.launch {
@@ -283,7 +288,7 @@ class BrowserController(private val container: AppContainer) {
             update { it.copy(highlight = false) }
             try {
                 com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
-                    .compress(sources, dest) { done, _ ->
+                    .compress(sources, dest, format) { done, _ ->
                         // 进度节流由 UI 侧省略；这里只在结束时提示
                     }
                 showStatus("已压缩为 ${name}")
@@ -727,6 +732,91 @@ class BrowserController(private val container: AppContainer) {
         return out
     }
 
+    /**
+     * MT 的「搜索」：文件名匹配（沿用过滤语法：普通文本 / `!否定` / `/正则` / `!/正则`），
+     * 可递归子目录；高级条件：按内容（文本类且 ≤2MB，读前 512K）与文件大小范围。
+     * 最多返回 [limit] 条，扫描超过 [scanCap] 个条目即停止，避免卡死大目录。
+     */
+    suspend fun searchTree(
+        side: PaneSide,
+        nameQuery: String,
+        recursive: Boolean,
+        contentQuery: String = "",
+        minSize: Long = -1L,
+        maxSize: Long = -1L,
+        limit: Int = 300,
+        scanCap: Int = 8000,
+    ): List<FileMetadata> {
+        val root = pane(side).uri
+        val vfs = container.locator.find(root) ?: throw VfsException.Unsupported("会话不可用")
+        val out = ArrayList<FileMetadata>()
+        var scanned = 0
+
+        fun sizeOk(item: FileMetadata): Boolean =
+            (minSize < 0 || item.size >= minSize) && (maxSize < 0 || item.size <= maxSize)
+
+        suspend fun contentOk(item: FileMetadata): Boolean {
+            if (contentQuery.isBlank()) return true
+            if (item.isDirectory || item.size < 0 || item.size > 2 * 1024 * 1024) return false
+            val kind = com.u707t.panelfm.core.common.MimeTypes.kindOf(item.extension)
+            if (kind != com.u707t.panelfm.core.common.MimeTypes.Kind.TEXT &&
+                kind != com.u707t.panelfm.core.common.MimeTypes.Kind.CODE &&
+                kind != com.u707t.panelfm.core.common.MimeTypes.Kind.OTHER
+            ) return false
+            return runCatching {
+                withContext(container.dispatchers.vfs) {
+                    val reader = vfs.openRead(item.uri, 0, 512 * 1024)
+                    try {
+                        val buf = ByteArray(64 * 1024)
+                        val text = buildString {
+                            while (true) {
+                                val n = reader.read(buf, 0, buf.size)
+                                if (n < 0) break
+                                append(String(buf, 0, n))
+                            }
+                        }
+                        text.contains(contentQuery, ignoreCase = true)
+                    } finally {
+                        runCatching { reader.close() }
+                    }
+                }
+            }.getOrDefault(false)
+        }
+
+        suspend fun walk(dir: VfsUri, depth: Int) {
+            if (out.size >= limit || scanned >= scanCap || depth > 12) return
+            val items = runCatching { withContext(container.dispatchers.vfs) { vfs.list(dir) } }
+                .getOrDefault(emptyList())
+            scanned += items.size
+            for (item in items) {
+                if (out.size >= limit) return
+                if (!item.isDirectory &&
+                    matchesSearch(item.name, nameQuery) &&
+                    sizeOk(item) &&
+                    contentOk(item)
+                ) {
+                    out.add(item)
+                }
+            }
+            if (recursive) {
+                for (item in items) {
+                    if (out.size >= limit || scanned >= scanCap) return
+                    if (item.isDirectory && !item.isHidden) walk(item.uri, depth + 1)
+                }
+            }
+        }
+        walk(root, 0)
+        return out
+    }
+
+    /** 跳到该项所在目录并选中它（MT：搜索结果点击 = 定位到文件） */
+    fun reveal(side: PaneSide, uri: VfsUri) {
+        val parent = uri.parent ?: return
+        val tab = pane(side).tab
+        open(side, parent, tab.connectionId, tab.label)
+        updatePane(side) { it.copy(selection = setOf(uri.toString())) }
+    }
+
     fun createFolder(side: PaneSide, name: String) {
         val dir = pane(side).uri
         container.scope.launch {
@@ -1126,6 +1216,13 @@ class BrowserController(private val container: AppContainer) {
         }
         val destDir = overrideDest ?: dstPane.uri
         val opText = if (op == TransferOp.COPY) "复制" else "移动"
+        // MT：另一窗口未打开有效路径时，提示无法操作
+        if (overrideDest == null && destDir.scheme != "local" && destDir.scheme != "archive" &&
+            container.locator.find(destDir) == null
+        ) {
+            showStatus("另一窗口未打开有效路径（${destDir.authority} 未连接），无法$opText")
+            return
+        }
 
         // ① 两侧路径高亮 + 中央文案（操作前可见性）
         update { it.copy(highlight = true, status = "$opText ${sources.size} 项 → ${destDir.displayPath}") }

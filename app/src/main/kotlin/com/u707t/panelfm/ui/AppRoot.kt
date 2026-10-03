@@ -62,6 +62,7 @@ sealed interface Screen {
         val connectionId: Long?,
         val prefillHost: String? = null,
         val prefillPort: Int? = null,
+        val initialType: com.u707t.panelfm.core.model.ConnectionType? = null,
     ) : Screen
     data class Preview(val request: com.u707t.panelfm.ui.preview.PreviewRequest) : Screen
     data class TextDiff(val left: VfsUri, val right: VfsUri) : Screen
@@ -201,6 +202,11 @@ fun AppRoot(container: AppContainer) {
                 onOpenSettings = { push(Screen.Settings) },
                 onOpenBookmarks = { push(Screen.Bookmarks) },
                 onOpenLanScan = { push(Screen.LanScan) },
+                onOpenTrash = { push(Screen.Trash) },
+                onOpenApps = { push(Screen.Apps) },
+                onOpenRemote = { push(Screen.Remote) },
+                onAddConnection = { type -> push(Screen.ConnectionEdit(null, initialType = type)) },
+                onEditConnection = { id -> push(Screen.ConnectionEdit(id)) },
                 onOpenPreview = { uri ->
                     push(Screen.Preview(com.u707t.panelfm.ui.preview.PreviewRequest(uri)))
                 },
@@ -256,6 +262,7 @@ fun AppRoot(container: AppContainer) {
                 onBack = pop,
                 prefillHost = current.prefillHost,
                 prefillPort = current.prefillPort,
+                initialType = current.initialType,
             )
             is Screen.Preview -> PreviewScreen(
                 container = container,
