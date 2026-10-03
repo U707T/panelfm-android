@@ -332,7 +332,7 @@ fun HomeScreen(
                 ToolRow("书签", "🔖") { onOpenBookmarks() }
                 ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇") { onOpenTasks() }
                 ToolRow("设置", "⚙") { onOpenSettings() }
-                ToolRow("关于", "ℹ") { status = "PanelFM 0.12.0 · 双列文件管理器（本地 / SFTP · 跳板机 / FTP · FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能" }
+                ToolRow("关于", "ℹ") { status = "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME} · 双列文件管理器（本地 / SFTP · 跳板机 / FTP · FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能" }
             }
 
             Box(Modifier.padding(bottom = 96.dp))

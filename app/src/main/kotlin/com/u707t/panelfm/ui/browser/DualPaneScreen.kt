@@ -80,9 +80,10 @@ import kotlinx.coroutines.launch
  * 双列主界面（对齐 MT 管理器 · 官方手册 + 截图复刻）：
  *  - **打开即是双列**；顶部 ≡（侧边栏抽屉）+ 面包屑路径 + 统计 + ⋮
  *  - 侧边栏：本地（占用条）/ 网络 / 工具，点击在活动窗口打开；右上 ⋮ = 主题跟随系统 / 添加存储 / 分组 / 设置
- *  - 列表首行 `..`，行高固定，左右滑动任意文件即进入多选；多选底栏 = 全选 / 反选 / 类选 / 同步 / 取消
+ *  - 列表首行 `..`，行高固定；**左右滑动任意项 = 进入多选**（继续滑过行间 = 连续区间选择）
+ *  - 长按松手 = 动作菜单；长按后拖动 = 跨窗格拖拽（落在对面行 = 复制，落在对面空白 = 复制到该目录）
  *  - 底部 `← → ＋ ⇄ ↑`：＋弹新建菜单；**⇄ 点击 = 交换窗口**（长按 = 过滤）；长按 ↑ = 路径跳转；底栏上滑 = 书签
- *  - 长按文件 → MT 动作菜单（复制 -> / 移动 -> 带 ● 支持长按单窗口操作）
+ *  - 长按文件 → MT 动作菜单（`复制 ->` / `移动 ->`，**箭头指向另一窗口**；带 ● 支持长按单窗口操作）
  */
 @Composable
 fun DualPaneScreen(
@@ -464,7 +465,12 @@ fun DualPaneScreen(
                         controller.swapPanes()
                         controller.showStatus("已交换窗口")
                     }
-                    BottomCommand("↑", enabled = focused.uri.parent != null, onLongClick = { gotoPath = true }) { controller.up(focusSide) }
+                    // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
+                    BottomCommand(
+                        "↑",
+                        enabled = focused.uri.parent != null || focused.uri.scheme == "archive",
+                        onLongClick = { gotoPath = true },
+                    ) { controller.up(focusSide) }
                 }
             }
         }
@@ -538,8 +544,9 @@ fun DualPaneScreen(
         val twoFiles = picked.size == 2 && picked.none { it.isDirectory }
         MtActionSheet(
             actions = buildList {
-                add(MtAction("copy_to", "复制 ->", "⧉", singleWindow = true))
-                add(MtAction("move_to", "移动 ->", "✂", singleWindow = true))
+                // MT：箭头跟随目标窗口方向 —— 选中项在左窗格 → `复制 ->`；在右窗格 → `<- 复制`
+                add(MtAction("copy_to", crossPaneLabel("复制", focusSide), "⧉", singleWindow = true))
+                add(MtAction("move_to", crossPaneLabel("移动", focusSide), "✂", singleWindow = true))
                 add(MtAction("delete", "删除", "🗑"))
                 add(MtAction("rename", "重命名", "✎"))
                 add(MtAction("tools", "工具", "🔧"))

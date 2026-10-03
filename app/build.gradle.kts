@@ -22,8 +22,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 12
-        versionName = "0.12.0"
+        versionCode = 13
+        versionName = "0.13.0-rc.1"
     }
 
     signingConfigs {
@@ -49,7 +49,10 @@ android {
         }
     }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true
+    }
 
     // 分 ABI 出包（CI 出 3 个 release APK，与 panelfm / mp4fix 一致）
     splits {

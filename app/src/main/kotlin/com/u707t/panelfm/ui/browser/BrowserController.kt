@@ -395,7 +395,7 @@ class BrowserController(private val container: AppContainer) {
         if (hi < lo) pane else pane.copy(selection = pane.items.subList(lo, hi + 1).map { it.uri.toString() }.toSet())
     }
 
-    /** 左右滑动进入多选：以该行为锚点开始区间选择 */
+    /** 左右滑动进入多选：先选中该行（区间选择的锚点；继续滑过行间 → setSelectionRange） */
     fun startSelectionDrag(side: PaneSide, index: Int) = updatePane(side) { pane ->
         if (index !in pane.items.indices) pane
         else pane.copy(selection = setOf(pane.items[index].uri.toString()))
@@ -1036,7 +1036,10 @@ class BrowserController(private val container: AppContainer) {
         update { it.copy(geometry = it.geometry + (side to geometry)) }
     }
 
-    /** 长按开始拖拽（MT/需求：拖到另一窗格目录区域 = 移动，拖到文件行 = 复制） */
+    /**
+     * 长按开始拖拽（MT 语义）：拖到对面**目录行** = 复制进该目录；拖到对面列表其他位置 = 复制到该窗格当前目录；
+     * 松手不在另一窗格 = 取消。（移动操作走动作菜单「移动 ->」。）
+     */
     fun startDrag(side: PaneSide, sources: List<VfsUri>, label: String, x: Float, y: Float) {
         focus(side)
         update { it.copy(drag = DragState(side, sources, label, x, y, x, y), dropHint = null) }

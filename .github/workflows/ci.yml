@@ -110,9 +110,18 @@ jobs:
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ steps.version.outputs.version }}
         run: |
+          # 版本号带 -rc 后缀 → 预发布（prerelease），与 IRIS / mp4fix 的发版约定一致
+          FLAGS=""
+          case "$VERSION" in
+            *-rc*) FLAGS="--prerelease" ;;
+          esac
+          NOTES="自动构建：Android 原生 Kotlin 版 PanelFM（双列文件管理器）。仅文件管理与预览，不含任何逆向功能。"
+          if [ -n "$FLAGS" ]; then NOTES="$NOTES（预发布 RC：版本号含 -rc）"; fi
           gh release create "${{ steps.version.outputs.tag }}" \
             apks/*.apk \
             --title "PanelFM ${{ steps.version.outputs.tag }}" \
-            --notes "自动构建：Android 原生 Kotlin 版 PanelFM（双列文件管理器）。仅文件管理与预览，不含任何逆向功能。" \
+            --notes "$NOTES" \
+            $FLAGS \
             --target main

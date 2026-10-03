@@ -113,11 +113,11 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         Column(Modifier.padding(top = 16.dp)) {
             Text("关于", style = MaterialTheme.typography.titleSmall)
             Text(
-                "PanelFM 0.12.0（原生 Kotlin / Compose）\n" +
+                "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}（原生 Kotlin / Compose）\n" +
                     "已实现：双列浏览（打开即双列）、MT 侧边栏抽屉、本地/SFTP(跳板机)/FTP·FTPS/WebDAV/SMB/S3、\n" +
                     "压缩包挂载解压压缩、任务引擎（进度/暂停/冲突/续传）、文本/图片/Hex(只读) 预览、\n" +
                     "回收站/远程管理/已安装应用/终端、MT 式搜索（递归 + 高级搜索）。\n" +
-                    "交互按 MT 管理器官方手册 + 截图复刻（v0.12.0 全面对齐侧边栏 / 底栏 / 菜单 / 搜索）。\n" +
+                    "交互按 MT 管理器官方手册 + 截图复刻（v0.13.0 起：滑动多选 / 长按菜单 / 箭头跟随目标窗口）。\n" +
                     "本项目不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

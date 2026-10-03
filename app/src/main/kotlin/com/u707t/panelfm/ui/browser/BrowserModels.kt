@@ -78,7 +78,7 @@ data class PaneGeometry(
     }
 }
 
-/** 跨窗格拖拽会话（松手在对面行 = 复制；松手在对面空白 = 移动） */
+/** 跨窗格拖拽会话（松手在对面行 = 复制；松手在对面空白 = 复制到该窗格当前目录） */
 data class DragState(
     val from: PaneSide,
     val sources: List<VfsUri>,
@@ -123,3 +123,10 @@ data class BrowserUiState(
     val focusedPane: PaneState get() = pane(focused)
     val otherPane: PaneState get() = pane(focused.other)
 }
+
+/**
+ * MT 动作菜单的跨窗格标签：**箭头始终指向另一窗格**（源在左窗格 → `复制 ->`；源在右窗格 → `<- 复制`）。
+ * 对应 MT 截图：两个箭头在左侧选中时向右，在右侧选中时向左。
+ */
+fun crossPaneLabel(base: String, from: PaneSide): String =
+    if (from == PaneSide.LEFT) "$base ->" else "<- $base"
