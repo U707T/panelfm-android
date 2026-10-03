@@ -67,6 +67,7 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onAddConnection: () -> Unit,
     onEditConnection: (Long) -> Unit,
+    onScanLan: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -117,7 +118,7 @@ fun HomeScreen(
                 Column(Modifier.weight(1f)) {
                     Text("PanelFM", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                     Text(
-                        "双列文件管理器 · 本地 / FTP / FTPS / WebDAV（SFTP·SMB·S3 在 M4–M6 接入）",
+                        "双列文件管理器 · 本地 / SFTP / FTP / FTPS / WebDAV（SMB·S3 在 M5–M6 接入）",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -232,6 +233,12 @@ fun HomeScreen(
 
             // ---- 工具
             SectionHeader("工具")
+            HomeRow(
+                title = "局域网扫描",
+                subtitle = "扫网段找 SSH / FTP / SMB / WebDAV 服务，一键建连接",
+                isDirectory = false,
+                onClick = onScanLan,
+            )
             HomeRow(title = "设置", subtitle = "主题 / 排序 / 并发 / User-Agent", isDirectory = false, onClick = onOpenSettings)
             HomeRow(title = "传输任务", subtitle = "取消 / 暂停 / 重试", isDirectory = false, onClick = onOpenTasks)
             HomeRow(

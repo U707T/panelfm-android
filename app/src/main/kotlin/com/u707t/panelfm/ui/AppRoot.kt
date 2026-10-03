@@ -17,6 +17,7 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.ui.browser.DualPaneScreen
 import com.u707t.panelfm.ui.connections.ConnectionEditScreen
+import com.u707t.panelfm.ui.connections.LanScanScreen
 import com.u707t.panelfm.ui.home.HomeScreen
 import com.u707t.panelfm.ui.preview.PreviewScreen
 import com.u707t.panelfm.ui.settings.SettingsScreen
@@ -28,7 +29,12 @@ sealed interface Screen {
     data object Browser : Screen
     data object Tasks : Screen
     data object Settings : Screen
-    data class ConnectionEdit(val connectionId: Long?) : Screen
+    data class ConnectionEdit(
+        val connectionId: Long?,
+        val prefillHost: String? = null,
+        val prefillPort: Int? = null,
+    ) : Screen
+    data object LanScan : Screen
     data class Preview(val uri: VfsUri) : Screen
 }
 
@@ -62,6 +68,7 @@ fun AppRoot(container: AppContainer) {
                 onOpenSettings = { push(Screen.Settings) },
                 onAddConnection = { push(Screen.ConnectionEdit(null)) },
                 onEditConnection = { id -> push(Screen.ConnectionEdit(id)) },
+                onScanLan = { push(Screen.LanScan) },
             )
 
             Screen.Browser -> DualPaneScreen(
@@ -78,6 +85,15 @@ fun AppRoot(container: AppContainer) {
                 container = container,
                 connectionId = current.connectionId,
                 onBack = pop,
+                prefillHost = current.prefillHost,
+                prefillPort = current.prefillPort,
+            )
+            Screen.LanScan -> LanScanScreen(
+                container = container,
+                onBack = pop,
+                onPick = { host, port ->
+                    stack = stack.dropLast(1) + Screen.ConnectionEdit(null, host, port)
+                },
             )
             is Screen.Preview -> PreviewScreen(
                 container = container,

@@ -22,8 +22,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 2
+        versionName = "0.2.0"
     }
 
     signingConfigs {
@@ -67,7 +67,20 @@ android {
     }
 
     packaging {
-        resources.excludes += setOf("/META-INF/{AL2.0,LGPL2.1}")
+        // sshd 等 Java 库带的重复元数据文件（APK 合并时会冲突）
+        resources.excludes += setOf(
+            "/META-INF/{AL2.0,LGPL2.1}",
+            "META-INF/DEPENDENCIES",
+            "META-INF/LICENSE",
+            "META-INF/LICENSE.txt",
+            "META-INF/NOTICE",
+            "META-INF/NOTICE.txt",
+            "META-INF/INDEX.LIST",
+            "META-INF/*.SF",
+            "META-INF/*.DSA",
+            "META-INF/*.RSA",
+            "META-INF/versions/9/OSGI-INF/MANIFEST.MF",
+        )
     }
 }
 
@@ -80,6 +93,7 @@ dependencies {
     implementation(project(":core:vfs-local"))
     implementation(project(":core:vfs-webdav"))
     implementation(project(":core:vfs-ftp"))
+    implementation(project(":core:vfs-sftp"))
     implementation(project(":core:transfer"))
     implementation(project(":core:data"))
     implementation(project(":core:ui"))

@@ -302,7 +302,15 @@ class TransferTask internal constructor(
             resumeStore.clear(id, index)
             return true
         } catch (e: Exception) {
-            withContext(NonCancellable) { runCatching { writer.abort() } }
+            withContext(NonCancellable) {
+                if (e is VfsException.Cancelled) {
+                    // 用户主动取消：清理临时文件
+                    runCatching { writer.abort() }
+                } else {
+                    // 传输失败：保留 .part，下次可从断点继续（进程被杀同理）
+                    runCatching { writer.close() }
+                }
+            }
             throw e
         } finally {
             runCatching { reader.close() }

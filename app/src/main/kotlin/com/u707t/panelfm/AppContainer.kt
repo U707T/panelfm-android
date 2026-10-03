@@ -7,6 +7,7 @@ import com.u707t.panelfm.core.common.PanelDispatchers
 import com.u707t.panelfm.core.data.AppSettings
 import com.u707t.panelfm.core.data.BookmarkDao
 import com.u707t.panelfm.core.data.ConnectionDao
+import com.u707t.panelfm.core.data.HostKeyDao
 import com.u707t.panelfm.core.data.PanelDb
 import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.data.ResumeDao
@@ -18,6 +19,7 @@ import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsRegistry
 import com.u707t.panelfm.core.vfs.local.LocalVfs
 import com.u707t.panelfm.core.vfs.ftp.FtpVfsFactory
+import com.u707t.panelfm.core.vfs.sftp.SftpVfs
 import com.u707t.panelfm.core.vfs.webdav.WebDavVfsFactory
 import com.u707t.panelfm.ui.browser.BrowserController
 import kotlinx.coroutines.CoroutineScope
@@ -56,6 +58,7 @@ class AppContainer(val app: Application) {
     val bookmarkDao = BookmarkDao(db)
     val resumeDao = ResumeDao(db)
     val secretStore = SecretStore(db)
+    val hostKeyDao = HostKeyDao(db)
     val prefs = PrefsStore(app)
 
     private val _settings = MutableStateFlow(AppSettings())
@@ -73,6 +76,7 @@ class AppContainer(val app: Application) {
             put("dav", WebDavVfsFactory())
             put("ftp", FtpVfsFactory("ftp"))
             put("ftps", FtpVfsFactory("ftps"))
+            put("sftp", SftpVfs.Factory(hostKeyDao))
         },
         env = env,
         scope = scope,

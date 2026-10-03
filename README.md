@@ -5,7 +5,7 @@ MT 管理器风格的**双窗格文件管理器**，Android 原生实现（Kotli
 
 策划与架构文档：[`docs/策划.md`](docs/策划.md)（含完整接口草图、协议要点、里程碑与风险对策）
 
-## 已完成（M0–M1 + WebDAV/FTP/FTPS 接入）
+## 已完成（M0–M4）
 
 - **双列浏览**：左右窗格完全独立——各自标签页、前进/后退历史栈、排序（名称/大小/时间/类型）、
   隐藏文件开关、焦点态、目录统计与可用空间；分隔条点击切换焦点。
@@ -14,8 +14,14 @@ MT 管理器风格的**双窗格文件管理器**，Android 原生实现（Kotli
   移动带二次确认（项数、体积、是否跨存储中转）。
 - **任务引擎**：队列 + 并发（1–4，可设）、进度/速率/剩余时间、暂停/继续/取消/全部暂停、
   冲突策略（覆盖 / 跳过 / 保留两者 / 每次都问 + 全部应用）、断点续传（本地偏移写、HTTP Range 读）。
-- **协议**：本地（`/storage/emulated/0`、外置卡、`/`、应用目录）、**WebDAV**（自研 OkHttp 客户端）、
-  **FTP / FTPS**（commons-net：MLSD/LIST、REST 续传、显式 AUTH TLS / 隐式 990 + PROT P）。
+- **协议**：
+  | 协议 | 实现 | 关键能力 |
+  |---|---|---|
+  | 本地 | `java.nio` + `Os.stat` | 偏移读写、原子改名（`.part`）、POSIX 权限、容量、SAF 预留 |
+  | WebDAV | 自研 OkHttp | PROPFIND / MOVE / COPY / Range 读 / 管道流式 PUT / 自研 307-308 保方法 / 自签信任 / 自定义 UA |
+  | FTP · FTPS | commons-net | MLSD 优先 + LIST 回退、REST 断点续传、显式 AUTH TLS、隐式 990、PBSZ/PROT P、主动/被动 |
+  | **SFTP** | **Apache MINA SSHD** | 密码 / 私钥（OpenSSH·PEM，ed25519·ecdsa·rsa）、**chacha20-poly1305 / curve25519**、**跳板机 ProxyJump**、主机指纹 TOFU、**双向偏移续传**、chmod、符号链接 |
+- **局域网扫描**：并发 TCP 探测 + banner 识别（SSH/FTP/SMB/WebDAV 端口），命中即可一键建连接。
 - **预览**：文本（编码自动识别 UTF-8/GBK/UTF-16+BOM，可切换 Hex/图片）、图片、Hex（只读，前 8 KB 窗口）、
   外部应用打开（FileProvider）。
 - **权限**：`MANAGE_EXTERNAL_STORAGE` 引导、**Android 17 `ACCESS_LOCAL_NETWORK` 局域网授权**（未授权会直接超时）、
@@ -26,7 +32,7 @@ MT 管理器风格的**双窗格文件管理器**，Android 原生实现（Kotli
 
 | 里程碑 | 内容 |
 |---|---|
-| M4 | SFTP（Apache MINA SSHD：密码/密钥、chacha20-poly1305、跳板机、局域网扫描） |
+| ~~M4~~ | ~~SFTP~~ ✅ 已完成（含跳板机 + 局域网扫描 + 双向偏移续传） |
 | M5 | SMB2/3（SMBJ，先做 2 天 spike，备选 jcifs-ng） |
 | M6 | S3 兼容对象存储（minio-java / 自研 SigV4、分片续传、自定义下载域名） |
 | M7 | 文本编辑器（自绘 View、大文件窗口化、语法高亮、查找替换）、字体预览、媒体播放（Media3 + VfsDataSource） |

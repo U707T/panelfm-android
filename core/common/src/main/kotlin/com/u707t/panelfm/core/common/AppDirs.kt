@@ -12,10 +12,12 @@ data class AppDirs(val filesDir: String, val cacheDir: String) {
     val relayDir: String get() = "$cacheDir/relay"
     val logsDir: String get() = "$cacheDir/logs"
     val trashDir: String get() = "$filesDir/trash"
+    /** 导入的 SSH 私钥（应用私有，chmod 600 思路：仅本应用可读） */
+    val keysDir: String get() = "$filesDir/keys"
     val dbPath: String get() = "$filesDir/panel.db"
 
     fun ensure() {
-        listOf(filesDir, cacheDir, tmpDir, thumbsDir, relayDir, logsDir, trashDir).forEach {
+        listOf(filesDir, cacheDir, tmpDir, thumbsDir, relayDir, logsDir, trashDir, keysDir).forEach {
             runCatching { File(it).mkdirs() }
         }
     }

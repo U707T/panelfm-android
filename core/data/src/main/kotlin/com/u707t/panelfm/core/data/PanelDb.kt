@@ -107,6 +107,19 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
         )
         db.execSQL(
             """
+            CREATE TABLE known_host(
+              host TEXT NOT NULL,
+              port INTEGER NOT NULL,
+              kind TEXT NOT NULL DEFAULT 'ssh',
+              key_type TEXT NOT NULL DEFAULT '',
+              fingerprint_sha256 TEXT NOT NULL,
+              added_at INTEGER NOT NULL DEFAULT 0,
+              PRIMARY KEY(host, port)
+            )
+            """.trimIndent()
+        )
+        db.execSQL(
+            """
             CREATE TABLE preview_pref(
               ext TEXT PRIMARY KEY,
               handler_id TEXT NOT NULL,
@@ -117,19 +130,25 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // 个人项目：破坏性升级足够，配置导出/导入兜底
-        db.execSQL("DROP TABLE IF EXISTS connection")
-        db.execSQL("DROP TABLE IF EXISTS secret")
-        db.execSQL("DROP TABLE IF EXISTS bookmark")
-        db.execSQL("DROP TABLE IF EXISTS path_history")
-        db.execSQL("DROP TABLE IF EXISTS resume_entry")
-        db.execSQL("DROP TABLE IF EXISTS task_record")
-        db.execSQL("DROP TABLE IF EXISTS tab_session")
-        db.execSQL("DROP TABLE IF EXISTS preview_pref")
-        onCreate(db)
+        // 加法式迁移：只补新表/新列，不动用户数据
+        if (oldVersion < 2) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS known_host(
+                  host TEXT NOT NULL,
+                  port INTEGER NOT NULL,
+                  kind TEXT NOT NULL DEFAULT 'ssh',
+                  key_type TEXT NOT NULL DEFAULT '',
+                  fingerprint_sha256 TEXT NOT NULL,
+                  added_at INTEGER NOT NULL DEFAULT 0,
+                  PRIMARY KEY(host, port)
+                )
+                """.trimIndent()
+            )
+        }
     }
 
     companion object {
-        const val DB_VERSION = 1
+        const val DB_VERSION = 2
     }
 }
