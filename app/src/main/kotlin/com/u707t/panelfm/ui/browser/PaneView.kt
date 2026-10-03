@@ -3,6 +3,8 @@ package com.u707t.panelfm.ui.browser
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -10,6 +12,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -24,19 +27,23 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
+import kotlin.math.abs
 
 /**
- * 单个窗格（MT 风格）：顶部一行紧凑信息（标签/路径/统计），下面是文件列表。
- * 行：实心文件夹图标 + 名称 + 「时间 · 大小」，多选时右侧出现对勾。
+ * 单个窗格（对齐 MT 管理器）：
+ *  - 顶部一行：路径 + 统计（聚焦窗格高亮）
+ *  - 列表首行是 `..`（返回上级）
+ *  - 行高固定 56dp；**左右滑动任意文件即进入多选**（MT 手册）
+ *  - 多选状态下，手指在行间滑动 = 连续选中（区间选择）
  */
 @Composable
 fun PaneView(
@@ -49,9 +56,19 @@ fun PaneView(
     onRowAction: (FileMetadata) -> Unit,
 ) {
     val listState = rememberLazyListState()
+    val rowHeightPx = with(androidx.compose.ui.platform.LocalDensity.current) { ROW_HEIGHT.toPx() }
+    val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
+
+    /** 手指 Y 坐标 → 列表项下标（-1 表示未命中；父目录行算 0） */
+    fun indexAt(y: Float): Int {
+        val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { y >= it.offset && y <= it.offset + it.size }
+            ?: return -1
+        val logical = info.index - (if (canGoUp) 1 else 0)
+        return if (logical in pane.items.indices) logical else -1
+    }
 
     Column(modifier.fillMaxSize()) {
-        // ---- 窗格信息行（路径 + 统计 + 标签页）
+        // ---- 窗格信息行
         Column(
             Modifier
                 .fillMaxWidth()
@@ -66,12 +83,12 @@ fun PaneView(
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = pane.uri.displayPath.ifEmpty { "/" },
+                    text = middleEllipsis(pane.uri.displayPath.ifEmpty { "/" }),
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Normal,
                     color = if (focused) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    overflow = TextOverflow.Clip,
                     modifier = Modifier.weight(1f),
                 )
                 if (pane.hasSelection) {
@@ -120,30 +137,68 @@ fun PaneView(
                     actionLabel = "重试",
                     onAction = { controller.refresh(side) },
                 )
-                pane.items.isEmpty() -> EmptyState(
+                pane.items.isEmpty() && !canGoUp -> com.u707t.panelfm.core.ui.EmptyState(
                     if (pane.filtered) "没有匹配的项" else "空目录",
-                    if (pane.filtered) "试试清除搜索或过滤条件" else "长按多选，底部 ⇄ 可复制/移动到对面",
+                    if (pane.filtered) "试试清除搜索或过滤条件" else "底部 ＋ 新建，或 ⇄ 从对面复制进来",
                 )
-                else -> LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
-                    items(pane.items, key = { it.uri.toString() }) { item ->
-                        MtFileRow(
-                            item = item,
-                            selected = pane.selection.contains(item.uri.toString()),
-                            dimmed = !focused,
-                            onClick = {
-                                if (pane.hasSelection) controller.toggleSelection(side, item.uri)
-                                else {
-                                    controller.focus(side)
-                                    controller.openItem(side, item)
+                else -> Box(
+                    Modifier
+                        .fillMaxSize()
+                        .then(
+                            if (pane.hasSelection) {
+                                // 多选状态下：手指滑过即连续选中（MT 的区间选择）
+                                Modifier.pointerInput(pane.items.size, canGoUp) {
+                                    awaitPointerEventScope {
+                                        while (true) {
+                                            val down = awaitFirstDown(requireUnconsumed = false)
+                                            val anchor = indexAt(down.position.y)
+                                            while (true) {
+                                                val event = awaitPointerEvent()
+                                                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                                                if (!change.pressed) break
+                                                val idx = indexAt(change.position.y)
+                                                if (anchor >= 0 && idx >= 0) controller.selectRange(side, anchor, idx)
+                                                change.consume()
+                                            }
+                                        }
+                                    }
                                 }
-                            },
-                            onLongClick = {
-                                controller.focus(side)
-                                if (!pane.hasSelection) controller.enterSelectionMode(side, item)
-                                else controller.toggleSelection(side, item.uri)
-                            },
-                            onMore = { controller.focus(side); onRowAction(item) },
+                            } else Modifier
                         )
+                ) {
+                    LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                        if (canGoUp) {
+                            item(key = "__parent__") {
+                                ParentRow(onClick = { controller.up(side) })
+                            }
+                        }
+                        items(pane.items, key = { it.uri.toString() }) { item ->
+                            MtFileRow(
+                                item = item,
+                                selected = pane.selection.contains(item.uri.toString()),
+                                dimmed = !focused,
+                                onSwipeSelect = {
+                                    controller.focus(side)
+                                    controller.toggleSelection(side, item.uri)
+                                },
+                                onClick = {
+                                    if (pane.hasSelection) controller.toggleSelection(side, item.uri)
+                                    else {
+                                        controller.focus(side)
+                                        controller.openItem(side, item)
+                                    }
+                                },
+                                onLongClick = {
+                                    controller.focus(side)
+                                    if (!pane.hasSelection) controller.enterSelectionMode(side, item)
+                                    else controller.toggleSelection(side, item.uri)
+                                },
+                                onMore = {
+                                    controller.focus(side)
+                                    onRowAction(item)
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -151,12 +206,35 @@ fun PaneView(
     }
 }
 
-/** MT 式文件行 */
+private val ROW_HEIGHT = 56.dp
+
+/** `..` 返回上级（MT 列表首行） */
+@Composable
+private fun ParentRow(onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .height(ROW_HEIGHT)
+            .clickable(onClick = onClick)
+            .padding(start = 14.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FileIcon(name = "", isDirectory = true, size = 40.dp)
+        Text(
+            "..",
+            style = MaterialTheme.typography.bodyLarge,
+            modifier = Modifier.padding(start = 12.dp),
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
 @Composable
 private fun MtFileRow(
     item: FileMetadata,
     selected: Boolean,
     dimmed: Boolean,
+    onSwipeSelect: () -> Unit,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     onMore: () -> Unit,
@@ -165,12 +243,22 @@ private fun MtFileRow(
     Row(
         Modifier
             .fillMaxWidth()
+            .height(ROW_HEIGHT)
             .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.13f) else Color.Transparent)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(start = 14.dp, end = 8.dp, top = 7.dp, bottom = 7.dp),
+            .pointerInput(item.uri.toString()) {
+                // 左右滑动任意文件 → 进入多选（MT 手册）
+                detectHorizontalDragGestures { change, dragAmount ->
+                    if (abs(dragAmount) > 4f) {
+                        onSwipeSelect()
+                        change.consume()
+                    }
+                }
+            }
+            .padding(start = 14.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        FileIcon(name = item.name, isDirectory = item.isDirectory, size = 40.dp, )
+        FileIcon(name = item.name, isDirectory = item.isDirectory, size = 40.dp, alpha = alpha)
         Column(
             Modifier
                 .weight(1f)
@@ -207,6 +295,14 @@ private fun MtFileRow(
             )
         }
     }
+}
+
+/** 路径中间省略（MT 的 `/storage/emula.../0/Download/` 观感） */
+fun middleEllipsis(path: String, maxChars: Int = 34): String {
+    if (path.length <= maxChars) return path
+    val head = 6
+    val tail = maxChars - head - 3
+    return path.take(head) + "..." + path.takeLast(tail)
 }
 
 /** 无涟漪点击 */

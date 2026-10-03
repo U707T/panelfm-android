@@ -1,7 +1,10 @@
 package com.u707t.panelfm.ui.browser
 
 import android.app.Activity
+import android.content.Intent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -12,7 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -26,16 +28,20 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.core.content.FileProvider
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
@@ -48,12 +54,15 @@ import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import java.io.File
+import kotlinx.coroutines.launch
 
 /**
- * 双列主界面（对齐 MT 管理器）：
- *  - 顶部：≡（快速位置/书签） + 聚焦窗格路径 + 「文件夹 / 文件 / 储存」统计 + ⋮（MT 动作菜单）
- *  - 中部：左右两个独立窗格
- *  - 底部：← → ＋ ⇄ ↑
+ * 双列主界面（对齐 MT 管理器 · 官方手册）：
+ *  - **打开即是双列**；顶部 ≡ + 路径（中间省略）+ 统计 + ⋮
+ *  - 列表首行 `..`，行高固定，左右滑动任意文件即进入多选；多选下支持 全选 / 反选 / 类选
+ *  - 底部 `← → ＋ ⇄ ↑`：长按 ⇄ = 过滤（支持 /正则、!/正则、!否定），长按 ↑ = 路径跳转，底栏上滑 = 书签
+ *  - 长按文件 → MT 动作菜单（复制 -> / 移动 -> 带 ● 支持长按单窗口操作）
  */
 @Composable
 fun DualPaneScreen(
@@ -64,12 +73,16 @@ fun DualPaneScreen(
     onOpenBookmarks: () -> Unit,
     onOpenLanScan: () -> Unit,
     onOpenPreview: (VfsUri) -> Unit,
+    onOpenEditor: (VfsUri) -> Unit,
 ) {
     val ui by container.browser.state.collectAsState()
     val controller = container.browser
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
 
     var rowAction by remember { mutableStateOf<FileMetadata?>(null) }
+    var toolsFor by remember { mutableStateOf<FileMetadata?>(null) }
     var renaming by remember { mutableStateOf<FileMetadata?>(null) }
     var deleting by remember { mutableStateOf<FileMetadata?>(null) }
     var creatingFolder by remember { mutableStateOf(false) }
@@ -79,13 +92,20 @@ fun DualPaneScreen(
     var showCrossMenu by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
     var showFilterDialog by remember { mutableStateOf(false) }
-    var searchMode by remember { mutableStateOf(false) }
     var gotoPath by remember { mutableStateOf(false) }
+    var filterInput by remember { mutableStateOf(false) }
+    var singleWindowOp by remember { mutableStateOf<TransferOp?>(null) }
+    var permissionFor by remember { mutableStateOf<FileMetadata?>(null) }
+    var message by remember { mutableStateOf<Pair<String, String>?>(null) }
 
     val focused = ui.focusedPane
+    val focusSide = ui.focused
+    val target: FileMetadata? = remember(rowAction, focused.selection.size) {
+        rowAction ?: focused.selectedItems.firstOrNull() ?: focused.items.firstOrNull()
+    }
 
     Column(Modifier.fillMaxSize()) {
-        // ---------------- 顶部栏（MT 风格）
+        // ---------------- 顶部栏
         Row(
             Modifier
                 .fillMaxWidth()
@@ -100,16 +120,17 @@ fun DualPaneScreen(
                     .padding(horizontal = 2.dp),
             ) {
                 Text(
-                    text = focused.uri.displayPath.ifEmpty { "/" },
+                    text = middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, 40),
                     style = MaterialTheme.typography.titleSmall,
                     maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
                 )
                 Text(
                     buildString {
                         append("文件夹: ").append(focused.dirCount)
                         append("  文件: ").append(focused.fileCount)
-                        focused.space?.let { append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total)) }
+                        focused.space?.let {
+                            append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total))
+                        }
                         if (focused.filtered) append("  ·  已过滤")
                     },
                     style = MaterialTheme.typography.labelSmall,
@@ -118,39 +139,6 @@ fun DualPaneScreen(
                 )
             }
             IconTextButton("⋮") { showMoreMenu = true }
-        }
-
-        // 搜索栏（MT 的「搜索」）
-        if (searchMode) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("搜索：", style = MaterialTheme.typography.labelMedium)
-                Box(Modifier.weight(1f)) {
-                    if (focused.search.isEmpty()) {
-                        Text("输入名称关键字（当前目录）", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    BasicTextField(
-                        value = focused.search,
-                        onValueChange = { q ->
-                            controller.setSearch(ui.focused, q)
-                            controller.refresh(ui.focused)
-                        },
-                        singleLine = true,
-                        textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface, fontSize = MaterialTheme.typography.bodySmall.fontSize),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                TextButton(onClick = {
-                    controller.setSearch(ui.focused, "")
-                    controller.refresh(ui.focused)
-                    searchMode = false
-                }) { Text("关闭") }
-            }
         }
 
         HSeparator()
@@ -173,8 +161,7 @@ fun DualPaneScreen(
             if (showLeft && showRight) {
                 Box(
                     Modifier
-                        .size(width = 1.dp, height = 0.dp)
-                        .fillMaxWidth(0.0001f)
+                        .size(width = 1.dp, height = 1.dp)
                         .background(MaterialTheme.colorScheme.outline),
                 )
             }
@@ -211,81 +198,95 @@ fun DualPaneScreen(
             }
         }
 
-        // ---------------- 底部命令栏（← → ＋ ⇄ ↑）
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .height(52.dp)
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceEvenly,
-        ) {
-            BottomCommand("←", enabled = focused.tab.back.isNotEmpty()) { controller.back(ui.focused) }
-            BottomCommand("→", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(ui.focused) }
-            BottomCommand("＋") { creatingFolder = true }
-            Box {
-                BottomCommand("⇄", highlighted = showCrossMenu) { showCrossMenu = true }
-                DropdownMenu(expanded = showCrossMenu, onDismissRequest = { showCrossMenu = false }) {
-                    DropdownMenuItem(text = { Text("复制到对面窗格") }, onClick = { showCrossMenu = false; controller.copyToOther() })
-                    DropdownMenuItem(text = { Text("移动到对面窗格") }, onClick = { showCrossMenu = false; controller.moveToOther() })
-                    DropdownMenuItem(text = { Text("同步路径到对面") }, onClick = { showCrossMenu = false; controller.syncPath() })
-                    DropdownMenuItem(text = { Text("交换窗口") }, onClick = { showCrossMenu = false; controller.swapPanes() })
-                    DropdownMenuItem(
-                        text = { Text(if (focused.hasSelection) "取消选择" else "全选") },
-                        onClick = {
-                            showCrossMenu = false
-                            if (focused.hasSelection) controller.clearSelection(ui.focused) else controller.selectAll(ui.focused)
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("压缩到对面（zip）") },
-                        onClick = { showCrossMenu = false; controller.compressToOther() },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("进入压缩包") },
-                        onClick = {
-                            showCrossMenu = false
-                            val item = focused.selectedItems.firstOrNull()
-                                ?: focused.items.firstOrNull { com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(it.name) != null }
-                            if (item != null) controller.openArchiveInPane(ui.focused, item)
-                            else controller.showStatus("当前目录没有压缩包")
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("比较两个目录") },
-                        onClick = {
-                            showCrossMenu = false
-                            controller.showStatus("目录比较：M9 计划（差异对比引擎已占位）")
-                        },
-                    )
-                }
+        // ---------------- 底部：多选工具栏 或 命令栏
+        if (focused.hasSelection) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                TextCommand("全选") { controller.selectAll(focusSide) }
+                TextCommand("反选") { controller.invertSelection(focusSide) }
+                TextCommand("类选") { controller.selectSameType(focusSide) }
+                TextCommand("复制到对面") { controller.copyToOther(focusSide) }
+                TextCommand("取消") { controller.clearSelection(focusSide) }
             }
-            BottomCommand("↑", enabled = focused.uri.parent != null) { controller.up(ui.focused) }
+        } else {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .height(52.dp)
+                    .background(MaterialTheme.colorScheme.surface)
+                    .pointerInput(Unit) {
+                        // 底栏上滑 → 书签（MT 手册：从底栏上滑调出书签）
+                        detectVerticalDragGestures { _, dragAmount ->
+                            if (dragAmount < -12f) onOpenBookmarks()
+                        }
+                    }
+                    .padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceEvenly,
+            ) {
+                BottomCommand("←", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
+                BottomCommand("→", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
+                BottomCommand("＋", onLongClick = { creatingFile = true }) { creatingFolder = true }
+                Box {
+                    BottomCommand(
+                        "⇄",
+                        highlighted = showCrossMenu,
+                        onLongClick = { filterInput = true },   // 长按 = 过滤（MT）
+                    ) { showCrossMenu = true }
+                    DropdownMenu(expanded = showCrossMenu, onDismissRequest = { showCrossMenu = false }) {
+                        DropdownMenuItem(text = { Text("复制到对面窗格") }, onClick = { showCrossMenu = false; controller.copyToOther() })
+                        DropdownMenuItem(text = { Text("移动到对面窗格") }, onClick = { showCrossMenu = false; controller.moveToOther() })
+                        DropdownMenuItem(text = { Text("同步（另一窗格跟随本窗格）") }, onClick = { showCrossMenu = false; controller.syncPath() })
+                        DropdownMenuItem(text = { Text("交换窗口") }, onClick = { showCrossMenu = false; controller.swapPanes() })
+                        DropdownMenuItem(text = { Text("压缩到对面（zip）") }, onClick = { showCrossMenu = false; controller.compressToOther() })
+                        DropdownMenuItem(
+                            text = { Text("进入压缩包") },
+                            onClick = {
+                                showCrossMenu = false
+                                val item = focused.selectedItems.firstOrNull()
+                                    ?: focused.items.firstOrNull { com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(it.name) != null }
+                                if (item != null) controller.openArchiveInPane(focusSide, item)
+                                else controller.showStatus("当前目录没有压缩包")
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("比较两个目录") },
+                            onClick = { showCrossMenu = false; controller.showStatus("目录比较：M9 计划（差异对比引擎已占位）") },
+                        )
+                    }
+                }
+                BottomCommand("↑", enabled = focused.uri.parent != null, onLongClick = { gotoPath = true }) { controller.up(focusSide) }
+            }
         }
     }
 
-    // ---------------- ⋮ 菜单（MT 的动作菜单）
+    // ---------------- ⋮ 菜单（MT 顺序）
     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
-        DropdownMenuItem(text = { Text("刷新") }, onClick = { showMoreMenu = false; controller.refresh(ui.focused) })
-        DropdownMenuItem(
-            text = { Text("搜索") },
-            onClick = { showMoreMenu = false; searchMode = !searchMode },
-        )
-        DropdownMenuItem(text = { Text("全选") }, onClick = { showMoreMenu = false; controller.selectAll(ui.focused) })
+        DropdownMenuItem(text = { Text("刷新") }, onClick = { showMoreMenu = false; controller.refresh(focusSide) })
+        DropdownMenuItem(text = { Text("输入路径…") }, onClick = { showMoreMenu = false; gotoPath = true })
+        DropdownMenuItem(text = { Text("搜索 / 过滤…") }, onClick = { showMoreMenu = false; filterInput = true })
+        DropdownMenuItem(text = { Text("全选") }, onClick = { showMoreMenu = false; controller.selectAll(focusSide) })
         DropdownMenuItem(text = { Text("过滤…") }, onClick = { showMoreMenu = false; showFilterDialog = true })
         DropdownMenuItem(text = { Text("排序方式…") }, onClick = { showMoreMenu = false; showSortDialog = true })
         DropdownMenuItem(
             text = { Text(if (focused.showHidden) "隐藏文件：已显示" else "隐藏文件：已隐藏") },
-            onClick = { showMoreMenu = false; controller.toggleHidden(ui.focused) },
+            onClick = { showMoreMenu = false; controller.toggleHidden(focusSide) },
         )
-        DropdownMenuItem(text = { Text("添加书签") }, onClick = { showMoreMenu = false; controller.addBookmark(ui.focused) })
-        DropdownMenuItem(text = { Text("设为首页") }, onClick = { showMoreMenu = false; controller.setAsHome(ui.focused) })
+        DropdownMenuItem(text = { Text("添加书签") }, onClick = { showMoreMenu = false; controller.addBookmark(focusSide) })
+        DropdownMenuItem(text = { Text("设为首页") }, onClick = { showMoreMenu = false; controller.setAsHome(focusSide) })
         DropdownMenuItem(text = { Text("交换窗口") }, onClick = { showMoreMenu = false; controller.swapPanes() })
         DropdownMenuItem(
             text = { Text(if (ui.singlePane) "切换为双列" else "切换为单列") },
             onClick = { showMoreMenu = false; controller.toggleSinglePane() },
         )
+        DropdownMenuItem(text = { Text("主页") }, onClick = { showMoreMenu = false; onOpenHome() })
         DropdownMenuItem(text = { Text("传输任务") }, onClick = { showMoreMenu = false; onOpenTasks() })
         DropdownMenuItem(text = { Text("设置") }, onClick = { showMoreMenu = false; onOpenSettings() })
         DropdownMenuItem(
@@ -299,35 +300,25 @@ fun DualPaneScreen(
 
     // ---------------- ≡ 菜单（快速位置 + 书签）
     DropdownMenu(expanded = showQuickMenu, onDismissRequest = { showQuickMenu = false }) {
-        DropdownMenuItem(
-            text = { Text("主页") },
-            onClick = { showQuickMenu = false; onOpenHome() },
-        )
+        DropdownMenuItem(text = { Text("主页") }, onClick = { showQuickMenu = false; onOpenHome() })
         DropdownMenuItem(
             text = { Text("内部存储") },
-            onClick = {
-                showQuickMenu = false
-                controller.open(ui.focused, VfsUri.of("local", "emulated", "/"), null, "内部存储")
-            },
+            onClick = { showQuickMenu = false; controller.open(focusSide, VfsUri.of("local", "emulated", "/"), null, "内部存储") },
         )
         DropdownMenuItem(
             text = { Text("根目录 /") },
-            onClick = { showQuickMenu = false; controller.open(ui.focused, VfsUri.of("local", "root", "/"), null, "根目录") },
+            onClick = { showQuickMenu = false; controller.open(focusSide, VfsUri.of("local", "root", "/"), null, "根目录") },
         )
         DropdownMenuItem(
             text = { Text("应用私有目录") },
-            onClick = { showQuickMenu = false; controller.open(ui.focused, VfsUri.of("local", "app", "/"), null, "应用目录") },
+            onClick = { showQuickMenu = false; controller.open(focusSide, VfsUri.of("local", "app", "/"), null, "应用目录") },
         )
         DropdownMenuItem(text = { Text("书签…") }, onClick = { showQuickMenu = false; onOpenBookmarks() })
         DropdownMenuItem(text = { Text("局域网扫描…") }, onClick = { showQuickMenu = false; onOpenLanScan() })
         val bookmarks = remember(showQuickMenu) { if (showQuickMenu) controller.bookmarks() else emptyList() }
         if (bookmarks.isNotEmpty()) {
             HSeparator()
-            Text(
-                "  书签",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Text("  书签", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             bookmarks.take(8).forEach { bm ->
                 DropdownMenuItem(
                     text = { Text(bm.name.ifEmpty { bm.uri.displayPath }, maxLines = 1) },
@@ -337,7 +328,193 @@ fun DualPaneScreen(
         }
     }
 
-    // ---------------- 排序 / 过滤
+    // ---------------- MT 动作菜单（长按文件）
+    rowAction?.let { item ->
+        val multi = focused.selection.size
+        val subject = if (multi > 1) "已选 $multi 项" else item.name
+        MtActionSheet(
+            title = subject,
+            actions = listOf(
+                MtAction("copy_to", "复制 ->", "⧉", singleWindow = true),
+                MtAction("move_to", "移动 ->", "✂", singleWindow = true),
+                MtAction("delete", "删除", "🗑"),
+                MtAction("rename", "重命名", "✎", enabled = multi <= 1),
+                MtAction("tools", "工具", "🔧"),
+                MtAction("compress", "压缩", "⬇"),
+                MtAction("properties", "属性", "ⓘ", enabled = multi <= 1),
+                MtAction("share", "分享", "⇪"),
+                MtAction("open_with", "打开方式…", "✓", enabled = !item.isDirectory),
+                MtAction("bookmark", "添加书签", "🔖"),
+            ),
+            onAction = { id ->
+                rowAction = null
+                when (id) {
+                    "copy_to" -> controller.copyToOther(focusSide)
+                    "move_to" -> controller.moveToOther(focusSide)
+                    "delete" -> deleting = item
+                    "rename" -> renaming = item
+                    "tools" -> toolsFor = item
+                    "compress" -> controller.compressHere(focusSide)
+                    "properties" -> controller.showProperties(item)
+                    "share" -> shareItem(container, context, item) { msg -> controller.showStatus(msg) }
+                    "open_with" -> openWithSystem(container, context, item) { msg -> controller.showStatus(msg) }
+                    "bookmark" -> {
+                        controller.addBookmark(focusSide)
+                    }
+                }
+            },
+            onLongAction = { id ->
+                rowAction = null
+                when (id) {
+                    "copy_to" -> singleWindowOp = TransferOp.COPY
+                    "move_to" -> singleWindowOp = TransferOp.MOVE
+                }
+            },
+            onDismiss = { rowAction = null },
+        )
+    }
+
+    // ---------------- 工具子菜单（MT 的「工具」）
+    toolsFor?.let { item ->
+        MtActionSheet(
+            title = "工具 · ${item.name}",
+            actions = listOf(
+                MtAction("copy_path", "复制路径", "⧉"),
+                MtAction("md5", "校验值 MD5", "#"),
+                MtAction("sha256", "校验值 SHA-256", "#"),
+                MtAction("chmod", "修改权限", "🔒", enabled = !item.isDirectory.not()),
+                MtAction("select_all", "全选", "☑"),
+                MtAction("invert", "反选", "☐"),
+                MtAction("same_type", "类选", "▣"),
+                MtAction("exit", "退出多选", "✕"),
+            ),
+            onAction = { id ->
+                toolsFor = null
+                when (id) {
+                    "copy_path" -> {
+                        clipboard.setText(AnnotatedString(item.uri.toString()))
+                        controller.showStatus("路径已复制：${item.uri.displayPath}")
+                    }
+                    "md5" -> controller.checksum(item.uri, "MD5") { r ->
+                        message = "MD5" to (r ?: "计算失败")
+                    }
+                    "sha256" -> controller.checksum(item.uri, "SHA-256") { r ->
+                        message = "SHA-256" to (r ?: "计算失败")
+                    }
+                    "chmod" -> permissionFor = item
+                    "select_all" -> controller.selectAll(focusSide)
+                    "invert" -> controller.invertSelection(focusSide)
+                    "same_type" -> controller.selectSameType(focusSide)
+                    "exit" -> controller.clearSelection(focusSide)
+                }
+            },
+            onLongAction = {},
+            onDismiss = { toolsFor = null },
+        )
+    }
+
+    // ---------------- 各种输入框
+    if (gotoPath) {
+        TextInputDialog(
+            title = "跳转路径",
+            initial = focused.uri.displayPath,
+            label = "路径",
+            hint = "可写完整 URI（s3://bucket/dir、/share/sub），也可写相对路径",
+            onConfirm = { input ->
+                val text = input.trim()
+                val dest = if (text.contains("://")) runCatching { VfsUri.parse(text) }.getOrNull()
+                else focused.uri.withPath(if (text.startsWith("/")) text else "/$text")
+                if (dest != null) controller.open(focusSide, dest, focused.tab.connectionId, focused.tab.label)
+                else controller.showStatus("路径格式不正确")
+            },
+            onDismiss = { gotoPath = false },
+        )
+    }
+    if (filterInput) {
+        TextInputDialog(
+            title = "过滤（长按同步按钮同款）",
+            initial = focused.search,
+            label = "关键字",
+            hint = "普通文本=包含；!文本=不包含；/正则；!/正则=正则否定。留空清除。",
+            onConfirm = { q -> controller.setSearch(focusSide, q) },
+            onDismiss = { filterInput = false },
+        )
+    }
+    if (singleWindowOp != null) {
+        val op = singleWindowOp!!
+        TextInputDialog(
+            title = if (op == TransferOp.COPY) "复制到（本窗格内）" else "移动到（本窗格内）",
+            initial = focused.uri.displayPath,
+            label = "目标目录",
+            hint = "单窗口操作：目标仍在当前窗格内，输入目录后立即执行",
+            onConfirm = { path ->
+                val dest = focused.uri.withPath(if (path.startsWith("/")) path else "/$path")
+                if (op == TransferOp.COPY) controller.copyWithinPane(focusSide, dest)
+                else controller.moveWithinPane(focusSide, dest)
+            },
+            onDismiss = { singleWindowOp = null },
+        )
+    }
+    permissionFor?.let { item ->
+        TextInputDialog(
+            title = "修改权限（八进制）",
+            initial = item.permissions?.let { Integer.toOctalString(it) } ?: "644",
+            label = "权限，如 644 / 755",
+            hint = "支持本地文件与支持 chmod 的协议（SFTP / FTP SITE CHMOD）",
+            onConfirm = { octal ->
+                val mode = runCatching { Integer.parseInt(octal, 8) }.getOrNull()
+                if (mode == null) {
+                    controller.showStatus("八进制格式不正确")
+                } else {
+                    scope.launch {
+                        val vfs = container.locator.find(item.uri)
+                        val ok = runCatching { vfs?.setPermissions(item.uri, mode) }.isSuccess
+                        controller.showStatus(if (ok) "权限已修改为 $octal" else "该位置不支持修改权限")
+                        if (ok) controller.refresh(focusSide)
+                    }
+                }
+            },
+            onDismiss = { permissionFor = null },
+        )
+    }
+    message?.let { (title, body) ->
+        MessageDialog(title, body) { message = null }
+    }
+    renaming?.let { item ->
+        TextInputDialog(
+            title = "重命名",
+            initial = item.name,
+            onConfirm = { newName -> controller.rename(item.uri, newName, focusSide) },
+            onDismiss = { renaming = null },
+        )
+    }
+    deleting?.let { item ->
+        ConfirmDialog(
+            title = "删除",
+            message = "确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else "",
+            confirmText = "删除",
+            onConfirm = { controller.deleteSelected(focusSide) },
+            onDismiss = { deleting = null },
+        )
+    }
+    if (creatingFolder) {
+        TextInputDialog(
+            title = "新建文件夹",
+            label = "文件夹名称",
+            onConfirm = { name -> controller.createFolder(focusSide, name) },
+            onDismiss = { creatingFolder = false },
+        )
+    }
+    if (creatingFile) {
+        TextInputDialog(
+            title = "新建文件",
+            label = "文件名",
+            onConfirm = { name -> controller.createFile(focusSide, name) },
+            onDismiss = { creatingFile = false },
+        )
+    }
+
+    // ---------------- 排序 / 过滤 对话框
     if (showSortDialog) {
         AlertDialog(
             onDismissRequest = { showSortDialog = false },
@@ -347,7 +524,7 @@ fun DualPaneScreen(
                     SortBy.entries.forEach { by ->
                         TextButton(onClick = {
                             val asc = if (focused.sort.by == by) !focused.sort.ascending else true
-                            controller.setSort(ui.focused, SortSpec(by, asc, focused.sort.dirsFirst))
+                            controller.setSort(focusSide, SortSpec(by, asc, focused.sort.dirsFirst))
                             showSortDialog = false
                         }) {
                             Text(
@@ -357,7 +534,7 @@ fun DualPaneScreen(
                         }
                     }
                     TextButton(onClick = {
-                        controller.setSort(ui.focused, focused.sort.copy(dirsFirst = !focused.sort.dirsFirst))
+                        controller.setSort(focusSide, focused.sort.copy(dirsFirst = !focused.sort.dirsFirst))
                         showSortDialog = false
                     }) { Text(if (focused.sort.dirsFirst) "文件夹置顶：开" else "文件夹置顶：关") }
                 }
@@ -368,10 +545,10 @@ fun DualPaneScreen(
     if (showFilterDialog) {
         AlertDialog(
             onDismissRequest = { showFilterDialog = false },
-            title = { Text("过滤") },
+            title = { Text("过滤（按类型）") },
             text = {
                 Column {
-                    TextButton(onClick = { controller.setFilter(ui.focused, null); showFilterDialog = false }) {
+                    TextButton(onClick = { controller.setFilter(focusSide, null); showFilterDialog = false }) {
                         Text("全部", color = if (focused.filterKind == null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
                     }
                     listOf(
@@ -384,7 +561,7 @@ fun DualPaneScreen(
                         MimeTypes.Kind.FONT to "字体",
                         MimeTypes.Kind.PDF to "PDF",
                     ).forEach { (kind, label) ->
-                        TextButton(onClick = { controller.setFilter(ui.focused, kind.name); showFilterDialog = false }) {
+                        TextButton(onClick = { controller.setFilter(focusSide, kind.name); showFilterDialog = false }) {
                             Text(
                                 label,
                                 color = if (focused.filterKind == kind.name) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
@@ -411,7 +588,7 @@ fun DualPaneScreen(
         }
     }
 
-    // ---------------- 对话框
+    // ---------------- 冲突 / 移动确认 / 属性
     ui.pendingMove?.let { pending ->
         MoveConfirmDialog(pending, onConfirm = { controller.confirmMove() }, onCancel = { controller.cancelMove() })
     }
@@ -423,80 +600,16 @@ fun DualPaneScreen(
             controller.dismissProperties()
         }
     }
-    rowAction?.let { item ->
-        RowActionsDialog(
-            item = item,
-            onDismiss = { rowAction = null },
-            onOpen = { controller.openItem(ui.focused, item) },
-            onRename = { renaming = item },
-            onCopyToOther = { controller.copyToOther() },
-            onMoveToOther = { controller.moveToOther() },
-            onDelete = { deleting = item },
-            onProperties = { controller.showProperties(item) },
-            onOpenWithSystem = { onOpenPreview(item.uri) },
-        )
-    }
-    renaming?.let { item ->
-        TextInputDialog(
-            title = "重命名",
-            initial = item.name,
-            onConfirm = { newName -> controller.rename(item.uri, newName, ui.focused) },
-            onDismiss = { renaming = null },
-        )
-    }
-    deleting?.let { item ->
-        ConfirmDialog(
-            title = "删除",
-            message = "确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else "",
-            confirmText = "删除",
-            onConfirm = { controller.deleteSelected(ui.focused) },
-            onDismiss = { deleting = null },
-        )
-    }
-    if (creatingFolder) {
-        TextInputDialog(
-            title = "新建文件夹",
-            label = "文件夹名称",
-            onConfirm = { name -> controller.createFolder(ui.focused, name) },
-            onDismiss = { creatingFolder = false },
-        )
-    }
-    if (gotoPath) {
-        TextInputDialog(
-            title = "跳转路径",
-            initial = focused.uri.displayPath,
-            label = "路径（可写完整 URI，如 s3://bucket/dir、/share/sub）",
-            onConfirm = { input ->
-                val text = input.trim()
-                val target = if (text.contains("://")) {
-                    runCatching { VfsUri.parse(text) }.getOrNull()
-                } else {
-                    focused.uri.withPath(if (text.startsWith("/")) text else "/$text")
-                }
-                if (target != null) {
-                    controller.open(ui.focused, target, focused.tab.connectionId, focused.tab.label)
-                } else {
-                    controller.showStatus("路径格式不正确")
-                }
-            },
-            onDismiss = { gotoPath = false },
-        )
-    }
-    if (creatingFile) {
-        TextInputDialog(
-            title = "新建文件",
-            label = "文件名",
-            onConfirm = { name -> controller.createFile(ui.focused, name) },
-            onDismiss = { creatingFile = false },
-        )
-    }
 }
+
+// ---------------------------------------------------------------------------
 
 @Composable
 private fun BottomCommand(
     symbol: String,
     enabled: Boolean = true,
     highlighted: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
     Box(
@@ -504,7 +617,17 @@ private fun BottomCommand(
             .size(46.dp)
             .clip(RoundedCornerShape(8.dp))
             .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
-            .clickableNoRipple(enabled, onClick),
+            .let { base ->
+                if (onLongClick != null) {
+                    base.pointerInput(Unit) {
+                        detectTapGestures(
+                            onDoubleTap = null,
+                            onLongPress = { onLongClick() },
+                            onTap = { if (enabled) onClick() },
+                        )
+                    }
+                } else base.clickableNoRipple(enabled, onClick)
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -520,11 +643,72 @@ private fun BottomCommand(
     }
 }
 
+@Composable
+private fun TextCommand(label: String, onClick: () -> Unit) {
+    TextButton(onClick = onClick) {
+        Text(label, style = MaterialTheme.typography.labelMedium, maxLines = 1)
+    }
+}
+
 private fun sortLabel(by: SortBy): String = when (by) {
     SortBy.NAME -> "按名称"
     SortBy.SIZE -> "按大小"
     SortBy.TIME -> "按时间"
     SortBy.TYPE -> "按类型"
+}
+
+/** 分享：本地文件走 FileProvider（可分享给任何应用） */
+internal fun shareItem(
+    container: AppContainer,
+    context: android.content.Context,
+    item: FileMetadata,
+    onMessage: (String) -> Unit,
+) {
+    if (item.uri.scheme != "local") {
+        onMessage("网络文件请先复制到本地再分享")
+        return
+    }
+    val file = File(container.localVfs.absolutePath(item.uri))
+    if (!file.exists()) {
+        onMessage("文件不存在")
+        return
+    }
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull()
+    if (uri == null) {
+        onMessage("无法生成分享链接")
+        return
+    }
+    val intent = Intent(Intent.ACTION_SEND).apply {
+        type = item.mimeType ?: "*/*"
+        putExtra(Intent.EXTRA_STREAM, uri)
+        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    }
+    runCatching { context.startActivity(Intent.createChooser(intent, "分享 ${item.name}")) }
+        .onFailure { onMessage("没有可用的分享目标") }
+}
+
+/** 打开方式：交给系统选择器 */
+internal fun openWithSystem(
+    container: AppContainer,
+    context: android.content.Context,
+    item: FileMetadata,
+    onMessage: (String) -> Unit,
+) {
+    if (item.uri.scheme != "local") {
+        onMessage("网络文件请先复制到本地再打开")
+        return
+    }
+    val file = File(container.localVfs.absolutePath(item.uri))
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull() ?: return onMessage("无法生成打开链接")
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, item.mimeType ?: "*/*")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching { context.startActivity(Intent.createChooser(intent, "打开方式")) }
+        .onFailure { onMessage("没有可用的应用") }
 }
 
 @Composable

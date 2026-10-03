@@ -72,6 +72,11 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onScanLan: () -> Unit,
+    onOpenTrash: () -> Unit,
+    onOpenApps: () -> Unit,
+    onOpenRemote: () -> Unit,
+    onOpenTerminal: () -> Unit,
+    onOpenEditor: () -> Unit,
     onAddConnection: () -> Unit,
     onEditConnection: (Long) -> Unit,
 ) {
@@ -318,11 +323,16 @@ fun HomeScreen(
                     val s = it.state.value
                     s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
                 }
+                ToolRow("回收站", "🗑") { onOpenTrash() }
+                ToolRow("远程管理", "🖥") { onOpenRemote() }
+                ToolRow("已安装应用", "📦") { onOpenApps() }
+                ToolRow("文本编辑器", "📄") { onOpenEditor() }
+                ToolRow("终端模拟器", "⌨") { onOpenTerminal() }
                 ToolRow("局域网扫描", "🧭") { onScanLan() }
                 ToolRow("书签", "🔖") { onOpenBookmarks() }
                 ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇") { onOpenTasks() }
                 ToolRow("设置", "⚙") { onOpenSettings() }
-                ToolRow("关于", "ℹ") { status = "PanelFM 0.3.0 · 双列文件管理器（本地 / SFTP / FTP / FTPS / WebDAV / SMB / S3），不含逆向功能" }
+                ToolRow("关于", "ℹ") { status = "PanelFM 0.5.0 · 双列文件管理器（本地 / SFTP · 跳板机 / FTP · FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能" }
             }
 
             Box(Modifier.padding(bottom = 96.dp))

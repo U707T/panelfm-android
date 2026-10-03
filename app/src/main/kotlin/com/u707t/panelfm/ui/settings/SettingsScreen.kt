@@ -87,9 +87,10 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         Column(Modifier.padding(top = 16.dp)) {
             Text("关于", style = MaterialTheme.typography.titleSmall)
             Text(
-                "PanelFM 0.1.0（原生 Kotlin / Compose）\n" +
-                    "已实现：双列浏览、本地 + WebDAV + FTP/FTPS、任务引擎（进度/暂停/冲突/续传）、文本/图片/Hex 预览。\n" +
-                    "计划：SFTP(M4)、SMB(M5)、S3(M6)、压缩包与 APK 内部浏览(M8)。\n" +
+                "PanelFM 0.5.0（原生 Kotlin / Compose）\n" +
+                    "已实现：双列浏览（打开即双列）、本地/SFTP(跳板机)/FTP·FTPS/WebDAV/SMB/S3、压缩包挂载解压压缩、\n" +
+                    "任务引擎（进度/暂停/冲突/续传）、文本/图片/Hex(只读) 预览、回收站/远程管理/已安装应用/终端。\n" +
+                    "计划：文本编辑器增强、字体预览、媒体播放、缩略图、拖拽、目录对比（M7/M9）。\n" +
                     "本项目不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

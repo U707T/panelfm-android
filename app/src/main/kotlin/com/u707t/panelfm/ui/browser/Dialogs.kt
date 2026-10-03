@@ -1,11 +1,18 @@
 package com.u707t.panelfm.ui.browser
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -18,7 +25,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.model.ConflictInfo
@@ -69,7 +80,7 @@ fun ConflictDialog(info: ConflictInfo, onDecision: (ConflictPolicy, Boolean) -> 
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp),
                 )
-                Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = applyAll, onCheckedChange = { applyAll = it })
                     Text("全部应用（本次任务后续冲突同样处理）", style = MaterialTheme.typography.bodySmall)
                 }
@@ -87,12 +98,13 @@ fun ConflictDialog(info: ConflictInfo, onDecision: (ConflictPolicy, Boolean) -> 
     )
 }
 
-/** 新建 / 重命名 输入框 */
+/** 输入框（新建 / 重命名 / 路径 / 过滤 / 权限） */
 @Composable
 fun TextInputDialog(
     title: String,
     initial: String = "",
     label: String = "名称",
+    hint: String? = null,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -101,19 +113,26 @@ fun TextInputDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
         text = {
-            OutlinedTextField(
-                value = text,
-                onValueChange = { text = it },
-                label = { Text(label) },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    label = { Text(label) },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                hint?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+            }
         },
         confirmButton = {
-            TextButton(
-                enabled = text.isNotBlank(),
-                onClick = { onConfirm(text.trim()); onDismiss() },
-            ) { Text("确定") }
+            TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text.trim()); onDismiss() }) { Text("确定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
@@ -154,38 +173,122 @@ fun PropertiesDialog(item: FileMetadata, space: String?, onDismiss: () -> Unit) 
     )
 }
 
-/** 单个条目的操作菜单（长按/⋮ 触发） */
+// ---------------------------------------------------------------------------
+// MT 的动作菜单：两列网格 + 带 ● 的项支持长按（单窗口操作）
+// ---------------------------------------------------------------------------
+
+data class MtAction(
+    val id: String,
+    val label: String,
+    val glyph: String,
+    /** 带 ● ：长按可触发「单窗口操作」 */
+    val singleWindow: Boolean = false,
+    val enabled: Boolean = true,
+)
+
 @Composable
-fun RowActionsDialog(
-    item: FileMetadata,
+fun MtActionSheet(
+    title: String,
+    actions: List<MtAction>,
+    onAction: (String) -> Unit,
+    onLongAction: (String) -> Unit,
     onDismiss: () -> Unit,
-    onOpen: () -> Unit,
-    onRename: () -> Unit,
-    onCopyToOther: () -> Unit,
-    onMoveToOther: () -> Unit,
-    onDelete: () -> Unit,
-    onProperties: () -> Unit,
-    onOpenWithSystem: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(item.name, style = MaterialTheme.typography.titleSmall) },
+        title = { Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                if (!item.isDirectory) {
-                    TextButton(onClick = { onDismiss(); onOpen() }) { Text("预览 / 打开") }
-                    TextButton(onClick = { onDismiss(); onOpenWithSystem() }) { Text("用其他应用打开") }
-                }
-                TextButton(onClick = { onDismiss(); onRename() }) { Text("重命名") }
-                TextButton(onClick = { onDismiss(); onCopyToOther() }) { Text("复制到对面窗格") }
-                TextButton(onClick = { onDismiss(); onMoveToOther() }) { Text("移动到对面窗格") }
-                TextButton(onClick = { onDismiss(); onDelete() }) { Text("删除") }
-                TextButton(onClick = { onDismiss(); onProperties() }) { Text("属性") }
-                item.uri.let { uri: VfsUri ->
-                    TextButton(onClick = { onDismiss() }) { Text("路径：${uri.displayPath}", style = MaterialTheme.typography.bodySmall) }
+            Column {
+                Text(
+                    "带 ● 的菜单表示可以长按触发单窗口操作",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                actions.chunked(2).forEach { row ->
+                    Row(Modifier.fillMaxWidth()) {
+                        row.forEach { action ->
+                            MtActionCell(action, Modifier.weight(1f), onAction, onLongAction)
+                        }
+                        if (row.size == 1) Box(Modifier.weight(1f))
+                    }
                 }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
+}
+
+@Composable
+private fun MtActionCell(
+    action: MtAction,
+    modifier: Modifier,
+    onAction: (String) -> Unit,
+    onLongAction: (String) -> Unit,
+) {
+    Row(
+        modifier
+            .padding(vertical = 6.dp)
+            .combinedClickable(
+                enabled = action.enabled,
+                onClick = { onAction(action.id) },
+                onLongClick = { if (action.singleWindow) onLongAction(action.id) },
+            )
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            action.glyph,
+            style = MaterialTheme.typography.titleMedium,
+            color = if (action.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+        )
+        Text(
+            action.label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (action.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+            modifier = Modifier.padding(start = 10.dp),
+        )
+        if (action.singleWindow) {
+            Box(
+                Modifier
+                    .padding(start = 6.dp)
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary)
+            )
+        }
+    }
+}
+
+/** 只读信息弹窗（校验值 / 工具结果） */
+@Composable
+fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                Text(message, style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Normal)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+@Composable
+fun InfoRow(label: String, value: String) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Text(
+            label,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(72.dp),
+        )
+        Text(value, style = MaterialTheme.typography.bodySmall)
+    }
 }

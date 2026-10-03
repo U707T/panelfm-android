@@ -85,13 +85,16 @@ class BrowserController(private val container: AppContainer) {
                 val options = ListOptions(
                     sort = pane.sort,
                     showHidden = pane.showHidden,
-                    filter = pane.search.takeIf { it.isNotBlank() },
+                    filter = null,      // 关键字过滤统一在客户端做（支持 /regex、!/regex、!text）
                 )
                 val listed = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
+                val bySearch = listed.filter { matchesSearch(it.name, pane.search) }
                 val items = pane.filterKind?.let { kindName ->
-                    listed.filter { it.isDirectory || it.extension.isEmpty() ||
-                        com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kindName }
-                } ?: listed
+                    bySearch.filter {
+                        it.isDirectory || it.extension.isEmpty() ||
+                            com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kindName
+                    }
+                } ?: bySearch
                 val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
                 updatePane(side) { it.copy(items = items, loading = false, error = null, space = space) }
                 runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
@@ -264,10 +267,54 @@ class BrowserController(private val container: AppContainer) {
 
     fun selectAll(side: PaneSide) = updatePane(side) { it.copy(selection = it.items.map { item -> item.uri.toString() }.toSet()) }
 
+    /** MT 的「反选」 */
+    fun invertSelection(side: PaneSide) = updatePane(side) { pane ->
+        val all = pane.items.map { it.uri.toString() }.toSet()
+        pane.copy(selection = all - pane.selection)
+    }
+
+    /** MT 的「类选」：与当前选中项同类型（同扩展名分类）的全部选中 */
+    fun selectSameType(side: PaneSide) = updatePane(side) { pane ->
+        val sample = pane.selectedItems.firstOrNull() ?: return@updatePane pane
+        val kind = if (sample.isDirectory) "dir" else com.u707t.panelfm.core.common.MimeTypes.kindOf(sample.extension).name
+        val same = pane.items.filter {
+            if (kind == "dir") it.isDirectory
+            else !it.isDirectory && com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kind
+        }.map { it.uri.toString() }.toSet()
+        pane.copy(selection = pane.selection + same)
+    }
+
+    /** 选中区间（MT：从第一个滑到最后一个即连续选中） */
+    fun selectRange(side: PaneSide, fromIndex: Int, toIndex: Int) = updatePane(side) { pane ->
+        val lo = minOf(fromIndex, toIndex).coerceAtLeast(0)
+        val hi = maxOf(fromIndex, toIndex).coerceAtMost(pane.items.lastIndex)
+        val range = pane.items.subList(lo, hi + 1).map { it.uri.toString() }.toSet()
+        pane.copy(selection = pane.selection + range)
+    }
+
     fun clearSelection(side: PaneSide) = updatePane(side) { it.copy(selection = emptySet()) }
 
     fun setSearch(side: PaneSide, query: String) {
         updatePane(side) { it.copy(search = query) }
+        load(side)
+    }
+
+    /**
+     * MT 的过滤语法：
+     *  - 普通文本：包含匹配
+     *  - 以 `!` 开头：否定匹配（不含该文本）
+     *  - 以 `/` 开头：正则匹配
+     *  - 以 `!/` 开头：正则否定匹配
+     */
+    fun matchesSearch(name: String, query: String): Boolean {
+        val q = query.trim()
+        if (q.isEmpty()) return true
+        return when {
+            q.startsWith("!/") -> runCatching { !Regex(q.removePrefix("!/")).containsMatchIn(name) }.getOrDefault(true)
+            q.startsWith("/") -> runCatching { Regex(q.removePrefix("/")).containsMatchIn(name) }.getOrDefault(true)
+            q.startsWith("!") -> !name.contains(q.removePrefix("!"), ignoreCase = true)
+            else -> name.contains(q, ignoreCase = true)
+        }
     }
 
     /** MT 的「过滤」：按类型筛选当前目录（客户端过滤，立即生效） */
@@ -368,9 +415,19 @@ class BrowserController(private val container: AppContainer) {
         }
         container.scope.launch {
             try {
-                val vfs = container.locator.find(pane.uri) ?: throw VfsException.Unsupported("会话不可用")
-                withContext(container.dispatchers.vfs) { vfs.delete(sources) }
-                showStatus("已删除 ${sources.size} 项")
+                // 本地文件优先进回收站（可还原）；网络位置直接删除
+                val localOnly = sources.filter { it.scheme == "local" }
+                val remoteOnly = sources.filter { it.scheme != "local" }
+                var trashed = 0
+                if (localOnly.isNotEmpty()) trashed = container.trash.moveToTrash(localOnly)
+                if (remoteOnly.isNotEmpty()) {
+                    val vfs = container.locator.find(remoteOnly.first()) ?: throw VfsException.Unsupported("会话不可用")
+                    withContext(container.dispatchers.vfs) { vfs.delete(remoteOnly) }
+                }
+                showStatus(
+                    if (trashed > 0) "已移入回收站 $trashed 项（可还原）"
+                    else "已删除 ${remoteOnly.size} 项"
+                )
                 clearSelection(side)
                 load(side)
             } catch (e: Exception) {
@@ -506,6 +563,78 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun cancelMove() = update { it.copy(pendingMove = null) }
+
+    /** 长按「复制/移动 ->」= 单窗口操作：目标仍在本窗格内 */
+    fun copyWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.COPY, destDir)
+
+    fun moveWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.MOVE, destDir)
+
+    private fun enqueueWithinPane(side: PaneSide, op: TransferOp, destDir: VfsUri) {
+        val st = _state.value
+        val srcPane = st.pane(side)
+        val sources = targetSources(side)
+        if (sources.isEmpty()) {
+            showStatus("当前目录没有可操作的项")
+            return
+        }
+        val opText = if (op == TransferOp.COPY) "复制" else "移动"
+        update { it.copy(status = "$opText ${sources.size} 项 → ${destDir.displayPath}") }
+        container.engine.enqueue(
+            TransferRequest(sources = sources, destDir = destDir, op = op, conflict = ConflictPolicy.ASK)
+        )
+        clearSelection(side)
+    }
+
+    /** 压缩到当前目录（MT 的「压缩」） */
+    fun compressHere(side: PaneSide) {
+        val st = _state.value
+        val pane = st.pane(side)
+        val sources = targetSources(side)
+        if (sources.isEmpty()) {
+            showStatus("当前目录没有可压缩的项")
+            return
+        }
+        val name = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources)
+        val dest = pane.uri.child(name)
+        container.scope.launch {
+            showStatus("正在压缩 → $name")
+            try {
+                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator).compress(sources, dest)
+                showStatus("已压缩为 $name")
+                clearSelection(side)
+                load(side)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "压缩失败：${e.message}")
+            }
+        }
+    }
+
+    /** 校验值（MD5/SHA-256）：本地与网络都能算 */
+    fun checksum(uri: VfsUri, algorithm: String, onResult: (String?) -> Unit) {
+        container.scope.launch {
+            val vfs = container.locator.find(uri)
+            if (vfs == null) {
+                onResult(null)
+                return@launch
+            }
+            val result = runCatching {
+                val digest = java.security.MessageDigest.getInstance(algorithm)
+                val reader = vfs.openRead(uri)
+                try {
+                    val buf = ByteArray(256 * 1024)
+                    while (true) {
+                        val n = reader.read(buf, 0, buf.size)
+                        if (n < 0) break
+                        digest.update(buf, 0, n)
+                    }
+                } finally {
+                    runCatching { reader.close() }
+                }
+                digest.digest().joinToString("") { "%02x".format(it) }
+            }.getOrNull()
+            onResult(result)
+        }
+    }
 
     private fun startCrossPane(
         side: PaneSide,

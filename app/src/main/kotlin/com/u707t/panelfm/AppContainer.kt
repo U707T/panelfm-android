@@ -24,6 +24,8 @@ import com.u707t.panelfm.core.vfs.s3.S3Vfs
 import com.u707t.panelfm.core.vfs.sftp.SftpVfs
 import com.u707t.panelfm.core.vfs.smb.SmbVfs
 import com.u707t.panelfm.core.vfs.webdav.WebDavVfsFactory
+import com.u707t.panelfm.tools.RemoteHttpServer
+import com.u707t.panelfm.tools.TrashService
 import com.u707t.panelfm.ui.browser.BrowserController
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -105,6 +107,12 @@ class AppContainer(val app: Application) {
     )
 
     val browser = BrowserController(this)
+
+    /** 本地回收站（删除 → 回收站，可还原） */
+    val trash = TrashService(appDirs, localVfs)
+
+    /** 远程管理：内置只读 HTTP 服务 */
+    val remote = RemoteHttpServer(locator)
 
     init {
         scope.launch {
@@ -197,6 +205,7 @@ class AppContainer(val app: Application) {
     fun loadSecret(configId: Long): String? = secretStore.get(connectionDao.secretRef(configId))
 
     fun close() {
+        runCatching { remote.stop() }
         scope.launch { registry.closeAll() }
         Logx.i("AppContainer", "closed")
     }
