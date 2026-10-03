@@ -86,6 +86,23 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             }
         }
 
+        Text(
+            "底部工具栏下边距（全面屏手势时更舒适）：${settings.bottomBarPaddingDp}dp",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0, 6, 10, 14, 20, 28).forEach { dp ->
+                TextButton(onClick = { scope.launch { container.prefs.setBottomBarPadding(dp) } }) {
+                    Text(
+                        dp.toString(),
+                        color = if (dp == settings.bottomBarPaddingDp) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
         Text("User-Agent", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 8.dp))
         Text(
             settings.userAgent,

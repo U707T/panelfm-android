@@ -36,6 +36,8 @@ data class AppSettings(
     val splitRatio: Float = 0.5f,
     /** 底栏上滑调出书签 */
     val bookmarkSwipe: Boolean = true,
+    /** 底部工具栏额外下边距（全面屏手势下的舒适区，0=自动） */
+    val bottomBarPaddingDp: Int = 8,
     val skipThumbsWhileScrolling: Boolean = true,
 )
 
@@ -60,6 +62,7 @@ class PrefsStore(private val context: Context) {
         val rememberLast = booleanPreferencesKey("remember_last_path")
         val splitRatio = androidx.datastore.preferences.core.floatPreferencesKey("split_ratio")
         val bookmarkSwipe = booleanPreferencesKey("bookmark_swipe")
+        val bottomPad = intPreferencesKey("bottom_bar_padding")
         val lastLeft = stringPreferencesKey("last_left")
         val lastRight = stringPreferencesKey("last_right")
     }
@@ -82,6 +85,7 @@ class PrefsStore(private val context: Context) {
             rememberLastPath = p[Keys.rememberLast] ?: true,
             splitRatio = p[Keys.splitRatio] ?: 0.5f,
             bookmarkSwipe = p[Keys.bookmarkSwipe] ?: true,
+            bottomBarPaddingDp = p[Keys.bottomPad] ?: 8,
         )
     }
 
@@ -103,6 +107,7 @@ class PrefsStore(private val context: Context) {
     suspend fun setRememberLastPath(on: Boolean) = context.panelDataStore.edit { it[Keys.rememberLast] = on }
     suspend fun setSplitRatio(ratio: Float) = context.panelDataStore.edit { it[Keys.splitRatio] = ratio }
     suspend fun setBookmarkSwipe(on: Boolean) = context.panelDataStore.edit { it[Keys.bookmarkSwipe] = on }
+    suspend fun setBottomBarPadding(dp: Int) = context.panelDataStore.edit { it[Keys.bottomPad] = dp.coerceIn(0, 28) }
 
     suspend fun saveLastPaths(left: String?, right: String?) = context.panelDataStore.edit { prefs ->
         if (left == null) prefs.remove(Keys.lastLeft) else prefs[Keys.lastLeft] = left

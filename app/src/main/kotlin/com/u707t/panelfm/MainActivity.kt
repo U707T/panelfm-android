@@ -3,6 +3,7 @@ package com.u707t.panelfm
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -13,6 +14,8 @@ import com.u707t.panelfm.ui.AppRoot
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 全面屏：内容延伸到状态栏/导航栏，由 Compose 侧统一处理安全区
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val container = (application as PanelApp).container
         setContent {

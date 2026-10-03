@@ -283,10 +283,12 @@ fun DualPaneScreen(
 
         // ---------------- 底部：多选工具栏 或 命令栏
         if (focused.hasSelection) {
+            val bottomExtraSel = container.settings.value.bottomBarPaddingDp.dp
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .height(52.dp + bottomExtraSel)
+                    .padding(bottom = bottomExtraSel)
                     .background(MaterialTheme.colorScheme.surface)
                     .padding(horizontal = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -299,10 +301,12 @@ fun DualPaneScreen(
                 TextCommand("取消") { controller.clearSelection(focusSide) }
             }
         } else {
+            val bottomExtra = container.settings.value.bottomBarPaddingDp.dp
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .height(52.dp)
+                    .height(52.dp + bottomExtra)
+                    .padding(bottom = bottomExtra)
                     .background(MaterialTheme.colorScheme.surface)
                     .pointerInput(Unit) {
                         // 底栏上滑 → 书签（MT 手册：从底栏上滑调出书签）
