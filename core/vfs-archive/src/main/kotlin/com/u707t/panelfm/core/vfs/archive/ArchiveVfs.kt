@@ -41,7 +41,8 @@ import java.io.InputStream
 class ArchiveVfs(
     val host: VfsUri,
     val kind: ArchiveKind,
-    private val localFile: File,
+    /** 本地可随机访问的副本（ZIP 增量写时需要重写它并回传到 host） */
+    val localFile: File,
     private val env: VfsEnv,
 ) : VirtualFileSystem {
 

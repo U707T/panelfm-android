@@ -156,6 +156,60 @@ class ArchiveVfsTest {
         assertTrue(inner.any { it.name == "sub" && it.isDirectory })
     }
 
+    @Test
+    fun `创建 tar gz 压缩包并回读`() = runTest {
+        val mem = MemoryVfs()
+        mem.put("/src/a.txt", "hello".toByteArray())
+        val locator = object : VfsLocator {
+            override fun find(uri: VfsUri): VirtualFileSystem? = if (uri.authority == "one") mem else null
+        }
+        val dest = VfsUri.of("mem", "one", "/out.tar.gz")
+        ArchiveCompressor(locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")),
+            dest,
+            ArchiveCompressor.Format.TAR_GZ,
+        )
+        val file = File.createTempFile("out", ".tar.gz").apply { writeBytes(mem.content("/out.tar.gz")) }
+        val vfs = ArchiveVfs(dest, ArchiveVfs.ArchiveKind.TAR_GZ, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(dest.toString()) + "!/"
+        assertTrue(vfs.list(VfsUri.of("archive", "targz", base)).any { it.name == "src" })
+        val inner = vfs.list(VfsUri.of("archive", "targz", base + "src"))
+        assertTrue(inner.any { it.name == "a.txt" && it.size == 5L })
+    }
+
+    @Test
+    fun `ZIP 内部增删改名（整包重写）`() = runTest {
+        val dir = Files.createTempDirectory("zipedit").toFile()
+        val zip = makeZip(dir)
+        val host = VfsUri.of("mem", "one", "/${zip.name}")
+        val mem = MemoryVfs()
+        mem.put("/new/added.txt", "added".toByteArray())
+        val locator = object : VfsLocator {
+            override fun find(uri: VfsUri): VirtualFileSystem? =
+                if (uri.authority == "one") mem else null
+        }
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, zip, env())
+        vfs.connect()
+        // mem 的 openWrite 落到内存，这里把结果写回磁盘验证
+        ZipEditor(vfs, locator).rewrite(
+            remove = setOf("a.txt"),
+            rename = mapOf("dir/b.bin" to "dir/renamed.bin"),
+            additions = listOf("added.txt" to VfsUri.of("mem", "one", "/new/added.txt")),
+        )
+        val rewritten = mem.content("/${zip.name}")
+        assertTrue("重写结果非空", rewritten.isNotEmpty())
+        val out = File(dir, "rewritten.zip").apply { writeBytes(rewritten) }
+        val check = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, out, env())
+        check.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        val root = check.list(VfsUri.of("archive", "zip", base))
+        assertTrue("a.txt 应已删除：${root.map { it.name }}", root.none { it.name == "a.txt" })
+        assertTrue("added.txt 应存在", root.any { it.name == "added.txt" })
+        val dirList = check.list(VfsUri.of("archive", "zip", base + "dir"))
+        assertTrue("重命名应生效：${dirList.map { it.name }}", dirList.any { it.name == "renamed.bin" })
+    }
+
     /** 极简内存 VFS：只实现压缩测试所需的能力 */
     private class MemoryVfs : VirtualFileSystem {
         override val id = "mem"

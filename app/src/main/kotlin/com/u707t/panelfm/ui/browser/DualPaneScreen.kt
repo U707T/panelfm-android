@@ -107,6 +107,8 @@ fun DualPaneScreen(
     var openWithFor by remember { mutableStateOf<FileMetadata?>(null) }
     var openWithManage by remember { mutableStateOf(false) }
     var batchRenameFor by remember { mutableStateOf<List<FileMetadata>?>(null) }
+    var compressFormatPicker by remember { mutableStateOf(false) }
+    var archiveRename by remember { mutableStateOf<FileMetadata?>(null) }
 
     val focused = ui.focusedPane
     val focusSide = ui.focused
@@ -268,6 +270,12 @@ fun DualPaneScreen(
                                 else controller.showStatus("当前目录没有压缩包")
                             },
                         )
+                        if (focused.uri.scheme == "archive") {
+                            DropdownMenuItem(
+                                text = { Text("添加对面选中项到压缩包（ZIP）") },
+                                onClick = { showCrossMenu = false; controller.addToArchive(focusSide) },
+                            )
+                        }
                         DropdownMenuItem(
                             text = { Text("比较两个目录") },
                             onClick = { showCrossMenu = false; controller.compareDirectories() },
@@ -364,14 +372,24 @@ fun DualPaneScreen(
                 when (id) {
                     "copy_to" -> controller.copyToOther(focusSide)
                     "move_to" -> controller.moveToOther(focusSide)
-                    "delete" -> deleting = item
+                    "delete" -> {
+                        if (focused.uri.scheme == "archive") {
+                            controller.deleteInsideArchive(focusSide, focused.selectedItems.ifEmpty { listOf(item) })
+                        } else {
+                            deleting = item
+                        }
+                    }
                     "rename" -> {
                         val picked = focused.selectedItems
-                        if (picked.size > 1) batchRenameFor = picked else renaming = item
+                        when {
+                            focused.uri.scheme == "archive" -> archiveRename = item
+                            picked.size > 1 -> batchRenameFor = picked
+                            else -> renaming = item
+                        }
                     }
                     "diff" -> controller.startFileDiff(focusSide)
                     "tools" -> toolsFor = item
-                    "compress" -> controller.compressHere(focusSide)
+                    "compress" -> compressFormatPicker = true
                     "properties" -> controller.showProperties(item)
                     "share" -> shareItem(container, context, item) { msg -> controller.showStatus(msg) }
                     "open_with" -> openWithFor = item
@@ -492,6 +510,35 @@ fun DualPaneScreen(
                 }
             },
             onDismiss = { permissionFor = null },
+        )
+    }
+    // 压缩格式选择（MT 支持 zip / 7z / tar / tar.gz / tar.bz2）
+    if (compressFormatPicker) {
+        AlertDialog(
+            onDismissRequest = { compressFormatPicker = false },
+            title = { Text("压缩格式") },
+            text = {
+                Column {
+                    com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.entries.forEach { fmt ->
+                        TextButton(onClick = {
+                            compressFormatPicker = false
+                            controller.compressHere(focusSide, fmt)
+                        }) { Text(fmt.label) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { compressFormatPicker = false }) { Text("关闭") } },
+        )
+    }
+    // 压缩包内重命名（完整路径，可改父目录 = 移动）
+    archiveRename?.let { item ->
+        TextInputDialog(
+            title = "重命名（压缩包内）",
+            initial = item.name,
+            label = "完整路径（可含目录）",
+            hint = "MT 语义：重命名的是完整路径，改父目录即为移动",
+            onConfirm = { newPath -> controller.renameInsideArchive(focusSide, item, newPath) },
+            onDismiss = { archiveRename = null },
         )
     }
     message?.let { (title, body) ->

@@ -645,6 +645,97 @@ class BrowserController(private val container: AppContainer) {
 
     fun cancelMove() = update { it.copy(pendingMove = null) }
 
+    // ------------------------------------------------------------------ 压缩包内写操作（MT：添加/删除/重命名）
+
+    private suspend fun archiveEditor(side: PaneSide): com.u707t.panelfm.core.vfs.archive.ZipEditor? {
+        val pane = pane(side)
+        if (pane.uri.scheme != "archive") return null
+        val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(pane.uri.path) ?: return null
+        val host = runCatching { VfsUri.parse(VfsUri.decodeHost(encoded)) }.getOrNull() ?: return null
+        val vfs = container.openArchive(host)
+        if (vfs.kind != com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ZIP) {
+            showStatus("只有 ZIP 支持内部修改（7z/tar 为只读）")
+            return null
+        }
+        return com.u707t.panelfm.core.vfs.archive.ZipEditor(vfs, container.locator)
+    }
+
+    private suspend fun refreshArchive(side: PaneSide) {
+        val pane = pane(side)
+        val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(pane.uri.path)
+        if (encoded != null) {
+            val host = runCatching { VfsUri.parse(VfsUri.decodeHost(encoded)) }.getOrNull()
+            if (host != null) container.forgetArchive(host.toString())
+        }
+        load(side)
+    }
+
+    /** 删除压缩包内条目（整包重写） */
+    fun deleteInsideArchive(side: PaneSide, items: List<FileMetadata>) {
+        container.scope.launch {
+            try {
+                val editor = archiveEditor(side) ?: return@launch
+                showStatus("正在重写压缩包（删除 ${items.size} 项）…")
+                val remove = items.map { entryPathOf(side, it) }.toSet()
+                editor.rewrite(remove = remove)
+                showStatus("已从压缩包删除 ${items.size} 项")
+                clearSelection(side)
+                refreshArchive(side)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "修改压缩包失败：${e.message}")
+            }
+        }
+    }
+
+    /** 重命名压缩包内条目（完整路径，可改父目录 = 移动） */
+    fun renameInsideArchive(side: PaneSide, item: FileMetadata, newFullPath: String) {
+        container.scope.launch {
+            try {
+                val editor = archiveEditor(side) ?: return@launch
+                val from = entryPathOf(side, item)
+                showStatus("正在重写压缩包…")
+                editor.rewrite(rename = mapOf(from to newFullPath.trimStart('/')))
+                showStatus("已更新压缩包")
+                refreshArchive(side)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "重命名失败：${e.message}")
+            }
+        }
+    }
+
+    /** 把对面窗格选中的项添加到当前压缩包（MT：和复制文件一样） */
+    fun addToArchive(side: PaneSide) {
+        val st = _state.value
+        val other = st.pane(side.other)
+        val sources = other.selectedItems.map { it.uri }.ifEmpty { other.items.map { it.uri } }
+        if (sources.isEmpty()) {
+            showStatus("对面窗格没有可添加的项")
+            return
+        }
+        container.scope.launch {
+            try {
+                val editor = archiveEditor(side) ?: return@launch
+                val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(pane(side).uri.path)
+                showStatus("正在添加 ${sources.size} 项到压缩包…")
+                val additions = sources.map { uri ->
+                    val name = (if (inner.isEmpty()) "" else "$inner/") + uri.name
+                    name to uri
+                }
+                editor.rewrite(additions = additions)
+                showStatus("已添加 ${sources.size} 项到压缩包")
+                refreshArchive(side)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "添加失败：${e.message}")
+            }
+        }
+    }
+
+    private fun entryPathOf(side: PaneSide, item: FileMetadata): String {
+        val base = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(pane(side).uri.path)
+        val rel = item.name
+        return (if (base.isEmpty()) rel else "$base/$rel").trimStart('/')
+    }
+
     // ------------------------------------------------------------------ 拖拽（M9）
 
     fun setGeometry(side: PaneSide, geometry: PaneGeometry) {
@@ -770,8 +861,9 @@ class BrowserController(private val container: AppContainer) {
         clearSelection(side)
     }
 
-    /** 压缩到当前目录（MT 的「压缩」） */
-    fun compressHere(side: PaneSide) {
+    /** 压缩到当前目录（MT 的「压缩」）：支持 zip / 7z / tar / tar.gz / tar.bz2 */
+    fun compressHere(side: PaneSide, format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format =
+        com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP) {
         val st = _state.value
         val pane = st.pane(side)
         val sources = targetSources(side)
@@ -779,12 +871,13 @@ class BrowserController(private val container: AppContainer) {
             showStatus("当前目录没有可压缩的项")
             return
         }
-        val name = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources)
+        val base = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
+        val name = "$base.${format.ext}"
         val dest = pane.uri.child(name)
         container.scope.launch {
-            showStatus("正在压缩 → $name")
+            showStatus("正在压缩为 ${format.label} → $name")
             try {
-                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator).compress(sources, dest)
+                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator).compress(sources, dest, format)
                 showStatus("已压缩为 $name")
                 clearSelection(side)
                 load(side)

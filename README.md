@@ -35,7 +35,11 @@ MT 管理器风格的**双窗格文件管理器**，Android 原生实现（Kotli
   | **SMB2/3** | **SMBJ** | 自动协商 3.1.1→3.0.2→2.1、NTLMv2（域/工作组）、共享访问、**偏移读写**（断点续传 + 局域网流媒体）、服务端 rename、共享容量 |
   | **S3 兼容** | **自研 SigV4**（OkHttp） | AWS S3 / R2 / COS / OSS / MinIO：ListBuckets 一键选择、ListObjectsV2 分页、path-style、Range 读、**Multipart 8MB 分片**、服务端 CopyObject、自动 Content-Type、自定义下载域名；**签名与 AWS 官方测试向量逐字节一致** |
 - **局域网扫描**：并发 TCP 探测 + banner 识别（SSH/FTP/SMB/WebDAV 端口），命中即可一键建连接。
-- **压缩包**：zip / jar / 7z / tar / tar.gz **挂载为只读 VFS** —— 直接进入压缩包逐层浏览、预览里面的文件、
+- **压缩包（对齐 mt.cc/guide/file/archive-file）**：
+  - 创建压缩包支持 **zip / 7z / tar / tar.gz / tar.bz2**（长按 → 压缩 → 选格式）
+  - **ZIP 内部写操作**：添加文件到 ZIP（`⇄ → 添加对面选中项到压缩包`）、删除 ZIP 内文件、
+    重命名（完整路径，改父目录即移动）—— 整包重写后回传（本地原子替换 / 网络流式写入）
+  - zip / jar / 7z / tar / tar.gz **挂载为只读 VFS** —— 直接进入压缩包逐层浏览、预览里面的文件、
   `⇄` 复制到对面窗格即**解压**；`⇄ → 压缩到对面（zip）` 把选中项打成 zip 写到另一个窗格（支持压缩到网络位置）。
     （按需求**不包含 APK 内部浏览**；Hex 仅保留只读查看，不做编辑。）
 - **工具**：回收站（本地删除可还原）、远程管理（内置只读 HTTP 服务，电脑浏览器直接浏览/下载任意窗格目录）、
