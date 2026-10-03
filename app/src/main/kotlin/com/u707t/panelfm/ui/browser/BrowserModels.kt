@@ -91,6 +91,12 @@ data class DragState(
     val over: PaneSide? get() = if (x < 0) null else if (from == PaneSide.LEFT && x > 0) PaneSide.RIGHT else if (from == PaneSide.RIGHT) PaneSide.LEFT else null
 }
 
+data class RenameConflict(
+    val from: VfsUri,
+    val target: VfsUri,
+    val keepOldName: String,
+)
+
 data class BrowserUiState(
     val left: PaneState = PaneState(),
     val right: PaneState = PaneState(),
@@ -105,6 +111,10 @@ data class BrowserUiState(
     val singlePane: Boolean = false,
     val diff: DiffResult? = null,
     val drag: DragState? = null,
+    /** 左窗格宽度比例（可拖动分隔条） */
+    val splitRatio: Float = 0.5f,
+    /** 重命名冲突（MT：交换 / 删除 / 备份） */
+    val renameConflict: RenameConflict? = null,
     val geometry: Map<PaneSide, PaneGeometry> = emptyMap(),
     /** 拖拽落点提示：复制 / 移动 */
     val dropHint: String? = null,

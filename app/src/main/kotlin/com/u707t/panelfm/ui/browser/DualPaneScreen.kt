@@ -3,6 +3,7 @@ package com.u707t.panelfm.ui.browser
 import android.app.Activity
 import android.content.Intent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -11,7 +12,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -22,6 +25,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -81,6 +85,7 @@ fun DualPaneScreen(
     onOpenPreview: (VfsUri) -> Unit,
     onOpenEditor: (VfsUri) -> Unit,
     onOpenDiff: (VfsUri, VfsUri) -> Unit,
+    onOpenTerminal: (String) -> Unit,
 ) {
     val ui by container.browser.state.collectAsState()
     val controller = container.browser
@@ -131,11 +136,51 @@ fun DualPaneScreen(
                     .weight(1f)
                     .padding(horizontal = 2.dp),
             ) {
-                Text(
-                    text = middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, 40),
-                    style = MaterialTheme.typography.titleSmall,
-                    maxLines = 1,
-                )
+                // 面包屑：点任意一级跳转；长按复制完整路径（MT 路径栏）
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val full = focused.uri.displayPath.ifEmpty { "/" }
+                    val segments = full.trim('/').split('/').filter { it.isNotEmpty() }
+                    val shown = if (segments.size > 4) segments.takeLast(4) else segments
+                    val prefixBase = "/" + segments.dropLast(shown.size).joinToString("/")
+                    if (segments.size > shown.size) {
+                        Text(
+                            "…",
+                            style = MaterialTheme.typography.titleSmall,
+                            modifier = Modifier
+                                .padding(horizontal = 2.dp)
+                                .clickableNoRipple { controller.open(focusSide, focused.uri.withPath("/"), focused.tab.connectionId, focused.tab.label) },
+                        )
+                    }
+                    shown.forEachIndexed { index, seg ->
+                        val path = (prefixBase.trimEnd('/') + "/" + shown.take(index + 1).joinToString("/")).replace("//", "/")
+                        Text(
+                            seg + "/",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = if (index == shown.lastIndex) MaterialTheme.colorScheme.onSurface
+                            else MaterialTheme.colorScheme.primary,
+                            maxLines = 1,
+                            modifier = Modifier
+                                .padding(horizontal = 1.dp)
+                                .combinedClickable(
+                                    onClick = {
+                                        controller.open(
+                                            focusSide,
+                                            focused.uri.withPath(path),
+                                            focused.tab.connectionId,
+                                            focused.tab.label,
+                                        )
+                                    },
+                                    onLongClick = {
+                                        clipboard.setText(AnnotatedString(focused.uri.toString()))
+                                        controller.showStatus("已复制路径：${focused.uri.displayPath}")
+                                    },
+                                ),
+                        )
+                    }
+                }
                 Text(
                     buildString {
                         append("文件夹: ").append(focused.dirCount)
@@ -167,16 +212,32 @@ fun DualPaneScreen(
                     focused = ui.focused == PaneSide.LEFT,
                     highlight = ui.highlight && ui.focused == PaneSide.LEFT,
                     controller = controller,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(ui.splitRatio),
                     onRowAction = { rowAction = it },
                 )
             }
             if (showLeft && showRight) {
+                // 可拖动分隔条（MT：左右比例可调）
                 Box(
                     Modifier
-                        .size(width = 1.dp, height = 1.dp)
-                        .background(MaterialTheme.colorScheme.outline),
-                )
+                        .width(10.dp)
+                        .fillMaxHeight()
+                        .pointerInput(Unit) {
+                            val widthPx = this.size.width.toFloat().coerceAtLeast(1f)
+                            detectDragGestures { change, dragAmount ->
+                                change.consume()
+                                controller.setSplitRatio(ui.splitRatio + dragAmount.x / widthPx)
+                            }
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Box(
+                        Modifier
+                            .width(2.dp)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.outline),
+                    )
+                }
             }
             if (showRight) {
                 PaneView(
@@ -186,7 +247,7 @@ fun DualPaneScreen(
                     focused = ui.focused == PaneSide.RIGHT,
                     highlight = ui.highlight && ui.focused == PaneSide.RIGHT,
                     controller = controller,
-                    modifier = Modifier.weight(1f),
+                    modifier = Modifier.weight(1f - ui.splitRatio),
                     onRowAction = { rowAction = it },
                 )
             }
@@ -238,7 +299,7 @@ fun DualPaneScreen(
                     .pointerInput(Unit) {
                         // 底栏上滑 → 书签（MT 手册：从底栏上滑调出书签）
                         detectVerticalDragGestures { _, dragAmount ->
-                            if (dragAmount < -12f) onOpenBookmarks()
+                            if (dragAmount < -12f && container.settings.value.bookmarkSwipe) onOpenBookmarks()
                         }
                     }
                     .padding(horizontal = 4.dp),
@@ -275,6 +336,25 @@ fun DualPaneScreen(
                                 text = { Text("添加对面选中项到压缩包（ZIP）") },
                                 onClick = { showCrossMenu = false; controller.addToArchive(focusSide) },
                             )
+                            DropdownMenuItem(
+                                text = { Text("解压到对面窗格") },
+                                onClick = { showCrossMenu = false; controller.extractTo(focusSide, ui.pane(focusSide.other).uri) },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("解压到压缩包所在目录") },
+                                onClick = {
+                                    showCrossMenu = false
+                                    val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
+                                    val host = encoded?.let { VfsUri.decodeHost(it) }?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+                                    val dir = host?.parent
+                                    if (dir != null) controller.extractTo(focusSide, dir)
+                                    else controller.showStatus("无法确定压缩包所在目录")
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("测试压缩包完整性") },
+                                onClick = { showCrossMenu = false; controller.testArchive(focusSide) },
+                            )
                         }
                         DropdownMenuItem(
                             text = { Text("比较两个目录") },
@@ -305,6 +385,10 @@ fun DualPaneScreen(
         DropdownMenuItem(
             text = { Text(if (ui.singlePane) "切换为双列" else "切换为单列") },
             onClick = { showMoreMenu = false; controller.toggleSinglePane() },
+        )
+        DropdownMenuItem(
+            text = { Text("打开终端（当前路径）") },
+            onClick = { showMoreMenu = false; onOpenTerminal(focused.uri.displayPath.ifEmpty { "/" }) },
         )
         DropdownMenuItem(text = { Text("主页") }, onClick = { showMoreMenu = false; onOpenHome() })
         DropdownMenuItem(text = { Text("传输任务") }, onClick = { showMoreMenu = false; onOpenTasks() })
@@ -748,6 +832,21 @@ fun DualPaneScreen(
     }
 
     // ---------------- 冲突 / 移动确认 / 属性
+    ui.renameConflict?.let { conflict ->
+        AlertDialog(
+            onDismissRequest = { controller.dismissRenameConflict() },
+            title = { Text("目标名称已存在") },
+            text = { Text("「${conflict.target.name}」已存在，与源文件同名（都不是文件夹）。请选择处理方式：") },
+            confirmButton = { TextButton(onClick = { controller.resolveRenameConflict("swap") }) { Text("交换") } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = { controller.resolveRenameConflict("delete") }) { Text("删除目标") }
+                    TextButton(onClick = { controller.resolveRenameConflict("backup") }) { Text("备份(.bak)") }
+                    TextButton(onClick = { controller.dismissRenameConflict() }) { Text("取消") }
+                }
+            },
+        )
+    }
     ui.pendingMove?.let { pending ->
         MoveConfirmDialog(pending, onConfirm = { controller.confirmMove() }, onCancel = { controller.cancelMove() })
     }

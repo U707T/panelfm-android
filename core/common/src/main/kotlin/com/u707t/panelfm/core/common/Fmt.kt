@@ -8,7 +8,11 @@ import kotlin.math.abs
 /** 全应用统一的显示格式化（大小 / 时间 / 速度 / 剩余时间）。 */
 object Fmt {
 
+    /** 是否在列表时间中显示秒（由设置控制） */
+    var showSeconds: Boolean = false
+
     private val timeFmt = DateTimeFormatter.ofPattern("yy-MM-dd HH:mm")
+    private val timeFmtSeconds = DateTimeFormatter.ofPattern("yy-MM-dd HH:mm:ss")
     private val fullTimeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
     private val units = arrayOf("B", "KB", "MB", "GB", "TB", "PB")
@@ -25,8 +29,9 @@ object Fmt {
         return if (v >= 100) "${v.toInt()} ${units[i]}" else String.format("%.1f %s", v, units[i])
     }
 
-    fun time(epochMs: Long): String =
-        if (epochMs <= 0) "" else Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(timeFmt)
+    fun time(epochMs: Long): String = if (epochMs <= 0) "" else Instant.ofEpochMilli(epochMs)
+        .atZone(ZoneId.systemDefault())
+        .format(if (showSeconds) timeFmtSeconds else timeFmt)
 
     fun fullTime(epochMs: Long): String =
         if (epochMs <= 0) "" else Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(fullTimeFmt)

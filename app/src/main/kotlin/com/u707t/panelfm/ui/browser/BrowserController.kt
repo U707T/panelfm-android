@@ -45,12 +45,43 @@ class BrowserController(private val container: AppContainer) {
     private val loadJobs = mutableMapOf<PaneSide, Job>()
 
     init {
-        _state.value = _state.value.copy(
-            left = _state.value.left.copy(showHidden = false),
-        )
+        val settings = container.settings.value
+        com.u707t.panelfm.core.common.Fmt.showSeconds = settings.showSeconds
+        val (lastLeft, lastRight) = if (settings.rememberLastPath) container.prefs.lastPaths() else (null to null)
+        val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+        val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+        update {
+            it.copy(
+                splitRatio = settings.splitRatio,
+                left = if (leftUri != null && container.locator.find(leftUri) != null)
+                    it.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority))) else it.left,
+                right = if (rightUri != null && container.locator.find(rightUri) != null)
+                    it.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority))) else it.right,
+            )
+        }
         load(PaneSide.LEFT)
         load(PaneSide.RIGHT)
         observeTasks()
+        // 路径变化时记忆（轻量：只在导航后写一次）
+        container.scope.launch {
+            container.settings.collect { s ->
+                com.u707t.panelfm.core.common.Fmt.showSeconds = s.showSeconds
+            }
+        }
+    }
+
+    /** 退出前保存双列路径（MT：记忆上次路径） */
+    fun persistPaths() {
+        if (!container.settings.value.rememberLastPath) return
+        val st = _state.value
+        container.scope.launch {
+            container.prefs.saveLastPaths(st.left.uri.toString(), st.right.uri.toString())
+        }
+    }
+
+    fun persistSplitRatio() {
+        val ratio = _state.value.splitRatio
+        container.scope.launch { container.prefs.setSplitRatio(ratio) }
     }
 
     // ------------------------------------------------------------------ 状态读写
@@ -522,6 +553,12 @@ class BrowserController(private val container: AppContainer) {
             try {
                 val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("会话不可用")
                 val target = uri.parent?.child(newName) ?: throw VfsException.ProtocolError("无法重命名根目录")
+                // MT：目标已存在且都不是文件夹时，弹「交换 / 删除 / 备份」选择
+                val exists = runCatching { withContext(container.dispatchers.vfs) { vfs.stat(target) } }.getOrNull()
+                if (exists != null && !exists.isDirectory) {
+                    update { it.copy(renameConflict = RenameConflict(uri, target, uri.name)) }
+                    return@launch
+                }
                 val ok = withContext(container.dispatchers.vfs) { vfs.rename(uri, target) }
                 if (!ok) throw VfsException.ProtocolError("服务器拒绝重命名（可能需要服务端复制）")
                 showStatus("已重命名为 $newName")
@@ -530,6 +567,113 @@ class BrowserController(private val container: AppContainer) {
                 showStatus((e as? VfsException)?.userMessage ?: "重命名失败：${e.message}")
             }
         }
+    }
+
+    /** 处理重命名冲突（MT 的三种处理） */
+    fun resolveRenameConflict(action: String) {
+        val conflict = _state.value.renameConflict ?: return
+        update { it.copy(renameConflict = null) }
+        container.scope.launch {
+            try {
+                val vfs = container.locator.find(conflict.from) ?: throw VfsException.Unsupported("会话不可用")
+                val side = _state.value.focused
+                when (action) {
+                    "swap" -> {
+                        // 交换文件名：目标先改到临时名，源改到目标名，临时名再改成源名
+                        val tmp = conflict.target.parent?.child(".panelfm.swap.${System.currentTimeMillis()}")
+                        if (tmp == null) throw VfsException.ProtocolError("无法交换")
+                        withContext(container.dispatchers.vfs) {
+                            vfs.rename(conflict.target, tmp)
+                            vfs.rename(conflict.from, conflict.target)
+                            vfs.rename(tmp, conflict.from)
+                        }
+                        showStatus("已交换文件名")
+                    }
+                    "delete" -> {
+                        withContext(container.dispatchers.vfs) {
+                            vfs.delete(listOf(conflict.target))
+                            vfs.rename(conflict.from, conflict.target)
+                        }
+                        showStatus("已删除同名文件并完成重命名")
+                    }
+                    "backup" -> {
+                        withContext(container.dispatchers.vfs) {
+                            vfs.rename(conflict.target, conflict.target.parent?.child(conflict.target.name + ".bak") ?: conflict.target)
+                            vfs.rename(conflict.from, conflict.target)
+                        }
+                        showStatus("原文件已备份为 .bak")
+                    }
+                }
+                load(side)
+            } catch (e: Exception) {
+                showStatus((e as? VfsException)?.userMessage ?: "重命名失败：${e.message}")
+            }
+        }
+    }
+
+    fun dismissRenameConflict() = update { it.copy(renameConflict = null) }
+
+    /** 解压：把当前（压缩包内）选中项复制到指定目录 */
+    fun extractTo(side: PaneSide, destDir: VfsUri) {
+        val sources = targetSources(side)
+        if (sources.isEmpty()) {
+            showStatus("当前目录没有可解压的项")
+            return
+        }
+        update { it.copy(status = "解压 ${sources.size} 项 → ${destDir.displayPath}") }
+        container.engine.enqueue(
+            TransferRequest(sources = sources, destDir = destDir, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
+        )
+        clearSelection(side)
+    }
+
+    /** 压缩包完整性测试（ZIP：逐条读取校验 CRC） */
+    fun testArchive(side: PaneSide) {
+        val pane = pane(side)
+        container.scope.launch {
+            try {
+                val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(pane.uri.path)
+                val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
+                if (host == null) {
+                    showStatus("当前不在压缩包内")
+                    return@launch
+                }
+                val vfs = container.openArchive(host)
+                val all = withContext(container.dispatchers.vfs) { listRecursive(vfs, com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, vfs.kind)) }
+                var ok = 0
+                var bad = 0
+                all.forEach { item ->
+                    if (!item.isDirectory) {
+                        runCatching {
+                            val reader = vfs.openRead(item.uri)
+                            val buf = ByteArray(64 * 1024)
+                            try {
+                                while (reader.read(buf, 0, buf.size) >= 0) Unit
+                            } finally {
+                                runCatching { reader.close() }
+                            }
+                        }.onSuccess { ok++ }.onFailure { bad++ }
+                    }
+                }
+                showStatus(if (bad == 0) "压缩包完整性检查通过（$ok 个文件）" else "压缩包有 $bad 个文件损坏（共 $ok 正常）")
+            } catch (e: Exception) {
+                showStatus("测试失败：${e.message}")
+            }
+        }
+    }
+
+    private suspend fun listRecursive(
+        vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
+        dir: VfsUri,
+        depth: Int = 0,
+    ): List<FileMetadata> {
+        if (depth > 16) return emptyList()
+        val out = ArrayList<FileMetadata>()
+        withContext(container.dispatchers.vfs) { vfs.list(dir) }.forEach { item ->
+            out.add(item)
+            if (item.isDirectory) out.addAll(listRecursive(vfs, item.uri, depth + 1))
+        }
+        return out
     }
 
     fun createFolder(side: PaneSide, name: String) {
@@ -738,6 +882,15 @@ class BrowserController(private val container: AppContainer) {
 
     // ------------------------------------------------------------------ 拖拽（M9）
 
+    /** 拖动分隔条 */
+    fun setSplitRatio(ratio: Float) = update { it.copy(splitRatio = ratio.coerceIn(0.25f, 0.75f)) }
+
+    /** 复制当前路径（MT：长按路径栏） */
+    fun copyPath(side: PaneSide) {
+        val uri = pane(side).uri
+        showStatus("路径：${uri.toString()}")
+    }
+
     fun setGeometry(side: PaneSide, geometry: PaneGeometry) {
         update { it.copy(geometry = it.geometry + (side to geometry)) }
     }
@@ -752,10 +905,12 @@ class BrowserController(private val container: AppContainer) {
         val drag = _state.value.drag ?: return
         val target = drag.from.other
         val geo = _state.value.geometry[target]
+        val rowIndex = geo?.rowIndexAt(y) ?: -1
+        val rowItem = if (rowIndex >= 0) pane(target).items.getOrNull(rowIndex) else null
         val hint = when {
             geo == null || !geo.contains(x, y) -> null
-            geo.rowIndexAt(y) >= 0 -> "复制到「${pane(target).uri.name.ifEmpty { "/" }}」"
-            else -> "移动到「${pane(target).uri.name.ifEmpty { "/" }}」"
+            rowItem?.isDirectory == true -> "复制到目录「${rowItem.name}」"
+            else -> "复制到「${pane(target).uri.name.ifEmpty { "/" }}」"
         }
         update { it.copy(drag = drag.copy(x = x, y = y), dropHint = hint) }
     }
@@ -772,29 +927,19 @@ class BrowserController(private val container: AppContainer) {
             showStatus("已取消拖拽（松手位置不在另一窗格）")
             return
         }
-        val overRow = geo.rowIndexAt(drag.y) >= 0
-        if (overRow) {
-            // 落在文件行上 → 复制
-            container.engine.enqueue(
-                TransferRequest(sources = drag.sources, destDir = dest, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
-            )
-            showStatus("拖拽复制 ${drag.sources.size} 项 → ${dest.displayPath}")
+        // MT 语义：拖到另一窗口的目录行上 = 复制进该目录；拖到窗口（列表）其他位置 = 复制到该窗口当前目录
+        val rowIndex = geo.rowIndexAt(drag.y)
+        val targetDir = if (rowIndex >= 0) {
+            pane(targetSide).items.getOrNull(rowIndex)
+                ?.takeIf { it.isDirectory }
+                ?.uri ?: dest
         } else {
-            // 落在目录空白区域 → 移动（需二次确认）
-            update {
-                it.copy(
-                    pendingMove = PendingMove(
-                        sources = drag.sources,
-                        destDir = dest,
-                        count = drag.sources.size,
-                        bytes = 0,
-                        crossVfs = container.locator.find(drag.sources.first()) !== container.locator.find(dest),
-                        fromLabel = drag.label,
-                        toLabel = dest.displayPath,
-                    )
-                )
-            }
+            dest
         }
+        container.engine.enqueue(
+            TransferRequest(sources = drag.sources, destDir = targetDir, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
+        )
+        showStatus("拖拽复制 ${drag.sources.size} 项 → ${targetDir.displayPath}")
     }
 
     fun cancelDrag() = update { it.copy(drag = null, dropHint = null) }

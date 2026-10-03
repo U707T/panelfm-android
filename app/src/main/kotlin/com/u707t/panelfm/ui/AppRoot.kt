@@ -54,7 +54,7 @@ sealed interface Screen {
     data object Trash : Screen
     data object Apps : Screen
     data object Remote : Screen
-    data object Terminal : Screen
+    data class Terminal(val cwd: String = "/sdcard") : Screen
     data class ConnectionEdit(
         val connectionId: Long?,
         val prefillHost: String? = null,
@@ -72,6 +72,10 @@ fun AppRoot(container: AppContainer) {
     val pop: () -> Unit = { if (stack.size > 1) stack = stack.dropLast(1) }
 
     BackHandler(enabled = stack.size > 1) { pop() }
+
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        onDispose { runCatching { container.browser.persistPaths() } }
+    }
 
     // 预览请求（点击文件）由控制器发起
     val previewRequest by container.browser.previewRequest.collectAsState()
@@ -206,6 +210,7 @@ fun AppRoot(container: AppContainer) {
                     )
                 },
                 onOpenDiff = { l, r -> push(Screen.TextDiff(l, r)) },
+                onOpenTerminal = { cwd -> push(Screen.Terminal(cwd)) },
             )
 
             Screen.Home -> HomeScreen(
@@ -220,7 +225,7 @@ fun AppRoot(container: AppContainer) {
                 onOpenTrash = { push(Screen.Trash) },
                 onOpenApps = { push(Screen.Apps) },
                 onOpenRemote = { push(Screen.Remote) },
-                onOpenTerminal = { push(Screen.Terminal) },
+                onOpenTerminal = { push(Screen.Terminal("/sdcard")) },
                 onOpenEditor = { push(Screen.Browser) },
             )
 
@@ -234,7 +239,7 @@ fun AppRoot(container: AppContainer) {
             Screen.Trash -> TrashScreen(container = container, onBack = pop)
             Screen.Apps -> AppsScreen(container = container, onBack = pop)
             Screen.Remote -> RemoteScreen(container = container, onBack = pop)
-            Screen.Terminal -> TerminalScreen(onBack = pop)
+            is Screen.Terminal -> TerminalScreen(cwd = current.cwd, onBack = pop)
             Screen.LanScan -> LanScanScreen(
                 container = container,
                 onBack = pop,

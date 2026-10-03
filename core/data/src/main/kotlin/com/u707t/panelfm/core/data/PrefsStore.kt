@@ -28,6 +28,14 @@ data class AppSettings(
     val trustSelfSigned: Boolean = false,
     /** 「设为首页」的路径（URI 字符串），空 = 内部存储根 */
     val homePath: String? = null,
+    /** 时间显示到秒 */
+    val showSeconds: Boolean = false,
+    /** 记忆上次的双列路径 */
+    val rememberLastPath: Boolean = true,
+    /** 左右分隔比例 */
+    val splitRatio: Float = 0.5f,
+    /** 底栏上滑调出书签 */
+    val bookmarkSwipe: Boolean = true,
     val skipThumbsWhileScrolling: Boolean = true,
 )
 
@@ -48,6 +56,12 @@ class PrefsStore(private val context: Context) {
         val userAgent = stringPreferencesKey("user_agent")
         val trustSelfSigned = booleanPreferencesKey("trust_self_signed")
         val homePath = stringPreferencesKey("home_path")
+        val showSeconds = booleanPreferencesKey("show_seconds")
+        val rememberLast = booleanPreferencesKey("remember_last_path")
+        val splitRatio = androidx.datastore.preferences.core.floatPreferencesKey("split_ratio")
+        val bookmarkSwipe = booleanPreferencesKey("bookmark_swipe")
+        val lastLeft = stringPreferencesKey("last_left")
+        val lastRight = stringPreferencesKey("last_right")
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -64,6 +78,10 @@ class PrefsStore(private val context: Context) {
             userAgent = p[Keys.userAgent] ?: "PanelFM/0.1 (Android)",
             trustSelfSigned = p[Keys.trustSelfSigned] ?: false,
             homePath = p[Keys.homePath],
+            showSeconds = p[Keys.showSeconds] ?: false,
+            rememberLastPath = p[Keys.rememberLast] ?: true,
+            splitRatio = p[Keys.splitRatio] ?: 0.5f,
+            bookmarkSwipe = p[Keys.bookmarkSwipe] ?: true,
         )
     }
 
@@ -80,6 +98,32 @@ class PrefsStore(private val context: Context) {
     suspend fun setSingleColumn(on: Boolean) = context.panelDataStore.edit { it[Keys.singleColumn] = on }
     suspend fun setUserAgent(ua: String) = context.panelDataStore.edit { it[Keys.userAgent] = ua }
     suspend fun setTrustSelfSigned(on: Boolean) = context.panelDataStore.edit { it[Keys.trustSelfSigned] = on }
+
+    suspend fun setShowSeconds(on: Boolean) = context.panelDataStore.edit { it[Keys.showSeconds] = on }
+    suspend fun setRememberLastPath(on: Boolean) = context.panelDataStore.edit { it[Keys.rememberLast] = on }
+    suspend fun setSplitRatio(ratio: Float) = context.panelDataStore.edit { it[Keys.splitRatio] = ratio }
+    suspend fun setBookmarkSwipe(on: Boolean) = context.panelDataStore.edit { it[Keys.bookmarkSwipe] = on }
+
+    suspend fun saveLastPaths(left: String?, right: String?) = context.panelDataStore.edit { prefs ->
+        if (left == null) prefs.remove(Keys.lastLeft) else prefs[Keys.lastLeft] = left
+        if (right == null) prefs.remove(Keys.lastRight) else prefs[Keys.lastRight] = right
+    }
+
+    fun lastPaths(): Pair<String?, String?> {
+        // 注意：DataStore 是异步的，这里用 runBlocking 只为启动时读取一次
+        return runCatching {
+            kotlinx.coroutines.runBlocking {
+                var l: String? = null
+                var r: String? = null
+                context.panelDataStore.data.collect { p ->
+                    l = p[Keys.lastLeft]
+                    r = p[Keys.lastRight]
+                    throw kotlinx.coroutines.CancellationException()
+                }
+                l to r
+            }
+        }.getOrElse { null to null }
+    }
 
     suspend fun setHomePath(uri: String?) = context.panelDataStore.edit { prefs ->
         if (uri == null) prefs.remove(Keys.homePath) else prefs[Keys.homePath] = uri

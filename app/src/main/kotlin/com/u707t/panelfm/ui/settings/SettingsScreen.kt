@@ -46,6 +46,15 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("动态取色（Android 12+）", settings.dynamicColor) {
             scope.launch { container.prefs.setDynamicColor(it) }
         }
+        SettingSwitch("时间显示到秒", settings.showSeconds) {
+            scope.launch { container.prefs.setShowSeconds(it) }
+        }
+        SettingSwitch("记忆上次的双列路径", settings.rememberLastPath) {
+            scope.launch { container.prefs.setRememberLastPath(it) }
+        }
+        SettingSwitch("底栏上滑调出书签", settings.bookmarkSwipe) {
+            scope.launch { container.prefs.setBookmarkSwipe(it) }
+        }
         SettingSwitch("默认显示隐藏文件", settings.showHidden) {
             scope.launch { container.prefs.setShowHidden(it) }
         }

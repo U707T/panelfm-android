@@ -204,8 +204,8 @@ private suspend fun exportApk(
 // ---------------------------------------------------------------------------
 
 @Composable
-fun TerminalScreen(onBack: () -> Unit) {
-    var input by remember { mutableStateOf("ls /sdcard") }
+fun TerminalScreen(cwd: String = "/sdcard", onBack: () -> Unit) {
+    var input by remember { mutableStateOf("ls " + cwd) }
     var output by remember { mutableStateOf("PanelFM 终端（非 root）：输入命令后回车执行\n") }
     val scope = rememberCoroutineScope()
 
