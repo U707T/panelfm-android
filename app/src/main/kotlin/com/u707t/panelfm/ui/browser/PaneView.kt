@@ -32,14 +32,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.positionChange
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
-import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -67,10 +69,6 @@ private class RowGestures(
     val onSwipeSelect: (Int) -> Unit,
     val onSweepTo: (Int) -> Unit,
     val onLongPress: () -> Unit,
-    val onDragStart: (Offset) -> Unit,
-    val onDrag: (Float, Float) -> Unit,
-    val onDragEnd: () -> Unit,
-    val onDragCancel: () -> Unit,
 )
 
 /**
@@ -78,8 +76,9 @@ private class RowGestures(
  *  - 顶部一行：路径（中间省略）+ 统计
  *  - 列表首行 `..`；行高固定
  *  - **左右滑动任意项 = 进入多选**（继续滑过行间 = 连续区间选择，MT 同款）
- *  - **长按后松手 = MT 动作菜单**（带 ● 的项支持长按触发单窗口操作）；**长按后拖动 = 跨窗格拖拽**
+ *  - **长按后松手 = MT 动作菜单**（带 ● 的项支持长按触发单窗口操作）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
+ *  - 跨窗格操作用动作菜单「复制 -> / 移动 ->」或底栏 `⇄`（长按拖动跨窗格已按需求移除）
  */
 @Composable
 fun PaneView(
@@ -93,8 +92,6 @@ fun PaneView(
     onRowAction: (FileMetadata) -> Unit,
 ) {
     val listState = rememberLazyListState()
-    val density = LocalDensity.current
-    val rowHeightPx = with(density) { ROW_HEIGHT.toPx() }
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
 
     /** 列表在根坐标系中的顶部（把行内局部坐标换算成列表坐标） */
@@ -165,26 +162,7 @@ fun PaneView(
         }
 
         // ---- 列表
-        Box(
-            Modifier
-                .weight(1f)
-                .onGloballyPositioned { coords ->
-                    val bounds = coords.boundsInRoot()
-                    controller.setGeometry(
-                        side,
-                        PaneGeometry(
-                            left = bounds.left,
-                            top = bounds.top,
-                            width = bounds.width,
-                            height = bounds.height,
-                            listTop = bounds.top,
-                            rowHeightPx = rowHeightPx,
-                            hasParentRow = canGoUp,
-                            itemCount = pane.items.size,
-                        )
-                    )
-                }
-        ) {
+        Box(Modifier.weight(1f)) {
             when {
                 pane.loading && pane.items.isEmpty() -> LoadingState()
                 pane.error != null -> ErrorState(
@@ -200,23 +178,8 @@ fun PaneView(
                     state = listState,
                     modifier = Modifier
                         .fillMaxSize()
-                        .onGloballyPositioned { coords ->
-                            val b = coords.boundsInRoot()
-                            listTopRoot = b.top
-                            controller.setGeometry(
-                                side,
-                                PaneGeometry(
-                                    left = b.left,
-                                    top = b.top,
-                                    width = b.width,
-                                    height = b.height,
-                                    listTop = b.top,
-                                    rowHeightPx = rowHeightPx,
-                                    hasParentRow = canGoUp,
-                                    itemCount = pane.items.size,
-                                )
-                            )
-                        },
+                        // 列表顶部（根坐标）：把触摸位置换算成行下标（滑动多选用）
+                        .onGloballyPositioned { coords -> listTopRoot = coords.boundsInRoot().top },
                 ) {
                     if (canGoUp) {
                         item(key = "__parent__") { ParentRow(onClick = { controller.up(side) }) }
@@ -248,25 +211,11 @@ fun PaneView(
                                 if (anchor >= 0 && index != anchor) controller.setSelectionRange(side, anchor, index)
                             },
                             onLongPress = {
-                                // MT：长按（松手未拖动）= 动作菜单；该项自动进入选择
+                                // MT：长按松手 = 动作菜单；该项自动进入选择
                                 controller.focus(side)
                                 if (!pane.hasSelection) controller.enterSelectionMode(side, item)
                                 onRowAction(item)
                             },
-                            onDragStart = { rootPosition ->
-                                val sources = if (pane.hasSelection) pane.selectedItems.map { it.uri }
-                                else listOf(item.uri)
-                                controller.startDrag(
-                                    side = side,
-                                    sources = sources,
-                                    label = pane.uri.displayPath,
-                                    x = rootPosition.x,
-                                    y = rootPosition.y,
-                                )
-                            },
-                            onDrag = { x, y -> controller.updateDrag(x, y) },
-                            onDragEnd = { controller.endDrag() },
-                            onDragCancel = { controller.cancelDrag() },
                         )
                     }
                 }
@@ -278,11 +227,17 @@ fun PaneView(
 /** `..` 返回上级（MT 列表首行） */
 @Composable
 private fun ParentRow(onClick: () -> Unit) {
+    val tapAction = onClick
     Row(
         Modifier
             .fillMaxWidth()
             .height(ROW_HEIGHT)
             .clickable(onClick = onClick)
+            .clearAndSetSemantics {
+                contentDescription = "返回上级目录"
+                role = Role.Button
+                onClick(label = "返回上级") { tapAction(); true }
+            }
             .padding(start = 14.dp, end = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -312,15 +267,11 @@ private fun MtFileRow(
     onSwipeSelect: (Int) -> Unit,
     onSweepTo: (Int) -> Unit,
     onLongPress: () -> Unit,
-    onDragStart: (Offset) -> Unit,
-    onDrag: (Float, Float) -> Unit,
-    onDragEnd: () -> Unit,
-    onDragCancel: () -> Unit,
 ) {
     val alpha = if (dimmed) 0.62f else 1f
     val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
     val haptic = LocalHapticFeedback.current
-    // 行在根坐标系中的位置（滑动选择 / 拖拽落点判定需要绝对坐标）
+    // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）
     var rootOffset by remember { mutableStateOf(Offset.Zero) }
     val gestures by rememberUpdatedState(
         RowGestures(
@@ -330,10 +281,6 @@ private fun MtFileRow(
             onSwipeSelect = onSwipeSelect,
             onSweepTo = onSweepTo,
             onLongPress = onLongPress,
-            onDragStart = onDragStart,
-            onDrag = onDrag,
-            onDragEnd = onDragEnd,
-            onDragCancel = onDragCancel,
         )
     )
 
@@ -347,8 +294,8 @@ private fun MtFileRow(
             //   · 单击              = 打开 / 预览（多选态 = 切换选中）
             //   · 左右滑动          = 进入多选；滑过行间 = 连续区间选择（替换语义）
             //   · 长按后松手        = 动作菜单（带 ● 的项可长按触发单窗口操作）
-            //   · 长按后拖动        = 跨窗格拖拽（落在对面行 = 复制，落在对面空白 = 复制到该目录）
             //   · 纵向拖动（未越阈值）= 交给列表滚动（不消费事件）
+            //   （跨窗格复制用动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已按需求移除）
             // ------------------------------------------------------------------
             .pointerInput(item.uri.toString()) {
                 val touchSlop = viewConfiguration.touchSlop
@@ -359,87 +306,74 @@ private fun MtFileRow(
                     val downTime = down.uptimeMillis
                     val downIndex = gestures.indexAtRoot(gestures.rowTop().y + downPos.y)
                     var mode = RowGestureMode.UNDECIDED
-                    var dragStarted = false
-                    var dragEnded = false
-                    var dragPos = Offset.Zero
                     var lastIndex = downIndex
 
-                    try {
-                        while (true) {
-                            val event = awaitPointerEvent()
-                            val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                            val pos = change.position
-                            val dx = pos.x - downPos.x
-                            val dy = pos.y - downPos.y
-                            val elapsed = change.uptimeMillis - downTime
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        val pos = change.position
+                        val dx = pos.x - downPos.x
+                        val dy = pos.y - downPos.y
+                        val elapsed = change.uptimeMillis - downTime
 
-                            if (mode == RowGestureMode.UNDECIDED) {
-                                when {
-                                    // 松手：短按 = 点击；超过长按阈值 = 动作菜单
-                                    !change.pressed -> {
-                                        if (elapsed >= longPressTimeout) gestures.onLongPress() else gestures.onTap()
-                                        change.consume()
-                                        break
-                                    }
-                                    // 长按阈值到：进入「长按」态（震动提示；继续看是拖动还是松手）
-                                    elapsed >= longPressTimeout -> {
-                                        mode = RowGestureMode.LONG_PRESS
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    }
-                                    // 横向为主且越过阈值 → 进入滑动多选
-                                    downIndex >= 0 && abs(dx) > touchSlop && abs(dx) > abs(dy) -> {
-                                        mode = RowGestureMode.SWEEP
-                                        gestures.onSwipeSelect(downIndex)
-                                        change.consume()
-                                    }
-                                    // 纵向为主 → 列表滚动，不消费事件
-                                    abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
-                                }
-                            }
-
-                            when (mode) {
-                                RowGestureMode.LONG_PRESS -> {
-                                    if (!change.pressed) {
-                                        if (dragStarted) {
-                                            dragEnded = true
-                                            gestures.onDragEnd()
-                                        } else {
-                                            gestures.onLongPress()
-                                        }
-                                        change.consume()
-                                        break
-                                    }
-                                    if (!dragStarted && (abs(dx) > touchSlop || abs(dy) > touchSlop)) {
-                                        dragStarted = true
-                                        dragPos = Offset(gestures.rowTop().x + pos.x, gestures.rowTop().y + pos.y)
-                                        gestures.onDragStart(dragPos)
-                                    }
-                                    if (dragStarted) {
-                                        dragPos += change.positionChange()
-                                        gestures.onDrag(dragPos.x, dragPos.y)
-                                        change.consume()
-                                    }
-                                }
-                                RowGestureMode.SWEEP -> {
-                                    val index = gestures.indexAtRoot(gestures.rowTop().y + pos.y)
-                                    if (index >= 0 && index != lastIndex) {
-                                        lastIndex = index
-                                        gestures.onSweepTo(index)
-                                    }
+                        if (mode == RowGestureMode.UNDECIDED) {
+                            when {
+                                // 松手：短按 = 点击；超过长按阈值 = 动作菜单
+                                !change.pressed -> {
+                                    if (elapsed >= longPressTimeout) gestures.onLongPress() else gestures.onTap()
                                     change.consume()
-                                    if (!change.pressed) break
+                                    break
                                 }
-                                RowGestureMode.UNDECIDED -> Unit
+                                // 长按阈值到：进入「长按」态（震动提示；松手弹动作菜单）
+                                elapsed >= longPressTimeout -> {
+                                    mode = RowGestureMode.LONG_PRESS
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                }
+                                // 横向为主且越过阈值 → 进入滑动多选
+                                downIndex >= 0 && abs(dx) > touchSlop && abs(dx) > abs(dy) -> {
+                                    mode = RowGestureMode.SWEEP
+                                    gestures.onSwipeSelect(downIndex)
+                                    change.consume()
+                                }
+                                // 纵向为主 → 列表滚动，不消费事件
+                                abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
                             }
                         }
-                    } finally {
-                        // 行被回收 / 手势被取消：兜底取消拖拽，避免拖拽幽灵卡住
-                        if (dragStarted && !dragEnded) gestures.onDragCancel()
+
+                        when (mode) {
+                            RowGestureMode.LONG_PRESS -> {
+                                // 长按态：等待松手后弹出动作菜单（不做拖拽）
+                                change.consume()
+                                if (!change.pressed) {
+                                    gestures.onLongPress()
+                                    break
+                                }
+                            }
+                            RowGestureMode.SWEEP -> {
+                                val index = gestures.indexAtRoot(gestures.rowTop().y + pos.y)
+                                if (index >= 0 && index != lastIndex) {
+                                    lastIndex = index
+                                    gestures.onSweepTo(index)
+                                }
+                                change.consume()
+                                if (!change.pressed) break
+                            }
+                            RowGestureMode.UNDECIDED -> Unit
+                        }
                     }
                 }
             }
             .onGloballyPositioned { coords -> rootOffset = coords.boundsInRoot().topLeft }
-            .semantics {
+            // 无障碍：整行合并为一条朗读（名称 / 类型 / 大小 / 修改时间 + 已选中状态）
+            .clearAndSetSemantics {
+                contentDescription = buildString {
+                    append(item.name)
+                    append(if (item.isDirectory) "，文件夹" else "，文件")
+                    if (!item.isDirectory && item.size >= 0) append("，${Fmt.size(item.size)}")
+                    val t = Fmt.time(item.lastModified)
+                    if (t.isNotBlank()) append("，修改于 $t")
+                }
+                if (selected) stateDescription = "已选中"
                 onClick(label = "打开") { onTap(); true }
                 onLongClick(label = "操作菜单") { onLongPress(); true }
             }

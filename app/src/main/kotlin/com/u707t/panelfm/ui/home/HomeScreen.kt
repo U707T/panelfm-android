@@ -178,13 +178,16 @@ fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                IconTextButton(if (settings.themeMode == ThemeMode.DARK) "☀" else "☾") {
+                IconTextButton(
+                    if (settings.themeMode == ThemeMode.DARK) "☀" else "☾",
+                    contentDescription = if (settings.themeMode == ThemeMode.DARK) "切换到浅色主题" else "切换到深色主题",
+                ) {
                     scope.launch {
                         container.prefs.setTheme(if (settings.themeMode == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK)
                     }
                 }
                 Box {
-                    IconTextButton("⋮") { showTopMenu = true }
+                    IconTextButton("⋮", contentDescription = "更多菜单") { showTopMenu = true }
                     DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
                         DropdownMenuItem(
                             text = { Text(if (settings.themeMode == ThemeMode.SYSTEM) "主题跟随系统 ✓" else "主题跟随系统") },

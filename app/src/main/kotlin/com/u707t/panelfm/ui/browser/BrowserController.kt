@@ -1021,7 +1021,7 @@ class BrowserController(private val container: AppContainer) {
         return (if (base.isEmpty()) rel else "$base/$rel").trimStart('/')
     }
 
-    // ------------------------------------------------------------------ 拖拽（M9）
+    // ------------------------------------------------------------------ 分隔条 / 路径
 
     /** 拖动分隔条 */
     fun setSplitRatio(ratio: Float) = update { it.copy(splitRatio = ratio.coerceIn(0.25f, 0.75f)) }
@@ -1031,62 +1031,6 @@ class BrowserController(private val container: AppContainer) {
         val uri = pane(side).uri
         showStatus("路径：${uri.toString()}")
     }
-
-    fun setGeometry(side: PaneSide, geometry: PaneGeometry) {
-        update { it.copy(geometry = it.geometry + (side to geometry)) }
-    }
-
-    /**
-     * 长按开始拖拽（MT 语义）：拖到对面**目录行** = 复制进该目录；拖到对面列表其他位置 = 复制到该窗格当前目录；
-     * 松手不在另一窗格 = 取消。（移动操作走动作菜单「移动 ->」。）
-     */
-    fun startDrag(side: PaneSide, sources: List<VfsUri>, label: String, x: Float, y: Float) {
-        focus(side)
-        update { it.copy(drag = DragState(side, sources, label, x, y, x, y), dropHint = null) }
-    }
-
-    fun updateDrag(x: Float, y: Float) {
-        val drag = _state.value.drag ?: return
-        val target = drag.from.other
-        val geo = _state.value.geometry[target]
-        val rowIndex = geo?.rowIndexAt(y) ?: -1
-        val rowItem = if (rowIndex >= 0) pane(target).items.getOrNull(rowIndex) else null
-        val hint = when {
-            geo == null || !geo.contains(x, y) -> null
-            rowItem?.isDirectory == true -> "复制到目录「${rowItem.name}」"
-            else -> "复制到「${pane(target).uri.name.ifEmpty { "/" }}」"
-        }
-        update { it.copy(drag = drag.copy(x = x, y = y), dropHint = hint) }
-    }
-
-    fun endDrag() {
-        val st = _state.value
-        val drag = st.drag ?: return
-        val targetSide = drag.from.other
-        val geo = st.geometry[targetSide]
-        val dest = pane(targetSide).uri
-        update { it.copy(drag = null, dropHint = null) }
-
-        if (geo == null || !geo.contains(drag.x, drag.y)) {
-            showStatus("已取消拖拽（松手位置不在另一窗格）")
-            return
-        }
-        // MT 语义：拖到另一窗口的目录行上 = 复制进该目录；拖到窗口（列表）其他位置 = 复制到该窗口当前目录
-        val rowIndex = geo.rowIndexAt(drag.y)
-        val targetDir = if (rowIndex >= 0) {
-            pane(targetSide).items.getOrNull(rowIndex)
-                ?.takeIf { it.isDirectory }
-                ?.uri ?: dest
-        } else {
-            dest
-        }
-        container.engine.enqueue(
-            TransferRequest(sources = drag.sources, destDir = targetDir, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
-        )
-        showStatus("拖拽复制 ${drag.sources.size} 项 → ${targetDir.displayPath}")
-    }
-
-    fun cancelDrag() = update { it.copy(drag = null, dropHint = null) }
 
     // ------------------------------------------------------------------ 目录对比（M9）
 

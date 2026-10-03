@@ -55,42 +55,6 @@ data class PendingMove(
     val toLabel: String,
 )
 
-/** 窗格几何（用于拖拽落点判定）：列表区域与行高 */
-data class PaneGeometry(
-    val left: Float = 0f,
-    val top: Float = 0f,
-    val width: Float = 0f,
-    val height: Float = 0f,
-    /** 列表首行（`..` 行）的顶部 Y */
-    val listTop: Float = 0f,
-    val rowHeightPx: Float = 1f,
-    val hasParentRow: Boolean = false,
-    val itemCount: Int = 0,
-) {
-    fun contains(x: Float, y: Float): Boolean = x in left..(left + width) && y in top..(top + height)
-
-    /** 命中第几行；-1 = 空白/越界 */
-    fun rowIndexAt(y: Float): Int {
-        val offset = y - listTop
-        if (offset < 0) return -1
-        val logical = (offset / rowHeightPx).toInt() - (if (hasParentRow) 1 else 0)
-        return if (logical in 0 until itemCount) logical else -1
-    }
-}
-
-/** 跨窗格拖拽会话（松手在对面行 = 复制；松手在对面空白 = 复制到该窗格当前目录） */
-data class DragState(
-    val from: PaneSide,
-    val sources: List<VfsUri>,
-    val label: String,
-    val startX: Float,
-    val startY: Float,
-    val x: Float,
-    val y: Float,
-) {
-    val over: PaneSide? get() = if (x < 0) null else if (from == PaneSide.LEFT && x > 0) PaneSide.RIGHT else if (from == PaneSide.RIGHT) PaneSide.LEFT else null
-}
-
 data class RenameConflict(
     val from: VfsUri,
     val target: VfsUri,
@@ -110,14 +74,10 @@ data class BrowserUiState(
     val tasks: List<TransferTaskSnapshot> = emptyList(),
     val singlePane: Boolean = false,
     val diff: DiffResult? = null,
-    val drag: DragState? = null,
     /** 左窗格宽度比例（可拖动分隔条） */
     val splitRatio: Float = 0.5f,
     /** 重命名冲突（MT：交换 / 删除 / 备份） */
     val renameConflict: RenameConflict? = null,
-    val geometry: Map<PaneSide, PaneGeometry> = emptyMap(),
-    /** 拖拽落点提示：复制 / 移动 */
-    val dropHint: String? = null,
 ) {
     fun pane(side: PaneSide): PaneState = if (side == PaneSide.LEFT) left else right
     val focusedPane: PaneState get() = pane(focused)

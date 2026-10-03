@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -45,6 +44,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -81,7 +86,7 @@ import kotlinx.coroutines.launch
  *  - **打开即是双列**；顶部 ≡（侧边栏抽屉）+ 面包屑路径 + 统计 + ⋮
  *  - 侧边栏：本地（占用条）/ 网络 / 工具，点击在活动窗口打开；右上 ⋮ = 主题跟随系统 / 添加存储 / 分组 / 设置
  *  - 列表首行 `..`，行高固定；**左右滑动任意项 = 进入多选**（继续滑过行间 = 连续区间选择）
- *  - 长按松手 = 动作菜单；长按后拖动 = 跨窗格拖拽（落在对面行 = 复制，落在对面空白 = 复制到该目录）
+ *  - 长按松手 = 动作菜单（跨窗格复制/移动走动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已移除）
  *  - 底部 `← → ＋ ⇄ ↑`：＋弹新建菜单；**⇄ 点击 = 交换窗口**（长按 = 过滤）；长按 ↑ = 路径跳转；底栏上滑 = 书签
  *  - 长按文件 → MT 动作菜单（`复制 ->` / `移动 ->`，**箭头指向另一窗口**；带 ● 支持长按单窗口操作）
  */
@@ -234,7 +239,7 @@ fun DualPaneScreen(
                     .padding(start = 2.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconTextButton("≡") { scope.launch { drawerState.open() } }
+                IconTextButton("≡", contentDescription = "打开侧边栏") { scope.launch { drawerState.open() } }
                 Column(
                     Modifier
                         .weight(1f)
@@ -324,7 +329,7 @@ fun DualPaneScreen(
                         maxLines = 1,
                     )
                 }
-                IconTextButton("⋮") { showMoreMenu = true; hiddenSub = false }
+                IconTextButton("⋮", contentDescription = "更多菜单") { showMoreMenu = true; hiddenSub = false }
             }
 
             HSeparator()
@@ -333,17 +338,13 @@ fun DualPaneScreen(
             Row(Modifier.weight(1f)) {
                 val showLeft = !ui.singlePane || ui.focused == PaneSide.LEFT
                 val showRight = !ui.singlePane || ui.focused == PaneSide.RIGHT
-                // MT：拖拽时目标窗口高亮
-                val dragOverSide = ui.drag?.let { d ->
-                    ui.geometry.entries.firstOrNull { (side, geo) -> side != d.from && geo.contains(d.x, d.y) }?.key
-                }
                 if (showLeft) {
                     PaneView(
                         container = container,
                         side = PaneSide.LEFT,
                         pane = ui.left,
                         focused = ui.focused == PaneSide.LEFT,
-                        highlight = (ui.highlight && ui.focused == PaneSide.LEFT) || dragOverSide == PaneSide.LEFT,
+                        highlight = ui.highlight && ui.focused == PaneSide.LEFT,
                         controller = controller,
                         modifier = Modifier.weight(ui.splitRatio),
                         onRowAction = { rowAction = it },
@@ -361,7 +362,8 @@ fun DualPaneScreen(
                                     change.consume()
                                     controller.setSplitRatio(ui.splitRatio + dragAmount.x / widthPx)
                                 }
-                            },
+                            }
+                            .semantics { contentDescription = "左右窗口分隔条（拖动调整比例）" },
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
@@ -378,7 +380,7 @@ fun DualPaneScreen(
                         side = PaneSide.RIGHT,
                         pane = ui.right,
                         focused = ui.focused == PaneSide.RIGHT,
-                        highlight = (ui.highlight && ui.focused == PaneSide.RIGHT) || dragOverSide == PaneSide.RIGHT,
+                        highlight = ui.highlight && ui.focused == PaneSide.RIGHT,
                         controller = controller,
                         modifier = Modifier.weight(1f - ui.splitRatio),
                         onRowAction = { rowAction = it },
@@ -444,10 +446,10 @@ fun DualPaneScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
                 ) {
-                    BottomCommand("←", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
-                    BottomCommand("→", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
+                    BottomCommand("←", "后退", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
+                    BottomCommand("→", "前进", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
                     Box {
-                        BottomCommand("＋", onLongClick = { creatingFile = true }) { showCreateMenu = true }
+                        BottomCommand("＋", "新建（长按新建文件）", onLongClick = { creatingFile = true }) { showCreateMenu = true }
                         // MT：新建（＋）弹出菜单
                         DropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
                             DropdownMenuItem(
@@ -461,13 +463,14 @@ fun DualPaneScreen(
                         }
                     }
                     // MT：⇄ = 交换窗口（一键调换左右窗口内容）；长按 = 过滤
-                    BottomCommand("⇄", onLongClick = { filterInput = true }) {
+                    BottomCommand("⇄", "交换窗口（长按过滤）", onLongClick = { filterInput = true }) {
                         controller.swapPanes()
                         controller.showStatus("已交换窗口")
                     }
                     // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
                     BottomCommand(
                         "↑",
+                        "上级目录（长按输入路径）",
                         enabled = focused.uri.parent != null || focused.uri.scheme == "archive",
                         onLongClick = { gotoPath = true },
                     ) { controller.up(focusSide) }
@@ -957,33 +960,6 @@ fun DualPaneScreen(
         )
     }
 
-    // ---------------- 拖拽幽灵与落点提示
-    ui.drag?.let { drag ->
-        Box(Modifier.fillMaxSize()) {
-            ui.dropHint?.let { hint ->
-                Text(
-                    hint,
-                    style = MaterialTheme.typography.labelMedium,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier
-                        .align(Alignment.TopCenter)
-                        .padding(top = 60.dp)
-                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                )
-            }
-            Text(
-                if (drag.sources.size > 1) "${drag.sources.size} 项" else (drag.sources.firstOrNull()?.name ?: "拖拽中"),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White,
-                modifier = Modifier
-                    .offset { androidx.compose.ui.unit.IntOffset(drag.x.toInt() - 40, drag.y.toInt() - 30) }
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.85f), RoundedCornerShape(6.dp))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-            )
-        }
-    }
-
     // ---------------- 状态提示
     ui.status?.let { msg ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
@@ -1040,27 +1016,43 @@ fun DualPaneScreen(
 @Composable
 private fun BottomCommand(
     symbol: String,
+    label: String,
     enabled: Boolean = true,
     highlighted: Boolean = false,
     onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit,
 ) {
+    val base = Modifier
+        .size(46.dp)
+        .clip(RoundedCornerShape(8.dp))
+        .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
+    val tapAction = onClick
+    val longAction = onLongClick
+    val modifier = if (longAction != null) {
+        base
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onDoubleTap = null,
+                    onLongPress = { longAction() },
+                    onTap = { if (enabled) tapAction() },
+                )
+            }
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+                onClick(label = "点击") { if (enabled) tapAction(); true }
+                onLongClick(label = "长按") { longAction(); true }
+            }
+    } else {
+        base
+            .clickableNoRipple(enabled, tapAction)
+            .semantics {
+                contentDescription = label
+                role = Role.Button
+            }
+    }
     Box(
-        Modifier
-            .size(46.dp)
-            .clip(RoundedCornerShape(8.dp))
-            .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
-            .let { base ->
-                if (onLongClick != null) {
-                    base.pointerInput(Unit) {
-                        detectTapGestures(
-                            onDoubleTap = null,
-                            onLongPress = { onLongClick() },
-                            onTap = { if (enabled) onClick() },
-                        )
-                    }
-                } else base.clickableNoRipple(enabled, onClick)
-            },
+        modifier,
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -1079,18 +1071,26 @@ private fun BottomCommand(
 /** 多选底栏的文字按钮（「同步」支持长按 = 过滤） */
 @Composable
 private fun TextCommand(label: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+    val tapAction = onClick
+    val longAction = onLongClick
     Box(
         Modifier
             .clip(RoundedCornerShape(8.dp))
             .then(
-                if (onLongClick != null) {
-                    Modifier.pointerInput(Unit) {
-                        detectTapGestures(
-                            onLongPress = { onLongClick() },
-                            onTap = { onClick() },
-                        )
-                    }
-                } else Modifier.clickableNoRipple(onClick = onClick),
+                if (longAction != null) {
+                    Modifier
+                        .pointerInput(Unit) {
+                            detectTapGestures(
+                                onLongPress = { longAction() },
+                                onTap = { tapAction() },
+                            )
+                        }
+                        .semantics {
+                            role = Role.Button
+                            onClick { tapAction(); true }
+                            onLongClick { longAction(); true }
+                        }
+                } else Modifier.clickableNoRipple(onClick = tapAction),
             )
             .padding(horizontal = 12.dp, vertical = 10.dp),
         contentAlignment = Alignment.Center,

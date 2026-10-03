@@ -24,6 +24,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
@@ -198,12 +202,17 @@ fun IconTextButton(
     symbol: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    contentDescription: String? = null,
     onClick: () -> Unit,
 ) {
     Box(
         modifier
             .size(44.dp)
-            .clickable(enabled = enabled) { onClick() },
+            .clickable(enabled = enabled) { onClick() }
+            .semantics {
+                if (contentDescription != null) this.contentDescription = contentDescription
+                role = Role.Button
+            },
         contentAlignment = Alignment.Center,
     ) {
         Text(

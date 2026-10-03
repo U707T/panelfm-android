@@ -125,7 +125,7 @@ fun MtSideDrawer(
             }
             // ---------------- 侧边栏右上 ⋮（MT：主题跟随系统 / 添加存储 / 分组 / 设置）
             Box {
-                IconTextButton("⋮") { drawerMenu = true; protocolSub = false }
+                IconTextButton("⋮", contentDescription = "侧边栏菜单") { drawerMenu = true; protocolSub = false }
                 DropdownMenu(expanded = drawerMenu, onDismissRequest = { drawerMenu = false }) {
                     if (!protocolSub) {
                         DropdownMenuItem(

@@ -12,6 +12,11 @@ on:
 permissions:
   contents: write
 
+# 同一分支连续推送时取消旧任务，避免排队
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   # ------------------------------------------------------------------ 单元测试
   test:
@@ -65,18 +70,65 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleDebug assembleRelease --stacktrace
+      # 分 ABI 出包：debug / release 各 3 个；文件名沿用发布命名，缺失直接报错（不再静默）
       - name: Rename APKs
         run: |
+          set -e
           mkdir -p out
-          cp app/build/outputs/apk/debug/app-debug.apk out/PanelFM-debug-universal.apk || true
-          cp app/build/outputs/apk/release/app-arm64-v8a-release.apk out/PanelFM-release-arm64-v8a.apk || true
-          cp app/build/outputs/apk/release/app-armeabi-v7a-release.apk out/PanelFM-release-armeabi-v7a.apk || true
-          cp app/build/outputs/apk/release/app-x86_64-release.apk out/PanelFM-release-x86_64.apk || true
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "app/build/outputs/apk/debug/app-${abi}-debug.apk" "out/PanelFM-debug-${abi}.apk"
+            cp "app/build/outputs/apk/release/app-${abi}-release.apk" "out/PanelFM-release-${abi}.apk"
+          done
           ls -la out
+      # Android 15+ 16KB 页大小兼容：APK 内 .so 必须 STORED 且 16KB 对齐、ELF LOAD 段 ≥ 16KB。
+      # 与 mp4fix 的发布硬门槛一致，防止依赖升级后回归。
+      - name: Verify 16 KB page-size compatibility (Android 15+)
+        run: |
+          python3 - <<'PY'
+          import glob, os, struct, subprocess, sys, tempfile, zipfile
+
+          bad = []
+          apks = sorted(glob.glob('out/PanelFM-*.apk'))
+          if not apks:
+              print('未找到 APK'); sys.exit(1)
+
+          def check_elf(p, apk, name):
+              out = subprocess.check_output(['readelf', '-lW', p], text=True)
+              for line in out.splitlines():
+                  if line.strip().startswith('LOAD'):
+                      align = int(line.split()[-1], 16)
+                      if align < 0x4000:
+                          bad.append((apk, name, 'ELF LOAD align', hex(align)))
+
+          with tempfile.TemporaryDirectory() as td:
+              for apk in apks:
+                  with zipfile.ZipFile(apk) as z:
+                      for info in z.infolist():
+                          if not (info.filename.startswith('lib/') and info.filename.endswith('.so')):
+                              continue
+                          z.fp.seek(info.header_offset)
+                          hdr = z.fp.read(30)
+                          name_len, extra_len = struct.unpack('<HH', hdr[26:30])
+                          data_off = info.header_offset + 30 + name_len + extra_len
+                          if info.compress_type != 0:
+                              bad.append((apk, info.filename, 'not STORED', info.compress_type))
+                          elif data_off % 16384 != 0:
+                              bad.append((apk, info.filename, 'zip align', data_off % 16384))
+                          z.extract(info.filename, td)
+                          check_elf(os.path.join(td, info.filename), apk, info.filename)
+
+          if bad:
+              print('16KB 兼容检查失败：')
+              for b in bad:
+                  print('  ', b)
+              sys.exit(1)
+          print(f'16KB 兼容检查通过：{len(apks)} 个 APK 的 .so 均 STORED + 16KB 对齐 + ELF LOAD ≥ 16KB')
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: PanelFM-apks
           path: out/*.apk
+          if-no-files-found: error
 
   # ------------------------------------------------------------------ 发布
   # 仅当 app/build.gradle.kts 的 versionName 还没有对应 tag 时创建 Release
@@ -119,8 +171,10 @@ jobs:
           esac
           NOTES="自动构建：Android 原生 Kotlin 版 PanelFM（双列文件管理器）。仅文件管理与预览，不含任何逆向功能。"
           if [ -n "$FLAGS" ]; then NOTES="$NOTES（预发布 RC：版本号含 -rc）"; fi
+          NOTES="$NOTES
+          安装包分 ABI（arm64-v8a / armeabi-v7a / x86_64）；.so 已通过 16KB 页大小兼容检查（Android 15+）。"
           gh release create "${{ steps.version.outputs.tag }}" \
-            apks/*.apk \
+            apks/PanelFM-release-*.apk \
             --title "PanelFM ${{ steps.version.outputs.tag }}" \
             --notes "$NOTES" \
             $FLAGS \
