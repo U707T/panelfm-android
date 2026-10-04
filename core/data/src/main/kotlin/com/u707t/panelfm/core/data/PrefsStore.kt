@@ -63,6 +63,11 @@ data class AppSettings(
     val backupOnSave: Boolean = false,
     /** MT「对话框图标」：0 深色背景（自适应）/ 1 浅色背景（自适应）/ 2 无背景 */
     val dialogIconMode: Int = 0,
+    /**
+     * MT 的输入框历史（`app:recordKey`）：键名照抄 MT（`filter_record` / `rename_multi_pattern` /
+     * `editor_find` …），值 = 最近使用在前、去重、最多 12 条。
+     */
+    val inputHistory: Map<String, List<String>> = emptyMap(),
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -102,6 +107,19 @@ class PrefsStore(private val context: Context) {
         val confirmExit = booleanPreferencesKey("confirm_exit")
         val backupOnSave = booleanPreferencesKey("backup_on_save")
         val dialogIconMode = intPreferencesKey("dialog_icon_mode")
+        // MT 对齐（v1.0）：输入框历史（recordKey → 历史值）
+        val inputHistory = androidx.datastore.preferences.core.stringSetPreferencesKey("input_history")
+    }
+
+    /** MT 的 recordKey 常量（与 MT 的 app:recordKey 同名，便于日后对表） */
+    object RecordKeys {
+        const val FILTER = "filter_record"
+        const val RENAME_PATTERN = "rename_multi_pattern"
+        const val RENAME_SEARCH = "rename_multi_search"
+        const val RENAME_REPLACE = "rename_multi_replace"
+        const val FILE_SEARCH = "file_search_record"
+        const val EDITOR_FIND = "editor_find"
+        const val EDITOR_REPLACE = "editor_replace"
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -140,6 +158,13 @@ class PrefsStore(private val context: Context) {
             confirmExit = p[Keys.confirmExit] ?: false,
             backupOnSave = p[Keys.backupOnSave] ?: false,
             dialogIconMode = (p[Keys.dialogIconMode] ?: 0).coerceIn(0, 2),
+            inputHistory = (p[Keys.inputHistory] ?: emptySet())
+                .mapNotNull { line ->
+                    val idx = line.indexOf('|')
+                    if (idx <= 0) null
+                    else line.substring(0, idx) to line.substring(idx + 1).split('\u0001').filter { it.isNotBlank() }
+                }
+                .toMap(),
         )
     }
 
@@ -181,6 +206,28 @@ class PrefsStore(private val context: Context) {
     suspend fun setConfirmExit(on: Boolean) = context.panelDataStore.edit { it[Keys.confirmExit] = on }
     suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }
     suspend fun setDialogIconMode(mode: Int) = context.panelDataStore.edit { it[Keys.dialogIconMode] = mode.coerceIn(0, 2) }
+
+    /**
+     * MT 的输入框历史（`app:recordKey`）：记一条历史（去重、最近在前、最多 [limit] 条）。
+     * 键名用 [RecordKeys] 里的常量，与 MT 的资源键保持一致。
+     */
+    suspend fun addInputHistory(key: String, value: String, limit: Int = 12) = context.panelDataStore.edit { prefs ->
+        val v = value.trim()
+        if (v.isEmpty()) return@edit
+        val all = (prefs[Keys.inputHistory] ?: emptySet()).filterNot { it.startsWith("$key|") }
+        val old = (prefs[Keys.inputHistory] ?: emptySet())
+            .firstOrNull { it.startsWith("$key|") }
+            ?.substringAfter('|')
+            ?.split('\u0001')
+            ?.filter { it.isNotBlank() }
+            ?: emptyList()
+        val merged = (listOf(v) + old.filterNot { it == v }).take(limit)
+        prefs[Keys.inputHistory] = (all + "$key|" + merged.joinToString("\u0001")).toSet()
+    }
+
+    suspend fun clearInputHistory(key: String) = context.panelDataStore.edit { prefs ->
+        prefs[Keys.inputHistory] = (prefs[Keys.inputHistory] ?: emptySet()).filterNot { it.startsWith("$key|") }.toSet()
+    }
 
     suspend fun addSearchQuery(query: String) = context.panelDataStore.edit { prefs ->
         val q = query.trim()

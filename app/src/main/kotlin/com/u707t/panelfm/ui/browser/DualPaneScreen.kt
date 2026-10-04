@@ -71,6 +71,7 @@ import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
+import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.model.SortBy
@@ -144,6 +145,11 @@ fun DualPaneScreen(
     var showSearch by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<FileMetadata>?>(null) }
     var searching by remember { mutableStateOf(false) }
+    var searchStopped by remember { mutableStateOf(false) }
+    var searchJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var refineInput by remember { mutableStateOf(false) }
+    /** MT 0x7f110430「已搜索到 %s 个结果，你确定继续搜索？」→ 暂停搜索等用户回答 */
+    var searchAsk by remember { mutableStateOf<Pair<Int, kotlinx.coroutines.CompletableDeferred<Boolean>>?>(null) }
     var singleWindowOp by remember { mutableStateOf<TransferOp?>(null) }
     var permissionFor by remember { mutableStateOf<FileMetadata?>(null) }
     var message by remember { mutableStateOf<Pair<String, String>?>(null) }
@@ -850,12 +856,17 @@ fun DualPaneScreen(
         )
     }
     if (filterInput) {
+        // MT `app:recordKey="filter_record"`：过滤词带历史
         TextInputDialog(
             title = "过滤",
             initial = focused.search,
             label = "关键字",
             hint = "普通文本=包含；!文本=不包含；/正则；!/正则=正则否定。留空清除。",
-            onConfirm = { q -> controller.setSearch(focusSide, q) },
+            history = container.settings.value.inputHistory[PrefsStore.RecordKeys.FILTER].orEmpty(),
+            onConfirm = { q ->
+                controller.setSearch(focusSide, q)
+                if (q.isNotBlank()) scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.FILTER, q) }
+            },
             onDismiss = { filterInput = false },
         )
     }
@@ -902,6 +913,7 @@ fun DualPaneScreen(
         )
     }
     // MT 的搜索：文件名 + 搜索子目录 + 高级搜索（内容 / 大小范围）
+    // v1.0 补：搜索结果上限询问（0x7f110430）、停止搜索（0x7f110686）、在当前结果中搜索（0x7f110619）
     if (showSearch) {
         MtSearchDialog(
             initialQuery = focused.search,
@@ -914,10 +926,12 @@ fun DualPaneScreen(
                     !recursive && !hasSizeFilter && field == SearchField.REGEX -> controller.setSearch(focusSide, "/$q")
                     else -> {
                         searching = true
+                        searchStopped = false
                         searchResults = emptyList()
-                        scope.launch {
+                        searchJob?.cancel()
+                        searchJob = scope.launch {
                             container.prefs.addSearchQuery(q)
-                            val r = runCatching {
+                            val outcome = runCatching {
                                 controller.searchTree(
                                     side = focusSide,
                                     nameQuery = if (field == SearchField.CONTENT) "" else q,
@@ -926,12 +940,27 @@ fun DualPaneScreen(
                                     minSize = minSize,
                                     maxSize = maxSize,
                                     nameRegex = field == SearchField.REGEX,
+                                    // MT 0x7f110430：到 300 条先问「你确定继续搜索？」
+                                    confirmEvery = 300,
+                                    onAskContinue = { n ->
+                                        val gate = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                                        searchAsk = n to gate
+                                        gate.await()
+                                    },
+                                    isCancelled = { !searching },
+                                    onPartial = { partial -> searchResults = partial },
                                 )
                             }.onFailure {
                                 controller.showStatus((it as? VfsException)?.userMessage ?: "搜索失败：${it.message}")
-                            }.getOrDefault(emptyList())
+                            }.getOrNull()
                             searching = false
-                            searchResults = r
+                            if (outcome != null) {
+                                searchResults = outcome.items
+                                searchStopped = outcome.stopped
+                                if (outcome.stopped && outcome.items.size >= 300) {
+                                    controller.showStatus("搜索结果数量过多，已停止搜索")
+                                }
+                            }
                         }
                     }
                 }
@@ -943,11 +972,56 @@ fun DualPaneScreen(
         MtSearchResultsDialog(
             results = results,
             searching = searching,
+            stopped = searchStopped,
+            onStop = {
+                // MT 0x7f110686「停止搜索」
+                searchJob?.cancel()
+                searching = false
+                searchStopped = true
+                controller.showStatus("已停止搜索（已找到 ${results.size} 条）")
+            },
+            onRefine = {
+                // MT 0x7f110619「在当前结果中搜索」：在现有结果里再筛（复用目录内过滤语法）
+                refineInput = true
+            },
+            onClear = {
+                searchResults = null
+                searchStopped = false
+                controller.showStatus("已清除搜索")
+            },
             onPick = { item ->
                 searchResults = null
                 controller.reveal(focusSide, item.uri)
             },
             onDismiss = { searchResults = null },
+        )
+    }
+    if (refineInput) {
+        TextInputDialog(
+            title = "在当前结果中搜索",
+            initial = "",
+            label = "关键字",
+            hint = "在当前 ${searchResults?.size ?: 0} 条结果里再筛（支持 /正则、!否定）",
+            onConfirm = { keyword ->
+                val base = searchResults.orEmpty()
+                searchResults = base.filter { controller.matchesSearch(it.name, keyword) }
+                refineInput = false
+            },
+            onDismiss = { refineInput = false },
+        )
+    }
+    // MT 0x7f110430「已搜索到 %s 个结果，你确定继续搜索？」（暂停搜索等回答）
+    searchAsk?.let { (count, gate) ->
+        AlertDialog(
+            onDismissRequest = { searchAsk = null; gate.complete(false) },
+            title = { Text("搜索结果较多") },
+            text = { Text("已搜索到 $count 个结果，你确定继续搜索？") },
+            confirmButton = {
+                TextButton(onClick = { searchAsk = null; gate.complete(true) }) { Text("继续搜索") }
+            },
+            dismissButton = {
+                TextButton(onClick = { searchAsk = null; gate.complete(false) }) { Text("停止搜索") }
+            },
         )
     }
     if (singleWindowOp != null) {
@@ -1086,12 +1160,18 @@ fun DualPaneScreen(
             onDismiss = { openWithManage = false },
         )
     }
-    // 批量重命名（MT 表达式）
+    // 批量重命名（MT 表达式 + 查找替换；表达式/查找/替换三处都带 `recordKey` 历史）
     batchRenameFor?.let { items ->
         BatchRenameDialog(
             items = items,
+            patternHistory = container.settings.value.inputHistory[PrefsStore.RecordKeys.RENAME_PATTERN].orEmpty(),
+            findHistory = container.settings.value.inputHistory[PrefsStore.RecordKeys.RENAME_SEARCH].orEmpty(),
+            replaceHistory = container.settings.value.inputHistory[PrefsStore.RecordKeys.RENAME_REPLACE].orEmpty(),
             onConfirm = { expression, find, replace, useRegex ->
                 scope.launch {
+                    container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_PATTERN, expression)
+                    if (find.isNotBlank()) container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_SEARCH, find)
+                    if (replace.isNotBlank()) container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_REPLACE, replace)
                     var ok = 0
                     items.forEachIndexed { index, fm ->
                         val newName = BatchRename.newName(expression, fm, index, find, replace, useRegex)

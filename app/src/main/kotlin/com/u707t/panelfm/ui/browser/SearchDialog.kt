@@ -30,6 +30,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.FileIcon
+import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 
@@ -38,6 +39,7 @@ import com.u707t.panelfm.core.vfs.FileMetadata
  *  - 标题右侧 🕘 = 搜索历史；输入框右侧 ▾ 也可调出历史
  *  - 搜索类型下拉：文件名包含的文本 / 文件名匹配正则 / 文件内容包含的文本
  *  - ☐搜索子目录（递归）+ ☐高级搜索（文件大小范围）
+ *  - **本轮补 MT 的条数上限反馈**（`0x7f110430` / `0x7f110620` / `0x7f110686` / `0x7f110628`）
  */
 enum class SearchField(val label: String) {
     NAME("文件名包含的文本"),
@@ -59,40 +61,13 @@ fun MtSearchDialog(
     var minSizeText by remember { mutableStateOf("") }
     var maxSizeText by remember { mutableStateOf("") }
     var fieldMenu by remember { mutableStateOf(false) }
-    var historyMenu by remember { mutableStateOf(false) }
-    var fieldHistoryMenu by remember { mutableStateOf(false) }
-
-    @Composable
-    fun HistoryMenu(expanded: Boolean, close: () -> Unit) {
-        DropdownMenu(expanded = expanded, onDismissRequest = close) {
-            if (history.isEmpty()) {
-                DropdownMenuItem(
-                    text = { Text("（暂无搜索历史）", style = MaterialTheme.typography.labelSmall) },
-                    onClick = close,
-                    enabled = false,
-                )
-            } else {
-                history.forEach { q ->
-                    DropdownMenuItem(
-                        text = { Text(q, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        onClick = { query = q; close() },
-                    )
-                }
-            }
-        }
-    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("搜索", modifier = Modifier.weight(1f))
-                Box {
-                    TextButton(onClick = { historyMenu = true }) {
-                        Text("🕘", style = MaterialTheme.typography.titleMedium)
-                    }
-                    HistoryMenu(historyMenu) { historyMenu = false }
-                }
+                HistoryButton(history) { query = it }
             }
         },
         text = {
@@ -129,14 +104,6 @@ fun MtSearchDialog(
                         )
                     },
                     singleLine = true,
-                    trailingIcon = {
-                        Box {
-                            Box(Modifier.clickable { fieldHistoryMenu = true }.padding(horizontal = 10.dp)) {
-                                Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                            HistoryMenu(fieldHistoryMenu) { fieldHistoryMenu = false }
-                        }
-                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Row(
@@ -212,43 +179,80 @@ fun MtSearchDialog(
     )
 }
 
-/** 搜索结果列表（递归/高级搜索）：点击结果 = 跳转到所在目录并选中（MT 语义） */
+/**
+ * 搜索结果列表（MT 语义）：
+ *  - 标题「搜索结果(%d)」（`0x7f11061f`），搜索中显示实时条数
+ *  - **「停止搜索」**（`0x7f110686`）：搜索中可中断
+ *  - **「二次搜索 / 在当前结果中搜索」**（`0x7f110628` / `0x7f110619`）：在结果里再筛
+ *  - 结果过多被停止时提示「搜索结果数量过多，已停止搜索」（`0x7f110620`）
+ */
 @Composable
 fun MtSearchResultsDialog(
     results: List<FileMetadata>,
     searching: Boolean,
+    stopped: Boolean = false,
+    onStop: () -> Unit = {},
+    onRefine: () -> Unit = {},
+    onClear: () -> Unit = {},
     onPick: (FileMetadata) -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (searching) "搜索中…" else "搜索结果（${results.size}）") },
+        title = {
+            Text(
+                if (searching) "搜索中…（已找到 ${results.size}）" else "搜索结果(${results.size})",
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        },
         text = {
-            Box(Modifier.height(360.dp)) {
-                when {
-                    searching -> LoadingState("正在递归搜索（最多显示 300 条）…")
-                    results.isEmpty() -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        Text("没有匹配的项", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (searching) {
+                        // MT 0x7f110686「停止搜索」
+                        TextButton(onClick = onStop) { Text("停止搜索") }
                     }
-                    else -> LazyColumn {
-                        items(results, key = { it.uri.toString() }) { item ->
-                            Row(
-                                Modifier
-                                    .fillMaxWidth()
-                                    .clickable { onPick(item) }
-                                    .padding(vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                FileIcon(name = item.name, isDirectory = item.isDirectory, size = 34.dp)
-                                Column(Modifier.padding(start = 10.dp)) {
-                                    Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        (item.uri.parent?.displayPath ?: "/") + "  ·  " + Fmt.size(item.size),
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
-                                    )
+                    if (results.isNotEmpty()) {
+                        // MT 0x7f110628「二次搜索」/ 0x7f110619「在当前结果中搜索」
+                        TextButton(onClick = onRefine) { Text("在当前结果中搜索") }
+                        TextButton(onClick = onClear) { Text("清除搜索") }
+                    }
+                }
+                if (stopped && !searching) {
+                    // MT 0x7f110620「搜索结果数量过多，已停止搜索」
+                    Text(
+                        "搜索结果数量过多，已停止搜索（显示前 ${results.size} 条）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                Box(Modifier.height(320.dp)) {
+                    when {
+                        searching && results.isEmpty() -> LoadingState("正在递归搜索…")
+                        results.isEmpty() -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                            Text("没有匹配的项", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                        else -> LazyColumn {
+                            items(results, key = { it.uri.toString() }) { item ->
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable { onPick(item) }
+                                        .padding(vertical = 6.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    FileIcon(name = item.name, isDirectory = item.isDirectory, size = 34.dp)
+                                    Column(Modifier.padding(start = 10.dp)) {
+                                        Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            (item.uri.parent?.displayPath ?: "/") + "  ·  " + Fmt.size(item.size),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
                                 }
                             }
                         }

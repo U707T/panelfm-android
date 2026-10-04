@@ -58,6 +58,15 @@ data class PaneState(
             ?.takeIf { it.isNotEmpty() }
 }
 
+/** 搜索结果（MT 的搜索反馈：条数上限 / 主动停止 / 扫描量） */
+data class SearchOutcome(
+    val items: List<FileMetadata>,
+    /** 是否被停止（用户点「停止搜索」/ 达到上限 / 扫描量封顶） */
+    val stopped: Boolean,
+    /** 实际扫描的条目数（MT 的「搜索结果数量过多，已停止搜索」判断依据） */
+    val scanned: Int,
+)
+
 /** 移动前的二次确认（需求：移动必须确认；跨协议要写明中转语义） */
 data class PendingMove(
     val sources: List<VfsUri>,

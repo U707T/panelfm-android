@@ -981,7 +981,11 @@ class BrowserController(private val container: AppContainer) {
     /**
      * MT 的「搜索」：文件名匹配（沿用过滤语法：普通文本 / `!否定` / `/正则` / `!/正则`），
      * 可递归子目录；高级条件：按内容（文本类且 ≤2MB，读前 512K）与文件大小范围。
-     * 最多返回 [limit] 条，扫描超过 [scanCap] 个条目即停止，避免卡死大目录。
+     *
+     * **MT 的三条反馈文案（0x7f110430 / 0x7f110620 / 0x7f110686）**：
+     *  - 到达 [confirmEvery] 条时回调 [onAskContinue]：返回 false = 停止（"搜索结果数量过多，已停止搜索"）
+     *  - [isCancelled] 每轮检查一次 → 用户点「停止搜索」后立即中断
+     *  - 搜索会实时把中间结果交给 [onPartial]（界面可边搜边显示，与 MT 的「搜索结果(%d)」一致）
      */
     suspend fun searchTree(
         side: PaneSide,
@@ -993,11 +997,18 @@ class BrowserController(private val container: AppContainer) {
         nameRegex: Boolean = false,
         limit: Int = 300,
         scanCap: Int = 8000,
-    ): List<FileMetadata> {
+        /** 达到该条数时询问是否继续（返回 false = 停止）；null = 不询问 */
+        confirmEvery: Int? = null,
+        onAskContinue: (suspend (Int) -> Boolean)? = null,
+        isCancelled: () -> Boolean = { false },
+        onPartial: ((List<FileMetadata>) -> Unit)? = null,
+    ): SearchOutcome {
         val root = pane(side).uri
         val vfs = container.locator.find(root) ?: throw VfsException.Unsupported("会话不可用")
         val out = ArrayList<FileMetadata>()
         var scanned = 0
+        var stopped = false
+        var askedAt = 0
 
         // MT 搜索类型：文件名（包含 / 正则）
         val nameOk: (FileMetadata) -> Boolean = when {
@@ -1042,7 +1053,8 @@ class BrowserController(private val container: AppContainer) {
         }
 
         suspend fun walk(dir: VfsUri, depth: Int) {
-            if (out.size >= limit || scanned >= scanCap || depth > 12) return
+            if (out.size >= limit || scanned >= scanCap || depth > 12 || stopped) return
+            if (isCancelled()) { stopped = true; return }
             val items = runCatching { withContext(container.dispatchers.vfs) { vfs.list(dir) } }
                 .getOrDefault(emptyList())
             scanned += items.size
@@ -1054,17 +1066,33 @@ class BrowserController(private val container: AppContainer) {
                     contentOk(item)
                 ) {
                     out.add(item)
+                    // MT 0x7f110430「已搜索到 %s 个结果，你确定继续搜索？」：到阈值先问再继续
+                    if (confirmEvery != null && onAskContinue != null &&
+                        out.size >= confirmEvery && out.size > askedAt
+                    ) {
+                        askedAt = out.size
+                        onPartial?.invoke(out.toList())
+                        val go = runCatching { onAskContinue(out.size) }.getOrDefault(false)
+                        if (!go) { stopped = true; return }
+                    }
+                    // 边搜边显示（MT 的「搜索结果(%d)」实时更新）
+                    if (out.size % 20 == 0) onPartial?.invoke(out.toList())
                 }
             }
             if (recursive) {
                 for (item in items) {
-                    if (out.size >= limit || scanned >= scanCap) return
+                    if (out.size >= limit || scanned >= scanCap || stopped) return
                     if (item.isDirectory && !item.isHidden) walk(item.uri, depth + 1)
                 }
             }
         }
         walk(root, 0)
-        return out
+        onPartial?.invoke(out.toList())
+        return SearchOutcome(
+            items = out,
+            stopped = stopped || scanned >= scanCap,
+            scanned = scanned,
+        )
     }
 
     /** 跳到该项所在目录并选中它（MT：搜索结果点击 = 定位到文件） */

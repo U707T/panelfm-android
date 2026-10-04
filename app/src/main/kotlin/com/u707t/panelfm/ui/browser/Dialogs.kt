@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.model.ConflictInfo
 import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
@@ -127,20 +128,28 @@ fun ConflictDialog(info: ConflictInfo, onDecision: (ConflictPolicy, Boolean) -> 
     )
 }
 
-/** 输入框（新建 / 重命名 / 路径 / 过滤 / 权限） */
+/** 输入框（新建 / 重命名 / 路径 / 过滤 / 权限）；[history] 非空时提供 MT 的 `recordKey` 历史下拉 */
 @Composable
 fun TextInputDialog(
     title: String,
     initial: String = "",
     label: String = "名称",
     hint: String? = null,
+    history: List<String> = emptyList(),
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var text by remember { mutableStateOf(initial) }
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(title) },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(title, modifier = Modifier.weight(1f))
+                if (history.isNotEmpty()) {
+                    HistoryButton(history) { text = it }
+                }
+            }
+        },
         text = {
             Column {
                 OutlinedTextField(

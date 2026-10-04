@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.vfs.FileMetadata
 import java.time.Instant
 import java.time.ZoneId
@@ -112,6 +113,9 @@ object BatchRename {
 @Composable
 fun BatchRenameDialog(
     items: List<FileMetadata>,
+    patternHistory: List<String> = emptyList(),
+    findHistory: List<String> = emptyList(),
+    replaceHistory: List<String> = emptyList(),
     onConfirm: (expression: String, find: String, replace: String, useRegex: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -128,13 +132,17 @@ fun BatchRenameDialog(
         title = { Text("批量重命名（${items.size} 项）") },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
-                OutlinedTextField(
-                    value = expression,
-                    onValueChange = { expression = it },
-                    label = { Text("命名表达式") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                // MT `app:recordKey`：表达式 / 查找 / 替换 三处都带历史下拉
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    OutlinedTextField(
+                        value = expression,
+                        onValueChange = { expression = it },
+                        label = { Text("命名表达式") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (patternHistory.isNotEmpty()) HistoryButton(patternHistory) { expression = it }
+                }
                 Text(
                     "{P} 文件名 · {S} 后缀 · {T} 修改时间 · {N} 从 N 递增 · {zN} 补零序号",
                     style = MaterialTheme.typography.labelSmall,
@@ -158,6 +166,10 @@ fun BatchRenameDialog(
                         singleLine = true,
                         modifier = Modifier.weight(1f),
                     )
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (findHistory.isNotEmpty()) HistoryButton(findHistory) { find = it }
+                    if (replaceHistory.isNotEmpty()) HistoryButton(replaceHistory) { replace = it }
                 }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Checkbox(checked = useRegex, onCheckedChange = { useRegex = it })
