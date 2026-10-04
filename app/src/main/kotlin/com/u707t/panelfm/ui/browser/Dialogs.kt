@@ -42,6 +42,8 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.model.ConflictInfo
 import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.ui.DialogIcon
+import com.u707t.panelfm.core.ui.DialogIconMode
 import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
@@ -83,14 +85,24 @@ fun MoveConfirmDialog(pending: PendingMove, onConfirm: () -> Unit, onCancel: () 
  * 另有 ☐ 为后续冲突执行相同操作（MT 0x7f1100a5）。
  */
 @Composable
-fun ConflictDialog(info: ConflictInfo, onDecision: (ConflictPolicy, Boolean) -> Unit) {
+fun ConflictDialog(
+    info: ConflictInfo,
+    dialogIconMode: Int = 0,
+    onDecision: (ConflictPolicy, Boolean) -> Unit,
+) {
     var applyAll by remember { mutableStateOf(false) }
     var policy by remember { mutableStateOf(ConflictPolicy.OVERWRITE) }
     val verb = if (info.isMove) "移动" else "复制"
 
     AlertDialog(
         onDismissRequest = { onDecision(ConflictPolicy.SKIP, applyAll) },
-        title = { Text("文件已存在") },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // MT 的「对话框图标」在冲突框也出现（深浅自适应）
+                DialogIcon("⚠", DialogIconMode.of(dialogIconMode), size = 32.dp)
+                Text("文件已存在", modifier = Modifier.padding(start = 10.dp))
+            }
+        },
         text = {
             Column {
                 Text("源：${info.sourceName}")
@@ -222,7 +234,13 @@ fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetada
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("属性") },
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // MT「对话框图标」设置（0x7f1102f3/2f4/2f5/2f6）：深色 / 浅色 / 无背景
+                DialogIcon("ⓘ", DialogIconMode.of(container.settings.value.dialogIconMode))
+                Text("属性", modifier = Modifier.padding(start = 10.dp))
+            }
+        },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 InfoRow("名称", meta.name.ifEmpty { "/" })

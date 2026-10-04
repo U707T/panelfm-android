@@ -68,7 +68,7 @@ class BrowserController(private val container: AppContainer) {
                     update {
                         it.copy(
                             splitRatio = s.splitRatio,
-                            singlePane = s.useSingleColumn,
+                            browseMode = if (s.useSingleColumn) BrowseMode.SINGLE else BrowseMode.DUAL,
                             left = it.left.copy(sort = defaultSort, showHidden = s.showHidden),
                             right = it.right.copy(sort = defaultSort, showHidden = s.showHidden),
                         )
@@ -146,7 +146,16 @@ class BrowserController(private val container: AppContainer) {
 
     fun focus(side: PaneSide) = update { if (it.focused == side) it else it.copy(focused = side) }
 
-    fun toggleSinglePane() = update { it.copy(singlePane = !it.singlePane) }
+    /** 单/双列快捷切换（保留给旧入口；等价于在 SINGLE / DUAL 之间切换） */
+    fun toggleSinglePane() = update {
+        it.copy(browseMode = if (it.effectiveBrowseMode == BrowseMode.SINGLE) BrowseMode.DUAL else BrowseMode.SINGLE)
+    }
+
+    /** 设置浏览模式三档（MT「单列 / 双列 / 自动切换」） */
+    fun setBrowseMode(mode: BrowseMode) = update { it.copy(browseMode = mode) }
+
+    /** 界面按屏宽写入（供 [BrowseMode.AUTO] 判定） */
+    fun setWideEnough(wide: Boolean) = update { if (it.wideEnough == wide) it else it.copy(wideEnough = wide) }
 
     // ------------------------------------------------------------------ MT「选择当前目录」模式（0x7f0c0025）
 

@@ -29,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.data.ThemeMode
+import com.u707t.panelfm.ui.browser.BrowseMode
 import kotlinx.coroutines.launch
 
 /**
@@ -98,7 +99,11 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setShowHidden(it) }
         }
         SettingSwitch("默认单列显示（手机窄屏）", settings.useSingleColumn) {
-            scope.launch { container.prefs.setSingleColumn(it) }
+            scope.launch {
+                container.prefs.setSingleColumn(it)
+                // 同步到运行期的浏览模式（否则要重启才生效）
+                container.browser.setBrowseMode(if (it) BrowseMode.SINGLE else BrowseMode.DUAL)
+            }
         }
         SettingSwitch("记忆上次的双列路径", settings.rememberLastPath) {
             scope.launch { container.prefs.setRememberLastPath(it) }
@@ -182,6 +187,22 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         }
 
         SectionLabel("界面")
+        Text(
+            "浏览模式（MT 单列 / 双列 / 自动切换）：",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(BrowseMode.AUTO to "自动切换", BrowseMode.SINGLE to "单列", BrowseMode.DUAL to "双列").forEach { (mode, label) ->
+                TextButton(onClick = { container.browser.setBrowseMode(mode) }) {
+                    Text(
+                        label,
+                        color = if (container.browser.state.value.browseMode == mode) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         Text(
             "对话框图标背景：" + listOf("深色背景（自适应）", "浅色背景（自适应）", "无背景（受系统影响）")[settings.dialogIconMode],
             style = MaterialTheme.typography.bodyMedium,

@@ -60,6 +60,7 @@ import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -138,6 +139,7 @@ fun DualPaneScreen(
     var showCreateMenu by remember { mutableStateOf(false) }
     var showMoreMenu by remember { mutableStateOf(false) }
     var hiddenSub by remember { mutableStateOf(false) }
+    var browseSub by remember { mutableStateOf(false) }
     var showSortDialog by remember { mutableStateOf(false) }
     var sortManage by remember { mutableStateOf(false) }
     var gotoPath by remember { mutableStateOf(false) }
@@ -487,13 +489,18 @@ fun DualPaneScreen(
             }
 
             // ---------------- 两个窗格
+            // MT「单列 / 双列 / 自动切换」（0x7f1101fb/1fc/1fd/1fe）：
+            // 自动切换 = 宽屏（≥600dp）双列、窄屏单列；由 ui.effectiveBrowseMode 展开。
+            val wideEnough = LocalConfiguration.current.screenWidthDp >= 600
+            LaunchedEffect(wideEnough) { controller.setWideEnough(wideEnough) }
             Row(
                 Modifier
                     .weight(1f)
                     .onGloballyPositioned { panesWidthPx = it.size.width.toFloat() },
             ) {
-                val showLeft = !ui.singlePane || ui.focused == PaneSide.LEFT
-                val showRight = !ui.singlePane || ui.focused == PaneSide.RIGHT
+                val single = ui.effectiveBrowseMode == BrowseMode.SINGLE
+                val showLeft = !single || ui.focused == PaneSide.LEFT
+                val showRight = !single || ui.focused == PaneSide.RIGHT
                 if (showLeft) {
                     PaneView(
                         container = container,
@@ -749,10 +756,22 @@ fun DualPaneScreen(
                 MtMenuItem("📥", "添加对面选中项到压缩包") { showMoreMenu = false; controller.addToArchive(focusSide) }
             }
             MtMenuItem("⇆", "比较两个目录") { showMoreMenu = false; controller.compareDirectories() }
-            // 视图：单/双窗格切换（设置里有「默认单列」，但运行期没有入口 → 补上）
-            MtMenuItem("◫", if (ui.singlePane) "切换到双窗口" else "切换到单窗口") {
-                showMoreMenu = false
-                controller.toggleSinglePane()
+            // 浏览模式（MT 0x7f1101fb/1fc/1fd/1fe：单列 / 双列 / 自动切换）
+            Box {
+                MtMenuItem("◫", "浏览模式（${ui.effectiveBrowseMode.label}）", trailing = "▶") { browseSub = true }
+                DropdownMenu(expanded = browseSub, onDismissRequest = { browseSub = false }) {
+                    BrowseMode.entries.forEach { mode ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    mode.label + if (mode == ui.browseMode) "  ✓" else "",
+                                    color = if (mode == ui.browseMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                )
+                            },
+                            onClick = { showMoreMenu = false; browseSub = false; controller.setBrowseMode(mode) },
+                        )
+                    }
+                }
             }
             // 类型过滤（MT 的「过滤」下拉：文件夹 / 图片 / 视频 …；此前 filterKind 有状态无入口）
             MtMenuItem("▽", "类型过滤" + focused.filterKind?.let { "（已过滤）" } ?: "") { showMoreMenu = false; showTypeFilter = true }
@@ -1375,7 +1394,10 @@ fun DualPaneScreen(
         MoveConfirmDialog(pending, onConfirm = { controller.confirmMove() }, onCancel = { controller.cancelMove() })
     }
     ui.conflict?.let { info ->
-        ConflictDialog(info) { policy, applyAll -> controller.resolveConflict(policy, applyAll) }
+        ConflictDialog(
+            info = info,
+            dialogIconMode = container.settings.value.dialogIconMode,
+        ) { policy, applyAll -> controller.resolveConflict(policy, applyAll) }
     }
     ui.diff?.let { diff ->
         FolderDiffDialog(

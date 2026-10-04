@@ -95,7 +95,13 @@ data class BrowserUiState(
     val conflict: ConflictInfo? = null,
     val property: FileMetadata? = null,
     val tasks: List<TransferTaskSnapshot> = emptyList(),
-    val singlePane: Boolean = false,
+    /**
+     * 浏览模式三档（MT「单列 / 双列 / 自动切换」）。
+     * 旧字段 [singlePane] 保留为派生值，兼容既有调用点。
+     */
+    val browseMode: BrowseMode = BrowseMode.DUAL,
+    /** 是否宽屏（由界面按屏宽写入，供 [BrowseMode.AUTO] 判定） */
+    val wideEnough: Boolean = true,
     val diff: DiffResult? = null,
     /** 左窗格宽度比例（可拖动分隔条） */
     val splitRatio: Float = 0.5f,
@@ -111,6 +117,13 @@ data class BrowserUiState(
     fun pane(side: PaneSide): PaneState = if (side == PaneSide.LEFT) left else right
     val focusedPane: PaneState get() = pane(focused)
     val otherPane: PaneState get() = pane(focused.other)
+
+    /** 实际生效的浏览模式（AUTO 按屏宽展开） */
+    val effectiveBrowseMode: BrowseMode
+        get() = if (browseMode == BrowseMode.AUTO) BrowseMode.autoFor(wideEnough) else browseMode
+
+    /** 派生值：当前是否单列显示（兼容旧调用点） */
+    val singlePane: Boolean get() = effectiveBrowseMode == BrowseMode.SINGLE
 }
 
 /** 「选择当前目录」模式被哪个流程唤起（决定选中后做什么） */
@@ -118,6 +131,23 @@ enum class PickDirPurpose(val label: String) {
     EXTRACT("解压到所选目录"),
     COPY_TO("复制到所选目录"),
     MOVE_TO("移动到所选目录"),
+}
+
+/**
+ * 浏览模式（复刻 MT 的「单列 / 双列 / 自动切换」，文案 `0x7f1101fb/1fc/1fd/1fe`）。
+ *  - [AUTO]：窄屏单列、宽屏双列（由界面按屏宽判定，见 `DualPaneScreen`）
+ *  - [SINGLE] / [DUAL]：强制单列 / 强制双列
+ */
+enum class BrowseMode(val label: String) {
+    AUTO("自动切换"),
+    SINGLE("单列"),
+    DUAL("双列"),
+    ;
+
+    companion object {
+        /** 自动切换：≥ 600dp 认为宽屏（MT 的平板/横屏阈值） */
+        fun autoFor(wideEnough: Boolean): BrowseMode = if (wideEnough) DUAL else SINGLE
+    }
 }
 
 /**
