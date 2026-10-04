@@ -274,6 +274,9 @@ fun PaneView(
                 )
                 else -> LazyColumn(
                     state = listState,
+                    // 加载中禁止滚动（MT 的遮罩会吞掉全部触摸；这里用开关保证「确定性」，
+                    // 不依赖 Compose 指针分发顺序）
+                    userScrollEnabled = !pane.loading,
                     modifier = Modifier
                         .fillMaxSize()
                         // 列表顶部（根坐标）：把触摸位置换算成行下标（滑动多选用）
@@ -293,6 +296,8 @@ fun PaneView(
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
                             dimmed = !focused,
+                            // 加载中（遮罩可见）时行手势整体关闭：避免遮罩期间误开文件 / 误多选
+                            gesturesEnabled = !pane.loading,
                             indexAtRoot = { rootY -> indexAtRoot(rootY) },
                             onTap = {
                                 // MT：多选态单击 = 切换选中；否则单击 = 打开 / 预览
@@ -380,7 +385,16 @@ fun PaneView(
                     Modifier
                         .fillMaxSize()
                         .background(Color(0x66222222))
-                        .clickableNoRipple(enabled = true) { /* 吞掉点击，避免误操作下层列表 */ },
+                        // MT 的遮罩是 clickable + focusable：吞掉**全部**触摸（点击与滚动），
+                        // 避免加载中误操作下层列表 / 误触 FAB（已被子组件消费的事件不动，保证「取消」可点）
+                        .pointerInput(Unit) {
+                            awaitEachGesture {
+                                while (true) {
+                                    val event = awaitPointerEvent()
+                                    event.changes.forEach { if (!it.isConsumed) it.consume() }
+                                }
+                            }
+                        },
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -447,6 +461,7 @@ private fun MtFileRow(
     item: FileMetadata,
     selected: Boolean,
     dimmed: Boolean,
+    gesturesEnabled: Boolean = true,
     indexAtRoot: (Float) -> Int,
     onTap: () -> Unit,
     onSwipeSelect: (Int) -> Unit,
@@ -487,7 +502,8 @@ private fun MtFileRow(
             //   · 小幅度拖动后松手  = 不触发点击（避免滑动误开文件）
             //   （跨窗格复制用动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已按需求移除）
             // ------------------------------------------------------------------
-            .pointerInput(item.uri.toString()) {
+            .pointerInput(item.uri.toString(), gesturesEnabled) {
+                if (!gesturesEnabled) return@pointerInput
                 val touchSlop = viewConfiguration.touchSlop
                 val longPressTimeout = viewConfiguration.longPressTimeoutMillis
                 val entrySlop = swipeEntrySlop
@@ -581,6 +597,11 @@ private fun MtFileRow(
                     if (!item.isDirectory && item.size >= 0) append("，${Fmt.size(item.size)}")
                     val t = Fmt.time(item.lastModified)
                     if (t.isNotBlank()) append("，修改于 $t")
+                }
+                if (!gesturesEnabled) {
+                    // 加载中：整行不可操作（与手势关闭保持一致）
+                    stateDescription = "正在加载"
+                    return@clearAndSetSemantics
                 }
                 if (selected) stateDescription = "已选中"
                 onClick(label = "打开") { onTap(); true }
