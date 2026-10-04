@@ -34,6 +34,8 @@ data class PaneState(
     val sort: SortSpec = SortSpec(),
     val showHidden: Boolean = false,
     val scrollIndex: Int = 0,
+    /** 需要滚动到可见的项（MT：搜索/跳转后定位到目标项；由 PaneView 消费后清空） */
+    val scrollToUri: String? = null,
     val space: com.u707t.panelfm.core.vfs.SpaceInfo? = null,
     /** 目录内搜索关键字（MT 的「搜索」） */
     val search: String = "",

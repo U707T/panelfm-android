@@ -127,6 +127,17 @@ fun PaneView(
     /** 本次滑动选择的锚点（按下的那一行）；-1 = 未开始 */
     var swipeAnchor by remember { mutableStateOf(-1) }
 
+    // 定位到指定项（搜索结果点进来 / 「打开所在目录」）：列表就绪后滚动到该项并清空请求
+    LaunchedEffect(pane.scrollToUri, pane.items) {
+        val target = pane.scrollToUri ?: return@LaunchedEffect
+        val index = pane.items.indexOfFirst { it.uri.toString() == target }
+        if (index >= 0) {
+            val listIndex = index + (if (canGoUp) 1 else 0)
+            listState.animateScrollToItem(listIndex.coerceAtLeast(0))
+        }
+        controller.consumeScrollTo(side)
+    }
+
     Column(
         modifier
             .fillMaxSize()

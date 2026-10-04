@@ -1072,8 +1072,12 @@ class BrowserController(private val container: AppContainer) {
         val parent = uri.parent ?: return
         val tab = pane(side).tab
         open(side, parent, tab.connectionId, tab.label)
-        updatePane(side) { it.copy(selection = setOf(uri.toString())) }
+        // 选中 + 滚动到该项（MT：搜索结果点进去直接定位，不靠用户自己找）
+        updatePane(side) { it.copy(selection = setOf(uri.toString()), scrollToUri = uri.toString()) }
     }
+
+    /** PaneView 消费完滚动请求后清空（避免重复滚动） */
+    fun consumeScrollTo(side: PaneSide) = updatePane(side) { if (it.scrollToUri == null) it else it.copy(scrollToUri = null) }
 
     fun createFolder(side: PaneSide, name: String) {
         val dir = pane(side).uri
