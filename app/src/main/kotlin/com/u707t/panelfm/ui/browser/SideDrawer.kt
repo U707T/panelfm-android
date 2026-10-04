@@ -37,6 +37,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.ThemeMode
@@ -142,21 +143,26 @@ fun MtSideDrawer(
                 .padding(start = 18.dp, end = 6.dp, top = 14.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            // MT 截图：头部图标是**圆角方形**（应用图标形状），不是圆形
             Box(
                 Modifier
-                    .size(44.dp)
-                    .clip(CircleShape)
-                    .background(Color.White.copy(alpha = 0.12f)),
+                    .size(46.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Color.White),
                 contentAlignment = Alignment.Center,
             ) {
-                MtFolderGlyph(size = 28.dp, color = Color.White)
+                MtFolderGlyph(size = 30.dp, color = Color(0xFF3C3C3C))
             }
             Column(
                 Modifier
                     .weight(1f)
                     .padding(start = 12.dp),
             ) {
-                Text("PanelFM", style = MaterialTheme.typography.titleLarge, color = MtSpec.TopBarText)
+                Text(
+                    "PanelFM",
+                    style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
+                    color = MtSpec.TopBarText,
+                )
                 Text(
                     when (settings.themeMode) {
                         ThemeMode.SYSTEM -> "主题跟随系统"
