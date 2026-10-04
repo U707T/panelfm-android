@@ -3,6 +3,48 @@
 > 版本号规则：`versionName` 带 `-rc` 后缀 → CI 自动发布为 **prerelease**。
 > 发版三步：改 `versionName` → 本文件顶部加段落 → push main（CI 自动构建 + 建 Release）。
 
+## v1.0.4 — 修复视频无法播放 + code review 修复
+
+### 修复：视频无法播放（关键）
+
+**根因**：播放地址被构造成 `panelfm://vfs?u=<编码后的 VFS URI>`（**path 为空**）。
+Media3 用 `Uri.getLastPathSegment()` 的后缀推断容器类型（`Util.inferContentType`）：
+
+- `getLastPathSegment()` 拿到的是 authority `vfs`（没有点号）→ 类型恒为 `CONTENT_TYPE_OTHER`；
+- 同时 `MediaItem.fromUri` 的 mimeType 为 `null`；
+- → `DefaultMediaSourceFactory` 选不到合适的 Extractor → **黑屏 / 播放失败**。
+
+**修法**：
+1. 播放地址改成 `panelfm://vfs/<真实文件名>?u=<完整 VFS URI>` —— path 末尾保留文件名与扩展名，
+   `inferContentType` 能按 `.mp4` / `.mkv` / `.m3u8` 正确判型；
+2. 新增 `mediaItemFor()`：额外用 `setMimeType` 显式给出容器类型（`mimeTypeForName`，含 mp4 家族
+   区分 `video/mp4` 与 `audio/mp4`）；
+3. 编解码规则抽成纯函数 `mediaUriString()` / `vfsUriFromMediaUri()`（读侧不再手动 `URLDecoder`
+   —— 原来会**双重解码**，把文件名里的 `%2B` 之类解错）；空格编成 `%20` 而不是 `+`
+   （`URLDecoder` 会把 `+` 当空格，Android 的 `Uri` 不会）；
+4. `VfsDataSource` 的 `isNetwork` 从 `false` 改成 `true`（同一套数据源既要读本地也要读网络，
+   标成网络让 Media3 用更宽容的超时与重试策略）。
+
+### 修复：code review 发现的问题
+
+- **Media3 事件不成对**（`VfsDataSource`）：`open()` 里先 `transferInitializing` 再 `openRead`，
+  若 `openRead` 抛异常（文件被删 / 权限不足 / 会话断开），`transferStarted` 不会执行，
+  但 `close()` 仍会 `transferEnded` → `TransferListener` 记出负数。
+  现在用 `started` 标志保证严格成对。
+- **图片预览的 InputStream 缓冲区竞争**（`PreviewScreen`）：`skip()` 复用了 `read()` 的共享
+  `buf`，并发/嵌套调用会读到脏数据（图片偶发解码失败）。
+  现在 `skip()` 用独立缓冲区，并在 VFS 支持随机访问时直接 `seek`（不浪费带宽）。
+- **`available()` 恒返回 0**：部分解码器用它估算缓冲，恒 0 会让它们退化。
+  现在返回「剩余可读字节数」。
+- **播放失败无出口**：原来只有一行错误文本。现在按 `PlaybackException.errorCode` 翻译成
+  **可执行的中文提示**（文件不存在 / 没权限 / 网络超时 / 解码器不支持 …，附原始原因），
+  并提供「重试」与「用其他应用打开」（本地文件）两个按钮。
+
+### 新增
+
+- `MediaUriTest`（20 项）：锁死播放地址的 path 必须带真实文件名、编解码成对、
+  mimeType 映射、以及端到端往返（含中文 / 空格 / 百分号 / 加号 / 多段扩展名）。
+
 ## v1.0.3 — 顶栏合并为 MT 的单块结构
 
 **基准**：MT 原版截图 + `0x7f0c0033` 的 `09046B` / `09038A` 结构
