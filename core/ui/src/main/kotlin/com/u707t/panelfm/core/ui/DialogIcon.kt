@@ -38,7 +38,40 @@ enum class DialogIconMode(val label: String) {
 }
 
 /**
- * 对话框标题左侧的方形图标。
+ * 对话框标题左侧的方形图标（**矢量版**：用 MT 反解出来的真实图标，比文字符号更贴 MT）。
+ * [mode] 由设置项 `dialogIconMode` 决定（调用方从 `AppSettings` 传入）。
+ */
+@Composable
+fun DialogIcon(
+    icon: MtIcon,
+    mode: DialogIconMode,
+    modifier: Modifier = Modifier,
+    size: Dp = 36.dp,
+) {
+    val dark = isSystemInDarkTheme()
+    val bg = when (mode) {
+        DialogIconMode.DARK -> if (dark) Color(0xFFEFEFEF) else Color(0xFF3C3C3C)
+        DialogIconMode.LIGHT -> if (dark) Color(0xFF3C3C3C) else Color(0xFFEFEFEF)
+        DialogIconMode.NONE -> Color.Transparent
+    }
+    val fg = when (mode) {
+        DialogIconMode.NONE -> MaterialTheme.colorScheme.primary
+        DialogIconMode.DARK -> if (dark) Color(0xFF3C3C3C) else Color.White
+        DialogIconMode.LIGHT -> if (dark) Color.White else Color(0xFF3C3C3C)
+    }
+    Box(
+        modifier
+            .size(size)
+            .clip(RoundedCornerShape(size * 0.22f))
+            .background(bg),
+        contentAlignment = Alignment.Center,
+    ) {
+        MtVectorIcon(icon = icon, size = size * 0.58f, tint = fg)
+    }
+}
+
+/**
+ * 对话框标题左侧的方形图标（**文字版**，保留给没有对应矢量的场景）。
  * [mode] 由设置项 `dialogIconMode` 决定（调用方从 `AppSettings` 传入）。
  */
 @Composable

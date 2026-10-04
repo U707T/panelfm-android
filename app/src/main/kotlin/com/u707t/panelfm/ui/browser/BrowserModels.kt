@@ -33,8 +33,18 @@ data class PaneState(
     val selection: Set<String> = emptySet(),
     val sort: SortSpec = SortSpec(),
     val showHidden: Boolean = false,
-    val scrollIndex: Int = 0,
-    /** 需要滚动到可见的项（MT：搜索/跳转后定位到目标项；由 PaneView 消费后清空） */
+    /**
+     * **当前 `items` 属于哪个目录**（`VfsUris.stripped(uri).toString()`；null = 还没加载过）。
+     *
+     * 为什么需要单独一个字段：切目录时 `uri` 立刻变、`items` 要等加载完才换，
+     * 中间这段窗口里「uri 是新的、内容是旧的」。滚动位置记忆必须按**内容真正的归属**来记，
+     * 否则会把旧目录的滚动位置写到新目录头上（表现为「进新目录后莫名停在中间」）。
+     */
+    val loadedUri: String? = null,
+    /**
+     * 需要滚动到可见的项（MT：搜索/跳转后定位到目标项；由 PaneView 消费后清空）。
+     * 优先级高于「滚动位置记忆」——定位是显式意图，记忆是隐式恢复。
+     */
     val scrollToUri: String? = null,
     val space: com.u707t.panelfm.core.vfs.SpaceInfo? = null,
     /** 目录内搜索关键字（MT 的「搜索」） */

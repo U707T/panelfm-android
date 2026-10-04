@@ -235,12 +235,19 @@ fun IconTextButton(
     }
 }
 
+/**
+ * 横向分割线。
+ *
+ * MT 的分割线是 **1px**（`dividerHeight=1px`、`0903F8` 高 1px、`090111/090112` 同理），
+ * 不是 1dp；这里默认取 MT 的分割线色（`0x7f06003a`：日 #FFBBBBBB / 夜 #FF505050）。
+ */
 @Composable
-fun HSeparator(color: Color = MaterialTheme.colorScheme.outlineVariant) {
+fun HSeparator(color: Color = MtDividerColor) {
+    val onePx = with(androidx.compose.ui.platform.LocalDensity.current) { 1.toDp() }
     Box(
         Modifier
             .fillMaxWidth()
-            .height(1.dp)
+            .height(onePx)
             .background(color),
     )
 }

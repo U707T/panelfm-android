@@ -45,6 +45,8 @@ import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.ui.DialogIcon
 import com.u707t.panelfm.core.ui.DialogIconMode
 import com.u707t.panelfm.core.ui.HistoryButton
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
@@ -98,8 +100,8 @@ fun ConflictDialog(
         onDismissRequest = { onDecision(ConflictPolicy.SKIP, applyAll) },
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                // MT 的「对话框图标」在冲突框也出现（深浅自适应）
-                DialogIcon("⚠", DialogIconMode.of(dialogIconMode), size = 32.dp)
+                // MT 的「对话框图标」在冲突框也出现（深浅自适应）；图标换成 MT 的真实矢量
+                DialogIcon(MtIcon.ERROR, DialogIconMode.of(dialogIconMode), size = 32.dp)
                 Text("文件已存在", modifier = Modifier.padding(start = 10.dp))
             }
         },
@@ -237,7 +239,7 @@ fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetada
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // MT「对话框图标」设置（0x7f1102f3/2f4/2f5/2f6）：深色 / 浅色 / 无背景
-                DialogIcon("ⓘ", DialogIconMode.of(container.settings.value.dialogIconMode))
+                DialogIcon(MtIcon.INFO, DialogIconMode.of(container.settings.value.dialogIconMode))
                 Text("属性", modifier = Modifier.padding(start = 10.dp))
             }
         },
@@ -327,7 +329,8 @@ private suspend fun folderSummary(
 data class MtAction(
     val id: String,
     val label: String,
-    val glyph: String,
+    /** MT 的真实矢量图标（原先用 emoji/文字符号，观感与字宽都漂移） */
+    val icon: MtIcon,
     /** 带 ● ：长按可触发「单窗口操作」 */
     val singleWindow: Boolean = false,
     val enabled: Boolean = true,
@@ -379,10 +382,10 @@ fun MtActionSheet(
                             modifier = Modifier.weight(1f),
                         )
                     }
-                    Text(
-                        "✕",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    MtVectorIcon(
+                        icon = MtIcon.CLOSE,
+                        size = 20.dp,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
                             .clip(CircleShape)
                             .clickable { onDismiss() }
@@ -422,10 +425,11 @@ private fun MtActionCell(
             .padding(vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(
-            action.glyph,
-            style = MaterialTheme.typography.titleMedium,
-            color = if (action.enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+        MtVectorIcon(
+            icon = action.icon,
+            size = 22.dp,
+            tint = if (action.enabled) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
         )
         Text(
             action.label,
@@ -586,9 +590,10 @@ fun MtCompressDialog(
                     visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                     trailingIcon = {
                         Box(Modifier.clickable { showPassword = !showPassword }.padding(horizontal = 10.dp)) {
-                            Text(
-                                "👁",
-                                color = if (showPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        MtVectorIcon(
+                                icon = if (showPassword) MtIcon.EYE_OFF else MtIcon.EYE,
+                                size = 20.dp,
+                                tint = if (showPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     },

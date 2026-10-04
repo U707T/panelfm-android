@@ -49,6 +49,17 @@ class BrowserController(private val container: AppContainer) {
 
     private val loadJobs = mutableMapOf<PaneSide, Job>()
 
+    /**
+     * 每个窗格各自的「目录 → 滚动位置」记忆（复刻 MT：进子目录再返回，列表停在原地）。
+     *
+     * 为什么放在控制器（而不是 Composable 里 `remember`）：窗格会因单/双列切换、
+     * 抽屉开关等原因重组甚至重建，位置必须活到控制器这一层才稳。
+     */
+    private var scrollMemory = mapOf(
+        PaneSide.LEFT to com.u707t.panelfm.core.common.ScrollMemory(),
+        PaneSide.RIGHT to com.u707t.panelfm.core.common.ScrollMemory(),
+    )
+
     init {
         // 注意：构造时 container.settings 尚未从 DataStore 加载（异步），此处拿到的是默认值；
         // 持久化设置要等 settings 首次发射后再应用（见下），否则「默认隐藏文件 / 默认单列 /
@@ -216,7 +227,17 @@ class BrowserController(private val container: AppContainer) {
                 } ?: bySearch
                 updatePane(side) { it.copy(loadProgress = 0.9f) }
                 val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
-                updatePane(side) { it.copy(items = items, loading = false, loadProgress = null, error = null, space = space) }
+                // loadedUri = 「这批 items 属于哪个目录」：滚动位置记忆按它来记，避免串目录
+                updatePane(side) {
+                    it.copy(
+                        items = items,
+                        loading = false,
+                        loadProgress = null,
+                        error = null,
+                        space = space,
+                        loadedUri = VfsUris.stripped(uri).toString(),
+                    )
+                }
                 runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 用户点了遮罩上的「取消」：不是错误，保持当前列表
@@ -229,6 +250,7 @@ class BrowserController(private val container: AppContainer) {
                         loadProgress = null,
                         error = (e as? VfsException)?.userMessage ?: (e.message ?: "加载失败"),
                         items = emptyList(),
+                        loadedUri = null,
                     )
                 }
             }
@@ -243,6 +265,12 @@ class BrowserController(private val container: AppContainer) {
         showStatus("已取消加载")
     }
 
+    /**
+     * 刷新当前目录。
+     *
+     * **保持滚动位置**（与「列表别跳回顶部重新加载」一致）：刷新只换内容，
+     * 位置由 PaneView 的恢复逻辑按记忆位置还原；若目录变短了会自动夹到有效范围。
+     */
     fun refresh(side: PaneSide) = load(side)
 
     fun refreshAll() {
@@ -259,6 +287,8 @@ class BrowserController(private val container: AppContainer) {
             load(side)
             return
         }
+        // 离开当前目录前先把滚动位置存下来（返回时才能停在原地）
+        flushScroll(side)
         val newBack = if (pushHistory) (tab.back + tab.uri).takeLast(HISTORY_LIMIT) else tab.back
         val newTab = tab.copy(
             uri = uri,
@@ -409,6 +439,7 @@ class BrowserController(private val container: AppContainer) {
     fun back(side: PaneSide) {
         val tab = pane(side).tab
         val prev = tab.back.lastOrNull() ?: return
+        flushScroll(side)
         val newTab = tab.copy(back = tab.back.dropLast(1), forward = (tab.forward + tab.uri).takeLast(HISTORY_LIMIT), uri = prev)
         updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, selection = emptySet()) }
         load(side)
@@ -417,6 +448,7 @@ class BrowserController(private val container: AppContainer) {
     fun forward(side: PaneSide) {
         val tab = pane(side).tab
         val next = tab.forward.lastOrNull() ?: return
+        flushScroll(side)
         val newTab = tab.copy(forward = tab.forward.dropLast(1), back = (tab.back + tab.uri).takeLast(HISTORY_LIMIT), uri = next)
         updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, selection = emptySet()) }
         load(side)
@@ -424,6 +456,7 @@ class BrowserController(private val container: AppContainer) {
 
     fun up(side: PaneSide) {
         val uri = pane(side).uri
+        flushScroll(side)
         // 压缩包内部：回到压缩包所在目录
         if (uri.scheme == "archive") {
             val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(uri.path)
@@ -523,6 +556,7 @@ class BrowserController(private val container: AppContainer) {
 
     fun clearSelection(side: PaneSide) {
         longPressAnchor = null
+        tapAnchor = null
         updatePane(side) { it.copy(selection = emptySet()) }
     }
 
@@ -579,6 +613,11 @@ class BrowserController(private val container: AppContainer) {
     fun removeBookmark(id: Long) {
         runCatching { container.bookmarkDao.delete(id) }
         showStatus("已删除书签")
+    }
+
+    /** 书签拖动排序（MT 0x7f110140「长按后拖动排序」） */
+    fun reorderBookmarks(orderedIds: List<Long>) {
+        runCatching { container.bookmarkDao.reorder(orderedIds) }
     }
 
     /** 打开书签：网络路径若未挂载则自动重连 */
@@ -731,8 +770,38 @@ class BrowserController(private val container: AppContainer) {
         updatePane(side) { it.copy(selection = setOf(key)) }
     }
 
+    /**
+     * MT 0x7f110630「开启后点击列表中任意两个项，将会自动选择它们中间所有的项。」
+     *
+     * 多选态下点击（不是长按）第二项 = 区间选择；未开启该设置时退回普通的加/减选。
+     * 返回 true 表示已按「点击连选」处理（调用方不需要再走 toggle 分支）。
+     */
+    fun tapSelect(side: PaneSide, item: FileMetadata): Boolean {
+        if (!container.settings.value.tapRangeSelect) return false
+        val pane = pane(side)
+        val index = pane.items.indexOfFirst { it.uri == item.uri }
+        if (index < 0) return false
+        val key = item.uri.toString()
+        val anchorKey = tapAnchor
+        if (anchorKey != null && anchorKey != key) {
+            val anchorIndex = pane.items.indexOfFirst { it.uri.toString() == anchorKey }
+            if (anchorIndex >= 0) {
+                setSelectionRange(side, anchorIndex, index)
+                tapAnchor = key
+                return true
+            }
+        }
+        tapAnchor = key
+        // 第一次点击：普通加/减选（作为下一次连选的锚点）
+        toggleSelection(side, item.uri)
+        return true
+    }
+
     /** 当前窗格长按锚点（连选用；切换窗格/清空选择时重置） */
     private var longPressAnchor: String? = null
+
+    /** 「点击连选」（0x7f110630）的锚点；与长按锚点分开，避免两种手势互相干扰 */
+    private var tapAnchor: String? = null
 
     // ------------------------------------------------------------------ 单窗格内操作
 
@@ -1136,6 +1205,56 @@ class BrowserController(private val container: AppContainer) {
     /** PaneView 消费完滚动请求后清空（避免重复滚动） */
     fun consumeScrollTo(side: PaneSide) = updatePane(side) { if (it.scrollToUri == null) it else it.copy(scrollToUri = null) }
 
+    // ------------------------------------------------------------------ 列表滚动位置记忆
+    //  复刻 MT：进入子文件夹再返回上一级时，列表停在刚才的位置（原地不动），
+    //  而不是跳回顶部重新加载。实现 = 每个窗格一张「目录 → (首个可见项, 像素偏移)」表。
+
+    /**
+     * 界面注册的「立刻保存滚动位置」回调（由 PaneView 在进入组合时注册）。
+     *
+     * 为什么要这个：底栏的 ← → ↑、返回键、⋮ 菜单里的跳转都**直接调控制器**，
+     * 不经过 PaneView 的点击处理，控制器这边需要一条通路在切目录前把位置落盘。
+     */
+    private val scrollSavers = mutableMapOf<PaneSide, () -> Unit>()
+
+    /** PaneView 进入组合时注册（DisposableEffect 里注销） */
+    fun registerScrollSaver(side: PaneSide, saver: () -> Unit) {
+        scrollSavers[side] = saver
+    }
+
+    fun unregisterScrollSaver(side: PaneSide) {
+        scrollSavers.remove(side)
+    }
+
+    /** 切目录前把所有窗格的滚动位置落盘（导航方法统一调用） */
+    private fun flushScroll(side: PaneSide) {
+        runCatching { scrollSavers[side]?.invoke() }
+    }
+
+    /** 滚动位置的 key：用「去连接参数的 uri 字符串」，避免 query 抖动、并隔离不同连接 */
+    private fun scrollKey(uri: VfsUri): String = VfsUris.stripped(uri).toString()
+
+    /**
+     * 界面在列表滚动 / 离开目录时调用，记下该目录的滚动位置。
+     *
+     * @param listIndex 含 `..` 行的列表下标（调用方用 [ScrollMemory.toListIndex] 换算）
+     */
+    fun rememberScroll(side: PaneSide, uri: VfsUri, listIndex: Int, offset: Int) {
+        scrollMemory[side]?.remember(scrollKey(uri), listIndex, offset)
+    }
+
+    /** 取某个目录上次的滚动位置；没有则 null（= 停在顶部） */
+    fun recallScroll(side: PaneSide, uri: VfsUri): com.u707t.panelfm.core.common.ScrollMemory.Entry? =
+        scrollMemory[side]?.recall(scrollKey(uri))
+
+    /**
+     * 「刷新」语义：用户主动刷新当前目录时，期望回到顶部重新看一遍，
+     * 所以顺手忘掉这个目录的滚动位置（否则刷新完还停在中间，会显得「没刷」）。
+     */
+    fun forgetScroll(side: PaneSide, uri: VfsUri) {
+        scrollMemory[side]?.forget(scrollKey(uri))
+    }
+
     fun createFolder(side: PaneSide, name: String) {
         val dir = pane(side).uri
         if (!isValidChildName(name)) {
@@ -1187,6 +1306,13 @@ class BrowserController(private val container: AppContainer) {
 
     fun swapPanes() {
         val st = _state.value
+        // 先落盘两侧位置，再把记忆跟着内容一起换边（否则交换后位置记忆留在原侧 = 丢失）
+        flushScroll(PaneSide.LEFT)
+        flushScroll(PaneSide.RIGHT)
+        scrollMemory = mapOf(
+            PaneSide.LEFT to scrollMemory.getValue(PaneSide.RIGHT),
+            PaneSide.RIGHT to scrollMemory.getValue(PaneSide.LEFT),
+        )
         update { it.copy(left = st.right, right = st.left) }
     }
 

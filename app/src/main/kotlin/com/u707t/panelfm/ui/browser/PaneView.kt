@@ -1,20 +1,22 @@
 package com.u707t.panelfm.ui.browser
+import androidx.compose.runtime.DisposableEffect
+import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.flow.distinctUntilChanged
+import androidx.compose.runtime.snapshotFlow
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -33,7 +35,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -55,9 +56,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.FileIcon
+import com.u707t.panelfm.core.ui.MtDividerColor
+import com.u707t.panelfm.core.ui.MtFab
+import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
@@ -67,16 +72,21 @@ import kotlin.math.abs
 /** 行高（MT 实测 48dp：图标 32 + 上下 padding 8×2） */
 private val ROW_HEIGHT = MtSpec.RowHeight
 
-/**
- * 滑动判定阈值（对齐 MT 手感，降低误触）：
- *  - [SWIPE_ENTRY]：进入多选的最小横向位移。MT 是「左右滑动文件可直接选择」，
- *    取 32dp（比系统 touchSlop 大不少，避免轻扫列表时误进多选）；
- *  - [SWIPE_MENU]：右滑「到底」呼出更多操作的距离。
- */
-private val SWIPE_ENTRY = 32.dp
+// ---------------------------------------------------------------------------
+// 手势阈值集中在 core.ui.MtGesture（文档附录 G.5），这里只做单位换算
+// ---------------------------------------------------------------------------
 
-/** 右滑「到底」呼出更多操作（MT 0x7f110697「右滑列表项可进行更多操作」）的距离 */
-private val SWIPE_MENU = 120.dp
+/** 左右滑动进入多选（MT 0x7f1106f3） */
+private val SWIPE_SELECT = MtGesture.SwipeSelectDp.dp
+
+/** 已多选态右滑出菜单（MT 0x7f110697） */
+private val SWIPE_MENU = MtGesture.SwipeMenuDp.dp
+
+/** 长按触发时间（MT 400ms，比系统默认 500ms 灵敏） */
+private const val LONG_PRESS_MS = MtGesture.LongPressMs
+
+/** 长按位移容差（MT 12dp） */
+private val LONG_PRESS_SLOP = MtGesture.LongPressSlopDp.dp
 
 /** 行手势的判定阶段 */
 private enum class RowGestureMode { UNDECIDED, SWEEP, LONG_PRESS }
@@ -96,15 +106,16 @@ private class RowGestures(
 )
 
 /**
- * 单个窗格（对齐 MT 管理器）：
- *  - 顶部一行：路径（中间省略）+ 统计
- *  - 列表首行 `..`；行高固定
- *  - **左右滑动一段距离（≥ 24dp 且横向占优）= 进入多选**（MT 0x7f1106f3）；继续滑过行间 = 区间选择（替换语义）
- *  - **右滑到底（≥ 96dp）= 呼出更多操作**（MT 0x7f110697「右滑列表项可进行更多操作」）
- *  - **长按后松手 = MT 动作菜单**（该项自动选中；带 ● 的项支持长按触发单窗口操作）
+ * 单个窗格（对齐 MT 管理器 `0x7f0c0033`）：
+ *  - 列表首行 `..`；行高固定 48dp、行间 **1px** 分割线（MT `dividerHeight=1px`）
+ *  - **左右滑动 ≥24dp 且 |dx| > 2|dy| = 进入多选**（MT `0x7f1106f3`）；继续滑过行间 = 区间选择
+ *  - **已多选态右滑 ≥48dp = 呼出更多操作**（MT `0x7f110697`；文档 F.5 冲突消解顺序第 5 条）
+ *  - **长按 400ms = 锚点 + 多选**；**长按第二项 = 连选区间**（MT `0x7f110631`）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
+ *  - **每窗格两枚 FAB**（复刻 MT A.2）：📋 粘贴（bottom|end 12dp）/ ✕ 关闭（bottom|end 74dp），
+ *    50dp / 图标 20dp / 底色 `#FFFF0000`，**显隐由状态决定**（布局里 MT 都写 visible）
+ *  - **加载遮罩**：`#66222222` + 转圈 + 「取消」+ 10sp 百分比（MT `09020D/09020E`）
  *  - 任何触摸都会先把本窗格设为活动窗口（同一时间只有一个窗口激活）
- *  - 跨窗格操作用动作菜单「复制 -> / 移动 ->」或底栏 `⇄`（长按拖动跨窗格已按需求移除）
  */
 @Composable
 fun PaneView(
@@ -121,6 +132,7 @@ fun PaneView(
     // 剪贴板里有没有内容（决定粘贴 FAB 是否出现）
     val clipboardReady = controller.hasClipboard
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
+    val settings = container.settings.value
 
     /** 列表在根坐标系中的顶部（把行内局部坐标换算成列表坐标） */
     var listTopRoot by remember { mutableStateOf(0f) }
@@ -130,47 +142,111 @@ fun PaneView(
         val y = rootY - listTopRoot
         val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { y >= it.offset && y <= it.offset + it.size }
             ?: return -1
-        val logical = info.index - (if (canGoUp) 1 else 0)
+        val logical = com.u707t.panelfm.core.common.ScrollMemory.toItemIndex(info.index, canGoUp)
         return if (logical in pane.items.indices) logical else -1
     }
 
     /** 本次滑动选择的锚点（按下的那一行）；-1 = 未开始 */
     var swipeAnchor by remember { mutableStateOf(-1) }
 
+    // ------------------------------------------------------------------
+    // 滚动位置记忆（复刻 MT：进子目录再返回，列表停在原地，不跳回顶部）
+    //
+    // 关键点：
+    //  1. 用 `loadedUri`（**这批 items 属于哪个目录**）而不是 `pane.uri` —— 切目录时
+    //     uri 先变、items 后到，用 uri 会把旧目录的位置写到新目录头上。
+    //  2. 恢复与记录**串行**：先恢复到记忆位置，再开始观察并持续记录；
+    //     否则「记录」会先用顶部的 (0,0) 把记忆擦掉，恢复就永远拿不到值。
+    //  3. 用 `firstVisibleItemIndex/ScrollOffset`（滚动位置**状态**）而不是 `layoutInfo`
+    //     （布局**结果**）：`scrollToItem` 会同步改前者，后者要等下一帧测量。
+    //  4. 位置直接用 **LazyListState 的列表下标**存取（含 `..` 行），不做二次换算，
+    //     避免两侧换算不一致导致「返回时偏一行」。
+    // ------------------------------------------------------------------
+
+    /** 当前这批 items 的滚动 key（= loadedUri）；null = 还没加载完 */
+    val loadedKey = pane.loadedUri
+
+    /**
+     * 观察者写回时用它复核「我还是当前目录吗」。
+     *
+     * 切目录时旧 effect 会被取消，但取消是异步的：旧观察者可能在被取消前
+     * 又收到一次 `scrollToItem(0,0)`（新目录的定位）引起的发射，
+     * 若不加这道校验就会把**旧目录**的记忆擦成 0 —— 返回上级时又跳回顶部。
+     */
+    val currentKey by rememberUpdatedState(loadedKey)
+
+    /** 立刻把当前位置写回记忆（离开组合 / 切换目录前调用，防止极端时序下丢位置） */
+    fun saveScrollNow(key: String?) {
+        if (key == null) return
+        controller.rememberScroll(
+            side,
+            VfsUri.parse(key),
+            listState.firstVisibleItemIndex,
+            listState.firstVisibleItemScrollOffset,
+        )
+    }
+
+    // 注册到控制器：底栏 ← → ↑ / 返回键 / ⋮ 跳转都直接调控制器，需要在切目录前落盘一次。
+    // onDispose 也存一次：打开预览/编辑器时浏览页会被移出组合，回来时是全新的 LazyListState，
+    // 必须靠这份记忆把位置还原。
+    DisposableEffect(side, loadedKey) {
+        val keyAtEnter = loadedKey
+        controller.registerScrollSaver(side) { saveScrollNow(keyAtEnter) }
+        onDispose {
+            saveScrollNow(keyAtEnter)
+            controller.unregisterScrollSaver(side)
+        }
+    }
+
+    // 只在「这批内容换了目录」时重启（loadedKey 与 items 是同一次 updatePane 写入的，天然同步）。
+    // 刻意**不**把 pane.items.size 放进 key：目录被后台刷新后条数变化会重启 effect，
+    // 那样用户正在滚动的列表会被拽回记忆位置（观感是「滚到一半自己跳了」）。
+    LaunchedEffect(loadedKey) {
+        val key = loadedKey ?: return@LaunchedEffect
+        if (pane.items.isEmpty()) return@LaunchedEffect
+        val maxIndex = com.u707t.panelfm.core.common.ScrollMemory.toListIndex(pane.items.lastIndex, canGoUp)
+        if (maxIndex < 0) return@LaunchedEffect
+        // ① 先定位。**两种情况都必须显式定位**：
+        //    · 有记忆 → 回到记忆位置（这就是「返回上级停在原地」）
+        //    · 没记忆 → 回顶部（0,0）。这一步不能省：LazyListState 是跨目录复用的，
+        //      上一个目录停在 20 号的话，新目录若项目够多就会**沿用 20 号**，
+        //      表现为「进新目录后莫名停在中间」。
+        //    显式「定位到指定项」（搜索/跳转）优先级更高，交给下面那个 effect 处理。
+        if (pane.scrollToUri == null) {
+            val entry = controller.recallScroll(side, VfsUri.parse(key))
+            if (entry != null) {
+                // 用 scrollToItem（不带动画）：返回上级时应当「原地不动」，
+                // 动画会先显示顶部再滑过去，观感反而像「跳了一下」
+                listState.scrollToItem(entry.index.coerceIn(0, maxIndex), entry.offset)
+            } else {
+                listState.scrollToItem(0, 0)
+            }
+        }
+        // ② 再观察：此后用户每次滚动都持续写回（滚一段就点进子目录也不会丢）
+        snapshotFlow { listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset }
+            .distinctUntilChanged()
+            .collect { (index, offset) ->
+                // 复核：只有「我仍是当前目录」才写（防止被取消的旧观察者擦掉旧目录的记忆）
+                if (currentKey == key) controller.rememberScroll(side, VfsUri.parse(key), index, offset)
+            }
+    }
+
     // 定位到指定项（搜索结果点进来 / 「打开所在目录」）：列表就绪后滚动到该项并清空请求
     LaunchedEffect(pane.scrollToUri, pane.items) {
         val target = pane.scrollToUri ?: return@LaunchedEffect
         val index = pane.items.indexOfFirst { it.uri.toString() == target }
         if (index >= 0) {
-            val listIndex = index + (if (canGoUp) 1 else 0)
+            val listIndex = com.u707t.panelfm.core.common.ScrollMemory.toListIndex(index, canGoUp)
             listState.animateScrollToItem(listIndex.coerceAtLeast(0))
         }
         controller.consumeScrollTo(side)
     }
 
-    // 活动窗口指示（复刻 MT 0x7f0c0033 的 shadow_left/right：阴影只亮在**活动窗格**一侧）
-    // 用「内侧 3dp 强调色竖条」表达，比整片阴影更轻，且不遮挡内容
-    val activeBar: Color = when {
-        highlight -> MtSpec.AccentLight
-        focused -> MtSpec.AccentLight.copy(alpha = 0.55f)
-        else -> Color.Transparent
-    }
+    // 窗格边缘阴影由外层 DualPaneScreen 负责（MT 的 shadow_left/right 在窗格外侧 5dp）
 
     Column(
         modifier
             .fillMaxSize()
-            // 活动窗口指示条：画在窗格内侧（左窗格贴右缘 / 右窗格贴左缘，指向分隔线）
-            .drawBehind {
-                val barWidth = 3.dp.toPx()
-                val x = if (side == PaneSide.LEFT) size.width - barWidth else 0f
-                if (activeBar.alpha > 0f) {
-                    drawRect(
-                        color = activeBar,
-                        topLeft = androidx.compose.ui.geometry.Offset(x, 0f),
-                        size = androidx.compose.ui.geometry.Size(barWidth, size.height),
-                    )
-                }
-            }
             // 任何触摸都先激活本窗格（同一时间只有一个窗口是活动窗口；不消费事件、不影响子组件）
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -179,77 +255,6 @@ fun PaneView(
                 }
             },
     ) {
-        // ---- 标签页条（MT：同窗格多标签时显示；单标签不占地方）
-        // 标签数据与开关早就在控制器里（newTab / switchTab / closeTab），此前没有任何入口，
-        // 属于「功能有、界面缺」——这里补齐：点击切换、✕ 关闭、＋ 新建。
-        if (pane.tabs.size > 1) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-                    .padding(horizontal = 6.dp, vertical = 3.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                pane.tabs.forEachIndexed { index, tab ->
-                    val active = index == pane.activeTab
-                    Row(
-                        Modifier
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(
-                                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
-                                else Color.Transparent
-                            )
-                            .clickableNoRipple { controller.switchTab(side, index) }
-                            .padding(start = 8.dp, end = 4.dp, top = 3.dp, bottom = 3.dp)
-                            .semantics {
-                                role = Role.Tab
-                                contentDescription = "标签页 ${tabLabel(tab)}" + if (active) "，当前" else ""
-                                onClick(label = "切换") { controller.switchTab(side, index); true }
-                            },
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            tabLabel(tab),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 88.dp),
-                        )
-                        Text(
-                            "✕",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(4.dp))
-                                .clickableNoRipple { controller.closeTab(side, index) }
-                                .padding(horizontal = 4.dp, vertical = 1.dp)
-                                .semantics {
-                                    role = Role.Button
-                                    contentDescription = "关闭标签页 ${tabLabel(tab)}"
-                                },
-                        )
-                    }
-                }
-                Text(
-                    "＋",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(6.dp))
-                        .clickableNoRipple { controller.newTab(side) }
-                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                        .semantics {
-                            role = Role.Button
-                            contentDescription = "新建标签页"
-                        },
-                )
-            }
-        }
-
-        // ---- 窗格内不再有独立路径栏（复刻 MT：路径与统计统一显示在顶部深色栏里）
-
         // ---- 列表
         Box(Modifier.weight(1f)) {
             when {
@@ -262,7 +267,7 @@ fun PaneView(
                 )
                 pane.items.isEmpty() && !canGoUp -> EmptyState(
                     if (pane.filtered) "没有匹配的项" else "空目录",
-                    if (pane.filtered) "试试清除搜索或过滤条件" else "底部 ＋ 新建，或 ⇄ 从对面复制进来",
+                    if (pane.filtered) "试试清除搜索或过滤条件" else "底部 ＋ 新建，或从对面窗格复制进来",
                 )
                 else -> LazyColumn(
                     state = listState,
@@ -275,7 +280,16 @@ fun PaneView(
                         .onGloballyPositioned { coords -> listTopRoot = coords.boundsInRoot().top },
                 ) {
                     if (canGoUp) {
-                        item(key = "__parent__") { ParentRow(onClick = { controller.up(side) }) }
+                        item(key = "__parent__") {
+                            ParentRow(
+                                onClick = {
+                                    // 返回上级前同样先存位置（这样「再进回这个子目录」也停在原地）
+                                    saveScrollNow(loadedKey)
+                                    controller.up(side)
+                                },
+                            )
+                            DividerPx()
+                        }
                     }
                     items(
                         pane.items,
@@ -284,29 +298,36 @@ fun PaneView(
                     ) { item ->
                         MtFileRow(
                             container = container,
-                            skipThumb = listState.isScrollInProgress && container.settings.value.skipThumbsWhileScrolling,
+                            skipThumb = listState.isScrollInProgress && settings.skipThumbsWhileScrolling,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
+                            selectionMode = pane.hasSelection,
                             dimmed = !focused,
                             // 加载中（遮罩可见）时行手势整体关闭：避免遮罩期间误开文件 / 误多选
                             gesturesEnabled = !pane.loading,
+                            tapRange = settings.tapRangeSelect,
                             indexAtRoot = { rootY -> indexAtRoot(rootY) },
                             onTap = {
-                                // MT：多选态单击 = 切换选中；否则单击 = 打开 / 预览
-                                if (pane.hasSelection) controller.toggleSelection(side, item.uri)
-                                else {
+                                // MT：多选态单击 = 切换选中（开启「点击连选」后 = 区间选择）；
+                                // 否则单击 = 打开 / 预览
+                                if (pane.hasSelection) {
+                                    if (!controller.tapSelect(side, item)) controller.toggleSelection(side, item.uri)
+                                } else {
                                     controller.focus(side)
+                                    // 离开本目录前先把滚动位置存下来（最直接的保障：
+                                    // 进子目录 / 打开文件都会换内容，之后返回上级要停在原地）
+                                    saveScrollNow(loadedKey)
                                     controller.openItem(side, item)
                                 }
                             },
                             onSwipeSelect = { index ->
-                                // MT：右滑 = 进入多选（该项单选）；已有多选时右滑该行 = 加选该行
+                                // MT：左右滑动 = 进入多选（该项单选）；已有多选时滑动该行 = 加选该行
                                 controller.focus(side)
                                 swipeAnchor = index
-                                val item = pane.items.getOrNull(index)
-                                if (item != null) {
+                                val target = pane.items.getOrNull(index)
+                                if (target != null) {
                                     if (!pane.hasSelection) controller.startSelectionDrag(side, index)
-                                    else controller.addToSelection(side, item.uri)
+                                    else controller.addToSelection(side, target.uri)
                                 }
                             },
                             onSweepTo = { index ->
@@ -314,13 +335,12 @@ fun PaneView(
                                 if (anchor >= 0 && index != anchor) controller.setSelectionRange(side, anchor, index)
                             },
                             onLongPress = {
-                                // MT：长按松手 = 动作菜单；该项自动进入选择。
-                                // 若上一次长按留下了锚点且本次是**另一项**，则先做「连选区间」
-                                // （MT 0x7f110631「可通过分别长按两个项目来进行连选」）。
+                                // MT：长按 400ms = 锚点 + 进入多选；
+                                // 再长按**另一项** = 连选区间（MT 0x7f110631）；松手弹动作菜单
                                 controller.longPressSelect(side, item)
                                 onRowAction(item)
                             },
-                            // MT 0x7f110697「右滑列表项可进行更多操作」：右滑到底 → 该项进入选择并弹动作菜单
+                            // MT 0x7f110697「右滑列表项可进行更多操作」：已多选态右滑 ≥48dp → 弹动作菜单
                             onSwipeMenu = { index ->
                                 controller.focus(side)
                                 swipeAnchor = -1
@@ -333,35 +353,36 @@ fun PaneView(
                                 onRowAction(target)
                             },
                         )
+                        // MT：列表分隔线 = **1px**（`dividerHeight=1px`，色 `0x7f06003a`）
+                        DividerPx()
                     }
                 }
             }
-        
 
-            // ---- 每窗格 FAB（复刻 MT 0x7f0c0033 的 090166/09016A）：
+            // ---- 每窗格 FAB（复刻 MT 0x7f0c0033 的 090166/09016A，附录 A.2）：
             //   剪贴板（粘贴，bottom|end 12dp）/ 取消（✕，bottom|end 74dp；多选态才出现）
+            //   50dp / 图标 20dp / 底色 #FFFF0000 / elevation 3dp
             if (clipboardReady) {
-                SmallFab(
-                    icon = MtIcon.CLIPBOARD,
-                    contentDesc = "粘贴剪贴板中的项到当前目录",
+                MtFab(
+                    icon = MtIcon.PASTE,
+                    contentDescription = "粘贴到当前目录",
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 12.dp, bottom = 12.dp),
+                        .padding(end = MtSpec.FabMargin, bottom = MtSpec.FabMargin),
                 ) { controller.pasteFromClipboard(side) }
             }
             if (pane.hasSelection) {
-                SmallFab(
+                MtFab(
                     icon = MtIcon.CLOSE,
-                    contentDesc = "取消选择",
+                    contentDescription = "退出多选",
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
-                        .padding(end = 12.dp, bottom = 74.dp),
+                        .padding(end = MtSpec.FabMargin, bottom = MtSpec.FabStackStep),
                 ) { controller.clearSelection(side) }
             }
 
             // ---- MT 加载遮罩（复刻 0x7f0c0033 的 09020D/09020E）：
             //   #66222222 半透明黑 + 转圈 + 「取消」按钮 + 10sp 百分比文字；
-            //   刷新已有内容时也盖一层（可取消），与 MT 的大目录/网络目录加载一致。
             //   本地小目录瞬间加载完 → 延迟 160ms 再显示，避免每次进目录都闪一下。
             var overlayVisible by remember { mutableStateOf(false) }
             LaunchedEffect(pane.loading) {
@@ -398,6 +419,7 @@ fun PaneView(
                             )
                             Text(
                                 pane.loadProgress?.let { "${(it * 100).toInt()}%" } ?: "",
+                                // MT：百分比文字 10sp（090214）
                                 style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                                 color = Color.White.copy(alpha = 0.9f),
                             )
@@ -415,7 +437,7 @@ fun PaneView(
     }
 }
 
-/** `..` 返回上级（MT 列表首行；与普通行同样式：32dp 图标 + 8dp 内边距） */
+/** `..` 返回上级（列表首行；与普通行同样式：32dp 图标 + 8dp 内边距） */
 @Composable
 private fun ParentRow(onClick: () -> Unit) {
     val tapAction = onClick
@@ -452,8 +474,10 @@ private fun MtFileRow(
     skipThumb: Boolean,
     item: FileMetadata,
     selected: Boolean,
+    selectionMode: Boolean,
     dimmed: Boolean,
     gesturesEnabled: Boolean = true,
+    tapRange: Boolean = false,
     indexAtRoot: (Float) -> Int,
     onTap: () -> Unit,
     onSwipeSelect: (Int) -> Unit,
@@ -464,10 +488,12 @@ private fun MtFileRow(
     // 非活动窗格：MT 只靠「活动侧阴影 + 顶栏高亮」表达焦点，**不整体调暗**；
     // 这里保留极轻微淡化（0.85），既区分焦点又不影响可读性（旧值 0.55 太暗、像禁用态）
     val alpha = if (dimmed) 0.85f else 1f
-    val swipeEntrySlop = with(LocalDensity.current) { SWIPE_ENTRY.toPx() }
-    val swipeMenuSlop = with(LocalDensity.current) { SWIPE_MENU.toPx() }
+    val selectSlop = with(LocalDensity.current) { SWIPE_SELECT.toPx() }
+    val menuSlop = with(LocalDensity.current) { SWIPE_MENU.toPx() }
+    val longPressSlop = with(LocalDensity.current) { LONG_PRESS_SLOP.toPx() }
     val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
     val haptic = LocalHapticFeedback.current
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
     // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）
     var rootOffset by remember { mutableStateOf(Offset.Zero) }
     val gestures by rememberUpdatedState(
@@ -489,26 +515,24 @@ private fun MtFileRow(
             // 选中态：MT 用强调蓝的浅色底（浅色主题 #1976d2 @ 14%）
             .background(
                 if (selected) {
-                    val dark = androidx.compose.foundation.isSystemInDarkTheme()
                     if (dark) MtSpec.RowSelectedDark else MtSpec.RowSelectedLight
                 } else Color.Transparent
             )
             // ------------------------------------------------------------------
-            // 行手势（MT 语义，统一由单个识别器处理，避免多个识别器互相抢事件）：
-            //   · 单击              = 打开 / 预览（多选态 = 切换选中）
-            //   · 左右滑动 ≥ 32dp    = 进入多选（震动确认）；继续滑过行间 = 区间选择（替换语义）
-            //   · 右滑到底 ≥ 120dp   = 呼出动作菜单（MT 0x7f110697）
-            //   · 长按后松手        = 动作菜单（该项自动选中；带 ● 的项可长按触发单窗口操作）
-            //   · 纵向拖动          = 交给列表滚动（不消费事件）
-            //   · 小幅度拖动后松手  = 不触发点击（避免滑动误开文件）
-            //   （跨窗格复制用动作菜单「复制 -> / 移动 ->」或底栏 ⇄；长按拖动已按需求移除）
+            // 行手势（MT 语义 + 文档附录 F.5 的冲突消解顺序）：
+            //   1. 长按（>400ms，位移 <12dp）      = 锚点 + 进入多选（松手弹动作菜单）
+            //   2. 单击                             = 打开 / 预览（多选态 = 切换选中）
+            //   3. 左右滑动 |dx| ≥ 24dp 且 |dx|>2|dy| = 进入多选；继续滑过行间 = 区间选择
+            //   4. 已多选态右滑 ≥ 48dp              = 呼出该项的更多操作
+            //   5. 纵向拖动                         = 交给列表滚动（不消费事件）
             // ------------------------------------------------------------------
-            .pointerInput(item.uri.toString(), gesturesEnabled) {
+            .pointerInput(item.uri.toString(), gesturesEnabled, selectionMode) {
                 if (!gesturesEnabled) return@pointerInput
                 val touchSlop = viewConfiguration.touchSlop
-                val longPressTimeout = viewConfiguration.longPressTimeoutMillis
-                val entrySlop = swipeEntrySlop
-                val menuSlop = swipeMenuSlop
+                val lpSlop = longPressSlop
+                val selSlop = selectSlop
+                val mSlop = menuSlop
+                val selectingAtStart = selectionMode
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
@@ -516,7 +540,7 @@ private fun MtFileRow(
                     val downIndex = gestures.indexAtRoot(gestures.rowTop().y + downPos.y)
                     var mode = RowGestureMode.UNDECIDED
                     var lastIndex = downIndex
-                    /** 右滑到底呼出菜单：只触发一次 */
+                    /** 右滑呼出菜单：只触发一次 */
                     var menuFired = false
 
                     while (true) {
@@ -531,26 +555,25 @@ private fun MtFileRow(
                             when {
                                 // 松手：真正的轻点 = 点击；长按 = 动作菜单；拖过一段距离后松手 = 什么都不做
                                 !change.pressed -> {
-                                    // 防误触：判定「拖动过」用 entrySlop 的一半（16dp）而不是系统 touchSlop（约 8dp），
-                                    // 否则手指轻微抖动就会被当成拖动，导致「点了没反应」
-                                    val dragged = abs(dx) > entrySlop * 0.5f || abs(dy) > entrySlop * 0.5f
+                                    // 防误触：判定「拖动过」用长按位移容差（12dp）而不是系统 touchSlop（约 8dp）
+                                    val dragged = abs(dx) > lpSlop || abs(dy) > lpSlop
                                     when {
-                                        elapsed >= longPressTimeout -> gestures.onLongPress()
+                                        elapsed >= LONG_PRESS_MS -> gestures.onLongPress()
                                         !dragged -> gestures.onTap()
                                     }
                                     change.consume()
                                     break
                                 }
-                                // 长按阈值到：进入「长按」态（震动提示；松手弹动作菜单）
-                                elapsed >= longPressTimeout -> {
+                                // 长按阈值到（MT 400ms）：进入「长按」态（震动提示；松手弹动作菜单）
+                                elapsed >= LONG_PRESS_MS -> {
                                     mode = RowGestureMode.LONG_PRESS
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                 }
                                 // 纵向为主 → 列表滚动，不消费事件（先判断，避免斜向滚动被误判成滑动选择）
                                 abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
-                                // 左右滑动一段距离（≥ 32dp 且横向占优）→ 进入多选
+                                // 左右滑动（≥24dp 且横向 > 纵向×2）→ 进入多选
                                 // （MT 0x7f1106f3「左右滑动文件可直接选择」：两个方向都可进入选择）
-                                downIndex >= 0 && abs(dx) > entrySlop && abs(dx) > abs(dy) -> {
+                                downIndex >= 0 && abs(dx) > selSlop && abs(dx) > abs(dy) * 2f -> {
                                     mode = RowGestureMode.SWEEP
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     gestures.onSwipeSelect(downIndex)
@@ -569,9 +592,10 @@ private fun MtFileRow(
                                 }
                             }
                             RowGestureMode.SWEEP -> {
-                                // MT 0x7f110697「右滑列表项可进行更多操作」：继续右滑到底 → 呼出动作菜单。
-                                // 要求「横向位移足够大 + 纵向位移仍小」（避免向下扫选区间时误弹菜单）。
-                                if (!menuFired && dx > menuSlop && dx > abs(dy) * 2f && abs(dy) < menuSlop) {
+                                // MT 0x7f110697「右滑列表项可进行更多操作」：
+                                // **已多选态**下继续右滑 ≥48dp → 呼出动作菜单（文档 F.5 第 5 条）。
+                                // 要求横向位移足够大 + 纵向位移仍小（避免向下扫选区间时误弹菜单）。
+                                if (!menuFired && selectingAtStart && dx > mSlop && dx > abs(dy) * 2f && abs(dy) < mSlop) {
                                     menuFired = true
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     gestures.onSwipeMenu(downIndex)
@@ -649,29 +673,36 @@ private fun MtFileRow(
                     .copy(alpha = alpha),
             )
             Text(
-                buildString {
-                    val t = Fmt.time(item.lastModified)
-                    if (t.isNotBlank()) append(t)
-                    if (!item.isDirectory && item.size >= 0) {
-                        if (isNotEmpty()) append("  ·  ")
-                        append(Fmt.size(item.size))
-                    }
-                },
+                // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
+                rowSubtitle(container.settings.value.listDisplayMode, item),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
                 color = MtSpec.RowSubLight.copy(alpha = alpha),
                 maxLines = 1,
             )
         }
         if (selected) {
-            Text(
-                "✓",
-                style = MaterialTheme.typography.titleMedium,
-                color = MtSpec.AccentLight,
+            // MT 的选中标记（顶栏计数 + 行内勾选）
+            MtVectorIcon(
+                icon = MtIcon.CHECK,
+                size = 18.dp,
+                tint = MtSpec.AccentLight,
                 modifier = Modifier.padding(start = 6.dp),
             )
         }
     }
 }
+
+/**
+ * 列表副标题（MT「文件列表显示」三档，文案 `0x7f110200/201/202`）：
+ * 纯函数在 [com.u707t.panelfm.core.common.MtListSubtitle]（可单测），这里只负责取字段。
+ */
+private fun rowSubtitle(mode: Int, item: FileMetadata): String =
+    com.u707t.panelfm.core.common.MtListSubtitle.render(
+        mode = mode,
+        permissionText = item.permissions?.let { Fmt.modeLong(it, item.isDirectory, item.isSymlink) },
+        timeText = Fmt.time(item.lastModified),
+        sizeText = if (!item.isDirectory && item.size >= 0) Fmt.size(item.size) else "",
+    )
 
 /** 路径中间省略（MT 的 `/storage/emula.../0/Download/` 观感） */
 fun middleEllipsis(path: String, maxChars: Int = 34): String {
@@ -680,10 +711,6 @@ fun middleEllipsis(path: String, maxChars: Int = 34): String {
     val tail = maxChars - head - 3
     return path.take(head) + "..." + path.takeLast(tail)
 }
-
-/** 标签页显示名：优先连接/卷名，其次路径末级 */
-private fun tabLabel(tab: PaneTab): String =
-    tab.label.ifBlank { tab.uri.name.ifBlank { "/" } }
 
 /** 无涟漪点击 */
 @Composable
@@ -695,29 +722,4 @@ fun Modifier.clickableNoRipple(enabled: Boolean = true, onClick: () -> Unit): Mo
         enabled = enabled,
         onClick = onClick,
     )
-}
-
-
-/** MT 风格的窗格内小悬浮按钮（50dp / 图标 20dp，与 MT 的 fabCustomSize 一致） */
-@Composable
-private fun SmallFab(
-    icon: MtIcon,
-    contentDesc: String,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit,
-) {
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
-    androidx.compose.material3.SmallFloatingActionButton(
-        onClick = onClick,
-        modifier = modifier.clearAndSetSemantics {
-            this.contentDescription = contentDesc
-            role = Role.Button
-            onClick(label = contentDesc) { onClick(); true }
-        },
-        // MT FAB：50dp 圆形，图标 20dp（0x7f0c0033 的 fabCustomSize=50dp / maxImageSize=20dp）
-        containerColor = if (dark) MtSpec.FabContainerDark else MtSpec.FabContainer,
-        contentColor = if (dark) MtSpec.FabContentDark else MtSpec.FabContent,
-    ) {
-        MtVectorIcon(icon = icon, size = MtSpec.FabIcon)
-    }
 }

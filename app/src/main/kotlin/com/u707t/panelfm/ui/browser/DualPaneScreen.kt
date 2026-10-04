@@ -68,6 +68,19 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.compose.foundation.layout.Spacer
+import com.u707t.panelfm.core.ui.DividerPx
+import com.u707t.panelfm.core.ui.HSeparator
+import com.u707t.panelfm.core.ui.IconTextButton
+import com.u707t.panelfm.core.ui.MtActionButton
+import com.u707t.panelfm.core.ui.MtBottomIconButton
+import com.u707t.panelfm.core.ui.MtGesture
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtMenuRow
+import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.core.ui.MtVectorIcon
+import com.u707t.panelfm.core.ui.PaneEdgeShadow
+import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
@@ -80,11 +93,6 @@ import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
-import com.u707t.panelfm.core.ui.HSeparator
-import com.u707t.panelfm.core.ui.IconTextButton
-import com.u707t.panelfm.core.ui.MtIcon
-import com.u707t.panelfm.core.ui.MtSpec
-import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
@@ -188,6 +196,9 @@ fun DualPaneScreen(
         scope.launch { drawerState.close() }
     }
 
+    /** 窗格标签页显示名（MT 顶栏 TabLayout 的页签名） */
+    fun tabLabelOf(tab: PaneTab): String = tab.label.ifBlank { tab.uri.name.ifBlank { "/" } }
+
     /** MT：点击侧边栏本地 / 网络节点 → 在**活动窗口**打开 */
     fun openVolumeInActivePane(volume: LocalVolume) {
         controller.open(focusSide, VfsUri.of("local", volume.authority, "/"), null, volume.label)
@@ -287,23 +298,29 @@ fun DualPaneScreen(
         },
     ) {
         Column(Modifier.fillMaxSize().safeAreaPadding()) {
-            // ---------------- 顶部栏（复刻 MT 0x7f0c0033 的 09046B）
-            //   MT 的顶栏**始终是深色**（浅色主题 #151515 / 深色 #303030），
-            //   左 ☰、右 ⋮，中间两行**居中**：路径（18sp）+ 统计（13sp）。
+            // ---------------- 顶部条（复刻 MT 0x7f0c0033 的 09046B + include 0x7f0c0034）
+            //   MT 的顶栏**始终是深色**（浅色主题 #151515 / 深色 #303030）；
+            //   结构：TabLayout(0903F9) + ⋮(0902B2) + ＋(090116) + 动作条(09022F) + 1px 分割线(0903F8)
+            //   NORMAL 态：动作条整行 GONE；SELECTING 态：出现「复制 / 移动 / 删除」三连（可横向滚动）
             val topBarBg = if (isSystemInDarkTheme()) MtSpec.TopBarDark else MtSpec.TopBarLight
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(topBarBg)
-                    .padding(horizontal = 4.dp, vertical = 6.dp),
+                    .background(topBarBg),
             ) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                // ---- 第一行：标签页 + 动作条 + ⋮ + ＋
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(MtSpec.TopBarHeight),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
                     // ☰ 侧边栏
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .clickableNoRipple { scope.launch { drawerState.open() } }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                             .semantics {
                                 role = Role.Button
                                 contentDescription = "打开侧边栏"
@@ -311,58 +328,150 @@ fun DualPaneScreen(
                     ) {
                         MtVectorIcon(icon = MtIcon.MENU, size = 24.dp, tint = MtSpec.TopBarText)
                     }
-                    // 中间两行居中（MT：路径 + 统计）
-                    Column(
+                    // TabLayout（0903F9）：MT 的标签页在顶栏左侧，可横向滚动；
+                    // 单标签时也显示（MT 的标签页是主界面固定元素，不像旧实现那样隐藏）
+                    Row(
                         Modifier
-                            .weight(1f)
-                            .padding(horizontal = 4.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
+                            .horizontalScroll(rememberScrollState())
+                            .weight(1f, fill = false),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, maxChars = 30),
-                            style = MaterialTheme.typography.titleMedium.copy(
-                                fontSize = MtSpec.TopBarTitleSize,
-                                fontWeight = FontWeight.SemiBold,
-                            ),
-                            color = MtSpec.TopBarText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Clip,
-                        )
-                        Text(
-                            buildString {
-                                append("文件夹: ").append(focused.dirCount)
-                                append("  文件: ").append(focused.fileCount)
-                                focused.space?.let {
-                                    append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total))
+                        focused.tabs.forEachIndexed { index, tab ->
+                            val active = index == focused.activeTab
+                            Row(
+                                Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(if (active) Color.White.copy(alpha = 0.14f) else Color.Transparent)
+                                    .clickableNoRipple { controller.switchTab(focusSide, index) }
+                                    .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+                                    .semantics {
+                                        role = Role.Tab
+                                        contentDescription = "标签页 ${tabLabelOf(tab)}" + if (active) "，当前" else ""
+                                    },
+                            ) {
+                                Text(
+                                    tabLabelOf(tab),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (active) MtSpec.TopBarText else MtSpec.TopBarSubText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.widthIn(max = 76.dp),
+                                )
+                                if (focused.tabs.size > 1) {
+                                    MtVectorIcon(
+                                        icon = MtIcon.CLOSE,
+                                        size = 14.dp,
+                                        tint = MtSpec.TopBarSubText,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .clickableNoRipple { controller.closeTab(focusSide, index) }
+                                            .padding(2.dp),
+                                    )
                                 }
-                                if (focused.hasSelection) append("  已选: ").append(focused.selection.size)
-                                if (focused.filtered) append("  ·  已过滤")
-                            },
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.TopBarSubSize),
-                            color = MtSpec.TopBarSubText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                            }
+                        }
                     }
-                    // ⋮ 更多菜单
+                    // 动作条（09022F）：横向可滚动，选中项后出现
+                    if (focused.hasSelection) {
+                        Row(
+                            Modifier
+                                .weight(1f)
+                                .fillMaxHeight()
+                                .horizontalScroll(rememberScrollState()),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TopActionItems(
+                                focused = focused,
+                                focusSide = focusSide,
+                                controller = controller,
+                                onDelete = { deleting = it },
+                                onRename = { item: FileMetadata ->
+                                    when {
+                                        focused.uri.scheme == "archive" -> archiveRename = item
+                                        focused.selection.size > 1 -> batchRenameFor = focused.selectedItems
+                                        else -> renaming = item
+                                    }
+                                },
+                                onCompress = { compressFormatPicker = true },
+                                onCopyTo = { controller.startPickDir(PickDirPurpose.COPY_TO) },
+                                onMoveTo = { controller.startPickDir(PickDirPurpose.MOVE_TO) },
+                                onProperties = { item: FileMetadata -> controller.showProperties(item) },
+                                onShare = { item: FileMetadata ->
+                                    shareItem(container, context, item) { msg -> controller.showStatus(msg) }
+                                },
+                            )
+                        }
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                    // ⋮ 更多（0902B2）
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .clickableNoRipple { showMoreMenu = true; hiddenSub = false }
-                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
                             .semantics {
                                 role = Role.Button
                                 contentDescription = "更多菜单"
                             },
                     ) {
-                        MtVectorIcon(icon = MtIcon.MORE, size = 24.dp, tint = MtSpec.TopBarText)
+                        MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = MtSpec.TopBarText)
+                    }
+                    // ＋ 新建页（090116）
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickableNoRipple { controller.newTab(focusSide) }
+                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = "新建标签页"
+                            },
+                    ) {
+                        MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = MtSpec.TopBarText)
                     }
                 }
-                // 面包屑（点任意一级跳转；长按复制完整路径）—— 深底上用小号亮字
+
+                // ---- 第二行：路径（18sp，居中）+ 统计（13sp，居中）
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, maxChars = 30),
+                        style = MaterialTheme.typography.titleMedium.copy(
+                            fontSize = MtSpec.TopBarTitleSize,
+                            fontWeight = FontWeight.SemiBold,
+                        ),
+                        color = MtSpec.TopBarText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Clip,
+                    )
+                    Text(
+                        buildString {
+                            append("文件夹: ").append(focused.dirCount)
+                            append("  文件: ").append(focused.fileCount)
+                            focused.space?.let {
+                                append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total))
+                            }
+                            // MT 0x7f11063b「已选: %d」——多选计数必须实时更新
+                            if (focused.hasSelection) append("  已选: ").append(focused.selection.size)
+                            if (focused.filtered) append("  ·  已过滤")
+                        },
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.TopBarSubSize),
+                        color = MtSpec.TopBarSubText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                // ---- 面包屑（点任意一级跳转；长按复制完整路径）—— 深底上用小号亮字
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 8.dp),
+                        .padding(horizontal = 8.dp, vertical = 2.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val crumbs: List<Pair<String, VfsUri>> = remember(focused.uri) {
@@ -431,62 +540,8 @@ fun DualPaneScreen(
                 }
             }
 
-            HSeparator()
-
-            // ---------------- MT 顶栏动作条（复刻 0x7f0c0034）：
-            //   选中项后出现「复制 / 移动 / 删除」三连（横向可滚动），未选中时整行隐藏。
-            //   源在左窗格 → `复制 ->`；源在右窗格 → `<- 复制`（箭头始终指向目标窗口）。
-            if (focused.hasSelection) {
-                val picked = focused.selectedItems
-                val twoFiles = picked.size == 2 && picked.none { it.isDirectory }
-                val anyDirectory = picked.any { it.isDirectory }
-                val inArchive = focused.uri.scheme == "archive"
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(40.dp)
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                        .horizontalScroll(rememberScrollState()),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ActionBarItem("⧉", crossPaneLabel("复制", focusSide)) { controller.copyToOther(focusSide) }
-                    ActionBarItem("✂", crossPaneLabel("移动", focusSide)) { controller.moveToOther(focusSide) }
-                    ActionBarItem("🗑", "删除") {
-                        if (picked.isEmpty()) return@ActionBarItem
-                        if (inArchive) controller.deleteInsideArchive(focusSide, picked)
-                        else deleting = picked.first()
-                    }
-                    ActionBarItem("✎", "重命名", enabled = picked.isNotEmpty()) {
-                        when {
-                            inArchive -> archiveRename = picked.firstOrNull()
-                            picked.size > 1 -> batchRenameFor = picked
-                            picked.size == 1 -> renaming = picked.first()
-                        }
-                    }
-                    ActionBarItem("⬇", "压缩", enabled = picked.isNotEmpty() && !inArchive) {
-                        if (picked.isNotEmpty()) compressFormatPicker = true
-                    }
-                    ActionBarItem("⇆", "文件对比", enabled = twoFiles) { controller.startFileDiff(focusSide) }
-                    // MT 0x7f0c0025「选择当前目录」：复制 / 移动的目标改成「浏览后确认」
-                    ActionBarItem("📂", "复制到…（选择目录）", enabled = !inArchive) {
-                        controller.startPickDir(PickDirPurpose.COPY_TO)
-                    }
-                    ActionBarItem("📂", "移动到…（选择目录）", enabled = !inArchive) {
-                        controller.startPickDir(PickDirPurpose.MOVE_TO)
-                    }
-                    ActionBarItem("📋", "复制到剪贴板") { controller.copySelectionToClipboard(focusSide) }
-                    ActionBarItem("🔖", "添加书签") { controller.addBookmark(focusSide) }
-                    ActionBarItem("ⓘ", "属性", enabled = picked.size == 1) {
-                        picked.firstOrNull()?.let { controller.showProperties(it) }
-                    }
-                    ActionBarItem("⇪", "分享", enabled = !anyDirectory && !inArchive) {
-                        picked.firstOrNull()?.let { item ->
-                            shareItem(container, context, item) { msg -> controller.showStatus(msg) }
-                        }
-                    }
-                }
-                HSeparator()
-            }
+            // MT：顶栏底部分割线 1px（0903F8）
+            DividerPx()
 
             // ---------------- 两个窗格
             // MT「单列 / 双列 / 自动切换」（0x7f1101fb/1fc/1fd/1fe）：
@@ -502,17 +557,27 @@ fun DualPaneScreen(
                 val showLeft = !single || ui.focused == PaneSide.LEFT
                 val showRight = !single || ui.focused == PaneSide.RIGHT
                 if (showLeft) {
-                    PaneView(
-                        container = container,
-                        side = PaneSide.LEFT,
-                        pane = ui.left,
-                        focused = ui.focused == PaneSide.LEFT,
-                        // 操作前两侧路径栏**同时**高亮（源与目标都要看得见；旧实现只高亮 focused 一侧）
-                        highlight = ui.highlight,
-                        controller = controller,
-                        modifier = Modifier.weight(ui.splitRatio),
-                        onRowAction = { rowAction = it },
-                    )
+                    // 复刻 MT 0x7f0c0033：**阴影只亮在活动窗格一侧**
+                    //  - 左窗格活动 → shadow_left（0903A1）亮，画在左窗格右缘
+                    //  - 右窗格活动 → shadow_right（0903A4）亮，画在右窗格左缘
+                    Box(Modifier.weight(ui.splitRatio)) {
+                        PaneView(
+                            container = container,
+                            side = PaneSide.LEFT,
+                            pane = ui.left,
+                            focused = ui.focused == PaneSide.LEFT,
+                            // 操作前两侧路径栏**同时**高亮（源与目标都要看得见）
+                            highlight = ui.highlight,
+                            controller = controller,
+                            modifier = Modifier.fillMaxSize(),
+                            onRowAction = { rowAction = it },
+                        )
+                        PaneEdgeShadow(
+                            active = ui.focused == PaneSide.LEFT,
+                            isLeftPane = true,
+                            modifier = Modifier.align(Alignment.CenterEnd),
+                        )
+                    }
                 }
                 if (showLeft && showRight) {
                     // 可拖动分隔条（复刻 MT 0x7f0c0033 的 0900B2 Guideline + 090111/090112 1px 线；
@@ -522,8 +587,6 @@ fun DualPaneScreen(
                             .width(10.dp)
                             .fillMaxHeight()
                             .pointerInput(Unit) {
-                                // 读取 controller 实时比例（pointerInput(Unit) 不会随重组重启，
-                                // 闭包里捕获的 ui.splitRatio 会过期，导致拖动回拉无效）
                                 detectDragGestures(
                                     onDragEnd = { controller.persistSplitRatio() },
                                     onDragCancel = { controller.persistSplitRatio() },
@@ -542,25 +605,27 @@ fun DualPaneScreen(
                             .semantics { contentDescription = "左右窗口分隔条（拖动调整比例，双击恢复等分）" },
                         contentAlignment = Alignment.Center,
                     ) {
-                        Box(
-                            Modifier
-                                .width(1.dp)
-                                .fillMaxHeight()
-                                .background(MaterialTheme.colorScheme.outline),
-                        )
+                        VDividerPx()
                     }
                 }
                 if (showRight) {
-                    PaneView(
-                        container = container,
-                        side = PaneSide.RIGHT,
-                        pane = ui.right,
-                        focused = ui.focused == PaneSide.RIGHT,
-                        highlight = ui.highlight,
-                        controller = controller,
-                        modifier = Modifier.weight(1f - ui.splitRatio),
-                        onRowAction = { rowAction = it },
-                    )
+                    Box(Modifier.weight(1f - ui.splitRatio)) {
+                        PaneView(
+                            container = container,
+                            side = PaneSide.RIGHT,
+                            pane = ui.right,
+                            focused = ui.focused == PaneSide.RIGHT,
+                            highlight = ui.highlight,
+                            controller = controller,
+                            modifier = Modifier.fillMaxSize(),
+                            onRowAction = { rowAction = it },
+                        )
+                        PaneEdgeShadow(
+                            active = ui.focused == PaneSide.RIGHT,
+                            isLeftPane = false,
+                            modifier = Modifier.align(Alignment.CenterStart),
+                        )
+                    }
                 }
             }
 
@@ -617,130 +682,159 @@ fun DualPaneScreen(
                     TextButton(onClick = { controller.cancelPickDir() }) { Text("取消") }
                 }
             } else if (focused.hasSelection) {
-                // MT：多选模式下出现「全选 / 反选 / 类选 / 同步」动态按钮
+                // MT：多选模式下底栏变成「全选 / 反选 / 类选 / …」动态按钮（0x7f11062b/632/633）
                 val bottomExtraSel = container.settings.value.bottomBarPaddingDp.dp
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(MtSpec.BottomBarHeight + bottomExtraSel)
-                        .padding(bottom = bottomExtraSel)
-                        .background(MaterialTheme.colorScheme.surface)
-                        .padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    BottomTextCommand("全选") { controller.selectAll(focusSide) }
-                    BottomTextCommand("反选") { controller.invertSelection(focusSide) }
-                    BottomTextCommand("类选") { controller.selectSameType(focusSide) }
-                    BottomTextCommand("同步", onLongClick = { filterInput = true }) { controller.syncPath() }
-                    BottomTextCommand("取消") { controller.clearSelection(focusSide) }
+                Column {
+                    DividerPx()
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(MtSpec.BottomBarHeight + bottomExtraSel)
+                            .padding(bottom = bottomExtraSel)
+                            .background(MaterialTheme.colorScheme.surface)
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                    ) {
+                        BottomTextCommand("全选") { controller.selectAll(focusSide) }
+                        BottomTextCommand("反选") { controller.invertSelection(focusSide) }
+                        BottomTextCommand("类选") { controller.selectSameType(focusSide) }
+                        BottomTextCommand("同步", onLongClick = { filterInput = true }) { controller.syncPath() }
+                        BottomTextCommand("取消") { controller.clearSelection(focusSide) }
+                    }
                 }
             } else {
                 val bottomExtra = container.settings.value.bottomBarPaddingDp.dp
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(MtSpec.BottomBarHeight + bottomExtra)
-                        .padding(bottom = bottomExtra)
-                        .background(MaterialTheme.colorScheme.surface)
-                        .pointerInput(Unit) {
-                            // 底栏上滑 → 书签（MT 手册：从底栏上滑调出书签）。
-                            // 防误触：累计位移要够（≥ 48px 才触发；单次 12px 太容易误触），
-                            // 且本次手势只触发一次。
-                            var accumulated = 0f
-                            var fired = false
-                            detectVerticalDragGestures(
-                                onDragStart = { accumulated = 0f; fired = false },
-                                onDragEnd = { accumulated = 0f },
-                                onDragCancel = { accumulated = 0f },
-                            ) { _, dragAmount ->
-                                accumulated += dragAmount
-                                if (!fired && accumulated < -48f && container.settings.value.bookmarkSwipe) {
-                                    fired = true
-                                    onOpenBookmarks()
+                Column {
+                    // MT：底栏上方的 1px 分割线（`090110` / `09007D`）
+                    DividerPx()
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(MtSpec.BottomBarHeight + bottomExtra)
+                            .padding(bottom = bottomExtra)
+                            .background(MaterialTheme.colorScheme.surface)
+                            .pointerInput(Unit) {
+                                // 底栏上滑 → 书签（MT 0x7f1107ca「从底部工具栏上滑即可打开书签」）。
+                                // 文档 G.1.3 提醒：热区要在底栏上边缘之上、并与全面屏手势错开；
+                                // 阈值取 MtGesture.SwipeBookmarkDp（32dp，文档 G.5），且本次手势只触发一次。
+                                val threshold = MtGesture.SwipeBookmarkDp.dp.toPx()
+                                var accumulated = 0f
+                                var fired = false
+                                detectVerticalDragGestures(
+                                    onDragStart = { accumulated = 0f; fired = false },
+                                    onDragEnd = { accumulated = 0f },
+                                    onDragCancel = { accumulated = 0f },
+                                ) { _, dragAmount ->
+                                    accumulated += dragAmount
+                                    if (!fired && accumulated < -threshold && container.settings.value.bookmarkSwipe) {
+                                        fired = true
+                                        onOpenBookmarks()
+                                    }
                                 }
                             }
+                            .padding(horizontal = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                    ) {
+                        // MT 底栏：后退 / 前进 / 新建 / 同步 / 上级（§1.5 + G.3.3）
+                        MtBottomIconButton(
+                            icon = MtIcon.BACK,
+                            label = "后退",
+                            enabled = focused.tab.back.isNotEmpty(),
+                        ) { controller.back(focusSide) }
+                        MtBottomIconButton(
+                            icon = MtIcon.FORWARD,
+                            label = "前进",
+                            enabled = focused.tab.forward.isNotEmpty(),
+                        ) { controller.forward(focusSide) }
+                        Box {
+                            MtBottomIconButton(
+                                icon = MtIcon.PLUS,
+                                label = "新建（长按直接新建文件）",
+                                onLongClick = { creatingFile = true },
+                            ) { showCreateMenu = true }
+                            // MT：新建（＋）弹出菜单
+                            DropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            MtVectorIcon(icon = MtIcon.FOLDER, size = 22.dp)
+                                            Text("新建文件夹", modifier = Modifier.padding(start = 12.dp))
+                                        }
+                                    },
+                                    onClick = { showCreateMenu = false; creatingFolder = true },
+                                )
+                                DropdownMenuItem(
+                                    text = {
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            MtVectorIcon(icon = MtIcon.FILE, size = 22.dp)
+                                            Text("新建文件", modifier = Modifier.padding(start = 12.dp))
+                                        }
+                                    },
+                                    onClick = { showCreateMenu = false; creatingFile = true },
+                                )
+                            }
                         }
-                        .padding(horizontal = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceEvenly,
-                ) {
-                    BottomCommand(MtIcon.BACK, "后退", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
-                    BottomCommand(MtIcon.FORWARD, "前进", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
-                    Box {
-                        BottomCommand(MtIcon.PLUS, "新建（长按新建文件）", onLongClick = { creatingFile = true }) { showCreateMenu = true }
-                        // MT：新建（＋）弹出菜单
-                        DropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
-                            DropdownMenuItem(
-                                text = { Text("📁  新建文件夹") },
-                                onClick = { showCreateMenu = false; creatingFolder = true },
-                            )
-                            DropdownMenuItem(
-                                text = { Text("📄  新建文件") },
-                                onClick = { showCreateMenu = false; creatingFile = true },
-                            )
-                        }
+                        // MT 底栏第三个按钮是「同步」（0x7f11069b）：点击 = 另一窗格跟随本窗格路径；
+                        // 长按 = 过滤（MT 0x7f11028f「长按底部的「同步」按钮也可以进行过滤」）。
+                        MtBottomIconButton(
+                            icon = MtIcon.SYNC,
+                            label = "同步路径到另一窗口（长按过滤）",
+                            onLongClick = { filterInput = true },
+                        ) { controller.syncPath() }
+                        // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
+                        MtBottomIconButton(
+                            icon = MtIcon.UP,
+                            label = "上级目录（长按输入路径）",
+                            enabled = focused.uri.parent != null || focused.uri.scheme == "archive",
+                            onLongClick = { gotoPath = true },
+                        ) { controller.up(focusSide) }
                     }
-                    // MT 底栏第三个按钮是「同步」（0x7f11069b「同步」）：
-                    // 点击 = 另一窗格跟随本窗格路径；长按 = 过滤（MT 0x7f11028f「长按底部的「同步」按钮也可以进行过滤」）。
-                    // （旧实现把这个位置做成「交换窗口」→ 用户误触会整列对调，是误触投诉的主因）
-                    BottomCommand(MtIcon.SYNC, "同步路径到另一窗口（长按过滤）", onLongClick = { filterInput = true }) {
-                        controller.syncPath()
-                    }
-                    // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
-                    BottomCommand(
-                        MtIcon.UP,
-                        "上级目录（长按输入路径）",
-                        enabled = focused.uri.parent != null || focused.uri.scheme == "archive",
-                        onLongClick = { gotoPath = true },
-                    ) { controller.up(focusSide) }
                 }
             }
         }
     }
 
-    // ---------------- ⋮ 菜单（MT 截图3 顺序 + 图标）
+    // ---------------- ⋮ 菜单（MT 截图3 顺序 + 图标，全部换成 MT 的真实矢量图标）
     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
         if (!hiddenSub) {
-            MtMenuItem("⟳", "刷新") { showMoreMenu = false; controller.refresh(focusSide) }
-            // MT：⋮ 菜单里的「输入路径」（现在长按 ↑ 也能调出，这里补上入口便于发现）
-            MtMenuItem("⌨", "输入路径") { showMoreMenu = false; gotoPath = true }
-            MtMenuItem("🔍", "搜索") { showMoreMenu = false; showSearch = true }
-            MtMenuItem("▣", "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
-            MtMenuItem("▽", "过滤") { showMoreMenu = false; filterInput = true }
-            MtMenuItem("⇅", "排序方式") { showMoreMenu = false; showSortDialog = true }
-            MtMenuItem("👁", "隐藏文件", trailing = "▶") { hiddenSub = true }
-            MtMenuItem("📋", "复制到剪贴板") { showMoreMenu = false; controller.copySelectionToClipboard(focusSide) }
+            MtMenuRow(MtIcon.SYNC, "刷新") { showMoreMenu = false; controller.refresh(focusSide) }
+            MtMenuRow(MtIcon.KEYBOARD, "输入路径") { showMoreMenu = false; gotoPath = true }
+            MtMenuRow(MtIcon.SEARCH, "搜索") { showMoreMenu = false; showSearch = true }
+            MtMenuRow(MtIcon.SELECT_ALL, "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
+            MtMenuRow(MtIcon.LOW_PRIORITY, "过滤") { showMoreMenu = false; filterInput = true }
+            MtMenuRow(MtIcon.SORT, "排序方式") { showMoreMenu = false; showSortDialog = true }
+            MtMenuRow(MtIcon.EYE_OFF, "隐藏文件", trailing = MtIcon.CHEVRON_R) { hiddenSub = true }
+            MtMenuRow(MtIcon.COPY, "复制到剪贴板") { showMoreMenu = false; controller.copySelectionToClipboard(focusSide) }
             if (controller.hasClipboard) {
-                MtMenuItem("📥", "粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide) }
-                MtMenuItem("✂", "移动粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide, move = true) }
+                MtMenuRow(MtIcon.PASTE, "粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide) }
+                MtMenuRow(MtIcon.CUT, "移动粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide, move = true) }
             }
-            MtMenuItem("🔖", "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
-            MtMenuItem("🏠", "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
+            MtMenuRow(MtIcon.BOOKMARK, "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
+            MtMenuRow(MtIcon.HOME, "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
             // MT 0x7f1104ab「已设置为该网络存储的初始路径」：把当前路径写回连接的初始路径
             if (focused.uri.scheme != "local" && focused.uri.scheme != "archive") {
-                MtMenuItem("📍", "设为该网络存储的初始路径") {
+                MtMenuRow(MtIcon.LOCATE, "设为该网络存储的初始路径") {
                     showMoreMenu = false
                     controller.setAsConnectionInitialPath(focusSide)
                 }
             }
-            MtMenuItem("🔄", "同步（另一窗格跟随本窗格）") { showMoreMenu = false; controller.syncPath() }
-            MtMenuItem("⇄", "交换窗口") {
+            MtMenuRow(MtIcon.SYNC, "同步（另一窗格跟随本窗格）") { showMoreMenu = false; controller.syncPath() }
+            MtMenuRow(MtIcon.SWAP, "交换窗口") {
                 showMoreMenu = false
                 controller.swapPanes()
                 controller.showStatus("已交换窗口")
             }
-            // 标签页：单标签时标签条隐藏（省空间）→ 这里补「新建标签页」入口，
-            // 保证任何时候都能开第二个标签（开完标签条自动出现）
-            MtMenuItem("🗂", "新建标签页") { showMoreMenu = false; controller.newTab(focusSide) }
+            MtMenuRow(MtIcon.VIEW_SIDEBAR, "新建标签页") { showMoreMenu = false; controller.newTab(focusSide) }
             if (focused.uri.scheme == "archive") {
                 // MT：压缩包内时，右上角菜单提供「测试压缩包完整性」与解压
-                MtMenuItem("✓", "测试压缩包完整性") { showMoreMenu = false; controller.testArchive(focusSide) }
-                MtMenuItem("⬆", "解压到对面窗格") {
+                MtMenuRow(MtIcon.VERIFIED, "测试压缩包完整性") { showMoreMenu = false; controller.testArchive(focusSide) }
+                MtMenuRow(MtIcon.ARCHIVE, "解压到对面窗格") {
                     showMoreMenu = false
                     controller.extractTo(focusSide, ui.pane(focusSide.other).uri)
                 }
-                MtMenuItem("📂", "解压到压缩包所在目录") {
+                MtMenuRow(MtIcon.FOLDER, "解压到压缩包所在目录") {
                     showMoreMenu = false
                     val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
                     val host = encoded?.let { VfsUri.decodeHost(it) }?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
@@ -749,16 +843,16 @@ fun DualPaneScreen(
                     else controller.showStatus("无法确定压缩包所在目录")
                 }
                 // MT 0x7f0c00ce「解压」对话框：三个单选（单独的文件夹 / 当前目录 / 文件夹…）+ 基于另一窗口路径
-                MtMenuItem("🗂", "解压…") {
+                MtMenuRow(MtIcon.ARCHIVE, "解压…") {
                     showMoreMenu = false
                     extractDirPicker = true
                 }
-                MtMenuItem("📥", "添加对面选中项到压缩包") { showMoreMenu = false; controller.addToArchive(focusSide) }
+                MtMenuRow(MtIcon.UPLOAD, "添加对面选中项到压缩包") { showMoreMenu = false; controller.addToArchive(focusSide) }
             }
-            MtMenuItem("⇆", "比较两个目录") { showMoreMenu = false; controller.compareDirectories() }
+            MtMenuRow(MtIcon.COMPARE, "比较两个目录") { showMoreMenu = false; controller.compareDirectories() }
             // 浏览模式（MT 0x7f1101fb/1fc/1fd/1fe：单列 / 双列 / 自动切换）
             Box {
-                MtMenuItem("◫", "浏览模式（${ui.effectiveBrowseMode.label}）", trailing = "▶") { browseSub = true }
+                MtMenuRow(MtIcon.LAYERS, "浏览模式（${ui.effectiveBrowseMode.label}）", trailing = MtIcon.CHEVRON_R) { browseSub = true }
                 DropdownMenu(expanded = browseSub, onDismissRequest = { browseSub = false }) {
                     BrowseMode.entries.forEach { mode ->
                         DropdownMenuItem(
@@ -773,21 +867,24 @@ fun DualPaneScreen(
                     }
                 }
             }
-            // 类型过滤（MT 的「过滤」下拉：文件夹 / 图片 / 视频 …；此前 filterKind 有状态无入口）
-            MtMenuItem("▽", "类型过滤" + focused.filterKind?.let { "（已过滤）" } ?: "") { showMoreMenu = false; showTypeFilter = true }
-            MtMenuItem("⚙", "设置") { showMoreMenu = false; onOpenSettings() }
-            MtMenuItem("➡", "退出") {
+            // 类型过滤（MT 的「过滤」下拉：文件夹 / 图片 / 视频 …）
+            MtMenuRow(
+                MtIcon.FILE,
+                "类型过滤" + focused.filterKind?.let { "（已过滤）" } ?: "",
+            ) { showMoreMenu = false; showTypeFilter = true }
+            MtMenuRow(MtIcon.SETTINGS, "设置") { showMoreMenu = false; onOpenSettings() }
+            MtMenuRow(MtIcon.EXIT, "退出") {
                 showMoreMenu = false
                 (context as? Activity)?.finishAffinity()
             }
         } else {
             // 隐藏文件 ▶ 子菜单（MT：带勾选态）
-            MtMenuItem("‹", "隐藏文件") { hiddenSub = false }
-            MtMenuItem(if (focused.showHidden) "☑" else "☐", "显示隐藏文件") {
+            MtMenuRow(MtIcon.CHEVRON_L, "隐藏文件") { hiddenSub = false }
+            MtMenuRow(MtIcon.CHECK, "显示隐藏文件", checked = focused.showHidden) {
                 showMoreMenu = false
                 if (!focused.showHidden) controller.toggleHidden(focusSide)
             }
-            MtMenuItem(if (!focused.showHidden) "☑" else "☐", "不显示隐藏文件") {
+            MtMenuRow(MtIcon.CLOSE, "不显示隐藏文件", checked = !focused.showHidden) {
                 showMoreMenu = false
                 if (focused.showHidden) controller.toggleHidden(focusSide)
             }
@@ -805,18 +902,18 @@ fun DualPaneScreen(
         MtActionSheet(
             actions = buildList {
                 // MT：箭头跟随目标窗口方向 —— 选中项在左窗格 → `复制 ->`；在右窗格 → `<- 复制`
-                add(MtAction("copy_to", crossPaneLabel("复制", focusSide), "⧉", singleWindow = true))
-                add(MtAction("move_to", crossPaneLabel("移动", focusSide), "✂", singleWindow = true))
-                add(MtAction("delete", "删除", "🗑"))
-                add(MtAction("rename", "重命名", "✎"))
-                add(MtAction("tools", "工具", "🔧"))
-                add(MtAction("compress", "压缩", "⬇"))
-                if (twoFiles) add(MtAction("diff", "文件对比", "⇆"))
-                add(MtAction("properties", "属性", "ⓘ", enabled = multi <= 1))
-                add(MtAction("share", "分享", "⇪", enabled = !anyDirectory))
-                add(MtAction("open_with", "打开方式…", "✓", enabled = !anyDirectory))
-                add(MtAction("clipboard", "复制到剪贴板", "📋"))
-                add(MtAction("bookmark", "添加书签", "🔖"))
+                add(MtAction("copy_to", crossPaneLabel("复制", focusSide), MtIcon.COPY, singleWindow = true))
+                add(MtAction("move_to", crossPaneLabel("移动", focusSide), MtIcon.CUT, singleWindow = true))
+                add(MtAction("delete", "删除", MtIcon.DELETE))
+                add(MtAction("rename", "重命名", MtIcon.EDIT))
+                add(MtAction("tools", "工具", MtIcon.BUILD))
+                add(MtAction("compress", "压缩", MtIcon.ARCHIVE))
+                if (twoFiles) add(MtAction("diff", "文件对比", MtIcon.COMPARE))
+                add(MtAction("properties", "属性", MtIcon.INFO, enabled = multi <= 1))
+                add(MtAction("share", "分享", MtIcon.SHARE, enabled = !anyDirectory))
+                add(MtAction("open_with", "打开方式…", MtIcon.CHECK, enabled = !anyDirectory))
+                add(MtAction("clipboard", "复制到剪贴板", MtIcon.PASTE))
+                add(MtAction("bookmark", "添加书签", MtIcon.BOOKMARK))
             },
             onAction = { id ->
                 rowAction = null
@@ -866,22 +963,22 @@ fun DualPaneScreen(
         MtActionSheet(
             title = "工具 · ${item.name}",
             actions = listOf(
-                MtAction("copy_path", "复制路径", "⧉"),
-                MtAction("crc32", "校验值 CRC32", "#"),
-                MtAction("md5", "校验值 MD5", "#"),
-                MtAction("sha1", "校验值 SHA-1", "#"),
-                MtAction("sha256", "校验值 SHA-256", "#"),
-                MtAction("chmod", "修改权限", "🔒"),
+                MtAction("copy_path", "复制路径", MtIcon.COPY),
+                MtAction("crc32", "校验值 CRC32", MtIcon.TAG),
+                MtAction("md5", "校验值 MD5", MtIcon.TAG),
+                MtAction("sha1", "校验值 SHA-1", MtIcon.TAG),
+                MtAction("sha256", "校验值 SHA-256", MtIcon.TAG),
+                MtAction("chmod", "修改权限", MtIcon.LOCK),
                 MtAction(
                     "swap_name",
                     "交换文件名",
-                    "⇄",
+                    MtIcon.SWAP,
                     enabled = focused.selection.size == 2,
                 ),
-                MtAction("select_all", "全选", "☑"),
-                MtAction("invert", "反选", "☐"),
-                MtAction("same_type", "类选", "▣"),
-                MtAction("exit", "退出多选", "✕"),
+                MtAction("select_all", "全选", MtIcon.SELECT_ALL),
+                MtAction("invert", "反选", MtIcon.SELECT_ALL),
+                MtAction("same_type", "类选", MtIcon.LAYERS),
+                MtAction("exit", "退出多选", MtIcon.CLOSE),
             ),
             onAction = { id ->
                 toolsFor = null
@@ -1416,61 +1513,58 @@ fun DualPaneScreen(
 
 // ---------------------------------------------------------------------------
 
+/**
+ * MT 顶栏动作条（复刻 `0x7f0c0034` 的 `09022F` HorizontalScrollView）：
+ * 前三项硬编码为 **复制 / 移动 / 删除**（MT 原文），其余为 PanelFM 的扩展动作。
+ * 源在左窗格 → `复制 ->`；源在右窗格 → `<- 复制`（箭头始终指向目标窗口）。
+ */
 @Composable
-private fun BottomCommand(
-    icon: MtIcon,
-    label: String,
-    enabled: Boolean = true,
-    highlighted: Boolean = false,
-    onLongClick: (() -> Unit)? = null,
-    onClick: () -> Unit,
+private fun TopActionItems(
+    focused: PaneState,
+    focusSide: PaneSide,
+    controller: BrowserController,
+    onDelete: (FileMetadata) -> Unit,
+    onRename: (FileMetadata) -> Unit,
+    onCompress: () -> Unit,
+    onCopyTo: () -> Unit,
+    onMoveTo: () -> Unit,
+    onProperties: (FileMetadata) -> Unit,
+    onShare: (FileMetadata) -> Unit,
 ) {
-    val base = Modifier
-        // MT 底栏：每个按钮是整高点击区（0x7f070031 = 64dp），24dp 线性图标居中
-        .fillMaxHeight()
-        .widthIn(min = 56.dp)
-        .clip(RoundedCornerShape(8.dp))
-        .background(if (highlighted) MtSpec.AccentLight.copy(alpha = 0.14f) else Color.Transparent)
-    val tapAction = onClick
-    val longAction = onLongClick
-    val modifier = if (longAction != null) {
-        base
-            .pointerInput(Unit) {
-                detectTapGestures(
-                    onDoubleTap = null,
-                    onLongPress = { longAction() },
-                    onTap = { if (enabled) tapAction() },
-                )
-            }
-            .semantics {
-                contentDescription = label
-                role = Role.Button
-                onClick(label = "点击") { if (enabled) tapAction(); true }
-                onLongClick(label = "长按") { longAction(); true }
-            }
-    } else {
-        base
-            .clickableNoRipple(enabled, tapAction)
-            .semantics {
-                contentDescription = label
-                role = Role.Button
-            }
+    val picked = focused.selectedItems
+    val twoFiles = picked.size == 2 && picked.none { it.isDirectory }
+    val anyDirectory = picked.any { it.isDirectory }
+    val inArchive = focused.uri.scheme == "archive"
+
+    // MT 0x7f0c0034：前三项 = 复制 / 移动 / 删除（图标 22dp + 文字 14sp + 左右 padding 15dp）
+    MtActionButton(MtIcon.COPY, crossPaneLabel("复制", focusSide)) { controller.copyToOther(focusSide) }
+    MtActionButton(MtIcon.CUT, crossPaneLabel("移动", focusSide)) { controller.moveToOther(focusSide) }
+    MtActionButton(MtIcon.DELETE, "删除", enabled = picked.isNotEmpty()) {
+        picked.firstOrNull()?.let { item ->
+            if (inArchive) controller.deleteInsideArchive(focusSide, picked) else onDelete(item)
+        }
     }
-    Box(
-        modifier,
-        contentAlignment = Alignment.Center,
-    ) {
-        MtVectorIcon(
-            icon = icon,
-            size = MtSpec.BottomBarIcon,
-            tint = when {
-                !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                highlighted -> MtSpec.AccentLight
-                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.87f)
-            },
-        )
+    MtActionButton(MtIcon.EDIT, "重命名", enabled = picked.isNotEmpty()) {
+        picked.firstOrNull()?.let(onRename)
+    }
+    MtActionButton(MtIcon.ARCHIVE, "压缩", enabled = picked.isNotEmpty() && !inArchive) {
+        if (picked.isNotEmpty()) onCompress()
+    }
+    MtActionButton(MtIcon.COMPARE, "文件对比", enabled = twoFiles) { controller.startFileDiff(focusSide) }
+    // MT 0x7f0c0025「选择当前目录」：复制 / 移动的目标改成「浏览后确认」
+    MtActionButton(MtIcon.FOLDER, "复制到…", enabled = !inArchive, onClick = onCopyTo)
+    MtActionButton(MtIcon.FOLDER, "移动到…", enabled = !inArchive, onClick = onMoveTo)
+    MtActionButton(MtIcon.PASTE, "复制到剪贴板") { controller.copySelectionToClipboard(focusSide) }
+    MtActionButton(MtIcon.BOOKMARK, "添加书签") { controller.addBookmark(focusSide) }
+    MtActionButton(MtIcon.INFO, "属性", enabled = picked.size == 1) {
+        picked.firstOrNull()?.let(onProperties)
+    }
+    MtActionButton(MtIcon.SHARE, "分享", enabled = !anyDirectory && !inArchive) {
+        picked.firstOrNull()?.let(onShare)
     }
 }
+
+
 
 /** 底栏文字按钮（多选工具栏用） */
 @Composable
@@ -1503,56 +1597,9 @@ private fun BottomTextCommand(label: String, onLongClick: (() -> Unit)? = null, 
     }
 }
 
-/** MT 顶栏动作条按钮（复刻 0x7f0c0034：图标 22dp + 文字 14sp，左右 padding 15dp） */
-@Composable
-private fun ActionBarItem(icon: String, label: String, enabled: Boolean = true, onClick: () -> Unit) {
-    Row(
-        Modifier
-            .fillMaxHeight()
-            .clickableNoRipple(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 15.dp)
-            .semantics {
-                role = Role.Button
-                contentDescription = label
-                if (!enabled) stateDescription = "不可用"
-                onClick(label = label) { if (enabled) { onClick(); true } else false }
-            },
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val tint = if (enabled) MaterialTheme.colorScheme.onSurface
-        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
-        Text(icon, style = MaterialTheme.typography.titleMedium, color = tint)
-        Text(
-            label,
-            // MT 0x7f0c0034：文字 14sp
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-            maxLines = 1,
-            color = tint,
-            modifier = Modifier.padding(start = 8.dp),
-        )
-    }
-}
 
-/** ⋮ 菜单项（MT 截图3：左图标 + 文字 + 可选右侧箭头） */
-@Composable
-private fun MtMenuItem(icon: String, label: String, trailing: String? = null, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    icon,
-                    style = MaterialTheme.typography.bodyMedium,
-                    modifier = Modifier.width(30.dp),
-                )
-                Text(label, modifier = Modifier.weight(1f))
-                trailing?.let {
-                    Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        },
-        onClick = onClick,
-    )
-}
+
+
 
 private fun sortLabel(by: SortBy): String = when (by) {
     SortBy.NAME -> "按名称"

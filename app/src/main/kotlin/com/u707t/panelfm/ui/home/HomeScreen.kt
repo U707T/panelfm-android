@@ -43,6 +43,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.core.ui.MtVectorIcon
+import androidx.compose.ui.graphics.Color
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.LocalNetwork
@@ -90,6 +94,14 @@ fun HomeScreen(
     var status by remember { mutableStateOf<String?>(null) }
     var connecting by remember { mutableStateOf<Long?>(null) }
     var menuFor by remember { mutableStateOf<ConnectionConfig?>(null) }
+    // MT 0x7f1106fa「再按一次断开连接」的 2 秒窗口
+    var disconnectArmed by remember { mutableStateOf<Long?>(null) }
+    LaunchedEffect(disconnectArmed) {
+        if (disconnectArmed != null) {
+            kotlinx.coroutines.delay(com.u707t.panelfm.core.ui.MtGesture.PressAgainMs)
+            disconnectArmed = null
+        }
+    }
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
     var showTopMenu by remember { mutableStateOf(false) }
 
@@ -135,8 +147,12 @@ fun HomeScreen(
 
     Scaffold(
         floatingActionButton = {
-            FloatingActionButton(onClick = onAddConnection) {
-                Text("＋", style = MaterialTheme.typography.titleLarge)
+            FloatingActionButton(
+                onClick = onAddConnection,
+                containerColor = MtSpec.FabRed,
+                contentColor = Color.White,
+            ) {
+                MtVectorIcon(icon = MtIcon.PLUS, size = MtSpec.FabIcon, tint = Color.White)
             }
         },
         containerColor = MaterialTheme.colorScheme.background,
@@ -258,9 +274,14 @@ fun HomeScreen(
                                     .background(MaterialTheme.colorScheme.onSurface),
                                 contentAlignment = Alignment.Center,
                             ) {
-                                Text(
-                                    if (volume.authority == "root") "📱" else if (volume.authority == "app") "🗂" else "💾",
-                                    style = MaterialTheme.typography.bodyMedium,
+                                MtVectorIcon(
+                                    icon = when (volume.authority) {
+                                        "root" -> MtIcon.ANDROID
+                                        "app" -> MtIcon.LAYERS
+                                        else -> MtIcon.SD
+                                    },
+                                    size = 24.dp,
+                                    tint = MaterialTheme.colorScheme.surface,
                                 )
                             }
                         },
@@ -281,7 +302,7 @@ fun HomeScreen(
                     MtListRow(
                         title = "还没有网络存储",
                         subtitle = "点右下角 ＋ 添加 SFTP / FTP / FTPS / WebDAV",
-                        icon = { NetworkBadge("＋") },
+                        icon = { NetworkBadge(MtIcon.PLUS) },
                         onClick = onAddConnection,
                     )
                 }
@@ -339,15 +360,15 @@ fun HomeScreen(
                     val s = it.state.value
                     s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
                 }
-                ToolRow("回收站", "🗑") { onOpenTrash() }
-                ToolRow("远程管理", "🖥") { onOpenRemote() }
-                ToolRow("已安装应用", "📦") { onOpenApps() }
-                ToolRow("文本编辑器", "📄") { onOpenEditor() }
-                ToolRow("局域网扫描", "🧭") { onScanLan() }
-                ToolRow("书签", "🔖") { onOpenBookmarks() }
-                ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇") { onOpenTasks() }
-                ToolRow("设置", "⚙") { onOpenSettings() }
-                ToolRow("关于", "ℹ") { status = "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME} · 双列文件管理器（本地 / SFTP · 跳板机 / FTP · FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能" }
+                ToolRow("回收站", MtIcon.DELETE) { onOpenTrash() }
+                ToolRow("远程管理", MtIcon.DNS) { onOpenRemote() }
+                ToolRow("已安装应用", MtIcon.EXTENSION) { onOpenApps() }
+                ToolRow("文本编辑器", MtIcon.CODE) { onOpenEditor() }
+                ToolRow("局域网扫描", MtIcon.EXPLORE) { onScanLan() }
+                ToolRow("书签", MtIcon.BOOKMARK) { onOpenBookmarks() }
+                ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP) { onOpenTasks() }
+                ToolRow("设置", MtIcon.SETTINGS) { onOpenSettings() }
+                ToolRow("关于", MtIcon.INFO) { status = "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME} · 双列文件管理器（本地 / SFTP · 跳板机 / FTP · FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能" }
             }
 
             Box(Modifier.padding(bottom = 96.dp))
@@ -377,10 +398,17 @@ fun HomeScreen(
                 Row {
                     TextButton(onClick = {
                         // 只断开这一条连接（旧实现 closeAll() 会把其它连接一起断掉）
-                        container.disconnectConnection(config)
-                        menuFor = null
-                        status = "已断开会话"
-                    }) { Text("断开") }
+                        // MT 0x7f1106fa：第一次点提示，2 秒内再点一次才真正断开
+                        if (disconnectArmed == config.id) {
+                            container.disconnectConnection(config)
+                            disconnectArmed = null
+                            menuFor = null
+                            status = "已断开会话"
+                        } else {
+                            disconnectArmed = config.id
+                            status = "再按一次断开连接"
+                        }
+                    }) { Text(if (disconnectArmed == config.id) "再按一次断开连接" else "断开") }
                     TextButton(onClick = { deleteTarget = config; menuFor = null }) { Text("删除") }
                 }
             },
@@ -408,7 +436,7 @@ fun HomeScreen(
 }
 
 @Composable
-private fun NetworkBadge(text: String) {
+private fun NetworkBadge(icon: MtIcon) {
     Box(
         Modifier
             .size(42.dp)
@@ -416,7 +444,7 @@ private fun NetworkBadge(text: String) {
             .background(MaterialTheme.colorScheme.onSurface),
         contentAlignment = Alignment.Center,
     ) {
-        Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.surface, fontWeight = FontWeight.Bold)
+        MtVectorIcon(icon = icon, size = 24.dp, tint = MaterialTheme.colorScheme.surface)
     }
 }
 
@@ -436,7 +464,18 @@ private fun HomeConnectionRow(
             append(config.host).append(":").append(config.port)
             if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
         },
-        icon = { NetworkBadge(config.type.label.take(3).uppercase()) },
+        icon = {
+            NetworkBadge(
+                when (config.type.scheme) {
+                    "dav" -> MtIcon.CLOUD
+                    "ftp", "ftps" -> MtIcon.DNS
+                    "sftp" -> MtIcon.LOCK
+                    "smb" -> MtIcon.WEB
+                    "s3" -> MtIcon.CLOUD
+                    else -> MtIcon.DNS
+                }
+            )
+        },
         onClick = onOpen,
         onLongClick = onLongClick,
         trailing = {
@@ -448,19 +487,11 @@ private fun HomeConnectionRow(
 }
 
 @Composable
-private fun ToolRow(title: String, emoji: String, onClick: () -> Unit) {
+private fun ToolRow(title: String, icon: MtIcon, onClick: () -> Unit) {
     MtListRow(
         title = title,
         subtitle = null,
-        icon = {
-            Box(
-                Modifier
-                    .size(42.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.onSurface),
-                contentAlignment = Alignment.Center,
-            ) { Text(emoji, style = MaterialTheme.typography.bodyMedium) }
-        },
+        icon = { NetworkBadge(icon) },
         onClick = onClick,
     )
 }

@@ -70,6 +70,28 @@ object MtSpec {
     val FabMargin = 12.dp
     val FabStackStep = 74.dp
 
+    /** FAB 底色（`0x7f060042` = `#FFFF0000`，MT 所有 FAB 的 backgroundTint） */
+    val FabRed = Color(0xFFFF0000)
+
+    // ------------------------------------------------------------------ 顶栏动作条 / 底栏 / 菜单
+
+    /** 顶栏动作条图标（`0x7f0c0034` 的 ImageView = 22dp） */
+    val ActionIcon = 22.dp
+
+    /** ⋮ 菜单左侧图标列宽（MT 菜单项：左图标 + 文字） */
+    val MenuIcon = 22.dp
+
+    /** 底栏按钮点击区宽度（MT 底栏 5 个按钮均分，最小 56dp） */
+    val BottomButtonWidth = 56.dp
+
+    /** 对话框内容区 paddingTop（`@7F070025` = 18dp） */
+    val DialogPaddingTop = 18.dp
+
+    // ------------------------------------------------------------------ 窗格阴影（附录 E.2）
+
+    /** 活动窗格边缘阴影宽度（shadow_left/right = 5dp） */
+    val PaneShadow = 5.dp
+
     // ------------------------------------------------------------------ 颜色（0x7f0600xx）
 
     /** 顶栏背景：浅色主题 #ff151515（**MT 的顶栏始终是深色**） */
@@ -127,4 +149,51 @@ object MtSpec {
     val IconCode = Color(0xFF1E88E5)
     val IconText = Color(0xFF546E7A)
     val IconOther = Color(0xFF607D8B)
+}
+
+/**
+ * MT 的手势参数（文档附录 G.5「手势参数与阈值（可量化复刻）」）。
+ *
+ * MT 的真实阈值写在被混淆的 dex 里，无法直接读出；文档给的是**与 MT 观感一致的推荐值**，
+ * 这里集中定义，避免各界面各写一套。
+ *
+ * | 参数 | 值 | 依据 |
+ * |---|---|---|
+ * | 长按触发时间 | 400ms（系统默认 500ms，MT 更灵敏） | 长按是主入口，过慢会与滑动冲突 |
+ * | 长按位移容差 | 12dp | 与 FAB margin 一致 |
+ * | 左右滑动选择判定 | ≥ 24dp 且 \|dx\| > 2\|dy\| | `0x7f1106f3`「左右滑动文件可直接选择」 |
+ * | 右滑出菜单阈值 | ≥ 48dp | `0x7f110697`「右滑列表项可进行更多操作」 |
+ * | 上滑书签热区 | dy < -32dp 且 \|dy\| > \|dx\| | `0x7f1100e0` |
+ * | 「再按一次」窗口 | 2000ms | `0x7f11055c/588/587/6fa` |
+ */
+object MtGesture {
+    /** 长按触发时间（ms）：MT 比系统默认（500ms）更灵敏 */
+    const val LongPressMs = 400L
+
+    /** 长按位移容差（dp）：超过即认为用户在滑动，不是长按 */
+    const val LongPressSlopDp = 12f
+
+    /** 左右滑动进入多选的判定：水平位移 ≥ 24dp 且 |dx| > 2|dy| */
+    const val SwipeSelectDp = 24f
+
+    /** 右滑出菜单的判定：≥ 48dp（仅在已进入多选态时启用，见文档 F.5 冲突消解顺序第 5 条） */
+    const val SwipeMenuDp = 48f
+
+    /** 底栏上滑书签：累计位移 ≥ 32dp 且纵向占优 */
+    const val SwipeBookmarkDp = 32f
+
+    /** 「再按一次 X」的确认窗口（ms） */
+    const val PressAgainMs = 2000L
+
+    /** 横向滑动是否构成「进入多选」（MT 0x7f1106f3 的判定）。 */
+    fun isSwipeSelect(dxDp: Float, dyDp: Float): Boolean =
+        kotlin.math.abs(dxDp) >= SwipeSelectDp && kotlin.math.abs(dxDp) > kotlin.math.abs(dyDp) * 2f
+
+    /** 右滑是否构成「滑出更多操作」（MT 0x7f110697；仅在多选态下生效）。 */
+    fun isSwipeMenu(dxDp: Float, dyDp: Float): Boolean =
+        dxDp >= SwipeMenuDp && dxDp > kotlin.math.abs(dyDp) * 2f
+
+    /** 底栏上滑是否构成「打开书签」（MT 0x7f1107ca）。 */
+    fun isSwipeBookmark(dyDp: Float, dxDp: Float): Boolean =
+        dyDp <= -SwipeBookmarkDp && kotlin.math.abs(dyDp) > kotlin.math.abs(dxDp)
 }

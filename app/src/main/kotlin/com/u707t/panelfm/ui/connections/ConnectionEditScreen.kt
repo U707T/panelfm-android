@@ -36,6 +36,8 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.model.ConnectionConfig
@@ -418,9 +420,10 @@ fun ConnectionEditScreen(
                 visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
                 trailingIcon = {
                     Box(Modifier.clickable { showPassword = !showPassword }.padding(horizontal = 10.dp)) {
-                        Text(
-                            "👁",
-                            color = if (showPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                    MtVectorIcon(
+                            icon = if (showPassword) MtIcon.EYE_OFF else MtIcon.EYE,
+                            size = 20.dp,
+                            tint = if (showPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },

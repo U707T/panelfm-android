@@ -10,7 +10,7 @@ class BookmarkDao(private val db: PanelDb) {
 
     fun all(): List<Bookmark> {
         val out = ArrayList<Bookmark>()
-        db.readableDatabase.query("bookmark", null, null, null, null, null, "created_at DESC").use { c ->
+        db.readableDatabase.query("bookmark", null, null, null, null, null, "sort_order ASC, created_at DESC").use { c ->
             while (c.moveToNext()) out.add(c.toBookmark())
         }
         return out
@@ -29,6 +29,23 @@ class BookmarkDao(private val db: PanelDb) {
 
     fun delete(id: Long) {
         db.writableDatabase.delete("bookmark", "id = ?", arrayOf(id.toString()))
+    }
+
+    /**
+     * 长按后拖动排序（MT `0x7f110140`）：按给定 id 顺序写回 `sort_order`。
+     * 未在列表中的书签保持原值（排在其后），避免误伤。
+     */
+    fun reorder(orderedIds: List<Long>) {
+        val dbw = db.writableDatabase
+        dbw.beginTransaction()
+        try {
+            orderedIds.forEachIndexed { index, id ->
+                dbw.execSQL("UPDATE bookmark SET sort_order = ? WHERE id = ?", arrayOf<Any?>(index, id))
+            }
+            dbw.setTransactionSuccessful()
+        } finally {
+            dbw.endTransaction()
+        }
     }
 
     /** 路径历史：记录访问过的目录（用于「最近使用」与书签建议） */

@@ -102,3 +102,49 @@ object Fmt {
     /** 用于日志/调试的比较：比较两个大小差异是否 > 1%（校验辅助） */
     fun sizeDiffers(a: Long, b: Long): Boolean = if (a <= 0 || b <= 0) a != b else abs(a - b) > 0
 }
+
+/**
+ * MT「文件列表显示策略」三档的副标题渲染（文案 `0x7f110200 / 201 / 202`）：
+ *  - 0 = 文件列表不显示权限 → 只有时间
+ *  - 1 = 非存储目录下的文件显示「权限+大小」（默认档）
+ *  - 2 = 全部目录下的文件显示「时间+大小」
+ *
+ * 抽成纯函数是为了可单测（原实现内联在 PaneView 里，改档位只能靠肉眼验证）。
+ */
+object MtListSubtitle {
+
+    /** 与 MT 一致的档位名（设置页展示用） */
+    val MODE_LABELS = listOf(
+        "文件列表不显示权限",
+        "非存储目录显示「权限+大小」",
+        "全部目录显示「时间+大小」",
+    )
+
+    /**
+     * 组装一行副标题。
+     *
+     * @param mode 0/1/2，越界按默认档 1 处理
+     * @param permissionText 权限串（如 `drwxrws---`），null = 该协议不提供
+     * @param timeText 时间串（已格式化），空串 = 无时间
+     * @param sizeText 大小串（已格式化），空串 = 无大小（目录/未知）
+     */
+    fun render(
+        mode: Int,
+        permissionText: String?,
+        timeText: String,
+        sizeText: String,
+    ): String {
+        fun join(vararg parts: String?): String =
+            parts.filter { !it.isNullOrBlank() }.joinToString("  ·  ")
+
+        return when (mode.coerceIn(0, 2)) {
+            0 -> timeText
+            2 -> join(timeText, sizeText)
+            else -> {
+                val withPerm = join(permissionText, sizeText)
+                // 权限与大小都拿不到时退回时间（MT 的列表不会出现空副标题）
+                if (withPerm.isBlank()) timeText else withPerm
+            }
+        }
+    }
+}

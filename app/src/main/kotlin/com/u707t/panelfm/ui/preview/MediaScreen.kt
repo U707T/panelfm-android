@@ -71,6 +71,8 @@ import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.vfs.FileMetadata
@@ -391,7 +393,11 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 Modifier.align(Alignment.Center),
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text("🎵", fontSize = 72.sp)
+                MtVectorIcon(
+                    icon = MtIcon.AUDIO,
+                    size = 72.dp,
+                    tint = Color.White.copy(alpha = 0.85f),
+                )
                 Text(
                     title,
                     color = Color.White.copy(alpha = 0.9f),

@@ -112,6 +112,21 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setBookmarkSwipe(it) }
         }
 
+        // MT 0x7f110630：点击两次 = 区间选择（与长按连选互补，默认关 = MT 默认）
+        SectionLabel("手势（复刻 MT 交互）")
+        SettingSwitch("点击连选：开启后点击列表中任意两个项，将会自动选择它们中间所有的项", settings.tapRangeSelect) {
+            scope.launch { container.prefs.setTapRangeSelect(it) }
+        }
+        Text(
+            "· 长按 = 锚点 + 进入多选；**长按第二项 = 连选区间**（MT 0x7f110631）\n" +
+                "· 左右滑动 ≥24dp = 进入多选；滑动跨行 = 区间选择（MT 0x7f1106f3 / 62f）\n" +
+                "· 已多选态右滑 ≥48dp = 滑出该项的更多操作（MT 0x7f110697）\n" +
+                "· 底栏长按「同步」= 过滤；底栏上滑 = 书签（MT 0x7f11028f / 7ca）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+        )
+
         SectionLabel("文件")
         SettingSwitch("保留文件时间（复制/解压/下载后保留原修改时间）", settings.preserveModifiedTime) {
             scope.launch { container.prefs.setPreserveModifiedTime(it) }
@@ -120,11 +135,8 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setStartAtHome(it) }
         }
         Text(
-            "文件列表显示：" + listOf(
-                "不显示权限",
-                "非存储目录显示「权限+大小」",
-                "全部目录显示「时间+大小」",
-            )[settings.listDisplayMode],
+            // MT 0x7f110200/201/202「文件列表显示策略」三档
+            "文件列表显示：" + com.u707t.panelfm.core.common.MtListSubtitle.MODE_LABELS[settings.listDisplayMode],
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 4.dp),
         )
@@ -132,7 +144,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             listOf(0, 1, 2).forEach { mode ->
                 TextButton(onClick = { scope.launch { container.prefs.setListDisplayMode(mode) } }) {
                     Text(
-                        listOf("权限隐藏", "权限+大小", "时间+大小")[mode],
+                        listOf("不显示权限", "权限+大小", "时间+大小")[mode],
                         color = if (mode == settings.listDisplayMode) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -47,7 +47,8 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
               connection_id INTEGER,
               uri TEXT NOT NULL,
               name TEXT NOT NULL,
-              created_at INTEGER NOT NULL DEFAULT 0
+              created_at INTEGER NOT NULL DEFAULT 0,
+              sort_order INTEGER NOT NULL DEFAULT 0
             )
             """.trimIndent()
         )
@@ -131,6 +132,10 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         // 加法式迁移：只补新表/新列，不动用户数据
+        if (oldVersion < 3) {
+            // 书签「长按后拖动排序」（MT 0x7f110140）：新增排序列，老数据按创建时间序（默认 0）
+            runCatching { db.execSQL("ALTER TABLE bookmark ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0") }
+        }
         if (oldVersion < 2) {
             db.execSQL(
                 """
@@ -149,6 +154,6 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
     }
 
     companion object {
-        const val DB_VERSION = 2
+        const val DB_VERSION = 3
     }
 }

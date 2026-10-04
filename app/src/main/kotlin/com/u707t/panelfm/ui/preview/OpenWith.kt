@@ -42,6 +42,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,18 +54,18 @@ import kotlinx.coroutines.withContext
  *  - 右上 🔍 搜索、❓ 帮助；底部「类型」过滤、「管理」删除默认、「关闭」
  *  - **长按内置项 = 设为该扩展名的默认打开方式**
  */
-enum class PreviewMode(val handlerId: String, val label: String, val glyph: String) {
-    AUTO("auto", "自动识别", "✨"),
-    TEXT("text", "文本查看器", "📄"),
-    EDITOR("editor", "编辑文本", "✏️"),
-    HEX("hex", "十六进制", "01"),
-    IMAGE("image", "查看图片", "🖼"),
-    MEDIA("media", "播放音乐/视频", "▶"),
-    PDF("pdf", "查看 PDF", "📕"),
-    APK_INFO("apk", "APK 信息", "📦"),
-    ARCHIVE("archive", "浏览压缩包", "🗜"),
-    FONT("font", "查看字体", "A"),
-    SYSTEM("system", "系统应用打开", "↗"),
+enum class PreviewMode(val handlerId: String, val label: String, val icon: MtIcon) {
+    AUTO("auto", "自动识别", MtIcon.EXPLORE),
+    TEXT("text", "文本查看器", MtIcon.DESC),
+    EDITOR("editor", "编辑文本", MtIcon.EDIT),
+    HEX("hex", "十六进制", MtIcon.CODE),
+    IMAGE("image", "查看图片", MtIcon.IMAGE),
+    MEDIA("media", "播放音乐/视频", MtIcon.MOVIE),
+    PDF("pdf", "查看 PDF", MtIcon.DESC),
+    APK_INFO("apk", "APK 信息", MtIcon.ANDROID),
+    ARCHIVE("archive", "浏览压缩包", MtIcon.ARCHIVE),
+    FONT("font", "查看字体", MtIcon.FONT),
+    SYSTEM("system", "系统应用打开", MtIcon.LAUNCH),
     ;
 
     companion object {
@@ -118,10 +120,10 @@ fun OpenWithDialog(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("打开方式…", modifier = Modifier.weight(1f))
                 TextButton(onClick = { searching = !searching; if (!searching) query = "" }) {
-                    Text("🔍", style = MaterialTheme.typography.titleMedium)
+                    MtVectorIcon(icon = MtIcon.SEARCH, size = 22.dp)
                 }
                 TextButton(onClick = { help = true }) {
-                    Text("❓", style = MaterialTheme.typography.titleMedium)
+                    MtVectorIcon(icon = MtIcon.HELP, size = 22.dp)
                 }
             }
         },
@@ -241,7 +243,7 @@ private fun BuiltinTile(
                 .background(builtinColor(option.mode).copy(alpha = if (option.available) 1f else 0.35f)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(option.mode.glyph, fontSize = 22.sp, color = Color.White)
+            MtVectorIcon(icon = option.mode.icon, size = 24.dp, tint = Color.White)
         }
         Text(
             option.mode.label + if (isDefault) "（默认）" else "",

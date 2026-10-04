@@ -46,6 +46,7 @@ import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtFolderGlyph
+import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
@@ -101,6 +102,8 @@ fun MtSideDrawer(
     var expandMore by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<ConnectionConfig?>(null) }
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
+    // MT 0x7f1106fa「再按一次断开连接」：不可逆操作用「连按两次」而不是二次弹窗
+    var disconnectArmed by remember { mutableStateOf<Long?>(null) }
     val systemDark = isSystemInDarkTheme()
 
     // ===== 后台：最近访问路径（MT 抽屉的「后台」段）
@@ -114,6 +117,14 @@ fun MtSideDrawer(
                 uri.toString() != browserUi.right.uri.toString() &&
                 container.locator.find(uri) != null
         }.distinctBy { it.toString() }.take(6)
+    }
+
+    // 「再按一次断开连接」的 2 秒窗口（MT 的 PressAgainMs）
+    LaunchedEffect(disconnectArmed) {
+        if (disconnectArmed != null) {
+            kotlinx.coroutines.delay(MtGesture.PressAgainMs)
+            disconnectArmed = null
+        }
     }
 
     Column(Modifier.fillMaxWidth()) {
@@ -192,42 +203,67 @@ fun MtSideDrawer(
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("＋", Modifier.padding(end = 12.dp))
-                                    Text("添加网络存储", Modifier.weight(1f))
-                                    Text("▶", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp)
+                                    Text("添加网络存储", Modifier.weight(1f).padding(start = 14.dp))
+                                    MtVectorIcon(icon = MtIcon.CHEVRON_R, size = 18.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             },
                             onClick = { protocolSub = true },
                         )
                         DropdownMenuItem(
-                            text = { Row { Text("＋", Modifier.padding(end = 12.dp)); Text("添加本地存储") } },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp)
+                                    Text("添加本地存储", Modifier.padding(start = 14.dp))
+                                }
+                            },
                             onClick = {
                                 drawerMenu = false
                                 showStatus("已自动枚举：根目录 / 内部存储 / 应用目录；外置 SD 卡（SAF）将在后续版本接入")
                             },
                         )
                         DropdownMenuItem(
-                            text = { Row { Text("📁", Modifier.padding(end = 12.dp)); Text("添加网络分组") } },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    MtVectorIcon(icon = MtIcon.FOLDER, size = 22.dp)
+                                    Text("添加网络分组", Modifier.padding(start = 14.dp))
+                                }
+                            },
                             onClick = {
                                 drawerMenu = false
                                 showStatus("网络分组：在「编辑连接 → 网络分组」中填写组名即可；同名分组会自动归拢")
                             },
                         )
                         DropdownMenuItem(
-                            text = { Row { Text("🔧", Modifier.padding(end = 12.dp)); Text("管理工具分组") } },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    MtVectorIcon(icon = MtIcon.BUILD, size = 22.dp)
+                                    Text("管理工具分组", Modifier.padding(start = 14.dp))
+                                }
+                            },
                             onClick = {
                                 drawerMenu = false
                                 showStatus("工具分组为默认布局，自定义分组将在后续版本提供")
                             },
                         )
                         DropdownMenuItem(
-                            text = { Row { Text("⚙", Modifier.padding(end = 12.dp)); Text("设置") } },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    MtVectorIcon(icon = MtIcon.SETTINGS, size = 22.dp)
+                                    Text("设置", Modifier.padding(start = 14.dp))
+                                }
+                            },
                             onClick = { drawerMenu = false; onOpenSettings() },
                         )
                     } else {
                         // 添加网络存储 ▶ 子菜单（协议列表）
                         DropdownMenuItem(
-                            text = { Row { Text("‹", Modifier.padding(end = 12.dp)); Text("选择协议") } },
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    MtVectorIcon(icon = MtIcon.CHEVRON_L, size = 22.dp)
+                                    Text("选择协议", Modifier.padding(start = 14.dp))
+                                }
+                            },
                             onClick = { protocolSub = false },
                         )
                         HSeparator()
@@ -268,13 +304,14 @@ fun MtSideDrawer(
                     subtitle = space?.let { "${Fmt.size(it.total - it.free)}已用，${Fmt.size(it.free)}可用" } ?: volume.path,
                     icon = {
                         RoundIconBox(size = 42.dp) {
-                            Text(
-                                when (volume.authority) {
-                                    "root" -> "📱"
-                                    "app" -> "🗂"
-                                    else -> "💾"
+                            MtVectorIcon(
+                                icon = when (volume.authority) {
+                                    "root" -> MtIcon.ANDROID
+                                    "app" -> MtIcon.LAYERS
+                                    else -> MtIcon.SD
                                 },
-                                style = MaterialTheme.typography.bodyMedium,
+                                size = 24.dp,
+                                tint = MaterialTheme.colorScheme.surface,
                             )
                         }
                     },
@@ -292,7 +329,11 @@ fun MtSideDrawer(
                 MtListRow(
                     title = "还没有网络存储",
                     subtitle = "右上角 ⋮ → 添加网络存储（SFTP / FTP / WebDAV / SMB / S3）",
-                    icon = { RoundIconBox(size = 42.dp) { Text("＋", style = MaterialTheme.typography.bodyMedium) } },
+                    icon = {
+                        RoundIconBox(size = 42.dp) {
+                            MtVectorIcon(icon = MtIcon.PLUS, size = 24.dp, tint = MaterialTheme.colorScheme.surface)
+                        }
+                    },
                     onClick = { onAddConnection(ConnectionType.SFTP) },
                 )
             }
@@ -319,15 +360,18 @@ fun MtSideDrawer(
                         subtitle = uri.displayPath.ifEmpty { "/" },
                         icon = {
                             RoundIconBox(size = 42.dp) {
-                                Text(
-                                    when (uri.scheme) {
-                                        "local" -> "本地"
-                                        "dav" -> "DAV"
-                                        else -> uri.scheme.take(3).uppercase()
+                                MtVectorIcon(
+                                    icon = when (uri.scheme) {
+                                        "local" -> MtIcon.SD
+                                        "dav" -> MtIcon.CLOUD
+                                        "ftp", "ftps" -> MtIcon.DNS
+                                        "sftp" -> MtIcon.LOCK
+                                        "smb" -> MtIcon.WEB
+                                        "s3" -> MtIcon.CLOUD
+                                        else -> MtIcon.CLOUD
                                     },
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.surface,
-                                    fontWeight = FontWeight.Bold,
+                                    size = 24.dp,
+                                    tint = MaterialTheme.colorScheme.surface,
                                 )
                             }
                         },
@@ -342,17 +386,17 @@ fun MtSideDrawer(
                 val s = it.state.value
                 s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
             }
-            DrawerTool("回收站", "🗑", onOpenTrash)
-            DrawerTool("已安装应用", "📦", onOpenApps)
-            DrawerTool("文本编辑器", "📄", onOpenEditor)
-            DrawerTool("远程管理", "🖥", onOpenRemote)
-            DrawerTool("书签", "🔖", onOpenBookmarks)
-            DrawerTool("传输任务" + if (active > 0) "（$active 进行中）" else "", "⬇", onOpenTasks)
-            DrawerTool("局域网扫描", "🧭", onOpenLanScan)
-            DrawerTool("更多工具", "⋯") { expandMore = !expandMore }
+            DrawerTool("回收站", MtIcon.DELETE, onOpenTrash)
+            DrawerTool("已安装应用", MtIcon.EXTENSION, onOpenApps)
+            DrawerTool("文本编辑器", MtIcon.CODE, onOpenEditor)
+            DrawerTool("远程管理", MtIcon.DNS, onOpenRemote)
+            DrawerTool("书签", MtIcon.BOOKMARK, onOpenBookmarks)
+            DrawerTool("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP, onOpenTasks)
+            DrawerTool("局域网扫描", MtIcon.EXPLORE, onOpenLanScan)
+            DrawerTool("更多工具", MtIcon.EXPAND) { expandMore = !expandMore }
             if (expandMore) {
-                DrawerTool("设置", "⚙", onOpenSettings)
-                DrawerTool("关于 PanelFM", "ℹ") {
+                DrawerTool("设置", MtIcon.SETTINGS, onOpenSettings)
+                DrawerTool("关于 PanelFM", MtIcon.INFO) {
                     showStatus("PanelFM · 双列文件管理器（本地 / SFTP / FTP / FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能")
                 }
             }
@@ -372,10 +416,17 @@ fun MtSideDrawer(
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        container.disconnectConnection(config)
-                        menuFor = null
-                        showStatus("已断开会话：${config.name.ifBlank { config.host }}")
-                    }) { Text("断开") }
+                        // MT 0x7f1106fa：第一次点提示，2 秒内再点一次才真正断开
+                        if (disconnectArmed == config.id) {
+                            container.disconnectConnection(config)
+                            disconnectArmed = null
+                            menuFor = null
+                            showStatus("已断开会话：${config.name.ifBlank { config.host }}")
+                        } else {
+                            disconnectArmed = config.id
+                            showStatus("再按一次断开连接")
+                        }
+                    }) { Text(if (disconnectArmed == config.id) "再按一次断开连接" else "断开") }
                     TextButton(onClick = { deleteTarget = config; menuFor = null }) { Text("删除") }
                 }
             },
@@ -402,11 +453,15 @@ fun MtSideDrawer(
 }
 
 @Composable
-private fun DrawerTool(title: String, emoji: String, onClick: () -> Unit) {
+private fun DrawerTool(title: String, icon: MtIcon, onClick: () -> Unit) {
     MtListRow(
         title = title,
         subtitle = null,
-        icon = { RoundIconBox(size = 42.dp) { Text(emoji, style = MaterialTheme.typography.bodyMedium) } },
+        icon = {
+            RoundIconBox(size = 42.dp) {
+                MtVectorIcon(icon = icon, size = 24.dp, tint = MaterialTheme.colorScheme.surface)
+            }
+        },
         onClick = onClick,
     )
 }

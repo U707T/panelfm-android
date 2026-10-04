@@ -68,6 +68,11 @@ data class AppSettings(
      * `editor_find` …），值 = 最近使用在前、去重、最多 12 条。
      */
     val inputHistory: Map<String, List<String>> = emptyMap(),
+    /**
+     * MT 0x7f110630「开启后点击列表中任意两个项，将会自动选择它们中间所有的项。」
+     * 默认关（MT 同默认）；开启后多选态里点第二项 = 区间选择。
+     */
+    val tapRangeSelect: Boolean = false,
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -107,6 +112,7 @@ class PrefsStore(private val context: Context) {
         val confirmExit = booleanPreferencesKey("confirm_exit")
         val backupOnSave = booleanPreferencesKey("backup_on_save")
         val dialogIconMode = intPreferencesKey("dialog_icon_mode")
+        val tapRangeSelect = booleanPreferencesKey("tap_range_select")
         // MT 对齐（v1.0）：输入框历史（recordKey → 历史值）
         val inputHistory = androidx.datastore.preferences.core.stringSetPreferencesKey("input_history")
     }
@@ -158,6 +164,7 @@ class PrefsStore(private val context: Context) {
             confirmExit = p[Keys.confirmExit] ?: false,
             backupOnSave = p[Keys.backupOnSave] ?: false,
             dialogIconMode = (p[Keys.dialogIconMode] ?: 0).coerceIn(0, 2),
+            tapRangeSelect = p[Keys.tapRangeSelect] ?: false,
             inputHistory = (p[Keys.inputHistory] ?: emptySet())
                 .mapNotNull { line ->
                     val idx = line.indexOf('|')
@@ -206,6 +213,7 @@ class PrefsStore(private val context: Context) {
     suspend fun setConfirmExit(on: Boolean) = context.panelDataStore.edit { it[Keys.confirmExit] = on }
     suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }
     suspend fun setDialogIconMode(mode: Int) = context.panelDataStore.edit { it[Keys.dialogIconMode] = mode.coerceIn(0, 2) }
+    suspend fun setTapRangeSelect(on: Boolean) = context.panelDataStore.edit { it[Keys.tapRangeSelect] = on }
 
     /**
      * MT 的输入框历史（`app:recordKey`）：记一条历史（去重、最近在前、最多 [limit] 条）。

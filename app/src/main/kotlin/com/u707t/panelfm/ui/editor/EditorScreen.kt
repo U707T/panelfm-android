@@ -1,4 +1,8 @@
 package com.u707t.panelfm.ui.editor
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.layout.size
+import androidx.compose.ui.draw.clip
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -46,6 +50,8 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.CodeFormatter
 import com.u707t.panelfm.core.common.Fmt
@@ -387,8 +393,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                     .padding(horizontal = 6.dp, vertical = 2.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                PageButton("⇤", enabled = page > 0 && !pageLoading) { goPage(0) }
-                PageButton("‹", enabled = page > 0 && !pageLoading) { goPage(page - 1) }
+                PageButton(MtIcon.FIRST_PAGE, enabled = page > 0 && !pageLoading) { goPage(0) }
+                PageButton(MtIcon.CHEVRON_L, enabled = page > 0 && !pageLoading) { goPage(page - 1) }
                 Text(
                     "段 ${page + 1}/$pageCount · ${Fmt.size(pageRange.first)}–${Fmt.size(pageRange.second)}" +
                         if (pageLoading) " · 加载中…" else "",
@@ -396,8 +402,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(1f),
                 )
-                PageButton("›", enabled = page < pageCount - 1 && !pageLoading) { goPage(page + 1) }
-                PageButton("⇥", enabled = page < pageCount - 1 && !pageLoading) { goPage(pageCount - 1) }
+                PageButton(MtIcon.CHEVRON_R, enabled = page < pageCount - 1 && !pageLoading) { goPage(page + 1) }
+                PageButton(MtIcon.FORWARD, enabled = page < pageCount - 1 && !pageLoading) { goPage(pageCount - 1) }
             }
         }
 
@@ -799,12 +805,21 @@ private class SyntaxHighlightTransformation(
 // ------------------------------------------------------------------ 小工具组件
 
 @Composable
-private fun PageButton(label: String, enabled: Boolean, onClick: () -> Unit) {
-    TextButton(
-        enabled = enabled,
-        onClick = onClick,
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 8.dp, vertical = 2.dp),
-    ) { Text(label, style = MaterialTheme.typography.labelLarge) }
+private fun PageButton(icon: MtIcon, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .size(34.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        MtVectorIcon(
+            icon = icon,
+            size = 20.dp,
+            tint = if (enabled) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
+        )
+    }
 }
 
 // ------------------------------------------------------------------ 读写

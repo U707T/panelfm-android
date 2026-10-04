@@ -32,6 +32,8 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.DiffIgnore
 import com.u707t.panelfm.core.common.DiffLine
@@ -146,12 +148,20 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
         ) {
             TextButton(onClick = onBack) { Text("← 返回") }
             Text("文本对比", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            // MT：上一个 / 下一个差异
-            TextButton(onClick = { jumpHunk(-1) }) { Text("↑ 上个差异") }
-            TextButton(onClick = { jumpHunk(1) }) { Text("↓ 下个差异") }
+            // MT 0x7f11055f / 0x7f1104c5：上一个 / 下一个差异
+            TextButton(onClick = { jumpHunk(-1) }) {
+                MtVectorIcon(icon = MtIcon.UP, size = 18.dp)
+                Text("上个差异", style = MaterialTheme.typography.labelMedium)
+            }
+            TextButton(onClick = { jumpHunk(1) }) {
+                MtVectorIcon(icon = MtIcon.ARROW_DOWN, size = 18.dp)
+                Text("下个差异", style = MaterialTheme.typography.labelMedium)
+            }
             // MT：⋮ 菜单（浏览模式 / 忽略 / 区分大小写）
             Box {
-                TextButton(onClick = { menu = DiffMenu.IGNORE }) { Text("⋮") }
+                TextButton(onClick = { menu = DiffMenu.IGNORE }) {
+                    MtVectorIcon(icon = MtIcon.LOW_PRIORITY, size = 20.dp)
+                }
                 DropdownMenu(expanded = menu == DiffMenu.IGNORE, onDismissRequest = { menu = null }) {
                     Text("忽略", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
                     DiffIgnore.entries.forEach { opt ->
@@ -168,7 +178,9 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
                 }
             }
             Box {
-                TextButton(onClick = { menu = DiffMenu.VIEW }) { Text("◫") }
+                TextButton(onClick = { menu = DiffMenu.VIEW }) {
+                    MtVectorIcon(icon = MtIcon.LAYERS, size = 20.dp)
+                }
                 DropdownMenu(expanded = menu == DiffMenu.VIEW, onDismissRequest = { menu = null }) {
                     Text("浏览模式", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
                     DiffViewMode.entries.forEach { mode ->
@@ -185,7 +197,9 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
                 }
             }
             Box {
-                TextButton(onClick = { menu = DiffMenu.CASE }) { Text("Aa") }
+                TextButton(onClick = { menu = DiffMenu.CASE }) {
+                    MtVectorIcon(icon = MtIcon.FONT, size = 20.dp)
+                }
                 DropdownMenu(expanded = menu == DiffMenu.CASE, onDismissRequest = { menu = null }) {
                     DropdownMenuItem(
                         text = {

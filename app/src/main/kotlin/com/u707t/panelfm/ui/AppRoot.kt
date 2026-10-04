@@ -80,7 +80,7 @@ fun AppRoot(container: AppContainer) {
             runCatching { (context as? android.app.Activity)?.finish() }
         } else {
             exitArmed = true
-            android.widget.Toast.makeText(context, "再按一次退出", android.widget.Toast.LENGTH_SHORT).show()
+            android.widget.Toast.makeText(context, "再按一次退出程序", android.widget.Toast.LENGTH_SHORT).show()
         }
     }
     LaunchedEffect(exitArmed) {
