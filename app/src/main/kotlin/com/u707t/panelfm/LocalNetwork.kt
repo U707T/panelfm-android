@@ -29,4 +29,13 @@ object LocalNetwork {
         } else {
             true
         }
+
+    /** 当前是否在 Wi-Fi / 有线网络下（用于「缩略图仅 Wi-Fi 加载」策略） */
+    fun isOnWifi(context: Context): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+            ?: return false
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) ||
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
 }

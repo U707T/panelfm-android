@@ -50,24 +50,37 @@ class BrowserController(private val container: AppContainer) {
     init {
         val settings = container.settings.value
         com.u707t.panelfm.core.common.Fmt.showSeconds = settings.showSeconds
-        val (lastLeft, lastRight) = if (settings.rememberLastPath) container.prefs.lastPaths() else (null to null)
-        val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
-        val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
         val defaultSort = SortSpec(settings.sortBy, settings.sortAscending, settings.dirsFirst)
         update {
             it.copy(
                 splitRatio = settings.splitRatio,
-                left = (if (leftUri != null && container.locator.find(leftUri) != null)
-                    it.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority))) else it.left)
-                    .copy(sort = defaultSort),
-                right = (if (rightUri != null && container.locator.find(rightUri) != null)
-                    it.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority))) else it.right)
-                    .copy(sort = defaultSort),
+                left = it.left.copy(sort = defaultSort),
+                right = it.right.copy(sort = defaultSort),
             )
         }
         load(PaneSide.LEFT)
         load(PaneSide.RIGHT)
         observeTasks()
+        // 记忆路径异步恢复（不在主线程 runBlocking —— 冷启动不卡首帧）
+        container.scope.launch {
+            if (!container.settings.value.rememberLastPath) return@launch
+            val (lastLeft, lastRight) = container.prefs.lastPathsSuspend()
+            val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+            val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+            if (leftUri == null && rightUri == null) return@launch
+            update { st ->
+                st.copy(
+                    left = if (leftUri != null && st.left.uri.isRoot && container.locator.find(leftUri) != null)
+                        st.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority)), sort = defaultSort)
+                    else st.left,
+                    right = if (rightUri != null && st.right.uri.isRoot && container.locator.find(rightUri) != null)
+                        st.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority)), sort = defaultSort)
+                    else st.right,
+                )
+            }
+            if (leftUri != null) load(PaneSide.LEFT)
+            if (rightUri != null) load(PaneSide.RIGHT)
+        }
         // 路径变化时记忆（轻量：只在导航后写一次）
         container.scope.launch {
             container.settings.collect { s ->

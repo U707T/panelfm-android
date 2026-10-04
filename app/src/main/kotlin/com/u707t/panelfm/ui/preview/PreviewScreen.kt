@@ -4,6 +4,8 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -29,6 +31,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -187,32 +191,108 @@ private const val MAX_TEXT_SIZE = 1L * 1024 * 1024
 private const val MAX_IMAGE_SIZE = 32L * 1024 * 1024
 private const val HEX_WINDOW = 8 * 1024
 
+/**
+ * 图片预览：先读边界再按最长边 ≤ 2048px 采样解码（大图不整包进内存）；
+ * 双击切换 1x / 2.5x，捏合缩放（1–5x），双指拖动平移（MT 同款）。
+ */
 @Composable
 private fun ImagePreview(container: AppContainer, item: FileMetadata) {
     var bitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
+    var scale by remember { mutableStateOf(1f) }
+    var offset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+
     LaunchedEffect(item.uri) {
         try {
-            val bytes = readBytes(container, item.uri, MAX_IMAGE_SIZE)
-            val bm = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: throw IllegalStateException("无法解码图片")
-            bitmap = bm
+            bitmap = decodeSampled(container, item.uri)
         } catch (e: Exception) {
-            error = e.message
+            error = e.message ?: "解码失败"
         }
     }
+
     when {
         error != null -> ErrorState("图片预览失败：$error\n（可在 ⋮ 菜单点「Hex」查看原始数据）")
         bitmap == null -> LoadingState("解码中…")
-        else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Image(
-                bitmap = bitmap!!.asImageBitmap(),
-                contentDescription = item.name,
-                contentScale = ContentScale.Fit,
-                modifier = Modifier.fillMaxSize(),
-            )
+        else -> {
+            val bm = bitmap!!
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(androidx.compose.ui.graphics.Color.Black)
+                    // 双击：1x ↔ 2.5x
+                    .pointerInput(bm) {
+                        detectTapGestures(
+                            onDoubleTap = {
+                                if (scale > 1.01f) {
+                                    scale = 1f
+                                    offset = androidx.compose.ui.geometry.Offset.Zero
+                                } else {
+                                    scale = 2.5f
+                                }
+                            },
+                        )
+                    }
+                    // 捏合缩放 + 双指平移
+                    .pointerInput(bm) {
+                        detectTransformGestures { _, pan, zoom, _ ->
+                            scale = (scale * zoom).coerceIn(1f, 5f)
+                            val maxX = (scale - 1f) * size.width / 2f
+                            val maxY = (scale - 1f) * size.height / 2f
+                            offset = androidx.compose.ui.geometry.Offset(
+                                (offset.x + pan.x).coerceIn(-maxX, maxX),
+                                (offset.y + pan.y).coerceIn(-maxY, maxY),
+                            )
+                        }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                Image(
+                    bitmap = bm.asImageBitmap(),
+                    contentDescription = item.name,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                            translationX = offset.x
+                            translationY = offset.y
+                        },
+                )
+            }
         }
     }
 }
+
+/** 先读边界再采样：本地走文件路径、远程读字节（采样目标：最长边 ≤ [TARGET_MAX_EDGE]） */
+private suspend fun decodeSampled(container: AppContainer, uri: VfsUri): android.graphics.Bitmap =
+    kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+        if (uri.scheme == "local") {
+            val path = container.localVfs.absolutePath(uri)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(path, bounds)
+            val sample = sampleToFit(bounds.outWidth, bounds.outHeight, TARGET_MAX_EDGE)
+            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+                ?: throw IllegalStateException("无法解码图片")
+        } else {
+            val bytes = readBytes(container, uri, MAX_IMAGE_SIZE)
+            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IllegalStateException("无法解码图片")
+            val sample = sampleToFit(bounds.outWidth, bounds.outHeight, TARGET_MAX_EDGE)
+            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+                ?: throw IllegalStateException("无法解码图片")
+        }
+    }
+
+private fun sampleToFit(width: Int, height: Int, target: Int): Int {
+    var sample = 1
+    val longest = maxOf(width, height)
+    while (longest / (sample * 2) >= target) sample *= 2
+    return sample
+}
+
+private const val TARGET_MAX_EDGE = 2048
 
 @Composable
 private fun TextPreview(container: AppContainer, item: FileMetadata) {

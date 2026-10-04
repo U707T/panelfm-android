@@ -10,6 +10,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.u707t.panelfm.core.model.SortBy
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
@@ -140,6 +141,12 @@ class PrefsStore(private val context: Context) {
     suspend fun saveLastPaths(left: String?, right: String?) = context.panelDataStore.edit { prefs ->
         if (left == null) prefs.remove(Keys.lastLeft) else prefs[Keys.lastLeft] = left
         if (right == null) prefs.remove(Keys.lastRight) else prefs[Keys.lastRight] = right
+    }
+
+    /** 异步读上次双列路径（启动不阻塞主线程） */
+    suspend fun lastPathsSuspend(): Pair<String?, String?> {
+        val p = context.panelDataStore.data.first()
+        return p[Keys.lastLeft] to p[Keys.lastRight]
     }
 
     fun lastPaths(): Pair<String?, String?> {

@@ -128,8 +128,10 @@ fun rememberThumb(
             ?: container.connectionByAuthority(item.uri.scheme, item.uri.authority)
         if (cfg?.option(com.u707t.panelfm.core.model.ConnectionConfig.OPT_LOAD_THUMBS) == "false") return null
     }
+    val context = androidx.compose.ui.platform.LocalContext.current
     val state = produceState<ImageBitmap?>(initialValue = null, item.uri.toString(), skip) {
-        val allowRemote = container.settings.value.thumbnailsOnMobile || true
+        // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置
+        val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || container.settings.value.thumbnailsOnMobile
         value = ThumbCache.load(container, item, targetPx, allowRemote)?.asImageBitmap()
     }
     return state.value
