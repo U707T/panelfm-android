@@ -308,11 +308,13 @@ fun DualPaneScreen(
                     .fillMaxWidth()
                     .background(topBarBg),
             ) {
-                // ---- 第一行：标签页 + 动作条 + ⋮ + ＋
+                // ---- 顶栏主体（复刻 MT `0x7f0c0033` 的 `09046B` + 自定义 View `09038A`）
+                //   MT 截图实测：**☰、路径/统计（居中）、⋮ 全在同一块里** ——
+                //   ☰ 与 ⋮ 在垂直方向跨两行居中，中间是「路径（大字）+ 统计（小字）」。
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .height(MtSpec.TopBarHeight),
+                        .padding(horizontal = 4.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // ☰ 侧边栏
@@ -326,60 +328,53 @@ fun DualPaneScreen(
                                 contentDescription = "打开侧边栏"
                             },
                     ) {
-                        MtVectorIcon(icon = MtIcon.MENU, size = 24.dp, tint = MtSpec.TopBarText)
+                        MtVectorIcon(icon = MtIcon.MENU, size = 26.dp, tint = MtSpec.TopBarText)
                     }
-                    // TabLayout（0903F9）：**只有多标签时才出现**。
-                    // MT 截图实测：文件浏览态（单标签）顶栏是「☰ + 路径(居中) + ⋮」，
-                    // 标签页与 ＋ 是编辑器多文件时才显示的（`0x7f0c0034` 里两者都由代码控制显隐）。
-                    if (focused.tabs.size > 1) {
-                    Row(
+
+                    // 中间：路径（大字，居中）+ 统计（小字，居中）
+                    Column(
                         Modifier
-                            .horizontalScroll(rememberScrollState())
-                            .weight(1f, fill = false),
-                        verticalAlignment = Alignment.CenterVertically,
+                            .weight(1f)
+                            .padding(horizontal = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        focused.tabs.forEachIndexed { index, tab ->
-                            val active = index == focused.activeTab
-                            Row(
-                                Modifier
-                                    .clip(RoundedCornerShape(6.dp))
-                                    .background(if (active) Color.White.copy(alpha = 0.14f) else Color.Transparent)
-                                    .clickableNoRipple { controller.switchTab(focusSide, index) }
-                                    .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
-                                    .semantics {
-                                        role = Role.Tab
-                                        contentDescription = "标签页 ${tabLabelOf(tab)}" + if (active) "，当前" else ""
-                                    },
-                            ) {
-                                Text(
-                                    tabLabelOf(tab),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = if (active) MtSpec.TopBarText else MtSpec.TopBarSubText,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                    modifier = Modifier.widthIn(max = 76.dp),
-                                )
-                                if (focused.tabs.size > 1) {
-                                    MtVectorIcon(
-                                        icon = MtIcon.CLOSE,
-                                        size = 14.dp,
-                                        tint = MtSpec.TopBarSubText,
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .clickableNoRipple { controller.closeTab(focusSide, index) }
-                                            .padding(2.dp),
-                                    )
+                        Text(
+                            // MT：路径完整显示，放不下才省略
+                            focused.uri.displayPath.ifEmpty { "/" },
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontSize = MtSpec.TopBarTitleSize,
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            color = MtSpec.TopBarText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            buildString {
+                                append("文件夹: ").append(focused.dirCount)
+                                append("  文件: ").append(focused.fileCount)
+                                focused.space?.let {
+                                    append("  储存: ")
+                                        .append(Fmt.sizeCompact(it.total - it.free))
+                                        .append("/")
+                                        .append(Fmt.sizeCompact(it.total))
                                 }
-                            }
-                        }
+                                // MT 0x7f11063b「已选: %d」——多选计数必须实时更新
+                                if (focused.hasSelection) append("  已选: ").append(focused.selection.size)
+                                if (focused.filtered) append("  ·  已过滤")
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.TopBarSubSize),
+                            color = MtSpec.TopBarSubText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
-                    }
-                    // 动作条（09022F）：横向可滚动，选中项后出现
+
+                    // 动作条（09022F）：横向可滚动，选中项后出现（MT 的「复制/移动/删除」三连）
                     if (focused.hasSelection) {
                         Row(
                             Modifier
-                                .weight(1f)
-                                .fillMaxHeight()
+                                .weight(1f, fill = false)
                                 .horizontalScroll(rememberScrollState()),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
@@ -404,80 +399,75 @@ fun DualPaneScreen(
                                 },
                             )
                         }
-                    } else {
-                        Spacer(Modifier.weight(1f))
                     }
+
+                    // TabLayout + ＋：**只有多标签时才出现**（MT 截图：文件浏览态顶栏没有它们）
+                    if (focused.tabs.size > 1) {
+                        Row(
+                            Modifier.horizontalScroll(rememberScrollState()),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            focused.tabs.forEachIndexed { index, tab ->
+                                val active = index == focused.activeTab
+                                Row(
+                                    Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (active) Color.White.copy(alpha = 0.14f) else Color.Transparent)
+                                        .clickableNoRipple { controller.switchTab(focusSide, index) }
+                                        .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
+                                        .semantics {
+                                            role = Role.Tab
+                                            contentDescription = "标签页 ${tabLabelOf(tab)}" + if (active) "，当前" else ""
+                                        },
+                                ) {
+                                    Text(
+                                        tabLabelOf(tab),
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (active) MtSpec.TopBarText else MtSpec.TopBarSubText,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.widthIn(max = 76.dp),
+                                    )
+                                    MtVectorIcon(
+                                        icon = MtIcon.CLOSE,
+                                        size = 14.dp,
+                                        tint = MtSpec.TopBarSubText,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .clickableNoRipple { controller.closeTab(focusSide, index) }
+                                            .padding(2.dp),
+                                    )
+                                }
+                            }
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .clickableNoRipple { controller.newTab(focusSide) }
+                                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                                    .semantics {
+                                        role = Role.Button
+                                        contentDescription = "新建标签页"
+                                    },
+                            ) {
+                                MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = MtSpec.TopBarText)
+                            }
+                        }
+                    }
+
                     // ⋮ 更多（0902B2）
                     Box(
                         Modifier
                             .clip(RoundedCornerShape(8.dp))
                             .clickableNoRipple { showMoreMenu = true; hiddenSub = false }
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
+                            .padding(horizontal = 10.dp, vertical = 6.dp)
                             .semantics {
                                 role = Role.Button
                                 contentDescription = "更多菜单"
                             },
                     ) {
-                        MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = MtSpec.TopBarText)
-                    }
-                    // ＋ 新建页（090116）：与 TabLayout 同进退（单标签时不显示，见上）
-                    if (focused.tabs.size > 1) {
-                        Box(
-                            Modifier
-                                .clip(RoundedCornerShape(8.dp))
-                                .clickableNoRipple { controller.newTab(focusSide) }
-                                .padding(horizontal = 8.dp, vertical = 6.dp)
-                                .semantics {
-                                    role = Role.Button
-                                    contentDescription = "新建标签页"
-                                },
-                        ) {
-                            MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = MtSpec.TopBarText)
-                        }
+                        MtVectorIcon(icon = MtIcon.MORE, size = 26.dp, tint = MtSpec.TopBarText)
                     }
                 }
-
-                // ---- 第二行：路径（居中，MT 用完整路径不省略）+ 统计（居中）
-                //   MT 实测（截图）：`/storage/emulated/0/` + `文件夹: 70  文件: 20  储存: 384.95G/479.51G`
-                //   —— 路径**完整显示不省略**（MT 的标题栏允许长路径），储存用紧凑单位（无空格）
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 2.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        // 长路径交给系统截断（MT 是同款行为：放不下才省略）
-                        focused.uri.displayPath.ifEmpty { "/" },
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = MtSpec.TopBarTitleSize,
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = MtSpec.TopBarText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        buildString {
-                            append("文件夹: ").append(focused.dirCount)
-                            append("  文件: ").append(focused.fileCount)
-                            focused.space?.let {
-                                append("  储存: ")
-                                    .append(Fmt.sizeCompact(it.total - it.free))
-                                    .append("/")
-                                    .append(Fmt.sizeCompact(it.total))
-                            }
-                            // MT 0x7f11063b「已选: %d」——多选计数必须实时更新
-                            if (focused.hasSelection) append("  已选: ").append(focused.selection.size)
-                            if (focused.filtered) append("  ·  已过滤")
-                        },
-                        style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.TopBarSubSize),
-                        color = MtSpec.TopBarSubText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
-
             }
 
             // MT：顶栏底部分割线 1px（0903F8）
