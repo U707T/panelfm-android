@@ -9,6 +9,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.ui.PanelTheme
+import com.u707t.panelfm.core.ui.fontScaleFactor
 import com.u707t.panelfm.ui.AppRoot
 
 class MainActivity : ComponentActivity() {
@@ -25,7 +26,11 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.DARK -> true
                 ThemeMode.LIGHT -> false
             }
-            PanelTheme(darkTheme = dark, dynamicColor = settings.dynamicColor) {
+            PanelTheme(
+                darkTheme = dark,
+                dynamicColor = settings.dynamicColor,
+                fontScale = fontScaleFactor(settings.fontScaleLevel),
+            ) {
                 AppRoot(container)
             }
         }

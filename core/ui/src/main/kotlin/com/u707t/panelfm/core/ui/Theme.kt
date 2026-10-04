@@ -53,25 +53,43 @@ private val DarkColors = darkColorScheme(
     error = Color(0xFFFF6B5F),
 )
 
-/** MT 的排版略紧凑、标题偏粗 */
-private val PanelTypography = Typography().let { base ->
-    base.copy(
-        titleLarge = base.titleLarge.copy(fontSize = 22.sp, fontWeight = FontWeight.Bold),
-        titleMedium = base.titleMedium.copy(fontSize = 17.sp, fontWeight = FontWeight.SemiBold),
-        titleSmall = base.titleSmall.copy(fontSize = 15.sp, fontWeight = FontWeight.SemiBold),
-        bodyLarge = base.bodyLarge.copy(fontSize = 16.sp),
-        bodyMedium = base.bodyMedium.copy(fontSize = 15.sp),
-        bodySmall = base.bodySmall.copy(fontSize = 13.sp),
-        labelLarge = base.labelLarge.copy(fontSize = 14.sp),
-        labelMedium = base.labelMedium.copy(fontSize = 12.sp),
-        labelSmall = base.labelSmall.copy(fontSize = 11.5.sp),
+/** MT 的排版略紧凑、标题偏粗；整体乘 [scale] 缩放（设置里的「字体大小」） */
+private fun scaledTypography(scale: Float): Typography {
+    fun androidx.compose.ui.text.TextStyle.s(size: Float, weight: FontWeight? = null) =
+        copy(fontSize = (size * scale).sp, fontWeight = weight ?: fontWeight)
+
+    val base = Typography()
+    return base.copy(
+        displayLarge = base.displayLarge.s(57f),
+        displayMedium = base.displayMedium.s(45f),
+        displaySmall = base.displaySmall.s(36f),
+        headlineLarge = base.headlineLarge.s(32f),
+        headlineMedium = base.headlineMedium.s(28f),
+        headlineSmall = base.headlineSmall.s(24f),
+        titleLarge = base.titleLarge.s(22f, FontWeight.Bold),
+        titleMedium = base.titleMedium.s(17f, FontWeight.SemiBold),
+        titleSmall = base.titleSmall.s(15f, FontWeight.SemiBold),
+        bodyLarge = base.bodyLarge.s(16f),
+        bodyMedium = base.bodyMedium.s(15f),
+        bodySmall = base.bodySmall.s(13f),
+        labelLarge = base.labelLarge.s(14f),
+        labelMedium = base.labelMedium.s(12f),
+        labelSmall = base.labelSmall.s(11.5f),
     )
+}
+
+/** 字体大小档位：0 紧凑 / 1 适中（默认）/ 2 标准 */
+fun fontScaleFactor(level: Int): Float = when (level) {
+    0 -> 0.88f
+    2 -> 1.0f
+    else -> 0.94f
 }
 
 @Composable
 fun PanelTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
     dynamicColor: Boolean = false,
+    fontScale: Float = 0.94f,
     content: @Composable () -> Unit,
 ) {
     val context = LocalContext.current
@@ -81,7 +99,7 @@ fun PanelTheme(
         darkTheme -> DarkColors
         else -> LightColors
     }
-    MaterialTheme(colorScheme = colors, typography = PanelTypography, content = content)
+    MaterialTheme(colorScheme = colors, typography = androidx.compose.runtime.remember(fontScale) { scaledTypography(fontScale) }, content = content)
 }
 
 /** MT 里面板主色（进度条、选中态） */

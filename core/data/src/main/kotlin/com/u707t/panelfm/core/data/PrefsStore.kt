@@ -44,6 +44,8 @@ data class AppSettings(
     val folderSorts: Map<String, String> = emptyMap(),
     /** 搜索历史（最近在前，最多 10 条） */
     val searchHistory: List<String> = emptyList(),
+    /** 字体大小档位：0 紧凑（0.88）/ 1 适中（0.94，默认）/ 2 标准（1.0） */
+    val fontScaleLevel: Int = 1,
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -72,6 +74,7 @@ class PrefsStore(private val context: Context) {
         val lastRight = stringPreferencesKey("last_right")
         val folderSorts = androidx.datastore.preferences.core.stringSetPreferencesKey("folder_sorts")
         val searchHistory = stringPreferencesKey("search_history")
+        val fontScaleLevel = intPreferencesKey("font_scale_level")
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -100,6 +103,7 @@ class PrefsStore(private val context: Context) {
                 }
                 .toMap(),
             searchHistory = (p[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() },
+            fontScaleLevel = p[Keys.fontScaleLevel] ?: 1,
         )
     }
 
@@ -130,6 +134,8 @@ class PrefsStore(private val context: Context) {
     }
 
     suspend fun clearFolderSorts() = context.panelDataStore.edit { it[Keys.folderSorts] = emptySet() }
+
+    suspend fun setFontScaleLevel(level: Int) = context.panelDataStore.edit { it[Keys.fontScaleLevel] = level.coerceIn(0, 2) }
 
     suspend fun addSearchQuery(query: String) = context.panelDataStore.edit { prefs ->
         val q = query.trim()

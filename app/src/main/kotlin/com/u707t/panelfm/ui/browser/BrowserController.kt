@@ -756,7 +756,7 @@ class BrowserController(private val container: AppContainer) {
                             val reader = vfs.openRead(item.uri)
                             val buf = ByteArray(64 * 1024)
                             try {
-                                while (reader.read(buf, 0, buf.size) >= 0) Unit
+                                while (reader.read(buf, 0, buf.size) >= 0) { /* 逐条读取校验完整性 */ }
                             } finally {
                                 runCatching { reader.close() }
                             }

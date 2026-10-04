@@ -49,6 +49,20 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("时间显示到秒", settings.showSeconds) {
             scope.launch { container.prefs.setShowSeconds(it) }
         }
+
+        // 字体大小（全局缩放：紧凑 / 适中 / 标准）
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("字体大小", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
+            listOf("紧凑", "适中", "标准").forEachIndexed { idx, label ->
+                TextButton(onClick = { scope.launch { container.prefs.setFontScaleLevel(idx) } }) {
+                    Text(
+                        label,
+                        color = if (settings.fontScaleLevel == idx) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
         SettingSwitch("记忆上次的双列路径", settings.rememberLastPath) {
             scope.launch { container.prefs.setRememberLastPath(it) }
         }

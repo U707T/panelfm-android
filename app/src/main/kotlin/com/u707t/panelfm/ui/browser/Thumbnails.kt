@@ -3,6 +3,8 @@ package com.u707t.panelfm.ui.browser
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -129,9 +131,10 @@ fun rememberThumb(
         if (cfg?.option(com.u707t.panelfm.core.model.ConnectionConfig.OPT_LOAD_THUMBS) == "false") return null
     }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val state = produceState<ImageBitmap?>(initialValue = null, item.uri.toString(), skip) {
-        // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置
-        val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || container.settings.value.thumbnailsOnMobile
+    val settings by container.settings.collectAsState()
+    val state = produceState<ImageBitmap?>(initialValue = null, item.uri.toString(), skip, settings.thumbnailsOnMobile) {
+        // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置（切换设置会刷新加载行为）
+        val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || settings.thumbnailsOnMobile
         value = ThumbCache.load(container, item, targetPx, allowRemote)?.asImageBitmap()
     }
     return state.value
