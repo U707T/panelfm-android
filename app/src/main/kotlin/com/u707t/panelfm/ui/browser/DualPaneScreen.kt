@@ -65,6 +65,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
@@ -474,7 +475,8 @@ fun DualPaneScreen(
                     )
                 }
                 if (showLeft && showRight) {
-                    // 可拖动分隔条（MT：左右比例可调；双击恢复 50/50）
+                    // 可拖动分隔条（复刻 MT 0x7f0c0033 的 0900B2 Guideline + 090111/090112 1px 线；
+                    // MT 的分隔线只有 1px，但触摸区给足 10dp 便于拖动）
                     Box(
                         Modifier
                             .width(10.dp)
@@ -502,7 +504,7 @@ fun DualPaneScreen(
                     ) {
                         Box(
                             Modifier
-                                .width(2.dp)
+                                .width(1.dp)
                                 .fillMaxHeight()
                                 .background(MaterialTheme.colorScheme.outline),
                         )
@@ -1352,7 +1354,8 @@ private fun ActionBarItem(icon: String, label: String, enabled: Boolean = true, 
         Text(icon, style = MaterialTheme.typography.titleMedium, color = tint)
         Text(
             label,
-            style = MaterialTheme.typography.bodyMedium,
+            // MT 0x7f0c0034：文字 14sp
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
             maxLines = 1,
             color = tint,
             modifier = Modifier.padding(start = 8.dp),

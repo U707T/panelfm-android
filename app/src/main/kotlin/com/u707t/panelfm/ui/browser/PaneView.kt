@@ -33,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -147,9 +148,29 @@ fun PaneView(
         controller.consumeScrollTo(side)
     }
 
+    // 活动窗口指示（复刻 MT 0x7f0c0033 的 shadow_left/right：阴影只亮在**活动窗格**一侧）
+    // 用「内侧 3dp 强调色竖条」表达，比整片阴影更轻，且不遮挡内容
+    val activeBar: Color = when {
+        highlight -> MtSpec.AccentLight
+        focused -> MtSpec.AccentLight.copy(alpha = 0.55f)
+        else -> Color.Transparent
+    }
+
     Column(
         modifier
             .fillMaxSize()
+            // 活动窗口指示条：画在窗格内侧（左窗格贴右缘 / 右窗格贴左缘，指向分隔线）
+            .drawBehind {
+                val barWidth = 3.dp.toPx()
+                val x = if (side == PaneSide.LEFT) size.width - barWidth else 0f
+                if (activeBar.alpha > 0f) {
+                    drawRect(
+                        color = activeBar,
+                        topLeft = androidx.compose.ui.geometry.Offset(x, 0f),
+                        size = androidx.compose.ui.geometry.Size(barWidth, size.height),
+                    )
+                }
+            }
             // 任何触摸都先激活本窗格（同一时间只有一个窗口是活动窗口；不消费事件、不影响子组件）
             .pointerInput(Unit) {
                 awaitEachGesture {
