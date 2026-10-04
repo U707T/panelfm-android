@@ -523,6 +523,11 @@ fun DualPaneScreen(
             MtMenuItem("▽", "过滤") { showMoreMenu = false; filterInput = true }
             MtMenuItem("⇅", "排序方式") { showMoreMenu = false; showSortDialog = true }
             MtMenuItem("👁", "隐藏文件", trailing = "▶") { hiddenSub = true }
+            MtMenuItem("📋", "复制到剪贴板") { showMoreMenu = false; controller.copySelectionToClipboard(focusSide) }
+            if (controller.hasClipboard) {
+                MtMenuItem("📥", "粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide) }
+                MtMenuItem("✂", "移动粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide, move = true) }
+            }
             MtMenuItem("🔖", "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
             MtMenuItem("🏠", "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
             MtMenuItem("🔄", "同步（另一窗格跟随本窗格）") { showMoreMenu = false; controller.syncPath() }
@@ -601,6 +606,7 @@ fun DualPaneScreen(
                 add(MtAction("properties", "属性", "ⓘ", enabled = multi <= 1))
                 add(MtAction("share", "分享", "⇪", enabled = !anyDirectory))
                 add(MtAction("open_with", "打开方式…", "✓", enabled = !anyDirectory))
+                add(MtAction("clipboard", "复制到剪贴板", "📋"))
                 add(MtAction("bookmark", "添加书签", "🔖"))
             },
             onAction = { id ->
@@ -628,6 +634,8 @@ fun DualPaneScreen(
                     "properties" -> controller.showProperties(item)
                     "share" -> shareItem(container, context, item) { msg -> controller.showStatus(msg) }
                     "open_with" -> openWithFor = item
+                    "clipboard" -> controller.copySelectionToClipboard(focusSide)
+
                     "bookmark" -> {
                         controller.addBookmark(focusSide)
                     }
@@ -650,7 +658,9 @@ fun DualPaneScreen(
             title = "工具 · ${item.name}",
             actions = listOf(
                 MtAction("copy_path", "复制路径", "⧉"),
+                MtAction("crc32", "校验值 CRC32", "#"),
                 MtAction("md5", "校验值 MD5", "#"),
+                MtAction("sha1", "校验值 SHA-1", "#"),
                 MtAction("sha256", "校验值 SHA-256", "#"),
                 MtAction("chmod", "修改权限", "🔒"),
                 MtAction(
@@ -670,6 +680,12 @@ fun DualPaneScreen(
                     "copy_path" -> {
                         clipboard.setText(AnnotatedString(item.uri.toString()))
                         controller.showStatus("路径已复制：${item.uri.displayPath}")
+                    }
+                    "crc32" -> controller.checksum(item.uri, "CRC32") { r ->
+                        message = "CRC32" to (r ?: "计算失败")
+                    }
+                    "sha1" -> controller.checksum(item.uri, "SHA-1") { r ->
+                        message = "SHA-1" to (r ?: "计算失败")
                     }
                     "md5" -> controller.checksum(item.uri, "MD5") { r ->
                         message = "MD5" to (r ?: "计算失败")
@@ -824,25 +840,16 @@ fun DualPaneScreen(
         )
     }
     permissionFor?.let { item ->
-        TextInputDialog(
-            title = "修改权限（八进制）",
-            initial = item.permissions?.let { Integer.toOctalString(it) } ?: "644",
-            label = "权限，如 644 / 755",
-            hint = "支持本地文件与支持 chmod 的协议（SFTP / FTP SITE CHMOD）",
-            onConfirm = { octal ->
-                val mode = runCatching { Integer.parseInt(octal, 8) }.getOrNull()
-                if (mode == null) {
-                    controller.showStatus("八进制格式不正确")
-                } else {
-                    scope.launch {
-                        val vfs = container.locator.find(item.uri)
-                        val ok = runCatching { vfs?.setPermissions(item.uri, mode) }.isSuccess
-                        controller.showStatus(if (ok) "权限已修改为 $octal" else "该位置不支持修改权限")
-                        if (ok) controller.refresh(focusSide)
-                    }
-                }
-            },
+        MtPermissionDialog(
+            fileName = item.name,
+            isDirectory = item.isDirectory,
+            initialMode = item.permissions,
+            canRecurse = item.isDirectory,
             onDismiss = { permissionFor = null },
+            onConfirm = { mode, recurseFiles, recurseDirs ->
+                permissionFor = null
+                controller.changePermissions(item.uri, mode, recurseFiles, recurseDirs)
+            },
         )
     }
     // 解压（复刻 MT 0x7f0c00ce「解压」）

@@ -100,6 +100,8 @@ fun PaneView(
     onRowAction: (FileMetadata) -> Unit,
 ) {
     val listState = rememberLazyListState()
+    // 剪贴板里有没有内容（决定粘贴 FAB 是否出现）
+    val clipboardReady = controller.hasClipboard
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
 
     /** 列表在根坐标系中的顶部（把行内局部坐标换算成列表坐标） */
@@ -306,16 +308,38 @@ fun PaneView(
                                 if (anchor >= 0 && index != anchor) controller.setSelectionRange(side, anchor, index)
                             },
                             onLongPress = {
-                                // MT：长按松手 = 动作菜单；该项自动进入选择
-                                controller.focus(side)
-                                if (!pane.hasSelection) controller.enterSelectionMode(side, item)
+                                // MT：长按松手 = 动作菜单；该项自动进入选择。
+                                // 若上一次长按留下了锚点且本次是**另一项**，则先做「连选区间」
+                                // （MT 0x7f110631「可通过分别长按两个项目来进行连选」）。
+                                controller.longPressSelect(side, item)
                                 onRowAction(item)
                             },
                         )
                     }
                 }
             }
-        }
+        
+
+            // ---- 每窗格 FAB（复刻 MT 0x7f0c0033 的 090166/09016A）：
+            //   剪贴板（粘贴，bottom|end 12dp）/ 取消（✕，bottom|end 74dp；多选态才出现）
+            if (clipboardReady) {
+                SmallFab(
+                    icon = "📋",
+                    contentDesc = "粘贴剪贴板中的项到当前目录",
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 12.dp, bottom = 12.dp),
+                ) { controller.pasteFromClipboard(side) }
+            }
+            if (pane.hasSelection) {
+                SmallFab(
+                    icon = "✕",
+                    contentDesc = "取消选择",
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 12.dp, bottom = 74.dp),
+                ) { controller.clearSelection(side) }
+            }}
     }
 }
 
@@ -562,4 +586,27 @@ fun Modifier.clickableNoRipple(enabled: Boolean = true, onClick: () -> Unit): Mo
         enabled = enabled,
         onClick = onClick,
     )
+}
+
+
+/** MT 风格的窗格内小悬浮按钮（50dp / 图标 20dp，与 MT 的 fabCustomSize 一致） */
+@Composable
+private fun SmallFab(
+    icon: String,
+    contentDesc: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    androidx.compose.material3.SmallFloatingActionButton(
+        onClick = onClick,
+        modifier = modifier.clearAndSetSemantics {
+            this.contentDescription = contentDesc
+            role = Role.Button
+            onClick(label = contentDesc) { onClick(); true }
+        },
+        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+    ) {
+        Text(icon, style = MaterialTheme.typography.titleSmall)
+    }
 }

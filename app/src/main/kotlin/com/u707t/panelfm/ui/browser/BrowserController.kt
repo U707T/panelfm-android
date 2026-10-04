@@ -474,7 +474,10 @@ class BrowserController(private val container: AppContainer) {
         pane.copy(selection = pane.selection + range)
     }
 
-    fun clearSelection(side: PaneSide) = updatePane(side) { it.copy(selection = emptySet()) }
+    fun clearSelection(side: PaneSide) {
+        longPressAnchor = null
+        updatePane(side) { it.copy(selection = emptySet()) }
+    }
 
     fun setSearch(side: PaneSide, query: String) {
         updatePane(side) { it.copy(search = query) }
@@ -609,6 +612,34 @@ class BrowserController(private val container: AppContainer) {
         focus(side)
         updatePane(side) { it.copy(selection = setOf(first.uri.toString())) }
     }
+
+    /**
+     * MT「可通过分别长按两个项目来进行连选」（0x7f110631）：
+     * 第一次长按 = 设锚点（只选它）；第二次长按另一项 = 选中两者之间的**全部**（含两端）。
+     * 再长按第三次则重新设锚点（与 MT 一致：连选是「两两成对」的操作）。
+     */
+    fun longPressSelect(side: PaneSide, item: FileMetadata) {
+        focus(side)
+        val pane = pane(side)
+        val index = pane.items.indexOfFirst { it.uri == item.uri }
+        if (index < 0) return
+        val key = item.uri.toString()
+        // 已有锚点且锚点 != 当前项 → 连选区间
+        if (longPressAnchor != null && longPressAnchor != key && pane.hasSelection) {
+            val anchorIndex = pane.items.indexOfFirst { it.uri.toString() == longPressAnchor }
+            if (anchorIndex >= 0) {
+                setSelectionRange(side, anchorIndex, index)
+                longPressAnchor = null
+                return
+            }
+        }
+        // 否则设锚点（只选当前项）
+        longPressAnchor = key
+        updatePane(side) { it.copy(selection = setOf(key)) }
+    }
+
+    /** 当前窗格长按锚点（连选用；切换窗格/清空选择时重置） */
+    private var longPressAnchor: String? = null
 
     // ------------------------------------------------------------------ 单窗格内操作
 
@@ -1258,6 +1289,60 @@ class BrowserController(private val container: AppContainer) {
     }
 
     /** 长按「复制/移动 ->」= 单窗口操作：目标仍在本窗格内 */
+    // ------------------------------------------------------------------ 剪贴板（MT 每窗格 FAB）
+
+    /**
+     * 把选中项「复制到剪贴板」：记录源 URI 列表（应用内剪贴板，跨窗格 / 跨会话可用）。
+     * MT 的剪贴板图标 FAB 是「粘贴」，对应的复制入口在动作菜单。
+     */
+    fun copySelectionToClipboard(side: PaneSide) {
+        val sources = targetSources(side)
+        if (sources.isEmpty()) {
+            showStatus("当前目录没有可复制的项")
+            return
+        }
+        clipboard = sources
+        showStatus("已复制 ${sources.size} 项到剪贴板（可到其他目录粘贴）")
+    }
+
+    /** 剪贴板是否为空（UI 决定 FAB 是否显示） */
+    val hasClipboard: Boolean get() = clipboard.isNotEmpty()
+
+    /**
+     * 从剪贴板粘贴到当前窗格目录（MT 的剪贴板 FAB）。
+     * 移动语义：粘贴后清空剪贴板（与 MT 的「剪切后粘贴」一致）。
+     */
+    fun pasteFromClipboard(side: PaneSide, move: Boolean = false) {
+        val st = _state.value
+        val sources = clipboard
+        if (sources.isEmpty()) {
+            showStatus("剪贴板为空")
+            return
+        }
+        val dest = st.pane(side).uri
+        // 剪贴板里的源可能来自已断开的会话；逐个校验可达性
+        val reachable = sources.filter { container.locator.find(it) != null }
+        if (reachable.isEmpty()) {
+            showStatus("剪贴板中的位置已不可用（会话可能已断开）")
+            return
+        }
+        val op = if (move) TransferOp.MOVE else TransferOp.COPY
+        val opText = if (move) "移动" else "复制"
+        update { it.copy(highlight = true, status = "$opText ${reachable.size} 项 → ${dest.displayPath}") }
+        container.scope.launch {
+            kotlinx.coroutines.delay(1600)
+            update { it.copy(highlight = false) }
+        }
+        container.engine.enqueue(
+            TransferRequest(sources = reachable, destDir = dest, op = op, conflict = ConflictPolicy.ASK)
+        )
+        if (move) clipboard = emptyList()
+        clearSelection(side)
+    }
+
+    /** 应用内剪贴板（源 URI 列表）。放控制器而不是系统剪贴板：能表达「多项 + 移动语义」 */
+    private var clipboard: List<VfsUri> = emptyList()
+
     fun copyWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.COPY, destDir)
 
     fun moveWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.MOVE, destDir)
@@ -1314,6 +1399,68 @@ class BrowserController(private val container: AppContainer) {
         }
     }
 
+    /**
+     * 修改权限（MT 0x7f0c0096）：可选递归应用到子文件 / 子文件夹。
+     * 递归时用 BFS 遍历（有深度与数量上限，避免超大目录卡死）。
+     */
+    fun changePermissions(
+        uri: VfsUri,
+        mode: Int,
+        recurseFiles: Boolean,
+        recurseDirs: Boolean,
+    ) {
+        container.scope.launch {
+            val vfs = container.locator.find(uri)
+            if (vfs == null) {
+                showStatus("会话不可用")
+                return@launch
+            }
+            if (!vfs.capabilities.permissions) {
+                showStatus("该位置不支持修改权限")
+                return@launch
+            }
+            var ok = 0
+            var failed = 0
+            runCatching { vfs.setPermissions(uri, mode) }
+                .onSuccess { ok++ }
+                .onFailure { failed++ }
+
+            if (recurseFiles || recurseDirs) {
+                showStatus("正在递归修改权限…")
+                val queue = ArrayDeque<Pair<VfsUri, Int>>()
+                queue += uri to 0
+                var visited = 0
+                while (queue.isNotEmpty() && visited < MAX_CHMOD_ITEMS) {
+                    val (dir, depth) = queue.removeFirst()
+                    if (depth > MAX_CHMOD_DEPTH) continue
+                    val children = runCatching { vfs.list(dir) }.getOrNull() ?: continue
+                    for (child in children) {
+                        visited++
+                        if (visited > MAX_CHMOD_ITEMS) break
+                        if (child.isDirectory) {
+                            if (recurseDirs) {
+                                runCatching { vfs.setPermissions(child.uri, mode) }
+                                    .onSuccess { ok++ }
+                                    .onFailure { failed++ }
+                            }
+                            queue += child.uri to (depth + 1)
+                        } else if (recurseFiles) {
+                            runCatching { vfs.setPermissions(child.uri, mode) }
+                                .onSuccess { ok++ }
+                                .onFailure { failed++ }
+                        }
+                    }
+                }
+            }
+            val octal = Integer.toOctalString(mode and 0xFFF)
+            showStatus(
+                if (failed == 0) "权限已修改为 $octal（$ok 项）"
+                else "权限已修改：成功 $ok 项，失败 $failed 项"
+            )
+            refreshAll()
+        }
+    }
+
     /** 校验值（MD5/SHA-256）：本地与网络都能算 */
     fun checksum(uri: VfsUri, algorithm: String, onResult: (String?) -> Unit) {
         container.scope.launch {
@@ -1323,19 +1470,24 @@ class BrowserController(private val container: AppContainer) {
                 return@launch
             }
             val result = runCatching {
-                val digest = java.security.MessageDigest.getInstance(algorithm)
                 val reader = vfs.openRead(uri)
                 try {
+                    // MT 的校验值清单（0x7f030009）：CRC32 / MD5 / SHA1 / SHA256
+                    // CRC32 不是 MessageDigest，单独走 java.util.zip.CRC32
+                    val crc = if (algorithm == "CRC32") java.util.zip.CRC32() else null
+                    val digest = if (crc == null) java.security.MessageDigest.getInstance(algorithm) else null
                     val buf = ByteArray(256 * 1024)
                     while (true) {
                         val n = reader.read(buf, 0, buf.size)
                         if (n < 0) break
-                        digest.update(buf, 0, n)
+                        crc?.update(buf, 0, n)
+                        digest?.update(buf, 0, n)
                     }
+                    crc?.let { "%08x".format(it.value) }
+                        ?: digest!!.digest().joinToString("") { "%02x".format(it) }
                 } finally {
                     runCatching { reader.close() }
                 }
-                digest.digest().joinToString("") { "%02x".format(it) }
             }.getOrNull()
             onResult(result)
         }
@@ -1466,6 +1618,10 @@ fun PaneState.summaryFor(mode: Int): String = when (mode) {
         space?.let { append("   ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total)) }
     }
 }
+
+/** 递归 chmod 的安全上限（防超大目录把界面拖死） */
+private const val MAX_CHMOD_ITEMS = 20_000
+private const val MAX_CHMOD_DEPTH = 32
 
 /** 由 VFS 类型给出的人类可读名 */
 fun VirtualFileSystem.kindLabel(): String = when (scheme) {
