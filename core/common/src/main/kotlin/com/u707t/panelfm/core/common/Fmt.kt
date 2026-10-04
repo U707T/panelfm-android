@@ -8,15 +8,36 @@ import kotlin.math.abs
 /** 全应用统一的显示格式化（大小 / 时间 / 速度 / 剩余时间）。 */
 object Fmt {
 
-    /** 是否在列表时间中显示秒（由设置控制） */
+    /**
+     * 是否在列表时间中显示秒（设置项）。
+     * MT 的默认格式本来就带秒，这个开关用于切到「不带秒」的紧凑写法。
+     */
     var showSeconds: Boolean = false
+        set(value) {
+            field = value
+            datePattern = if (value) "yyyy-MM-dd HH:mm:ss" else "yyyy-MM-dd HH:mm"
+        }
 
-    private val timeFmt = DateTimeFormatter.ofPattern("yy-MM-dd HH:mm")
-    private val timeFmtSeconds = DateTimeFormatter.ofPattern("yy-MM-dd HH:mm:ss")
+    /**
+     * MT 的时间日期格式预设（`0x7f03000a`，三项原文）：
+     *   ① `yyyy-MM-dd HH:mm:ss` ② `dd-MM-yyyy HH:mm:ss` ③ `HH:mm:ss dd-MM-yyyy`
+     *
+     * ⚠️ 但 MT **列表副标题实测**是 `26-10-04 13:16`（= `yy-MM-dd HH:mm`，见截图），
+     * 不带秒也不带世纪 —— 这是 MT 列表的默认写法，所以这里默认用它。
+     */
+    var datePattern: String = "yy-MM-dd HH:mm"
+
+    private val listTimeFmt: DateTimeFormatter get() = DateTimeFormatter.ofPattern(datePattern)
     private val fullTimeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
-    private val units = arrayOf("B", "KB", "MB", "GB", "TB", "PB")
+    private val units = arrayOf("B", "K", "M", "G", "T", "P")
 
+    /**
+     * 文件大小（MT 观感）：`384.95 G` / `1.50 M` / `512 B`。
+     *
+     * MT 的单位是**单字母**且**保留两位小数**（截图实测 `储存: 384.95G/479.51G`、
+     * 侧拉栏 `384.71G已用 , 94.80G可用`），旧实现是 `384 GB` / `1.5 MB`（双字母 + 大数值取整）。
+     */
     fun size(bytes: Long): String {
         if (bytes < 0) return ""
         if (bytes < 1024) return "$bytes B"
@@ -26,12 +47,15 @@ object Fmt {
             v /= 1024.0
             i++
         }
-        return if (v >= 100) "${v.toInt()} ${units[i]}" else String.format("%.1f %s", v, units[i])
+        return String.format("%.2f %s", v, units[i])
     }
 
-    fun time(epochMs: Long): String = if (epochMs <= 0) "" else Instant.ofEpochMilli(epochMs)
-        .atZone(ZoneId.systemDefault())
-        .format(if (showSeconds) timeFmtSeconds else timeFmt)
+    /** 紧凑大小（无空格，MT 顶栏「储存: 384.9G/479.5G」的写法） */
+    fun sizeCompact(bytes: Long): String = size(bytes).replace(" ", "")
+
+    /** 列表副标题里的时间（MT 默认 `yyyy-MM-dd HH:mm:ss`） */
+    fun time(epochMs: Long): String =
+        if (epochMs <= 0) "" else Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(listTimeFmt)
 
     fun fullTime(epochMs: Long): String =
         if (epochMs <= 0) "" else Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault()).format(fullTimeFmt)
@@ -116,8 +140,8 @@ object MtListSubtitle {
     /** 与 MT 一致的档位名（设置页展示用） */
     val MODE_LABELS = listOf(
         "文件列表不显示权限",
-        "非存储目录显示「权限+大小」",
-        "全部目录显示「时间+大小」",
+        "非存储目录下的文件显示「权限+大小」",
+        "全部目录下的文件显示「时间+大小」",
     )
 
     /**

@@ -36,7 +36,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtTextField
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
@@ -334,10 +336,14 @@ fun ConnectionEditScreen(
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
+            // MT 截图：左上「← 返回」+ 标题「添加 WebDav」，标题 20sp 常规字重
+            TextButton(onClick = onBack) {
+                MtVectorIcon(icon = MtIcon.BACK, size = 20.dp)
+                Text("返回", modifier = Modifier.padding(start = 4.dp))
+            }
             Text(
                 (if (existing == null) "添加 " else "编辑 ") + type.label,
-                style = MaterialTheme.typography.titleMedium,
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
                 modifier = Modifier.weight(1f),
             )
         }
@@ -356,26 +362,29 @@ fun ConnectionEditScreen(
                     ConnectionType.SFTP, ConnectionType.SMB, ConnectionType.S3,
                     ConnectionType.WEBDAV, ConnectionType.FTP, ConnectionType.FTPS,
                 ).forEach { t ->
-                    TextButton(onClick = {
-                        type = t
-                        if (t == ConnectionType.WEBDAV) syncUrlFromFields()
-                    }) {
+                    TextButton(
+                        onClick = {
+                            type = t
+                            if (t == ConnectionType.WEBDAV) syncUrlFromFields()
+                        },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                    ) {
                         Text(
-                            t.label,
+                            // MT 的协议名：`对象存储(S3)` 带括号
+                            if (t == ConnectionType.S3) "对象存储(S3)" else t.label,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = if (t == type) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
-            Text(
-                "全部协议免费开放；SFTP 支持私钥与跳板机，S3 支持 R2/COS/OSS/MinIO 等兼容端点。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
 
+            // ---------------- 连接字段（复刻 MT 的 `TextInputLayout`：label 在上、下划线、hint 在框内）
+            //   MT 原文（`0x7f0c0082` WebDAV）：URL / 用户名 / 密码 / 初始路径 / 备注
+            //   非 WebDAV 协议用「主机 + 端口 + 用户名 + 密码 + 根路径 + 初始路径 + 备注 + 分组」
             if (type == ConnectionType.WEBDAV) {
-                // MT 样式：URL 单行输入（http/https、端口、路径都写在这里）
-                OutlinedTextField(
+                // MT 的 URL 单行输入：hint 示例就是 `https://dav.xxx.com:443/dav`
+                MtTextField(
                     value = url,
                     onValueChange = { text ->
                         url = text
@@ -386,68 +395,91 @@ fun ConnectionEditScreen(
                             basePath = p.path
                         }
                     },
-                    label = { Text("URL") },
-                    placeholder = { Text("http://192.168.1.9:5244/dav") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    label = "URL",
+                    placeholder = "https://dav.xxx.com:443/dav",
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri,
                 )
             } else {
-                OutlinedTextField(value = host, onValueChange = { host = it }, label = { Text("主机 / IP") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = port, onValueChange = { port = it.filter { ch -> ch.isDigit() } }, label = { Text("端口") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                MtTextField(
+                    value = host,
+                    onValueChange = { host = it },
+                    label = "主机 / IP",
+                    placeholder = "192.168.1.9",
+                )
+                MtTextField(
+                    value = port,
+                    onValueChange = { port = it.filter { ch -> ch.isDigit() } },
+                    label = "端口",
+                    placeholder = "0",
+                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
+                )
             }
 
-            OutlinedTextField(
+            MtTextField(
                 value = user,
                 onValueChange = { user = it },
-                label = { Text(if (type == ConnectionType.S3) "用户名 / Access Key（AK）" else "用户名") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                label = if (type == ConnectionType.S3) "用户名 / Access Key（AK）" else "用户名",
+                placeholder = "可空",
             )
-            OutlinedTextField(
+            MtTextField(
                 value = if (type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY) "" else password,
                 onValueChange = { password = it },
-                label = {
-                    Text(
-                        when {
-                            type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY -> "密码（使用私钥时忽略）"
-                            type == ConnectionType.S3 -> "密码 / Secret Key（SK，Keystore 加密保存）"
-                            else -> "密码（Keystore 加密保存）"
-                        }
-                    )
+                label = when {
+                    type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY -> "密码（使用私钥时忽略）"
+                    type == ConnectionType.S3 -> "密码 / Secret Key（SK）"
+                    else -> "密码"
                 },
-                singleLine = true,
+                placeholder = "可空",
                 enabled = !(type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY),
                 visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                trailingIcon = {
-                    Box(Modifier.clickable { showPassword = !showPassword }.padding(horizontal = 10.dp)) {
-                    MtVectorIcon(
+                // MT 的密码框带 👁 可见性切换（`app:passwordToggleEnabled=true`）
+                trailing = {
+                    Box(
+                        Modifier
+                            .clickable { showPassword = !showPassword }
+                            .padding(start = 10.dp),
+                    ) {
+                        MtVectorIcon(
                             icon = if (showPassword) MtIcon.EYE_OFF else MtIcon.EYE,
-                            size = 20.dp,
-                            tint = if (showPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            size = 22.dp,
+                            tint = if (showPassword) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
             )
             if (type == ConnectionType.WEBDAV) {
-                OutlinedTextField(value = userAgent, onValueChange = { userAgent = it }, label = { Text("自定义 UA（可留空）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                MtTextField(
+                    value = userAgent,
+                    onValueChange = { userAgent = it },
+                    label = "自定义 UA",
+                    placeholder = "可空",
+                )
             } else {
-                OutlinedTextField(value = basePath, onValueChange = { basePath = it }, label = { Text("根路径（如 /home/user）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                MtTextField(
+                    value = basePath,
+                    onValueChange = { basePath = it },
+                    label = "根路径",
+                    placeholder = "/home/user",
+                )
             }
-            OutlinedTextField(
+            MtTextField(
                 value = initialPath,
                 onValueChange = { initialPath = it },
-                label = { Text("初始路径（可留空；相对根路径 / 挂载点）") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                label = "初始路径",
+                placeholder = "可空",
             )
-            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("备注（显示用）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(
+            MtTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = "备注",
+                placeholder = "可空",
+            )
+            MtTextField(
                 value = group,
                 onValueChange = { group = it },
-                label = { Text("网络分组（可留空；侧边栏按组展示）") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                label = "网络分组",
+                placeholder = "可空",
             )
 
             // ---------------- SFTP 专属

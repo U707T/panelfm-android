@@ -105,6 +105,11 @@ fun MtSideDrawer(
     // MT 0x7f1106fa「再按一次断开连接」：不可逆操作用「连按两次」而不是二次弹窗
     var disconnectArmed by remember { mutableStateOf<Long?>(null) }
     val systemDark = isSystemInDarkTheme()
+    // 三段折叠态（MT 截图：「本地 / 网络 / 工具」标题右侧都有 ︿，点标题折叠）
+    var expandLocal by remember { mutableStateOf(true) }
+    var expandNet by remember { mutableStateOf(true) }
+    var expandTools by remember { mutableStateOf(true) }
+    var expandRecent by remember { mutableStateOf(true) }
 
     // ===== 后台：最近访问路径（MT 抽屉的「后台」段）
     val browserUi by container.browser.state.collectAsState()
@@ -295,13 +300,13 @@ fun MtSideDrawer(
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState()),
         ) {
-            // ===== 本地（MT：带已用/可用 + 占用条）
-            SectionHeader("本地")
-            volumes.forEach { volume ->
+            // ===== 本地（MT：带已用/可用 + 占用条；标题可折叠）
+            SectionHeader("本地", expanded = expandLocal, onToggle = { expandLocal = !expandLocal })
+            if (expandLocal) volumes.forEach { volume ->
                 val space = spaces[volume.authority]
                 MtListRow(
                     title = volume.label,
-                    subtitle = space?.let { "${Fmt.size(it.total - it.free)}已用，${Fmt.size(it.free)}可用" } ?: volume.path,
+                    subtitle = space?.let { com.u707t.panelfm.core.ui.usageText(it.total - it.free, it.free) } ?: volume.path,
                     icon = {
                         RoundIconBox(size = 42.dp) {
                             MtVectorIcon(
@@ -323,9 +328,11 @@ fun MtSideDrawer(
             }
 
             // ===== 网络（「在侧拉栏隐藏地址」的连接不在这里显示；按分组归拢）
-            SectionHeader("网络")
+            SectionHeader("网络", expanded = expandNet, onToggle = { expandNet = !expandNet })
             val drawerConnections = connections.filter { it.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) != "true" }
-            if (drawerConnections.isEmpty()) {
+            if (!expandNet) {
+                // 折叠时不渲染内容（MT 同行为）
+            } else if (drawerConnections.isEmpty()) {
                 MtListRow(
                     title = "还没有网络存储",
                     subtitle = "右上角 ⋮ → 添加网络存储（SFTP / FTP / WebDAV / SMB / S3）",
@@ -348,7 +355,7 @@ fun MtSideDrawer(
 
             // ===== 后台（最近访问；点击在活动窗口打开）
             if (recentPaths.isNotEmpty()) {
-                SectionHeader("后台")
+                SectionHeader("后台", expanded = expandRecent, onToggle = { expandRecent = !expandRecent })
                 recentPaths.forEach { uri ->
                     val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
                         ?: container.connectionByAuthority(uri.scheme, uri.authority)
@@ -380,25 +387,29 @@ fun MtSideDrawer(
                 }
             }
 
-            // ===== 工具（MT：回收站 / 已安装应用 / 文本编辑器 / … / 更多工具）
-            SectionHeader("工具")
-            val active = tasks.count {
-                val s = it.state.value
-                s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
-            }
-            DrawerTool("回收站", MtIcon.DELETE, onOpenTrash)
-            DrawerTool("已安装应用", MtIcon.EXTENSION, onOpenApps)
-            DrawerTool("文本编辑器", MtIcon.CODE, onOpenEditor)
-            DrawerTool("远程管理", MtIcon.DNS, onOpenRemote)
-            DrawerTool("书签", MtIcon.BOOKMARK, onOpenBookmarks)
-            DrawerTool("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP, onOpenTasks)
-            DrawerTool("局域网扫描", MtIcon.EXPLORE, onOpenLanScan)
-            DrawerTool("更多工具", MtIcon.EXPAND) { expandMore = !expandMore }
-            if (expandMore) {
-                DrawerTool("设置", MtIcon.SETTINGS, onOpenSettings)
-                DrawerTool("关于 PanelFM", MtIcon.INFO) {
-                    showStatus("PanelFM · 双列文件管理器（本地 / SFTP / FTP / FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能")
+            // ===== 工具（MT 截图：回收站 / 插件管理 / 远程管理 / 已安装应用 / 文本编辑器 /
+            //        终端模拟器 / … / 更多工具；标题右侧 ︿ 可折叠，默认展开）
+            SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
+            if (expandTools) {
+                val active = tasks.count {
+                    val s = it.state.value
+                    s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
                 }
+                DrawerTool("回收站", MtIcon.DELETE, onOpenTrash)
+                DrawerTool("已安装应用", MtIcon.EXTENSION, onOpenApps)
+                DrawerTool("文本编辑器", MtIcon.CODE, onOpenEditor)
+                DrawerTool("远程管理", MtIcon.DNS, onOpenRemote)
+                DrawerTool("书签", MtIcon.BOOKMARK, onOpenBookmarks)
+                DrawerTool("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP, onOpenTasks)
+                DrawerTool("局域网扫描", MtIcon.EXPLORE, onOpenLanScan)
+                DrawerTool("更多工具", if (expandMore) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN) { expandMore = !expandMore }
+                if (expandMore) {
+                    DrawerTool("设置", MtIcon.SETTINGS, onOpenSettings)
+                    DrawerTool("关于 PanelFM", MtIcon.INFO) {
+                        showStatus("PanelFM · 双列文件管理器（本地 / SFTP / FTP / FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能")
+                    }
+                }
+
             }
             Box(Modifier.padding(bottom = 24.dp))
         }

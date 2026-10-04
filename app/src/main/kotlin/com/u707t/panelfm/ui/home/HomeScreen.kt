@@ -264,7 +264,7 @@ fun HomeScreen(
                     val space = spaces[volume.authority]
                     MtListRow(
                         title = volume.label,
-                        subtitle = space?.let { "${Fmt.size(it.total - it.free)}已用，${Fmt.size(it.free)}可用" }
+                        subtitle = space?.let { com.u707t.panelfm.core.ui.usageText(it.total - it.free, it.free) }
                             ?: volume.path,
                         icon = {
                             Box(

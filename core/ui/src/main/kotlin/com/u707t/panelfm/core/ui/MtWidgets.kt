@@ -14,12 +14,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -397,5 +403,94 @@ fun MtSectionDivider(text: String, modifier: Modifier = Modifier) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+/**
+ * MT 的输入框（复刻 MT 的 `com.google.android.material.textfield.TextInputLayout`）。
+ *
+ * MT 的四个连接表单（WebDAV / SFTP / SMB / FTP）用的都是 **Material 填充式**输入框：
+ *  - 上方一行小号灰色 **label**（`hint` 提升后的样子，如「URL」「用户名」「密码」）
+ *  - 输入框内一行更淡的 **placeholder**（如 `https://dav.xxx.com:443/dav`、`可空`）
+ *  - 底部一条细下划线，聚焦时变主题蓝
+ *
+ * 与 Compose 的 `OutlinedTextField`（四边框）观感差别很大 —— MT 是**只有下划线**的填充式，
+ * 所以这里自绘一个，保证和 MT 截图一致。
+ */
+@Composable
+fun MtTextField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    label: String,
+    placeholder: String? = null,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    singleLine: Boolean = true,
+    keyboardType: androidx.compose.ui.text.input.KeyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
+    visualTransformation: androidx.compose.ui.text.input.VisualTransformation =
+        androidx.compose.ui.text.input.VisualTransformation.None,
+    trailing: (@Composable () -> Unit)? = null,
+) {
+    var focused by remember { mutableStateOf(false) }
+    val interaction = remember { MutableInteractionSource() }
+    val accent = MaterialTheme.colorScheme.primary
+    val labelColor = if (focused) accent else MaterialTheme.colorScheme.onSurfaceVariant
+    val lineColor = if (focused) accent else MaterialTheme.colorScheme.outline
+    Column(
+        modifier
+            .fillMaxWidth()
+            .padding(top = 10.dp),
+    ) {
+        // MT：label 在输入框**上方**（Material 的 expandedHint），13sp 灰字
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 13.sp),
+            color = labelColor,
+            maxLines = 1,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f)) {
+                if (value.isEmpty() && placeholder != null) {
+                    Text(
+                        placeholder,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.55f),
+                        maxLines = 1,
+                        modifier = Modifier.padding(top = 6.dp),
+                    )
+                }
+                androidx.compose.foundation.text.BasicTextField(
+                    value = value,
+                    onValueChange = onValueChange,
+                    enabled = enabled,
+                    singleLine = singleLine,
+                    visualTransformation = visualTransformation,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(
+                        fontSize = 16.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    ),
+                    cursorBrush = androidx.compose.ui.graphics.SolidColor(accent),
+                    interactionSource = interaction,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(keyboardType = keyboardType),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp, bottom = 6.dp),
+                )
+            }
+            trailing?.invoke()
+        }
+        // MT：只有一条下划线（不是四边框）
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(if (focused) 2.dp else 1.dp)
+                .background(lineColor),
+        )
+        // 记录焦点（用 LaunchedEffect 观察 BasicTextField 的焦点状态）
+        LaunchedEffect(interaction) {
+            interaction.interactions.collect { i ->
+                focused = i is androidx.compose.foundation.interaction.FocusInteraction.Focus
+            }
+        }
     }
 }

@@ -144,7 +144,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             listOf(0, 1, 2).forEach { mode ->
                 TextButton(onClick = { scope.launch { container.prefs.setListDisplayMode(mode) } }) {
                     Text(
-                        listOf("不显示权限", "权限+大小", "时间+大小")[mode],
+                        com.u707t.panelfm.core.common.MtListSubtitle.MODE_LABELS[mode],
                         color = if (mode == settings.listDisplayMode) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )

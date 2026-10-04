@@ -633,6 +633,18 @@ class MtIcon(
 
         /** @see SYNC */
         val REFRESH get() = SYNC
+
+        /** 展开态箭头（MT `0x7f0800b3` = keyboard_arrow_up） */
+        val UNFOLD_UP = MtIcon(
+            paths = listOf("M12,8l-6,6 1.41,1.41L12,10.83l4.59,4.58L18,14z"),
+            viewport = 24f,
+        )
+
+        /** 折叠态箭头（MT `0x7f0800a4` = keyboard_arrow_down） */
+        val UNFOLD_DOWN = MtIcon(
+            paths = listOf("M12,16.41l-6.71,-6.7l1.42,-1.42l5.29,5.3l5.29,-5.3l1.42,1.42z"),
+            viewport = 24f,
+        )
     }
 }
 

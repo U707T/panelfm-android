@@ -328,8 +328,10 @@ fun DualPaneScreen(
                     ) {
                         MtVectorIcon(icon = MtIcon.MENU, size = 24.dp, tint = MtSpec.TopBarText)
                     }
-                    // TabLayout（0903F9）：MT 的标签页在顶栏左侧，可横向滚动；
-                    // 单标签时也显示（MT 的标签页是主界面固定元素，不像旧实现那样隐藏）
+                    // TabLayout（0903F9）：**只有多标签时才出现**。
+                    // MT 截图实测：文件浏览态（单标签）顶栏是「☰ + 路径(居中) + ⋮」，
+                    // 标签页与 ＋ 是编辑器多文件时才显示的（`0x7f0c0034` 里两者都由代码控制显隐）。
+                    if (focused.tabs.size > 1) {
                     Row(
                         Modifier
                             .horizontalScroll(rememberScrollState())
@@ -370,6 +372,7 @@ fun DualPaneScreen(
                                 }
                             }
                         }
+                    }
                     }
                     // 动作条（09022F）：横向可滚动，选中项后出现
                     if (focused.hasSelection) {
@@ -417,44 +420,52 @@ fun DualPaneScreen(
                     ) {
                         MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = MtSpec.TopBarText)
                     }
-                    // ＋ 新建页（090116）
-                    Box(
-                        Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickableNoRipple { controller.newTab(focusSide) }
-                            .padding(horizontal = 8.dp, vertical = 6.dp)
-                            .semantics {
-                                role = Role.Button
-                                contentDescription = "新建标签页"
-                            },
-                    ) {
-                        MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = MtSpec.TopBarText)
+                    // ＋ 新建页（090116）：与 TabLayout 同进退（单标签时不显示，见上）
+                    if (focused.tabs.size > 1) {
+                        Box(
+                            Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickableNoRipple { controller.newTab(focusSide) }
+                                .padding(horizontal = 8.dp, vertical = 6.dp)
+                                .semantics {
+                                    role = Role.Button
+                                    contentDescription = "新建标签页"
+                                },
+                        ) {
+                            MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = MtSpec.TopBarText)
+                        }
                     }
                 }
 
-                // ---- 第二行：路径（18sp，居中）+ 统计（13sp，居中）
+                // ---- 第二行：路径（居中，MT 用完整路径不省略）+ 统计（居中）
+                //   MT 实测（截图）：`/storage/emulated/0/` + `文件夹: 70  文件: 20  储存: 384.95G/479.51G`
+                //   —— 路径**完整显示不省略**（MT 的标题栏允许长路径），储存用紧凑单位（无空格）
                 Column(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 12.dp, vertical = 2.dp),
+                        .padding(horizontal = 10.dp, vertical = 2.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, maxChars = 30),
+                        // 长路径交给系统截断（MT 是同款行为：放不下才省略）
+                        focused.uri.displayPath.ifEmpty { "/" },
                         style = MaterialTheme.typography.titleMedium.copy(
                             fontSize = MtSpec.TopBarTitleSize,
                             fontWeight = FontWeight.SemiBold,
                         ),
                         color = MtSpec.TopBarText,
                         maxLines = 1,
-                        overflow = TextOverflow.Clip,
+                        overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         buildString {
                             append("文件夹: ").append(focused.dirCount)
                             append("  文件: ").append(focused.fileCount)
                             focused.space?.let {
-                                append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total))
+                                append("  储存: ")
+                                    .append(Fmt.sizeCompact(it.total - it.free))
+                                    .append("/")
+                                    .append(Fmt.sizeCompact(it.total))
                             }
                             // MT 0x7f11063b「已选: %d」——多选计数必须实时更新
                             if (focused.hasSelection) append("  已选: ").append(focused.selection.size)
@@ -467,77 +478,6 @@ fun DualPaneScreen(
                     )
                 }
 
-                // ---- 面包屑（点任意一级跳转；长按复制完整路径）—— 深底上用小号亮字
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 8.dp, vertical = 2.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    val crumbs: List<Pair<String, VfsUri>> = remember(focused.uri) {
-                        buildList {
-                            if (focused.uri.scheme == "archive") {
-                                val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
-                                val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
-                                val kind = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.entries
-                                    .firstOrNull { it.id == focused.uri.authority }
-                                if (host != null && kind != null) {
-                                    add((host.name.ifEmpty { "压缩包" }) + "!/" to
-                                        com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, kind, ""))
-                                    val innerSegs = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(focused.uri.path)
-                                        .split('/').filter { it.isNotEmpty() }
-                                    innerSegs.forEachIndexed { i, seg ->
-                                        add("$seg/" to com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(
-                                            host, kind, innerSegs.take(i + 1).joinToString("/")))
-                                    }
-                                }
-                            } else {
-                                val full = focused.uri.displayPath.ifEmpty { "/" }
-                                val segments = full.trim('/').split('/').filter { it.isNotEmpty() }
-                                if (segments.isEmpty()) {
-                                    add("/" to focused.uri.withPath("/"))
-                                } else {
-                                    segments.forEachIndexed { i, seg ->
-                                        add("$seg/" to focused.uri.withPath("/" + segments.take(i + 1).joinToString("/")))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    val shown = if (crumbs.size > 4) crumbs.takeLast(4) else crumbs
-                    if (crumbs.size > shown.size) {
-                        Text(
-                            "…",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MtSpec.TopBarSubText,
-                            modifier = Modifier.padding(horizontal = 2.dp),
-                        )
-                    }
-                    shown.forEachIndexed { index, (label, target) ->
-                        Text(
-                            label,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (index == shown.lastIndex) MtSpec.TopBarText else MtSpec.TopBarSubText,
-                            maxLines = 1,
-                            modifier = Modifier
-                                .padding(horizontal = 1.dp)
-                                .combinedClickable(
-                                    onClick = {
-                                        controller.open(
-                                            focusSide,
-                                            target,
-                                            focused.tab.connectionId,
-                                            focused.tab.label,
-                                        )
-                                    },
-                                    onLongClick = {
-                                        clipboard.setText(AnnotatedString(focused.uri.toString()))
-                                        controller.showStatus("已复制路径：${focused.uri.displayPath}")
-                                    },
-                                ),
-                        )
-                    }
-                }
             }
 
             // MT：顶栏底部分割线 1px（0903F8）
@@ -776,10 +716,12 @@ fun DualPaneScreen(
                                 )
                             }
                         }
-                        // MT 底栏第三个按钮是「同步」（0x7f11069b）：点击 = 另一窗格跟随本窗格路径；
+                        // MT 底栏第 4 个按钮是「同步」（0x7f11069b）：点击 = 另一窗格跟随本窗格路径；
                         // 长按 = 过滤（MT 0x7f11028f「长按底部的「同步」按钮也可以进行过滤」）。
+                        // ⚠️ 图标是 **swap_horiz（⇄）** 而不是刷新箭头 —— MT 截图实测，
+                        // 语义是「把两个窗格同步成一样」= 两个相向的箭头（`0x7f0801f8`）。
                         MtBottomIconButton(
-                            icon = MtIcon.SYNC,
+                            icon = MtIcon.SWAP,
                             label = "同步路径到另一窗口（长按过滤）",
                             onLongClick = { filterInput = true },
                         ) { controller.syncPath() }
@@ -796,23 +738,35 @@ fun DualPaneScreen(
         }
     }
 
-    // ---------------- ⋮ 菜单（MT 截图3 顺序 + 图标，全部换成 MT 的真实矢量图标）
+    // ---------------- ⋮ 菜单
+    //   顺序**逐条对照 MT 截图**（右半屏的菜单）：
+    //     刷新 / 搜索 / 全选 / 过滤 / 排序方式 / 隐藏文件 ▶ / 添加书签 / 设为首页 /
+    //     交换窗口 / 设置 / 退出
+    //   PanelFM 的扩展项（粘贴 / 类型过滤 / 浏览模式 / 比较目录 / 网络初始路径 /
+    //   压缩包专属）插在同语义位置，不改变 MT 的前几项顺序。
     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
         if (!hiddenSub) {
             MtMenuRow(MtIcon.SYNC, "刷新") { showMoreMenu = false; controller.refresh(focusSide) }
-            MtMenuRow(MtIcon.KEYBOARD, "输入路径") { showMoreMenu = false; gotoPath = true }
             MtMenuRow(MtIcon.SEARCH, "搜索") { showMoreMenu = false; showSearch = true }
             MtMenuRow(MtIcon.SELECT_ALL, "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
             MtMenuRow(MtIcon.LOW_PRIORITY, "过滤") { showMoreMenu = false; filterInput = true }
             MtMenuRow(MtIcon.SORT, "排序方式") { showMoreMenu = false; showSortDialog = true }
+            // 隐藏文件 ▶（MT：带勾选态的子菜单）
             MtMenuRow(MtIcon.EYE_OFF, "隐藏文件", trailing = MtIcon.CHEVRON_R) { hiddenSub = true }
+            MtMenuRow(MtIcon.BOOKMARK, "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
+            MtMenuRow(MtIcon.HOME, "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
+            MtMenuRow(MtIcon.SWAP, "交换窗口") {
+                showMoreMenu = false
+                controller.swapPanes()
+                controller.showStatus("已交换窗口")
+            }
+            // ---- 以下是 PanelFM 的扩展项（MT 的 ⋮ 里没有，但语义上属于同一层）----
+            MtMenuRow(MtIcon.KEYBOARD, "输入路径") { showMoreMenu = false; gotoPath = true }
             MtMenuRow(MtIcon.COPY, "复制到剪贴板") { showMoreMenu = false; controller.copySelectionToClipboard(focusSide) }
             if (controller.hasClipboard) {
                 MtMenuRow(MtIcon.PASTE, "粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide) }
                 MtMenuRow(MtIcon.CUT, "移动粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide, move = true) }
             }
-            MtMenuRow(MtIcon.BOOKMARK, "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
-            MtMenuRow(MtIcon.HOME, "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
             // MT 0x7f1104ab「已设置为该网络存储的初始路径」：把当前路径写回连接的初始路径
             if (focused.uri.scheme != "local" && focused.uri.scheme != "archive") {
                 MtMenuRow(MtIcon.LOCATE, "设为该网络存储的初始路径") {
@@ -821,11 +775,6 @@ fun DualPaneScreen(
                 }
             }
             MtMenuRow(MtIcon.SYNC, "同步（另一窗格跟随本窗格）") { showMoreMenu = false; controller.syncPath() }
-            MtMenuRow(MtIcon.SWAP, "交换窗口") {
-                showMoreMenu = false
-                controller.swapPanes()
-                controller.showStatus("已交换窗口")
-            }
             MtMenuRow(MtIcon.VIEW_SIDEBAR, "新建标签页") { showMoreMenu = false; controller.newTab(focusSide) }
             if (focused.uri.scheme == "archive") {
                 // MT：压缩包内时，右上角菜单提供「测试压缩包完整性」与解压
@@ -870,7 +819,7 @@ fun DualPaneScreen(
             // 类型过滤（MT 的「过滤」下拉：文件夹 / 图片 / 视频 …）
             MtMenuRow(
                 MtIcon.FILE,
-                "类型过滤" + focused.filterKind?.let { "（已过滤）" } ?: "",
+                "类型过滤" + (focused.filterKind?.let { "（已过滤）" } ?: ""),
             ) { showMoreMenu = false; showTypeFilter = true }
             MtMenuRow(MtIcon.SETTINGS, "设置") { showMoreMenu = false; onOpenSettings() }
             MtMenuRow(MtIcon.EXIT, "退出") {

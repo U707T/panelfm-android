@@ -132,9 +132,29 @@ object MtSpec {
     val RowSelectedLight = Color(0x241976D2)
     val RowSelectedDark = Color(0x2E42A5F5)
 
-    /** 文件夹图标色（MT 是深灰近黑；夜间转浅） */
+    /** 文件夹剪影色（画在浅色方块内 → 深色；夜间反相） */
     val FolderGlyphLight = Color(0xFF3C3C3C)
     val FolderGlyphDark = Color(0xFFE0E0E0)
+
+    /** 分段标题色（侧拉栏「本地 / 网络 / 工具」；MT 截图实测是中灰，不是纯黑） */
+    val SectionTitleLight = Color(0xFF666666)
+    val SectionTitleDark = Color(0xFFBBBBBB)
+
+    // ------------------------------------------------------------------ 列表行图标方块（对照 MT 截图）
+
+    /**
+     * 行内图标方块底色。
+     *
+     * **MT 实测（截图）：深底 + 白剪影** —— 文件夹是近黑圆角方块（`#FF3C3C3C`）
+     * 里画白色文件夹剪影；文件是**按类型着色**的方块 + 白色类型缩写。
+     * （早前有一版误判成「浅底 + 深剪影」，与 MT 截图不符，已改回。）
+     */
+    val FolderTileLight = Color(0xFF3C3C3C)
+    val FolderTileDark = Color(0xFF3C3C3C)
+
+    /** 文件行图标方块底色（按类型着色，见 [FileIcons]） */
+    val FileTileLight = Color(0xFF546E7A)
+    val FileTileDark = Color(0xFF546E7A)
 
     // ------------------------------------------------------------------ 文件类型图标色
 

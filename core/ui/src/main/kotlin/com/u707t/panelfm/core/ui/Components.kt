@@ -95,22 +95,23 @@ fun SectionHeader(
         modifier
             .fillMaxWidth()
             .clickable(enabled = onToggle != null) { onToggle?.invoke() }
-            .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 8.dp),
+            // MT 截图实测：分段标题上下留白较紧（上 14dp / 下 6dp），左 18dp
+            .padding(start = 18.dp, end = 18.dp, top = 14.dp, bottom = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             title,
-            // MT 的分段标题：16sp、常规字重、深色（近黑）
+            // MT 的分段标题：16sp、常规字重、**中灰**（截图实测是 #666 一类的灰，不是纯黑）
             style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Normal),
-            color = MaterialTheme.colorScheme.onSurface,
+            color = MtSpec.SectionTitleLight,
             modifier = Modifier.weight(1f),
         )
         if (onToggle != null) {
-            // MT 用「︿ / ﹀」细箭头表示折叠态
-            Text(
-                if (expanded) "︿" else "﹀",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
+            // MT 用**矢量细箭头**（︿/﹀ 是文字符号，字宽与基线会漂移）
+            MtVectorIcon(
+                icon = if (expanded) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN,
+                size = 20.dp,
+                tint = MtSpec.SectionTitleLight,
             )
         }
     }
@@ -125,19 +126,19 @@ fun UsageBar(
     height: Dp = 3.dp,
 ) {
     val ratio = if (total > 0) (used.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
+    // MT 的占用条：细线 + 右侧百分比（截图实测「────── 80%」），
+    // 百分比与横线**基线对齐**、间距 6dp，横线本身不圆角（MT 是直角细线）
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.fillMaxWidth()) {
         Box(
             Modifier
                 .weight(1f)
                 .height(height)
-                .clip(RoundedCornerShape(height / 2))
                 .background(MaterialTheme.colorScheme.outlineVariant),
         ) {
             Box(
                 Modifier
                     .fillMaxWidth(ratio.toFloat())
                     .height(height)
-                    .clip(RoundedCornerShape(height / 2))
                     .background(AccentBlue),
             )
         }
@@ -145,10 +146,19 @@ fun UsageBar(
             text = "${(ratio * 100).toInt()}%",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 8.dp),
+            modifier = Modifier.padding(start = 6.dp),
         )
     }
 }
+
+/**
+ * MT 的「已用/可用」文案（`0x7f110206` = `%1$s已用 , %2$s可用`）。
+ *
+ * 注意 MT 的原文在「已用」后有空格再逗号（`384.71G已用 , 94.80G可用`），
+ * 且大小用**紧凑单位**（无空格）。
+ */
+fun usageText(used: Long, free: Long): String =
+    "${com.u707t.panelfm.core.common.Fmt.sizeCompact(used)}已用 , ${com.u707t.panelfm.core.common.Fmt.sizeCompact(free)}可用"
 
 /** MT 工具/网络列表的圆形图标底 */
 @Composable

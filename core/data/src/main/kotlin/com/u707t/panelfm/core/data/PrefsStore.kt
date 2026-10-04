@@ -51,8 +51,13 @@ data class AppSettings(
     val preserveModifiedTime: Boolean = true,
     /** MT「启动路径 - 左/右窗口」：true = 首页，false = 上次路径 */
     val startAtHome: Boolean = false,
-    /** MT「文件列表显示」三档：0 不显示权限 / 1 非存储目录显示「权限+大小」 / 2 全部目录显示「时间+大小」 */
-    val listDisplayMode: Int = 1,
+    /**
+     * MT「文件列表显示」三档（文案 `0x7f110200/201/202`）：
+     *   0 不显示权限（只有时间）/ 1 非存储目录显示「权限+大小」/ 2 全部目录显示「时间+大小」
+     *
+     * **默认 2**：MT 截图实测列表副标题是时间（`26-10-04 13:16`）而不是权限位。
+     */
+    val listDisplayMode: Int = 2,
     /** MT「超过 X 大小的图片文件不加载缩略图」（字节，0 = 不限制） */
     val thumbnailMaxBytes: Long = 3L * 1024 * 1024,
     /** MT「缩略图未在 N 秒内加载完成将会取消加载」（0 = 不超时） */
@@ -158,7 +163,7 @@ class PrefsStore(private val context: Context) {
             skipThumbsWhileScrolling = p[Keys.skipThumbs] ?: true,
             preserveModifiedTime = p[Keys.preserveMtime] ?: true,
             startAtHome = p[Keys.startAtHome] ?: false,
-            listDisplayMode = (p[Keys.listDisplayMode] ?: 1).coerceIn(0, 2),
+            listDisplayMode = (p[Keys.listDisplayMode] ?: 2).coerceIn(0, 2),
             thumbnailMaxBytes = p[Keys.thumbMaxBytes] ?: (3L * 1024 * 1024),
             thumbnailTimeoutSec = p[Keys.thumbTimeoutSec] ?: 5,
             confirmExit = p[Keys.confirmExit] ?: false,
