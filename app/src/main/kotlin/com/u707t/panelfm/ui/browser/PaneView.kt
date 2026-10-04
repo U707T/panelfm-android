@@ -220,10 +220,14 @@ fun PaneView(
                                 }
                             },
                             onSwipeSelect = { index ->
-                                // MT：左右滑动 = 进入多选（该项单选；继续滑过行间变成区间选择）
+                                // MT：右滑 = 进入多选（该项单选）；已有多选时右滑该行 = 加选该行
                                 controller.focus(side)
                                 swipeAnchor = index
-                                if (!pane.hasSelection) controller.startSelectionDrag(side, index)
+                                val item = pane.items.getOrNull(index)
+                                if (item != null) {
+                                    if (!pane.hasSelection) controller.startSelectionDrag(side, index)
+                                    else controller.addToSelection(side, item.uri)
+                                }
                             },
                             onSweepTo = { index ->
                                 val anchor = swipeAnchor

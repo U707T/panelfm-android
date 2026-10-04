@@ -264,26 +264,72 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata) {
     }
 }
 
-/** 先读边界再采样：本地走文件路径、远程读字节（采样目标：最长边 ≤ [TARGET_MAX_EDGE]） */
+/**
+ * 图片解码：流式两遍读（边界 → 采样），不把整包读进 Java 堆 —— 超大图片 / 远程图片也不 OOM；
+ * 最长边 ≤ [TARGET_MAX_EDGE] 采样。
+ */
 private suspend fun decodeSampled(container: AppContainer, uri: VfsUri): android.graphics.Bitmap =
     kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-        if (uri.scheme == "local") {
-            val path = container.localVfs.absolutePath(uri)
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeFile(path, bounds)
-            val sample = sampleToFit(bounds.outWidth, bounds.outHeight, TARGET_MAX_EDGE)
-            BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
-                ?: throw IllegalStateException("无法解码图片")
-        } else {
-            val bytes = readBytes(container, uri, MAX_IMAGE_SIZE)
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) throw IllegalStateException("无法解码图片")
-            val sample = sampleToFit(bounds.outWidth, bounds.outHeight, TARGET_MAX_EDGE)
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-                ?: throw IllegalStateException("无法解码图片")
+        val openStream: () -> java.io.InputStream = when {
+            uri.scheme == "local" -> {
+                val path = runCatching { container.localVfs.absolutePath(uri) }.getOrNull()
+                if (path != null && File(path).exists()) {
+                    { java.io.FileInputStream(path) }
+                } else {
+                    { openVfsStream(container, uri) }
+                }
+            }
+            else -> ({ openVfsStream(container, uri) })
+        }
+        // 第一遍：读边界（BufferedInputStream 提供 mark/reset，BitmapFactory 需要）
+        val (w, h) = openStream().use { s ->
+            val b = java.io.BufferedInputStream(s, 64 * 1024)
+            val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeStream(b, null, opts)
+            if (opts.outWidth <= 0 || opts.outHeight <= 0) {
+                throw IllegalStateException("无法解码图片（不支持的格式或数据损坏）")
+            }
+            opts.outWidth to opts.outHeight
+        }
+        // 第二遍：按边界采样解码（流式读入，解码后位图最长边 ≤ 2048px）
+        val sample = sampleToFit(w, h, TARGET_MAX_EDGE)
+        openStream().use { s ->
+            val b = java.io.BufferedInputStream(s, 64 * 1024)
+            val opts = BitmapFactory.Options().apply { inSampleSize = sample }
+            BitmapFactory.decodeStream(b, null, opts) ?: throw IllegalStateException("无法解码图片")
         }
     }
+
+/** 把统一 VFS 的顺序读适配成 InputStream（BitmapFactory.decodeStream 用） */
+private fun openVfsStream(container: AppContainer, uri: VfsUri): java.io.InputStream {
+    val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
+    return object : java.io.InputStream() {
+        private val reader = vfs.openRead(uri)
+        private val buf = ByteArray(64 * 1024)
+
+        override fun read(): Int {
+            val n = kotlinx.coroutines.runBlocking { reader.read(buf, 0, 1) }
+            return if (n < 0) -1 else buf[0].toInt() and 0xFF
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int =
+            kotlinx.coroutines.runBlocking { reader.read(b, off, len) }
+
+        override fun skip(n: Long): Long {
+            var left = n
+            while (left > 0) {
+                val got = kotlinx.coroutines.runBlocking { reader.read(buf, 0, minOf(buf.size.toLong(), left).toInt()) }
+                if (got < 0) break
+                left -= got
+            }
+            return n - left
+        }
+
+        override fun available(): Int = 0
+
+        override fun close() = runCatching { reader.close() }.let { Unit }
+    }
+}
 
 private fun sampleToFit(width: Int, height: Int, target: Int): Int {
     var sample = 1

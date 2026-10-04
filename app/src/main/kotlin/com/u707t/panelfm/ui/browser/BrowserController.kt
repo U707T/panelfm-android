@@ -424,6 +424,11 @@ class BrowserController(private val container: AppContainer) {
         else pane.copy(selection = setOf(pane.items[index].uri.toString()))
     }
 
+    /** 已有多选时右滑该行 = 加选该行（已选中则保持不变） */
+    fun addToSelection(side: PaneSide, uri: VfsUri) = updatePane(side) {
+        it.copy(selection = it.selection + uri.toString())
+    }
+
     /** 选中区间（MT：从第一个滑到最后一个即连续选中） */
     fun selectRange(side: PaneSide, fromIndex: Int, toIndex: Int) = updatePane(side) { pane ->
         val lo = minOf(fromIndex, toIndex).coerceAtLeast(0)
