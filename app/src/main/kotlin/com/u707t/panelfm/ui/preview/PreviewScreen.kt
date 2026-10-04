@@ -208,7 +208,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             item == null -> LoadingState()
             item.isDirectory -> Text("这是一个文件夹：${uri.displayPath}", Modifier.padding(16.dp))
             else -> when (resolved) {
-                PreviewMode.IMAGE -> ImagePreview(container, item)
+                PreviewMode.IMAGE -> ImagePreview(container, item) { effective = PreviewMode.HEX; editing = false }
                 PreviewMode.PDF -> PdfScreen(container, item, onBack = onBack)
                 PreviewMode.HEX -> HexPreview(container, item)
                 PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
@@ -231,7 +231,7 @@ private const val HEX_WINDOW = 8 * 1024
  *  - 大图流式采样解码（不整包进内存）
  */
 @Composable
-private fun ImagePreview(container: AppContainer, item: FileMetadata) {
+private fun ImagePreview(container: AppContainer, item: FileMetadata, onSwitchToHex: () -> Unit = {}) {
     // 同目录图片列表（左右滑动切图用；加载完成前不组装 Pager，避免初始页错位）
     var siblings by remember(item.uri.parent) { mutableStateOf<List<FileMetadata>?>(null) }
     var initialPage by remember(item.uri) { mutableStateOf(0) }
@@ -283,6 +283,7 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata) {
                 offset = offset,
                 onScale = { scale = it },
                 onOffset = { offset = it },
+                onOpenHex = { onSwitchToHex() },
             )
         }
         // 页码 + 文件名（MT 观感：底部小字）
@@ -312,6 +313,7 @@ private fun ImagePage(
     offset: androidx.compose.ui.geometry.Offset,
     onScale: (Float) -> Unit,
     onOffset: (androidx.compose.ui.geometry.Offset) -> Unit,
+    onOpenHex: () -> Unit,
 ) {
     var bitmap by remember(item.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
     var error by remember(item.uri) { mutableStateOf<String?>(null) }
@@ -325,7 +327,11 @@ private fun ImagePage(
     }
 
     when {
-        error != null -> ErrorState("图片预览失败：$error\n（可在 ⋮ 菜单点「Hex」查看原始数据）")
+        error != null -> ErrorState(
+            "图片预览失败：$error",
+            actionLabel = "用 Hex 查看",
+            onAction = onOpenHex,
+        )
         bitmap == null -> LoadingState("解码中…")
         else -> {
             val bm = bitmap!!

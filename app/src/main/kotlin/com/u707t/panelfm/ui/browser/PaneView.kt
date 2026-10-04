@@ -461,7 +461,9 @@ private fun MtFileRow(
     onLongPress: () -> Unit,
     onSwipeMenu: (Int) -> Unit,
 ) {
-    val alpha = if (dimmed) 0.55f else 1f
+    // 非活动窗格：MT 只靠「活动侧阴影 + 顶栏高亮」表达焦点，**不整体调暗**；
+    // 这里保留极轻微淡化（0.85），既区分焦点又不影响可读性（旧值 0.55 太暗、像禁用态）
+    val alpha = if (dimmed) 0.85f else 1f
     val swipeEntrySlop = with(LocalDensity.current) { SWIPE_ENTRY.toPx() }
     val swipeMenuSlop = with(LocalDensity.current) { SWIPE_MENU.toPx() }
     val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
@@ -626,7 +628,7 @@ private fun MtFileRow(
                 isDirectory = item.isDirectory,
                 size = MtSpec.RowIcon,
                 alpha = alpha,
-                folderColor = if (dimmed) MaterialTheme.colorScheme.onSurfaceVariant
+                folderColor = if (dimmed) MtSpec.FolderGlyphLight.copy(alpha = 0.75f)
                 else MtSpec.FolderGlyphLight,
             )
         }

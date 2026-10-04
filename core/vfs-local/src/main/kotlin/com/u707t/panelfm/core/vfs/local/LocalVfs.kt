@@ -278,7 +278,17 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         private val raf: RandomAccessFile = try {
             RandomAccessFile(file, "r")
         } catch (e: Exception) {
-            throw VfsException.Permission("无法读取：${file.name}（${e.message}）")
+            // 面向用户的错误文案：不要暴露原始异常（ENOTDIR / EACCES 之类对用户无意义），
+            // 按 errno 给出可执行的下一步；调试细节交给 Logx。
+            val reason = when {
+                !file.exists() -> "文件不存在（可能已被移动或删除）"
+                file.isDirectory -> "这是一个文件夹，不是文件"
+                e is java.io.FileNotFoundException && (e.message?.contains("EACCES") == true) ->
+                    "没有读取权限（可能需要「所有文件访问」授权）"
+                else -> "无法打开文件（${e.message?.substringBefore(':')?.trim() ?: "读取失败"}）"
+            }
+            Logx.w("LocalVfs", "openRead failed: ${file.absolutePath}", e)
+            throw VfsException.Permission("$reason：${file.name}")
         }
 
         private var pos: Long = startOffset
