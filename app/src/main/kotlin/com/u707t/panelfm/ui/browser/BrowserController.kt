@@ -5,6 +5,8 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.model.ConflictDecision
 import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.model.ConnectionConfig
+import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.model.SortBy
 import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.model.TransferOp
@@ -162,17 +164,20 @@ class BrowserController(private val container: AppContainer) {
         val ruleSort = container.settings.value.folderSorts[VfsUris.stripped(uri).toString()]?.let { decodeSortSpec(it) }
         val effSort = ruleSort ?: pane.sort
         if (effSort != pane.sort) updatePane(side) { it.copy(sort = effSort) }
-        updatePane(side) { it.copy(loading = true, error = null) }
+        // MT 加载遮罩（0x7f0c0033 的 09020D/09020E）：连接 → 枚举 → 过滤 → 完成 分阶段上报百分比
+        updatePane(side) { it.copy(loading = true, loadProgress = 0.05f, error = null) }
         loadJobs[side] = container.scope.launch {
             try {
                 val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("未连接：${uri.authority}（请先在主页添加/打开该存储）")
                 vfs.connect()
+                updatePane(side) { it.copy(loadProgress = 0.3f) }
                 val options = ListOptions(
                     sort = effSort,
                     showHidden = pane.showHidden,
                     filter = null,      // 关键字过滤统一在客户端做（支持 /regex、!/regex、!text）
                 )
                 val listed = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
+                updatePane(side) { it.copy(loadProgress = 0.75f) }
                 val bySearch = listed.filter { matchesSearch(it.name, pane.search) }
                 val items = pane.filterKind?.let { kindName ->
                     bySearch.filter {
@@ -180,20 +185,33 @@ class BrowserController(private val container: AppContainer) {
                             com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kindName
                     }
                 } ?: bySearch
+                updatePane(side) { it.copy(loadProgress = 0.9f) }
                 val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
-                updatePane(side) { it.copy(items = items, loading = false, error = null, space = space) }
+                updatePane(side) { it.copy(items = items, loading = false, loadProgress = null, error = null, space = space) }
                 runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // 用户点了遮罩上的「取消」：不是错误，保持当前列表
+                throw e
             } catch (e: Exception) {
                 Logx.w("Browser", "list failed ${uri}: ${e.message}", e)
                 updatePane(side) {
                     it.copy(
                         loading = false,
+                        loadProgress = null,
                         error = (e as? VfsException)?.userMessage ?: (e.message ?: "加载失败"),
                         items = emptyList(),
                     )
                 }
             }
         }
+    }
+
+    /** 取消当前加载（MT 加载遮罩的「取消」，0x7f0c0033 09020F/090210） */
+    fun cancelLoad(side: PaneSide) {
+        val job = loadJobs.remove(side) ?: return
+        job.cancel()
+        updatePane(side) { it.copy(loading = false, loadProgress = null) }
+        showStatus("已取消加载")
     }
 
     fun refresh(side: PaneSide) = load(side)
@@ -560,6 +578,52 @@ class BrowserController(private val container: AppContainer) {
         val uri = pane(side).uri.toString()
         container.scope.launch { container.prefs.setHomePath(uri) }
         showStatus("已设为首页：${pane(side).uri.displayPath}")
+    }
+
+    /**
+     * MT「已设置为该网络存储的初始路径」（0x7f1104ab）：把**当前窗格路径**写回该连接的「初始路径」，
+     * 下次从侧栏/主页打开该存储时直达这里。
+     *
+     * 初始路径的语义与 [ConnectionConfig.openPath] 相反（见 Connection.kt）：
+     *  - WebDAV：basePath 是服务挂载点，初始路径是**虚拟根下**的相对子路径；
+     *  - 其余协议：初始路径相对 basePath 追加。
+     */
+    fun setAsConnectionInitialPath(side: PaneSide) {
+        val pane = pane(side)
+        val uri = pane.uri
+        if (uri.scheme == "local" || uri.scheme == "archive") {
+            showStatus("当前窗口不是网络存储，无法设置初始路径")
+            return
+        }
+        val config = container.connectionOf(pane.tab.connectionId)
+            ?: container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+            ?: container.connectionByAuthority(uri.scheme, uri.authority)
+        if (config == null) {
+            showStatus("找不到该网络存储的连接配置（可先在侧栏重新打开一次）")
+            return
+        }
+        // 初始路径是「相对连接根」的，路径必须落在连接根之内；上溯到根之外无法用相对路径表达（MT 同限制）
+        val initial = initialPathFor(config, uri.path)
+        if (initial == null) {
+            showStatus("当前路径不在该连接的根目录下，无法设置为初始路径")
+            return
+        }
+        val options = config.options.toMutableMap().apply {
+            if (initial.isEmpty()) remove(ConnectionConfig.OPT_INITIAL_PATH)
+            else put(ConnectionConfig.OPT_INITIAL_PATH, initial)
+        }
+        container.scope.launch {
+            runCatching {
+                withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    container.connectionDao.update(config.copy(options = options))
+                }
+                container.reloadConnections()
+            }.onFailure {
+                showStatus("写入初始路径失败：${it.message}")
+                return@launch
+            }
+            showStatus("已设置为该网络存储的初始路径")
+        }
     }
 
     /** 打开应用启动时进入的目录 */
@@ -1464,32 +1528,32 @@ class BrowserController(private val container: AppContainer) {
     /** 校验值（MD5/SHA-256）：本地与网络都能算 */
     fun checksum(uri: VfsUri, algorithm: String, onResult: (String?) -> Unit) {
         container.scope.launch {
-            val vfs = container.locator.find(uri)
-            if (vfs == null) {
-                onResult(null)
-                return@launch
-            }
-            val result = runCatching {
-                val reader = vfs.openRead(uri)
-                try {
-                    // MT 的校验值清单（0x7f030009）：CRC32 / MD5 / SHA1 / SHA256
-                    // CRC32 不是 MessageDigest，单独走 java.util.zip.CRC32
-                    val crc = if (algorithm == "CRC32") java.util.zip.CRC32() else null
-                    val digest = if (crc == null) java.security.MessageDigest.getInstance(algorithm) else null
-                    val buf = ByteArray(256 * 1024)
-                    while (true) {
-                        val n = reader.read(buf, 0, buf.size)
-                        if (n < 0) break
-                        crc?.update(buf, 0, n)
-                        digest?.update(buf, 0, n)
-                    }
-                    crc?.let { "%08x".format(it.value) }
-                        ?: digest!!.digest().joinToString("") { "%02x".format(it) }
-                } finally {
-                    runCatching { reader.close() }
+            onResult(runCatching { checksumNow(uri, algorithm) }.getOrNull())
+        }
+    }
+
+    /** 校验值的挂起实现（APK 信息页等复用；算法：CRC32 / MD5 / SHA-1 / SHA-256） */
+    suspend fun checksumNow(uri: VfsUri, algorithm: String): String? {
+        val vfs = container.locator.find(uri) ?: return null
+        return withContext(container.dispatchers.vfs) {
+            val reader = vfs.openRead(uri)
+            try {
+                // MT 的校验值清单（0x7f030009）：CRC32 / MD5 / SHA1 / SHA256
+                // CRC32 不是 MessageDigest，单独走 java.util.zip.CRC32
+                val crc = if (algorithm == "CRC32") java.util.zip.CRC32() else null
+                val digest = if (crc == null) java.security.MessageDigest.getInstance(algorithm) else null
+                val buf = ByteArray(256 * 1024)
+                while (true) {
+                    val n = reader.read(buf, 0, buf.size)
+                    if (n < 0) break
+                    crc?.update(buf, 0, n)
+                    digest?.update(buf, 0, n)
                 }
-            }.getOrNull()
-            onResult(result)
+                crc?.let { "%08x".format(it.value) }
+                    ?: digest!!.digest().joinToString("") { "%02x".format(it) }
+            } finally {
+                runCatching { reader.close() }
+            }
         }
     }
 
@@ -1655,4 +1719,30 @@ internal fun decodeSortSpec(line: String): com.u707t.panelfm.core.model.SortSpec
         ascending = parts[1].toBooleanStrictOrNull() ?: true,
         dirsFirst = parts[2].toBooleanStrictOrNull() ?: true,
     )
+}
+
+// --------------------------------------------------------------------------- 网络存储「初始路径」
+
+/**
+ * 把当前路径换算成连接的「初始路径」选项值（MT 0x7f1104ab 的写入逻辑）。
+ *
+ * 语义（与 [ConnectionConfig.openPath] 互为逆运算）：
+ *  - WebDAV：basePath 是服务挂载点，初始路径相对**虚拟根**（去前导 `/`）；
+ *  - 其余协议：初始路径相对 basePath（根目录 → 空串 = 清除选项）。
+ *
+ * @return 相对初始路径（可为空串 = 连接根）；**null = 当前路径不在连接根内**（无法表达）。
+ */
+internal fun initialPathFor(config: ConnectionConfig, currentPath: String): String? {
+    val p = currentPath.trimEnd('/')
+    return if (config.type == ConnectionType.WEBDAV) {
+        p.trim('/')
+    } else {
+        val base = config.basePath.ifBlank { "/" }.trimEnd('/')
+        when {
+            base.isEmpty() -> p.trim('/')
+            p == base -> ""
+            p.startsWith("$base/") -> p.removePrefix(base).trim('/')
+            else -> null
+        }
+    }
 }

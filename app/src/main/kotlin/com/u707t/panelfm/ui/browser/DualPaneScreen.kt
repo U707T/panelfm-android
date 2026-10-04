@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -56,6 +57,7 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -353,6 +355,54 @@ fun DualPaneScreen(
 
             HSeparator()
 
+            // ---------------- MT 顶栏动作条（复刻 0x7f0c0034）：
+            //   选中项后出现「复制 / 移动 / 删除」三连（横向可滚动），未选中时整行隐藏。
+            //   源在左窗格 → `复制 ->`；源在右窗格 → `<- 复制`（箭头始终指向目标窗口）。
+            if (focused.hasSelection) {
+                val picked = focused.selectedItems
+                val twoFiles = picked.size == 2 && picked.none { it.isDirectory }
+                val anyDirectory = picked.any { it.isDirectory }
+                val inArchive = focused.uri.scheme == "archive"
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(40.dp)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .horizontalScroll(rememberScrollState()),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    ActionBarItem("⧉", crossPaneLabel("复制", focusSide)) { controller.copyToOther(focusSide) }
+                    ActionBarItem("✂", crossPaneLabel("移动", focusSide)) { controller.moveToOther(focusSide) }
+                    ActionBarItem("🗑", "删除") {
+                        if (picked.isEmpty()) return@ActionBarItem
+                        if (inArchive) controller.deleteInsideArchive(focusSide, picked)
+                        else deleting = picked.first()
+                    }
+                    ActionBarItem("✎", "重命名", enabled = picked.isNotEmpty()) {
+                        when {
+                            inArchive -> archiveRename = picked.firstOrNull()
+                            picked.size > 1 -> batchRenameFor = picked
+                            picked.size == 1 -> renaming = picked.first()
+                        }
+                    }
+                    ActionBarItem("⬇", "压缩", enabled = picked.isNotEmpty() && !inArchive) {
+                        if (picked.isNotEmpty()) compressFormatPicker = true
+                    }
+                    ActionBarItem("⇆", "文件对比", enabled = twoFiles) { controller.startFileDiff(focusSide) }
+                    ActionBarItem("📋", "复制到剪贴板") { controller.copySelectionToClipboard(focusSide) }
+                    ActionBarItem("🔖", "添加书签") { controller.addBookmark(focusSide) }
+                    ActionBarItem("ⓘ", "属性", enabled = picked.size == 1) {
+                        picked.firstOrNull()?.let { controller.showProperties(it) }
+                    }
+                    ActionBarItem("⇪", "分享", enabled = !anyDirectory && !inArchive) {
+                        picked.firstOrNull()?.let { item ->
+                            shareItem(container, context, item) { msg -> controller.showStatus(msg) }
+                        }
+                    }
+                }
+                HSeparator()
+            }
+
             // ---------------- 两个窗格
             Row(
                 Modifier
@@ -530,6 +580,13 @@ fun DualPaneScreen(
             }
             MtMenuItem("🔖", "添加书签") { showMoreMenu = false; controller.addBookmark(focusSide) }
             MtMenuItem("🏠", "设为首页") { showMoreMenu = false; controller.setAsHome(focusSide) }
+            // MT 0x7f1104ab「已设置为该网络存储的初始路径」：把当前路径写回连接的初始路径
+            if (focused.uri.scheme != "local" && focused.uri.scheme != "archive") {
+                MtMenuItem("📍", "设为该网络存储的初始路径") {
+                    showMoreMenu = false
+                    controller.setAsConnectionInitialPath(focusSide)
+                }
+            }
             MtMenuItem("🔄", "同步（另一窗格跟随本窗格）") { showMoreMenu = false; controller.syncPath() }
             MtMenuItem("⇄", "交换窗口") {
                 showMoreMenu = false
@@ -928,6 +985,8 @@ fun DualPaneScreen(
                     available = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name) != null,
                 ),
                 OpenWithOption(PreviewMode.FONT, available = kind == MimeTypes.Kind.FONT),
+                OpenWithOption(PreviewMode.PDF, available = kind == MimeTypes.Kind.PDF),
+                OpenWithOption(PreviewMode.APK_INFO, available = kind == MimeTypes.Kind.APK),
                 OpenWithOption(PreviewMode.SYSTEM, available = item.uri.scheme == "local"),
             ),
             defaultMode = controller.defaultOpenMode(item),
@@ -1000,12 +1059,17 @@ fun DualPaneScreen(
         LaunchedEffect(item.uri) {
             bigCount = if (item.isDirectory && item.uri.scheme == "local") controller.countLocalEntries(item.uri) else -1
         }
+        // 多选时删除的是整个选择集（顶栏动作条 / 底栏「删除」都走这里）
+        val delCount = focused.selection.size
         AlertDialog(
             onDismissRequest = { deleting = null },
             title = { Text("删除") },
             text = {
                 Column {
-                    Text("确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else "")
+                    Text(
+                        if (delCount > 1) "确定删除已选中的 $delCount 项？"
+                        else "确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else ""
+                    )
                     if (bigCount > 1000) {
                         Text(
                             "该目录含 $bigCount+ 个文件：可用「极速删除」直接清理（不进回收站，秒级完成）",
@@ -1208,6 +1272,35 @@ private fun TextCommand(label: String, onLongClick: (() -> Unit)? = null, onClic
         contentAlignment = Alignment.Center,
     ) {
         Text(label, style = MaterialTheme.typography.labelLarge, maxLines = 1)
+    }
+}
+
+/** MT 顶栏动作条按钮（复刻 0x7f0c0034：图标 22dp + 文字 14sp，左右 padding 15dp） */
+@Composable
+private fun ActionBarItem(icon: String, label: String, enabled: Boolean = true, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxHeight()
+            .clickableNoRipple(enabled = enabled, onClick = onClick)
+            .padding(horizontal = 15.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = label
+                if (!enabled) stateDescription = "不可用"
+                onClick(label = label) { if (enabled) { onClick(); true } else false }
+            },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        val tint = if (enabled) MaterialTheme.colorScheme.onSurface
+        else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.35f)
+        Text(icon, style = MaterialTheme.typography.titleMedium, color = tint)
+        Text(
+            label,
+            style = MaterialTheme.typography.bodyMedium,
+            maxLines = 1,
+            color = tint,
+            modifier = Modifier.padding(start = 8.dp),
+        )
     }
 }
 

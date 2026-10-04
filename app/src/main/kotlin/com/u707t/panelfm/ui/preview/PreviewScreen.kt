@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -85,13 +86,19 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 MimeTypes.Kind.IMAGE -> PreviewMode.IMAGE
                 MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO -> PreviewMode.MEDIA
                 MimeTypes.Kind.FONT -> PreviewMode.FONT
+                // MT 的 PDF 走内置查看器；PanelFM 用系统 PdfRenderer（只读，非逆向）
+                MimeTypes.Kind.PDF -> PreviewMode.PDF
+                // APK：只读信息（PackageManager 解析），不做 dex/arsc 编辑
+                MimeTypes.Kind.APK -> PreviewMode.APK_INFO
                 MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
-                else -> if (item.size in 1..MAX_TEXT_SIZE) PreviewMode.TEXT else PreviewMode.HEX
+                // 未知格式兜底：先看内容（文本 → 文本预览；二进制 → Hex），空文件单独提示
+                else -> if (item.size == 0L) PreviewMode.TEXT
+                else if (item.size in 1..MAX_TEXT_SIZE) PreviewMode.TEXT
+                else PreviewMode.HEX
             }
         }
         r
     } else null
-
     // 独立整屏界面（自带顶栏）：播放器 / 编辑器 / 字体预览
     if (item != null && resolved != null) {
         when (resolved) {
@@ -105,6 +112,14 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             }
             PreviewMode.FONT -> {
                 FontScreen(container, item.uri, onBack = onBack)
+                return
+            }
+            PreviewMode.PDF -> {
+                PdfScreen(container, item, onBack = onBack)
+                return
+            }
+            PreviewMode.APK_INFO -> {
+                ApkInfoScreen(container, item, onBack = onBack)
                 return
             }
             else -> Unit
@@ -151,6 +166,14 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                         onClick = { effective = PreviewMode.FONT; editing = false; modeMenu = false },
                     )
                     DropdownMenuItem(
+                        text = { Text("PDF") },
+                        onClick = { effective = PreviewMode.PDF; editing = false; modeMenu = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("APK 信息") },
+                        onClick = { effective = PreviewMode.APK_INFO; editing = false; modeMenu = false },
+                    )
+                    DropdownMenuItem(
                         text = { Text("外部应用") },
                         onClick = {
                             modeMenu = false
@@ -186,6 +209,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             item.isDirectory -> Text("这是一个文件夹：${uri.displayPath}", Modifier.padding(16.dp))
             else -> when (resolved) {
                 PreviewMode.IMAGE -> ImagePreview(container, item)
+                PreviewMode.PDF -> PdfScreen(container, item, onBack = onBack)
                 PreviewMode.HEX -> HexPreview(container, item)
                 PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
                 PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
@@ -201,15 +225,96 @@ private const val MAX_IMAGE_SIZE = 32L * 1024 * 1024
 private const val HEX_WINDOW = 8 * 1024
 
 /**
- * 图片预览：先读边界再按最长边 ≤ 2048px 采样解码（大图不整包进内存）；
- * 双击切换 1x / 2.5x，捏合缩放（1–5x），双指拖动平移（MT 同款）。
+ * 图片预览（复刻 MT）：
+ *  - **同目录图片组成播放列表：左右滑动切换上一张 / 下一张**（MT 同款）
+ *  - 双击切换 1x / 2.5x，捏合缩放（1–5x），双指拖动平移；放大后暂停翻页
+ *  - 大图流式采样解码（不整包进内存）
  */
 @Composable
 private fun ImagePreview(container: AppContainer, item: FileMetadata) {
-    var bitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
+    // 同目录图片列表（左右滑动切图用；加载完成前不组装 Pager，避免初始页错位）
+    var siblings by remember(item.uri.parent) { mutableStateOf<List<FileMetadata>?>(null) }
+    var initialPage by remember(item.uri) { mutableStateOf(0) }
+
+    LaunchedEffect(item.uri) {
+        val parent = item.uri.parent
+        val list = if (parent == null) emptyList() else runCatching {
+            val vfs = container.locator.find(parent) ?: return@runCatching emptyList()
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                vfs.list(parent).filter {
+                    !it.isDirectory && MimeTypes.kindOf(it.extension) == MimeTypes.Kind.IMAGE
+                }
+            }
+        }.getOrDefault(emptyList())
+        val effective = if (list.any { it.uri == item.uri }) list else listOf(item)
+        siblings = effective
+        initialPage = effective.indexOfFirst { it.uri == item.uri }.coerceAtLeast(0)
+    }
+
+    val list = siblings
+    if (list == null) {
+        LoadingState("正在加载同目录图片…")
+        return
+    }
+
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState(
+        initialPage = initialPage.coerceIn(0, (list.size - 1).coerceAtLeast(0)),
+        pageCount = { list.size },
+    )
+    // 缩放状态按页重置（翻页后回到适应窗口）
     var scale by remember { mutableStateOf(1f) }
     var offset by remember { mutableStateOf(androidx.compose.ui.geometry.Offset.Zero) }
+    LaunchedEffect(pagerState.currentPage) {
+        scale = 1f
+        offset = androidx.compose.ui.geometry.Offset.Zero
+    }
+
+    Box(Modifier.fillMaxSize().background(androidx.compose.ui.graphics.Color.Black)) {
+        androidx.compose.foundation.pager.HorizontalPager(
+            state = pagerState,
+            // 放大状态下禁止翻页（让双指平移 / 拖动查看细节优先）
+            userScrollEnabled = scale <= 1.01f,
+            modifier = Modifier.fillMaxSize(),
+        ) { page ->
+            ImagePage(
+                container = container,
+                item = list[page],
+                scale = scale,
+                offset = offset,
+                onScale = { scale = it },
+                onOffset = { offset = it },
+            )
+        }
+        // 页码 + 文件名（MT 观感：底部小字）
+        if (list.size > 1) {
+            Text(
+                "${pagerState.currentPage + 1} / ${list.size} · ${list[pagerState.currentPage].name}",
+                style = MaterialTheme.typography.labelSmall,
+                color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.85f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .padding(bottom = 12.dp)
+                    .background(androidx.compose.ui.graphics.Color(0x66000000), RoundedCornerShape(10.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+            )
+        }
+    }
+}
+
+/** 单张图片：双击 1x/2.5x、捏合 1–5x、双指平移 */
+@Composable
+private fun ImagePage(
+    container: AppContainer,
+    item: FileMetadata,
+    scale: Float,
+    offset: androidx.compose.ui.geometry.Offset,
+    onScale: (Float) -> Unit,
+    onOffset: (androidx.compose.ui.geometry.Offset) -> Unit,
+) {
+    var bitmap by remember(item.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
+    var error by remember(item.uri) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(item.uri) {
         try {
@@ -227,29 +332,31 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata) {
             Box(
                 Modifier
                     .fillMaxSize()
-                    .background(androidx.compose.ui.graphics.Color.Black)
                     // 双击：1x ↔ 2.5x
                     .pointerInput(bm) {
                         detectTapGestures(
                             onDoubleTap = {
                                 if (scale > 1.01f) {
-                                    scale = 1f
-                                    offset = androidx.compose.ui.geometry.Offset.Zero
+                                    onScale(1f)
+                                    onOffset(androidx.compose.ui.geometry.Offset.Zero)
                                 } else {
-                                    scale = 2.5f
+                                    onScale(2.5f)
                                 }
                             },
                         )
                     }
-                    // 捏合缩放 + 双指平移
+                    // 捏合缩放 + 平移
                     .pointerInput(bm) {
                         detectTransformGestures { _, pan, zoom, _ ->
-                            scale = (scale * zoom).coerceIn(1f, 5f)
-                            val maxX = (scale - 1f) * size.width / 2f
-                            val maxY = (scale - 1f) * size.height / 2f
-                            offset = androidx.compose.ui.geometry.Offset(
-                                (offset.x + pan.x).coerceIn(-maxX, maxX),
-                                (offset.y + pan.y).coerceIn(-maxY, maxY),
+                            val next = (scale * zoom).coerceIn(1f, 5f)
+                            onScale(next)
+                            val maxX = (next - 1f) * size.width / 2f
+                            val maxY = (next - 1f) * size.height / 2f
+                            onOffset(
+                                androidx.compose.ui.geometry.Offset(
+                                    (offset.x + pan.x).coerceIn(-maxX, maxX),
+                                    (offset.y + pan.y).coerceIn(-maxY, maxY),
+                                )
                             )
                         }
                     },

@@ -59,6 +59,8 @@ enum class PreviewMode(val handlerId: String, val label: String, val glyph: Stri
     HEX("hex", "十六进制", "01"),
     IMAGE("image", "查看图片", "🖼"),
     MEDIA("media", "播放音乐/视频", "▶"),
+    PDF("pdf", "查看 PDF", "📕"),
+    APK_INFO("apk", "APK 信息", "📦"),
     ARCHIVE("archive", "浏览压缩包", "🗜"),
     FONT("font", "查看字体", "A"),
     SYSTEM("system", "系统应用打开", "↗"),
@@ -301,6 +303,8 @@ private fun builtinColor(mode: PreviewMode): Color = when (mode) {
     PreviewMode.HEX -> Color(0xFF78909C)
     PreviewMode.IMAGE -> Color(0xFF26A69A)
     PreviewMode.MEDIA -> Color(0xFFE57373)
+    PreviewMode.PDF -> Color(0xFFEF5350)
+    PreviewMode.APK_INFO -> Color(0xFF66BB6A)
     PreviewMode.ARCHIVE -> Color(0xFF8D6E63)
     PreviewMode.FONT -> Color(0xFF7E57C2)
     else -> Color(0xFF9E9E9E)

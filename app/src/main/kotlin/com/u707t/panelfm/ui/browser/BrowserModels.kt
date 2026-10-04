@@ -24,6 +24,11 @@ data class PaneState(
     val activeTab: Int = 0,
     val items: List<FileMetadata> = emptyList(),
     val loading: Boolean = false,
+    /**
+     * 加载进度（复刻 MT 的加载遮罩）：0..1 = 已知进度（连接 → 列表 → 过滤 → 完成）；
+     * null 且 [loading] = true → 不确定进度（转圈）。
+     */
+    val loadProgress: Float? = null,
     val error: String? = null,
     val selection: Set<String> = emptySet(),
     val sort: SortSpec = SortSpec(),

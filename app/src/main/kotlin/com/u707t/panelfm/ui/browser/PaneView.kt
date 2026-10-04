@@ -19,9 +19,12 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,11 +52,11 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.FileIcon
-import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 import kotlin.math.abs
 
@@ -61,6 +64,9 @@ private val ROW_HEIGHT = 56.dp
 
 /** 右滑进入多选的最小距离（超过系统 touchSlop，保证「滑动一段距离才触发」） */
 private val SWIPE_ENTRY = 24.dp
+
+/** 右滑「到底」呼出更多操作（MT 0x7f110697「右滑列表项可进行更多操作」）的距离 */
+private val SWIPE_MENU = 96.dp
 
 /** 行手势的判定阶段 */
 private enum class RowGestureMode { UNDECIDED, SWEEP, LONG_PRESS }
@@ -76,13 +82,15 @@ private class RowGestures(
     val onSwipeSelect: (Int) -> Unit,
     val onSweepTo: (Int) -> Unit,
     val onLongPress: () -> Unit,
+    val onSwipeMenu: (Int) -> Unit,
 )
 
 /**
  * 单个窗格（对齐 MT 管理器）：
  *  - 顶部一行：路径（中间省略）+ 统计
  *  - 列表首行 `..`；行高固定
- *  - **向右滑动一段距离（≥ 24dp 且横向占优）= 进入多选**；继续滑过行间 = 区间选择（替换语义）
+ *  - **左右滑动一段距离（≥ 24dp 且横向占优）= 进入多选**（MT 0x7f1106f3）；继续滑过行间 = 区间选择（替换语义）
+ *  - **右滑到底（≥ 96dp）= 呼出更多操作**（MT 0x7f110697「右滑列表项可进行更多操作」）
  *  - **长按后松手 = MT 动作菜单**（该项自动选中；带 ● 的项支持长按触发单窗口操作）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
  *  - 任何触摸都会先把本窗格设为活动窗口（同一时间只有一个窗口激活）
@@ -253,7 +261,8 @@ fun PaneView(
         // ---- 列表
         Box(Modifier.weight(1f)) {
             when {
-                pane.loading && pane.items.isEmpty() -> LoadingState()
+                // 首次加载（无任何内容）：底层留空，由遮罩层（转圈 + 取消 + 百分比）覆盖
+                pane.loading && pane.items.isEmpty() -> Unit
                 pane.error != null -> ErrorState(
                     message = pane.error,
                     actionLabel = "重试",
@@ -314,6 +323,18 @@ fun PaneView(
                                 controller.longPressSelect(side, item)
                                 onRowAction(item)
                             },
+                            // MT 0x7f110697「右滑列表项可进行更多操作」：右滑到底 → 该项进入选择并弹动作菜单
+                            onSwipeMenu = { index ->
+                                controller.focus(side)
+                                swipeAnchor = -1
+                                val target = pane.items.getOrNull(index) ?: item
+                                // 已有多选且包含该项 → 保留多选（菜单作用于整个选择集）；
+                                // 否则只选该项（与长按菜单语义一致）。
+                                if (!pane.selection.contains(target.uri.toString())) {
+                                    controller.enterSelectionMode(side, target)
+                                }
+                                onRowAction(target)
+                            },
                         )
                     }
                 }
@@ -339,7 +360,52 @@ fun PaneView(
                         .align(Alignment.BottomEnd)
                         .padding(end = 12.dp, bottom = 74.dp),
                 ) { controller.clearSelection(side) }
-            }}
+            }
+
+            // ---- MT 加载遮罩（复刻 0x7f0c0033 的 09020D/09020E）：
+            //   #66222222 半透明黑 + 转圈 + 「取消」按钮 + 10sp 百分比文字；
+            //   刷新已有内容时也盖一层（可取消），与 MT 的大目录/网络目录加载一致。
+            //   本地小目录瞬间加载完 → 延迟 160ms 再显示，避免每次进目录都闪一下。
+            var overlayVisible by remember { mutableStateOf(false) }
+            LaunchedEffect(pane.loading) {
+                if (pane.loading) {
+                    kotlinx.coroutines.delay(160)
+                    overlayVisible = true
+                } else {
+                    overlayVisible = false
+                }
+            }
+            if (pane.loading && overlayVisible) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(Color(0x66222222))
+                        .clickableNoRipple(enabled = true) { /* 吞掉点击，避免误操作下层列表 */ },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(42.dp),
+                                strokeWidth = 3.dp,
+                                color = Color.White.copy(alpha = 0.9f),
+                            )
+                            Text(
+                                pane.loadProgress?.let { "${(it * 100).toInt()}%" } ?: "",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = Color.White.copy(alpha = 0.9f),
+                            )
+                        }
+                        TextButton(
+                            onClick = { controller.cancelLoad(side) },
+                            modifier = Modifier.padding(top = 10.dp),
+                        ) {
+                            Text("取消", color = Color.White.copy(alpha = 0.9f))
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -386,9 +452,11 @@ private fun MtFileRow(
     onSwipeSelect: (Int) -> Unit,
     onSweepTo: (Int) -> Unit,
     onLongPress: () -> Unit,
+    onSwipeMenu: (Int) -> Unit,
 ) {
     val alpha = if (dimmed) 0.55f else 1f
     val swipeEntrySlop = with(LocalDensity.current) { SWIPE_ENTRY.toPx() }
+    val swipeMenuSlop = with(LocalDensity.current) { SWIPE_MENU.toPx() }
     val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
     val haptic = LocalHapticFeedback.current
     // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）
@@ -401,6 +469,7 @@ private fun MtFileRow(
             onSwipeSelect = onSwipeSelect,
             onSweepTo = onSweepTo,
             onLongPress = onLongPress,
+            onSwipeMenu = onSwipeMenu,
         )
     )
 
@@ -422,6 +491,7 @@ private fun MtFileRow(
                 val touchSlop = viewConfiguration.touchSlop
                 val longPressTimeout = viewConfiguration.longPressTimeoutMillis
                 val entrySlop = swipeEntrySlop
+                val menuSlop = swipeMenuSlop
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     val downPos = down.position
@@ -429,6 +499,8 @@ private fun MtFileRow(
                     val downIndex = gestures.indexAtRoot(gestures.rowTop().y + downPos.y)
                     var mode = RowGestureMode.UNDECIDED
                     var lastIndex = downIndex
+                    /** 右滑到底呼出菜单：只触发一次 */
+                    var menuFired = false
 
                     while (true) {
                         val event = awaitPointerEvent()
@@ -457,8 +529,9 @@ private fun MtFileRow(
                                 }
                                 // 纵向为主 → 列表滚动，不消费事件（先判断，避免斜向滚动被误判成滑动选择）
                                 abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
-                                // 向右滑动一段距离（≥ 24dp 且横向占优）→ 进入多选
-                                downIndex >= 0 && dx > entrySlop && dx > abs(dy) -> {
+                                // 左右滑动一段距离（≥ 24dp 且横向占优）→ 进入多选
+                                // （MT 0x7f1106f3「左右滑动文件可直接选择」：两个方向都可进入选择）
+                                downIndex >= 0 && abs(dx) > entrySlop && abs(dx) > abs(dy) -> {
                                     mode = RowGestureMode.SWEEP
                                     haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
                                     gestures.onSwipeSelect(downIndex)
@@ -477,6 +550,15 @@ private fun MtFileRow(
                                 }
                             }
                             RowGestureMode.SWEEP -> {
+                                // MT 0x7f110697「右滑列表项可进行更多操作」：继续右滑到底 → 呼出动作菜单
+                                if (!menuFired && dx > menuSlop && dx > abs(dy)) {
+                                    menuFired = true
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    val index = gestures.indexAtRoot(gestures.rowTop().y + pos.y)
+                                    gestures.onSwipeMenu(if (index >= 0) index else downIndex)
+                                    change.consume()
+                                    break
+                                }
                                 val index = gestures.indexAtRoot(gestures.rowTop().y + pos.y)
                                 if (index >= 0 && index != lastIndex) {
                                     lastIndex = index
