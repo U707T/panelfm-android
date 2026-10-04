@@ -232,7 +232,7 @@ fun PaneView(
                 )
                 if (pane.hasSelection) {
                     Text(
-                        "已选 ${pane.selection.size} 项",
+                        "已选: ${pane.selection.size}",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(start = 6.dp),
@@ -550,12 +550,12 @@ private fun MtFileRow(
                                 }
                             }
                             RowGestureMode.SWEEP -> {
-                                // MT 0x7f110697「右滑列表项可进行更多操作」：继续右滑到底 → 呼出动作菜单
-                                if (!menuFired && dx > menuSlop && dx > abs(dy)) {
+                                // MT 0x7f110697「右滑列表项可进行更多操作」：继续右滑到底 → 呼出动作菜单。
+                                // 要求「横向位移足够大 + 纵向位移仍小」（避免向下扫选区间时误弹菜单）。
+                                if (!menuFired && dx > menuSlop && dx > abs(dy) * 2f && abs(dy) < menuSlop) {
                                     menuFired = true
                                     haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    val index = gestures.indexAtRoot(gestures.rowTop().y + pos.y)
-                                    gestures.onSwipeMenu(if (index >= 0) index else downIndex)
+                                    gestures.onSwipeMenu(downIndex)
                                     change.consume()
                                     break
                                 }

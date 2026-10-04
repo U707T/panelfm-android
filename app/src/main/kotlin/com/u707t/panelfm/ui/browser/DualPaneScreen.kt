@@ -203,10 +203,11 @@ fun DualPaneScreen(
         }
     }
 
-    // 返回手势：多选 → 取消选择；否则返回上一级；已在根目录则交给外层（主页/退出）
+    // 返回手势：加载中 → 取消加载；多选 → 取消选择；否则返回上一级；已在根目录则交给外层（主页/退出）
     androidx.activity.compose.BackHandler(enabled = true) {
         when {
             drawerState.isOpen -> closeDrawer()
+            focused.loading -> controller.cancelLoad(focusSide)
             focused.hasSelection -> controller.clearSelection(focusSide)
             focused.uri.parent != null || focused.uri.scheme == "archive" -> controller.up(focusSide)
             else -> onOpenHome()
