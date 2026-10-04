@@ -57,7 +57,9 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.FileIcon
+import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
 import kotlin.math.abs
 
@@ -319,7 +321,7 @@ fun PaneView(
             //   剪贴板（粘贴，bottom|end 12dp）/ 取消（✕，bottom|end 74dp；多选态才出现）
             if (clipboardReady) {
                 SmallFab(
-                    icon = "📋",
+                    icon = MtIcon.CLIPBOARD,
                     contentDesc = "粘贴剪贴板中的项到当前目录",
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -328,7 +330,7 @@ fun PaneView(
             }
             if (pane.hasSelection) {
                 SmallFab(
-                    icon = "✕",
+                    icon = MtIcon.CLOSE,
                     contentDesc = "取消选择",
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
@@ -461,11 +463,11 @@ private fun MtFileRow(
         Modifier
             .fillMaxWidth()
             .height(ROW_HEIGHT)
-            // 选中态：MT 用强调蓝的浅色底（浅色主题 #1976d2 @ 12%）
+            // 选中态：MT 用强调蓝的浅色底（浅色主题 #1976d2 @ 14%）
             .background(
                 if (selected) {
                     val dark = androidx.compose.foundation.isSystemInDarkTheme()
-                    (if (dark) MtSpec.AccentDark else MtSpec.AccentLight).copy(alpha = 0.14f)
+                    if (dark) MtSpec.RowSelectedDark else MtSpec.RowSelectedLight
                 } else Color.Transparent
             )
             // ------------------------------------------------------------------
@@ -674,11 +676,12 @@ fun Modifier.clickableNoRipple(enabled: Boolean = true, onClick: () -> Unit): Mo
 /** MT 风格的窗格内小悬浮按钮（50dp / 图标 20dp，与 MT 的 fabCustomSize 一致） */
 @Composable
 private fun SmallFab(
-    icon: String,
+    icon: MtIcon,
     contentDesc: String,
     modifier: Modifier = Modifier,
     onClick: () -> Unit,
 ) {
+    val dark = androidx.compose.foundation.isSystemInDarkTheme()
     androidx.compose.material3.SmallFloatingActionButton(
         onClick = onClick,
         modifier = modifier.clearAndSetSemantics {
@@ -686,9 +689,10 @@ private fun SmallFab(
             role = Role.Button
             onClick(label = contentDesc) { onClick(); true }
         },
-        containerColor = MaterialTheme.colorScheme.surfaceVariant,
-        contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+        // MT FAB：50dp 圆形，图标 20dp（0x7f0c0033 的 fabCustomSize=50dp / maxImageSize=20dp）
+        containerColor = if (dark) MtSpec.FabContainerDark else MtSpec.FabContainer,
+        contentColor = if (dark) MtSpec.FabContentDark else MtSpec.FabContent,
     ) {
-        Text(icon, style = MaterialTheme.typography.titleSmall)
+        MtVectorIcon(icon = icon, size = MtSpec.FabIcon)
     }
 }

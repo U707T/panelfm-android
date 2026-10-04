@@ -98,6 +98,18 @@ object MtSpec {
     val AccentLight = Color(0xFF1976D2)
     val AccentDark = Color(0xFF42A5F5)
 
+    /** FAB 容器/内容色（MT：浅色主题 #EFEFEF 底 + #3C3C3C 图标） */
+    val FabContainer = Color(0xFFEFEFEF)
+    val FabContent = Color(0xFF3C3C3C)
+
+    /** FAB 容器/内容色（夜间） */
+    val FabContainerDark = Color(0xFF3A3A3A)
+    val FabContentDark = Color(0xFFE0E0E0)
+
+    /** 列表行选中底色（MT 的强调蓝浅底） */
+    val RowSelectedLight = Color(0x241976D2)
+    val RowSelectedDark = Color(0x2E42A5F5)
+
     /** 文件夹图标色（MT 是深灰近黑；夜间转浅） */
     val FolderGlyphLight = Color(0xFF3C3C3C)
     val FolderGlyphDark = Color(0xFFE0E0E0)

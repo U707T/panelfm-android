@@ -79,7 +79,9 @@ import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
+import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
@@ -278,7 +280,7 @@ fun DualPaneScreen(
                                 contentDescription = "打开侧边栏"
                             },
                     ) {
-                        Text("☰", style = MaterialTheme.typography.titleLarge, color = MtSpec.TopBarText)
+                        MtVectorIcon(icon = MtIcon.MENU, size = 24.dp, tint = MtSpec.TopBarText)
                     }
                     // 中间两行居中（MT：路径 + 统计）
                     Column(
@@ -324,7 +326,7 @@ fun DualPaneScreen(
                                 contentDescription = "更多菜单"
                             },
                     ) {
-                        Text("⋮", style = MaterialTheme.typography.titleLarge, color = MtSpec.TopBarText)
+                        MtVectorIcon(icon = MtIcon.MORE, size = 24.dp, tint = MtSpec.TopBarText)
                     }
                 }
                 // 面包屑（点任意一级跳转；长按复制完整路径）—— 深底上用小号亮字
@@ -554,11 +556,11 @@ fun DualPaneScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
                 ) {
-                    TextCommand("全选") { controller.selectAll(focusSide) }
-                    TextCommand("反选") { controller.invertSelection(focusSide) }
-                    TextCommand("类选") { controller.selectSameType(focusSide) }
-                    TextCommand("同步", onLongClick = { filterInput = true }) { controller.syncPath() }
-                    TextCommand("取消") { controller.clearSelection(focusSide) }
+                    BottomTextCommand("全选") { controller.selectAll(focusSide) }
+                    BottomTextCommand("反选") { controller.invertSelection(focusSide) }
+                    BottomTextCommand("类选") { controller.selectSameType(focusSide) }
+                    BottomTextCommand("同步", onLongClick = { filterInput = true }) { controller.syncPath() }
+                    BottomTextCommand("取消") { controller.clearSelection(focusSide) }
                 }
             } else {
                 val bottomExtra = container.settings.value.bottomBarPaddingDp.dp
@@ -578,10 +580,11 @@ fun DualPaneScreen(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceEvenly,
                 ) {
-                    BottomCommand("←", "后退", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
-                    BottomCommand("→", "前进", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
+                    BottomCommand(MtIcon.BACK, "后退", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
+                    BottomCommand(MtIcon.FORWARD, "前进", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
                     Box {
-                        BottomCommand("＋", "新建（长按新建文件）", onLongClick = { creatingFile = true }) { showCreateMenu = true }                        // MT：新建（＋）弹出菜单
+                        BottomCommand(MtIcon.PLUS, "新建（长按新建文件）", onLongClick = { creatingFile = true }) { showCreateMenu = true }
+                        // MT：新建（＋）弹出菜单
                         DropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
                             DropdownMenuItem(
                                 text = { Text("📁  新建文件夹") },
@@ -596,12 +599,12 @@ fun DualPaneScreen(
                     // MT 底栏第三个按钮是「同步」（0x7f11069b「同步」）：
                     // 点击 = 另一窗格跟随本窗格路径；长按 = 过滤（MT 0x7f11028f「长按底部的「同步」按钮也可以进行过滤」）。
                     // （旧实现把这个位置做成「交换窗口」→ 用户误触会整列对调，是误触投诉的主因）
-                    BottomCommand("⇄", "同步路径到另一窗口（长按过滤）", onLongClick = { filterInput = true }) {
+                    BottomCommand(MtIcon.SYNC, "同步路径到另一窗口（长按过滤）", onLongClick = { filterInput = true }) {
                         controller.syncPath()
                     }
                     // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
                     BottomCommand(
-                        "↑",
+                        MtIcon.UP,
                         "上级目录（长按输入路径）",
                         enabled = focused.uri.parent != null || focused.uri.scheme == "archive",
                         onLongClick = { gotoPath = true },
@@ -1243,7 +1246,7 @@ fun DualPaneScreen(
 
 @Composable
 private fun BottomCommand(
-    symbol: String,
+    icon: MtIcon,
     label: String,
     enabled: Boolean = true,
     highlighted: Boolean = false,
@@ -1251,11 +1254,11 @@ private fun BottomCommand(
     onClick: () -> Unit,
 ) {
     val base = Modifier
-        // MT 底栏：每个按钮是整高点击区（0x7f070031 = 64dp），图标居中
+        // MT 底栏：每个按钮是整高点击区（0x7f070031 = 64dp），24dp 线性图标居中
         .fillMaxHeight()
         .widthIn(min = 56.dp)
         .clip(RoundedCornerShape(8.dp))
-        .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
+        .background(if (highlighted) MtSpec.AccentLight.copy(alpha = 0.14f) else Color.Transparent)
     val tapAction = onClick
     val longAction = onLongClick
     val modifier = if (longAction != null) {
@@ -1285,22 +1288,21 @@ private fun BottomCommand(
         modifier,
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            symbol,
-            style = MaterialTheme.typography.headlineSmall,
-            fontWeight = FontWeight.Normal,
-            color = when {
+        MtVectorIcon(
+            icon = icon,
+            size = MtSpec.BottomBarIcon,
+            tint = when {
                 !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)
-                highlighted -> MaterialTheme.colorScheme.primary
-                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.85f)
+                highlighted -> MtSpec.AccentLight
+                else -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.87f)
             },
         )
     }
 }
 
-/** 多选底栏的文字按钮（「同步」支持长按 = 过滤） */
+/** 底栏文字按钮（多选工具栏用） */
 @Composable
-private fun TextCommand(label: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
+private fun BottomTextCommand(label: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val tapAction = onClick
     val longAction = onLongClick
     Box(

@@ -16,40 +16,46 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.sp
 
 /**
- * MT 风格的配色：默认「跟随系统」，浅色为主，中性灰 + 蓝色强调。
- * 动态取色默认关闭（MT 的观感是固定的中性色板），设置里可开。
+ * MT 风格的配色（取自 MT 2.14.5 的真实资源值）：
+ *  - 主文字 `0x7f060043` = #ee000000（浅）/ #eed0d0d0（深）
+ *  - 次文字 `0x7f060047` = #99000000（浅）/ #99c4c4c4（深）
+ *  - 分割线 `0x7f06003a` = #ffbbbbbb（浅）/ #ff505050（深）
+ *  - 强调蓝 `0x7f0400ed` = #ff1976d2（浅）/ #ff42a5f5（深）
+ *  - 顶栏（标题栏）**始终深色**：#ff151515（浅色主题）/ #ff303030（深色主题）——
+ *    见 MtSpec.TopBarLight / TopBarDark，由 DualPaneScreen 单独上色，不走主题 surface。
+ * 动态取色默认关闭（MT 是固定中性色板），设置里可开。
  */
 private val LightColors = lightColorScheme(
-    primary = Color(0xFF2F6FED),
+    primary = MtSpec.AccentLight,
     onPrimary = Color.White,
     primaryContainer = Color(0xFFDCE7FF),
     onPrimaryContainer = Color(0xFF0B2B66),
     secondary = Color(0xFF4C5560),
     background = Color(0xFFFFFFFF),
-    onBackground = Color(0xFF111315),
+    onBackground = MtSpec.RowNameLight,
     surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF111315),
-    surfaceVariant = Color(0xFFF1F2F4),
-    onSurfaceVariant = Color(0xFF8A8F98),
-    outline = Color(0xFFE1E4E8),
-    outlineVariant = Color(0xFFEFF1F3),
+    onSurface = MtSpec.RowNameLight,
+    surfaceVariant = Color(0xFFF2F2F2),
+    onSurfaceVariant = MtSpec.RowSubLight,
+    outline = MtSpec.DividerLight,
+    outlineVariant = Color(0xFFE0E0E0),
     error = Color(0xFFD93025),
 )
 
 private val DarkColors = darkColorScheme(
-    primary = Color(0xFF6FA0FF),
+    primary = MtSpec.AccentDark,
     onPrimary = Color(0xFF08203F),
     primaryContainer = Color(0xFF1B2A44),
     onPrimaryContainer = Color(0xFFD7E3FF),
     secondary = Color(0xFFB6BCC5),
-    background = Color(0xFF121417),
-    onBackground = Color(0xFFECEDEE),
-    surface = Color(0xFF17191C),
-    onSurface = Color(0xFFECEDEE),
-    surfaceVariant = Color(0xFF1E2126),
-    onSurfaceVariant = Color(0xFF9AA1AB),
-    outline = Color(0xFF2A2E34),
-    outlineVariant = Color(0xFF23262A),
+    background = Color(0xFF121212),
+    onBackground = MtSpec.RowNameDark,
+    surface = Color(0xFF1B1B1B),
+    onSurface = MtSpec.RowNameDark,
+    surfaceVariant = Color(0xFF262626),
+    onSurfaceVariant = MtSpec.RowSubDark,
+    outline = MtSpec.DividerDark,
+    outlineVariant = Color(0xFF3A3A3A),
     error = Color(0xFFFF6B5F),
 )
 
