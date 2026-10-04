@@ -5,7 +5,6 @@ import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,6 +15,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,6 +33,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.u707t.panelfm.AppContainer
@@ -45,8 +47,9 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * 预览调度：按 MIME / 扩展名分派到图片 / 文本 / Hex；
- * 未知类型给出「用其他应用打开」。大文件按窗口读取（本轮先支持首段窗口，分块编辑器在 M7）。
+ * 预览调度：按 MIME / 扩展名分派到 播放器 / 编辑器 / 字体 / 图片 / 文本 / Hex。
+ *  - 播放器、编辑器、字体预览自带整屏界面（整页接管，不再叠加外壳）
+ *  - 顶栏复刻 MT：← 返回 · 文件名（单行省略）· ⋮（文本 / 编辑 / Hex / 字体 / 外部应用）
  */
 @Composable
 fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -> Unit) {
@@ -56,6 +59,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
     var error by remember { mutableStateOf<String?>(null) }
     var effective by remember { mutableStateOf(request.mode) }
     var editing by remember { mutableStateOf(request.mode == PreviewMode.EDITOR) }
+    var modeMenu by remember { mutableStateOf(false) }
 
     LaunchedEffect(uri) {
         try {
@@ -66,12 +70,49 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
         }
     }
 
+    val item = meta
+    val resolved: PreviewMode? = if (item != null && !item.isDirectory) {
+        var r = effective
+        if (editing) r = PreviewMode.EDITOR
+        if (r == PreviewMode.AUTO) {
+            val kind = MimeTypes.kindOf(item.extension)
+            r = when (kind) {
+                MimeTypes.Kind.IMAGE -> PreviewMode.IMAGE
+                MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO -> PreviewMode.MEDIA
+                MimeTypes.Kind.FONT -> PreviewMode.FONT
+                MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
+                else -> if (item.size in 1..MAX_TEXT_SIZE) PreviewMode.TEXT else PreviewMode.HEX
+            }
+        }
+        r
+    } else null
+
+    // 独立整屏界面（自带顶栏）：播放器 / 编辑器 / 字体预览
+    if (item != null && resolved != null) {
+        when (resolved) {
+            PreviewMode.MEDIA -> {
+                MediaScreen(container, item.uri, item.name, onBack = onBack)
+                return
+            }
+            PreviewMode.EDITOR -> {
+                com.u707t.panelfm.ui.editor.EditorScreen(container, item.uri, onBack = onBack)
+                return
+            }
+            PreviewMode.FONT -> {
+                FontScreen(container, item.uri, onBack = onBack)
+                return
+            }
+            else -> Unit
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
+        // 顶栏：← 返回 · 文件名（单行省略，不会被按钮挤成竖排）· ⋮
         Row(
             Modifier
                 .fillMaxWidth()
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .padding(horizontal = 6.dp, vertical = 4.dp),
+                .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onBack) { Text("← 返回") }
@@ -79,59 +120,64 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 meta?.name ?: uri.name,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
-                modifier = Modifier.weight(1f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = 4.dp),
             )
-            TextButton(onClick = { effective = PreviewMode.TEXT; editing = false }) { Text("文本") }
-            TextButton(onClick = { editing = true }) { Text("编辑") }
-            TextButton(onClick = { effective = PreviewMode.HEX; editing = false }) { Text("Hex") }
-            TextButton(onClick = { effective = PreviewMode.FONT; editing = false }) { Text("字体") }
-            TextButton(onClick = {
-                val file = File(container.localVfs.absolutePath(uri))
-                if (uri.scheme == "local" && file.exists()) {
-                    val shareUri = runCatching {
-                        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                    }.getOrNull()
-                    if (shareUri != null) {
-                        val intent = Intent(Intent.ACTION_VIEW)
-                            .setDataAndType(shareUri, meta?.mimeType ?: "*/*")
-                            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                        runCatching { context.startActivity(intent) }
-                    }
+            Box {
+                TextButton(onClick = { modeMenu = true }) { Text("⋮") }
+                DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("文本", color = if (!editing && resolved == PreviewMode.TEXT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        onClick = { effective = PreviewMode.TEXT; editing = false; modeMenu = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("编辑", color = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        onClick = { editing = true; modeMenu = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Hex", color = if (!editing && resolved == PreviewMode.HEX) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                        onClick = { effective = PreviewMode.HEX; editing = false; modeMenu = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("字体") },
+                        onClick = { effective = PreviewMode.FONT; editing = false; modeMenu = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("外部应用") },
+                        onClick = {
+                            modeMenu = false
+                            val file = runCatching { File(container.localVfs.absolutePath(uri)) }.getOrNull()
+                            if (uri.scheme == "local" && file != null && file.exists()) {
+                                val shareUri = runCatching {
+                                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+                                }.getOrNull()
+                                if (shareUri != null) {
+                                    val intent = Intent(Intent.ACTION_VIEW)
+                                        .setDataAndType(shareUri, meta?.mimeType ?: "*/*")
+                                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    runCatching { context.startActivity(intent) }
+                                }
+                            }
+                        },
+                    )
                 }
-            }) { Text("外部应用") }
+            }
         }
 
         when {
             error != null -> ErrorState(error!!)
-            meta == null -> LoadingState()
-            meta!!.isDirectory -> Text("这是一个文件夹：${uri.displayPath}", Modifier.padding(16.dp))
-            else -> {
-                val item = meta!!
-                val kind = MimeTypes.kindOf(item.extension)
-                var resolved = effective
-                if (editing) resolved = PreviewMode.EDITOR
-                if (resolved == PreviewMode.AUTO) {
-                    resolved = when (kind) {
-                        MimeTypes.Kind.IMAGE -> PreviewMode.IMAGE
-                        MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO -> PreviewMode.MEDIA
-                        MimeTypes.Kind.FONT -> PreviewMode.FONT
-                        MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
-                        else -> if (item.size in 1..MAX_TEXT_SIZE) PreviewMode.TEXT else PreviewMode.HEX
-                    }
-                }
-                when (resolved) {
-                    PreviewMode.MEDIA -> MediaScreen(container, item.uri, item.name, onBack = onBack)
-                    PreviewMode.IMAGE -> ImagePreview(container, item)
-                    PreviewMode.EDITOR -> com.u707t.panelfm.ui.editor.EditorScreen(container, item.uri, onBack = onBack)
-                    PreviewMode.FONT -> FontScreen(container, item.uri, onBack = onBack)
-                    PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
-                    PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
-                    else -> if (kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO) {
-                        MediaScreen(container, item.uri, item.name, onBack = onBack)
-                    } else {
-                        HexPreview(container, item)
-                    }
-                }
+            item == null -> LoadingState()
+            item.isDirectory -> Text("这是一个文件夹：${uri.displayPath}", Modifier.padding(16.dp))
+            else -> when (resolved) {
+                PreviewMode.IMAGE -> ImagePreview(container, item)
+                PreviewMode.HEX -> HexPreview(container, item)
+                PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
+                PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
+                // 文本 / 其它未识别文本类内容 → 文本预览（修复此前误落到 Hex 的问题）
+                else -> TextPreview(container, item)
             }
         }
     }
@@ -155,7 +201,7 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata) {
         }
     }
     when {
-        error != null -> ErrorState("图片预览失败：$error\n（可点右上角「Hex」查看原始数据）")
+        error != null -> ErrorState("图片预览失败：$error\n（可在 ⋮ 菜单点「Hex」查看原始数据）")
         bitmap == null -> LoadingState("解码中…")
         else -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Image(
@@ -199,7 +245,11 @@ private fun TextPreview(container: AppContainer, item: FileMetadata) {
                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
             )
             SelectionContainer(Modifier.fillMaxSize()) {
-                LazyColumn(Modifier.fillMaxSize().horizontalScroll(rememberScrollState())) {
+                LazyColumn(
+                    Modifier
+                        .fillMaxSize()
+                        .horizontalScroll(rememberScrollState()),
+                ) {
                     items(text!!.split('\n')) { line ->
                         Text(
                             line.ifEmpty { " " },
