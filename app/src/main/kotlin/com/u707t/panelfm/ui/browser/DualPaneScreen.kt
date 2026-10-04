@@ -962,11 +962,11 @@ fun DualPaneScreen(
     batchRenameFor?.let { items ->
         BatchRenameDialog(
             items = items,
-            onConfirm = { expression ->
+            onConfirm = { expression, find, replace, useRegex ->
                 scope.launch {
                     var ok = 0
                     items.forEachIndexed { index, fm ->
-                        val newName = BatchRename.newName(expression, fm, index)
+                        val newName = BatchRename.newName(expression, fm, index, find, replace, useRegex)
                         if (newName != fm.name && newName.isNotBlank()) {
                             val target = fm.uri.parent?.child(newName)
                             val vfs = container.locator.find(fm.uri)

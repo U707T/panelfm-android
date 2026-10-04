@@ -260,6 +260,7 @@ class TransferTask internal constructor(
             destSize = existing.size,
             destModified = existing.lastModified,
             isDirectory = existing.isDirectory,
+            isMove = request.op == TransferOp.MOVE,
         )
         val waiter = CompletableDeferred<ConflictDecision>()
         conflictWaiter = waiter

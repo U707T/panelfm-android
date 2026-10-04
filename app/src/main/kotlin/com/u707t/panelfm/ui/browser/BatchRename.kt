@@ -1,11 +1,14 @@
 package com.u707t.panelfm.ui.browser
 
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -15,6 +18,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -34,7 +38,26 @@ object BatchRename {
 
     private val timeFmt = DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss")
 
-    fun newName(expression: String, item: FileMetadata, index: Int): String {
+    /**
+     * MT 0x7f0c0099 的完整语义：先按表达式改名，再做「查找内容 → 替换内容」。
+     * 「不使用替换功能请将查找内容留空」（MT 原文）。
+     */
+    fun newName(
+        expression: String,
+        item: FileMetadata,
+        index: Int,
+        find: String = "",
+        replace: String = "",
+        useRegex: Boolean = false,
+    ): String {
+        val base = newNameByExpression(expression, item, index)
+        if (find.isEmpty()) return base
+        return runCatching {
+            if (useRegex) Regex(find).replace(base, replace) else base.replace(find, replace)
+        }.getOrDefault(base)
+    }
+
+    private fun newNameByExpression(expression: String, item: FileMetadata, index: Int): String {
         val dot = item.name.lastIndexOf('.')
         val prefix = if (dot > 0) item.name.substring(0, dot) else item.name
         val suffix = if (dot > 0) item.name.substring(dot) else ""
@@ -49,21 +72,39 @@ object BatchRename {
             .replace("{T}", time)
 
         // {N} / {zN}
+        // MT 文档（0x7f1105bc）：「{zN}：与 {N} 类似，区别是会进行补 0 对齐，
+        // 例如 {z8} 重命名会得到 08、09、10、11…」——即补零宽度**至少 2 位**，
+        // 不是「起始数字的位数」（旧实现 {z8} 会得到 8，与 MT 不符）。
         val regex = Regex("""\{(z?)(\d+)}""")
         result = regex.replace(result) { m ->
             val zeroPad = m.groupValues[1] == "z"
-            val start = m.groupValues[2].toIntOrNull() ?: 0
+            val digits = m.groupValues[2]
+            val start = digits.toIntOrNull() ?: 0
             val value = start + index
-            if (zeroPad) value.toString().padStart(m.groupValues[2].length, '0') else value.toString()
+            if (zeroPad) value.toString().padStart(maxOf(2, digits.length), '0') else value.toString()
         }
         return result
     }
 
-    fun preview(items: List<FileMetadata>, expression: String, limit: Int = 8): List<Pair<String, String>> =
-        items.take(limit).mapIndexed { i, item -> item.name to newName(expression, item, i) }
+    fun preview(
+        items: List<FileMetadata>,
+        expression: String,
+        limit: Int = 8,
+        find: String = "",
+        replace: String = "",
+        useRegex: Boolean = false,
+    ): List<Pair<String, String>> = items.take(limit).mapIndexed { i, item ->
+        item.name to newName(expression, item, i, find, replace, useRegex)
+    }
 
-    fun hasConflict(items: List<FileMetadata>, expression: String): Boolean {
-        val names = items.mapIndexed { i, item -> newName(expression, item, i) }
+    fun hasConflict(
+        items: List<FileMetadata>,
+        expression: String,
+        find: String = "",
+        replace: String = "",
+        useRegex: Boolean = false,
+    ): Boolean {
+        val names = items.mapIndexed { i, item -> newName(expression, item, i, find, replace, useRegex) }
         return names.size != names.distinct().size
     }
 }
@@ -71,10 +112,17 @@ object BatchRename {
 @Composable
 fun BatchRenameDialog(
     items: List<FileMetadata>,
-    onConfirm: (String) -> Unit,
+    onConfirm: (expression: String, find: String, replace: String, useRegex: Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var expression by remember { mutableStateOf("{P}{S}") }
+    // MT 0x7f0c0099：表达式 + 查找内容 / 替换内容 双列 + ☐ 使用正则表达式查找替换
+    var find by remember { mutableStateOf("") }
+    var replace by remember { mutableStateOf("") }
+    var useRegex by remember { mutableStateOf(false) }
+    val regexError = useRegex && find.isNotEmpty() &&
+        runCatching { Regex(find) }.isFailure
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("批量重命名（${items.size} 项）") },
@@ -83,7 +131,7 @@ fun BatchRenameDialog(
                 OutlinedTextField(
                     value = expression,
                     onValueChange = { expression = it },
-                    label = { Text("表达式") },
+                    label = { Text("命名表达式") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth(),
                 )
@@ -93,7 +141,35 @@ fun BatchRenameDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp, bottom = 8.dp),
                 )
-                BatchRename.preview(items, expression).forEach { (old, new) ->
+                // 查找 / 替换（MT：双列并排）
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = find,
+                        onValueChange = { find = it },
+                        label = { Text("查找内容") },
+                        singleLine = true,
+                        isError = regexError,
+                        modifier = Modifier.weight(1f),
+                    )
+                    OutlinedTextField(
+                        value = replace,
+                        onValueChange = { replace = it },
+                        label = { Text("替换内容") },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Checkbox(checked = useRegex, onCheckedChange = { useRegex = it })
+                    Text("使用正则表达式查找替换", style = MaterialTheme.typography.bodySmall)
+                }
+                Text(
+                    if (find.isEmpty()) "不使用替换功能请将查找内容留空" else "先按表达式改名，再执行查找替换",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (regexError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                // 实时预览
+                BatchRename.preview(items, expression, find = find, replace = replace, useRegex = useRegex).forEach { (old, new) ->
                     Text(
                         "$old  →  $new",
                         style = MaterialTheme.typography.labelSmall,
@@ -105,7 +181,7 @@ fun BatchRenameDialog(
                 if (items.size > 8) {
                     Text("… 共 ${items.size} 项", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (BatchRename.hasConflict(items, expression)) {
+                if (BatchRename.hasConflict(items, expression, find, replace, useRegex)) {
                     Text(
                         "注意：表达式会产生重名，执行时同名的会被跳过",
                         style = MaterialTheme.typography.labelSmall,
@@ -115,7 +191,12 @@ fun BatchRenameDialog(
                 }
             }
         },
-        confirmButton = { TextButton(onClick = { onConfirm(expression); onDismiss() }) { Text("执行") } },
+        confirmButton = {
+            TextButton(
+                enabled = !regexError,
+                onClick = { onConfirm(expression, find, replace, useRegex); onDismiss() },
+            ) { Text("执行") }
+        },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )
 }

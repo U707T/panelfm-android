@@ -74,38 +74,56 @@ fun MoveConfirmDialog(pending: PendingMove, onConfirm: () -> Unit, onCancel: () 
     )
 }
 
-/** 同名冲突（需求：覆盖 / 跳过 / 保留两者 / 全部应用） */
+/**
+ * 同名冲突（复刻 MT 0x7f0c0098「文件已存在」）。
+ *
+ * MT 用**三个单选**而不是三个按钮：
+ *   复制并替换 / 跳过该文件 / 复制但保留两个文件（移动场景换成「移动并…」）
+ * 另有 ☐ 为后续冲突执行相同操作（MT 0x7f1100a5）。
+ */
 @Composable
 fun ConflictDialog(info: ConflictInfo, onDecision: (ConflictPolicy, Boolean) -> Unit) {
     var applyAll by remember { mutableStateOf(false) }
+    var policy by remember { mutableStateOf(ConflictPolicy.OVERWRITE) }
+    val verb = if (info.isMove) "移动" else "复制"
+
     AlertDialog(
         onDismissRequest = { onDecision(ConflictPolicy.SKIP, applyAll) },
-        title = { Text("已存在同名项") },
+        title = { Text("文件已存在") },
         text = {
             Column {
                 Text("源：${info.sourceName}")
                 Text("目标：${info.destName}" + if (info.destSize >= 0) "（${Fmt.size(info.destSize)}）" else "")
                 Text(
-                    if (info.isDirectory) "目标是一个文件夹，覆盖将递归合并/替换。" else "覆盖会替换目标文件。",
+                    if (info.isDirectory) "目标是一个文件夹，替换将递归合并/覆盖。" else "替换会覆盖目标文件的内容。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 6.dp),
+                    modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                listOf(
+                    ConflictPolicy.OVERWRITE to "${verb}并替换",
+                    ConflictPolicy.SKIP to "跳过该文件",
+                    ConflictPolicy.KEEP_BOTH to "${verb}但保留两个文件",
+                ).forEach { (p, label) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { policy = p }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = policy == p, onClick = { policy = p })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
                     Checkbox(checked = applyAll, onCheckedChange = { applyAll = it })
-                    Text("全部应用（本次任务后续冲突同样处理）", style = MaterialTheme.typography.bodySmall)
+                    Text("为后续冲突执行相同操作", style = MaterialTheme.typography.bodySmall)
                 }
             }
         },
-        confirmButton = {
-            TextButton(onClick = { onDecision(ConflictPolicy.OVERWRITE, applyAll) }) { Text("覆盖") }
-        },
-        dismissButton = {
-            Row {
-                TextButton(onClick = { onDecision(ConflictPolicy.SKIP, applyAll) }) { Text("跳过") }
-                TextButton(onClick = { onDecision(ConflictPolicy.KEEP_BOTH, applyAll) }) { Text("保留两者") }
-            }
-        },
+        confirmButton = { TextButton(onClick = { onDecision(policy, applyAll) }) { Text("确定") } },
+        dismissButton = { TextButton(onClick = { onDecision(ConflictPolicy.SKIP, applyAll) }) { Text("取消") } },
     )
 }
 
