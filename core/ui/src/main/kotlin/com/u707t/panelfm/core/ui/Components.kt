@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 
 @Composable
 fun LoadingState(text: String = "加载中…", modifier: Modifier = Modifier) {
@@ -94,20 +95,22 @@ fun SectionHeader(
         modifier
             .fillMaxWidth()
             .clickable(enabled = onToggle != null) { onToggle?.invoke() }
-            .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 8.dp),
+            .padding(start = 18.dp, end = 18.dp, top = 18.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             title,
-            style = MaterialTheme.typography.titleSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // MT 的分段标题：16sp、常规字重、深色（近黑）
+            style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Normal),
+            color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
         if (onToggle != null) {
+            // MT 用「︿ / ﹀」细箭头表示折叠态
             Text(
-                if (expanded) "⌃" else "⌄",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                if (expanded) "︿" else "﹀",
+                style = MaterialTheme.typography.titleMedium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
         }
     }

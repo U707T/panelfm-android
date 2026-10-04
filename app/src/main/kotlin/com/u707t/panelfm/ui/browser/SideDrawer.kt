@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -29,6 +30,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
@@ -40,6 +46,9 @@ import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtFolderGlyph
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.MtListRow
 import com.u707t.panelfm.core.ui.RoundIconBox
 import com.u707t.panelfm.core.ui.SectionHeader
@@ -108,10 +117,12 @@ fun MtSideDrawer(
     }
 
     Column(Modifier.fillMaxWidth()) {
-        // ---------------- 头部（MT：图标 + 名称 + ⋮）
+        // ---------------- 头部（复刻 MT：深色底 #151515 + 图标 + 名称 + 副标题 + 右上 ⋮）
+        val drawerHeaderBg = if (systemDark) MtSpec.TopBarDark else MtSpec.TopBarLight
         Row(
             Modifier
                 .fillMaxWidth()
+                .background(drawerHeaderBg)
                 .padding(start = 18.dp, end = 6.dp, top = 14.dp, bottom = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -119,17 +130,17 @@ fun MtSideDrawer(
                 Modifier
                     .size(44.dp)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                    .background(Color.White.copy(alpha = 0.12f)),
                 contentAlignment = Alignment.Center,
             ) {
-                MtFolderGlyph(size = 28.dp, color = MaterialTheme.colorScheme.onSurface)
+                MtFolderGlyph(size = 28.dp, color = Color.White)
             }
             Column(
                 Modifier
                     .weight(1f)
                     .padding(start = 12.dp),
             ) {
-                Text("PanelFM", style = MaterialTheme.typography.titleLarge)
+                Text("PanelFM", style = MaterialTheme.typography.titleLarge, color = MtSpec.TopBarText)
                 Text(
                     when (settings.themeMode) {
                         ThemeMode.SYSTEM -> "主题跟随系统"
@@ -137,12 +148,23 @@ fun MtSideDrawer(
                         ThemeMode.DARK -> "深色主题"
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MtSpec.TopBarSubText,
                 )
             }
             // ---------------- 侧边栏右上 ⋮（MT：主题跟随系统 / 添加存储 / 分组 / 设置）
             Box {
-                IconTextButton("⋮", contentDescription = "侧边栏菜单") { drawerMenu = true; protocolSub = false }
+                Box(
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickableNoRipple { drawerMenu = true; protocolSub = false }
+                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "侧边栏菜单"
+                        },
+                ) {
+                    MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = MtSpec.TopBarText)
+                }
                 DropdownMenu(expanded = drawerMenu, onDismissRequest = { drawerMenu = false }) {
                     if (!protocolSub) {
                         DropdownMenuItem(
