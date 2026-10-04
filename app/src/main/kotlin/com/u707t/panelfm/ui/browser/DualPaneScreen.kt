@@ -216,12 +216,32 @@ fun DualPaneScreen(
     }
 
     // 返回手势：加载中 → 取消加载；多选 → 取消选择；否则返回上一级；已在根目录则交给外层（主页/退出）
+    //
+    // MT「再按一次」范式（0x7f11055c「再按一次返回上级」/ 0x7f110588「再按一次退出程序」）：
+    // 不可逆操作用「连按两次」而不是弹窗，把摩擦降到最低。
+    var upArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(upArmed) {
+        if (upArmed) {
+            kotlinx.coroutines.delay(2000)
+            upArmed = false
+        }
+    }
     androidx.activity.compose.BackHandler(enabled = true) {
         when {
             drawerState.isOpen -> closeDrawer()
             focused.loading -> controller.cancelLoad(focusSide)
             focused.hasSelection -> controller.clearSelection(focusSide)
-            focused.uri.parent != null || focused.uri.scheme == "archive" -> controller.up(focusSide)
+            focused.uri.parent != null || focused.uri.scheme == "archive" -> {
+                // MT：在目录里直接返回上级（不弹窗）；已到根目录再按一次才提示
+                if (focused.uri.parent == null && focused.uri.scheme != "archive") {
+                    if (upArmed) controller.up(focusSide) else {
+                        upArmed = true
+                        controller.showStatus("再按一次返回上级")
+                    }
+                } else {
+                    controller.up(focusSide)
+                }
+            }
             else -> onOpenHome()
         }
     }
@@ -445,6 +465,13 @@ fun DualPaneScreen(
                         if (picked.isNotEmpty()) compressFormatPicker = true
                     }
                     ActionBarItem("⇆", "文件对比", enabled = twoFiles) { controller.startFileDiff(focusSide) }
+                    // MT 0x7f0c0025「选择当前目录」：复制 / 移动的目标改成「浏览后确认」
+                    ActionBarItem("📂", "复制到…（选择目录）", enabled = !inArchive) {
+                        controller.startPickDir(PickDirPurpose.COPY_TO)
+                    }
+                    ActionBarItem("📂", "移动到…（选择目录）", enabled = !inArchive) {
+                        controller.startPickDir(PickDirPurpose.MOVE_TO)
+                    }
                     ActionBarItem("📋", "复制到剪贴板") { controller.copySelectionToClipboard(focusSide) }
                     ActionBarItem("🔖", "添加书签") { controller.addBookmark(focusSide) }
                     ActionBarItem("ⓘ", "属性", enabled = picked.size == 1) {
@@ -550,8 +577,39 @@ fun DualPaneScreen(
                 }
             }
 
-            // ---------------- 底部：多选工具栏 或 命令栏
-            if (focused.hasSelection) {
+            // ---------------- 底部：MT「选择当前目录」模式 / 多选工具栏 / 命令栏
+            if (ui.pickDirFor != null) {
+                // MT 0x7f0c0025：底栏上方浮出一个全宽按钮「选择当前目录」（090084）+ 取消
+                val purpose = ui.pickDirFor!!
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(MtSpec.BottomBarHeight)
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "选择当前目录：" + middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, maxChars = 22),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = {
+                        val picked = controller.confirmPickDir()
+                        if (picked != null) {
+                            val (purposeNow, dir) = picked
+                            when (purposeNow) {
+                                PickDirPurpose.EXTRACT -> controller.extractTo(focusSide, dir)
+                                PickDirPurpose.COPY_TO -> controller.copyTo(side = focusSide, dest = dir)
+                                PickDirPurpose.MOVE_TO -> controller.moveTo(side = focusSide, dest = dir)
+                            }
+                        }
+                    }) { Text(purpose.label) }
+                    TextButton(onClick = { controller.cancelPickDir() }) { Text("取消") }
+                }
+            } else if (focused.hasSelection) {
                 // MT：多选模式下出现「全选 / 反选 / 类选 / 同步」动态按钮
                 val bottomExtraSel = container.settings.value.bottomBarPaddingDp.dp
                 Row(
@@ -1071,10 +1129,8 @@ fun DualPaneScreen(
                         else controller.showStatus("无法确定压缩包所在目录")
                     ExtractTarget.HERE -> controller.extractTo(focusSide, focused.uri)
                     ExtractTarget.PICK_FOLDER -> {
-                        val path = customPath ?: return@MtExtractDialog
-                        val parsed = runCatching { VfsUri.parse(path) }.getOrNull()
-                        if (parsed != null) controller.extractTo(focusSide, parsed)
-                        else controller.showStatus("路径格式无法识别：$path")
+                        // MT 0x7f0c0025：进入「选择当前目录」模式，用户浏览到目标后点底栏的确认按钮
+                        controller.startPickDir(PickDirPurpose.EXTRACT)
                     }
                 }
             },

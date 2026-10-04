@@ -101,10 +101,23 @@ data class BrowserUiState(
     val splitRatio: Float = 0.5f,
     /** 重命名冲突（MT：交换 / 删除 / 备份） */
     val renameConflict: RenameConflict? = null,
+    /**
+     * MT「选择当前目录」模式（`0x7f0c0025` 的 `090084`/`090435`/`090085`）：
+     * 进入后底栏上方浮出全宽按钮「选择当前目录」，选中后把该路径交给 [pickDirFor] 对应的流程
+     * （解压到文件夹… / 单窗格复制到…）。
+     */
+    val pickDirFor: PickDirPurpose? = null,
 ) {
     fun pane(side: PaneSide): PaneState = if (side == PaneSide.LEFT) left else right
     val focusedPane: PaneState get() = pane(focused)
     val otherPane: PaneState get() = pane(focused.other)
+}
+
+/** 「选择当前目录」模式被哪个流程唤起（决定选中后做什么） */
+enum class PickDirPurpose(val label: String) {
+    EXTRACT("解压到所选目录"),
+    COPY_TO("复制到所选目录"),
+    MOVE_TO("移动到所选目录"),
 }
 
 /**

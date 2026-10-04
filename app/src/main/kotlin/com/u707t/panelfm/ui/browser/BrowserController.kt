@@ -148,6 +148,26 @@ class BrowserController(private val container: AppContainer) {
 
     fun toggleSinglePane() = update { it.copy(singlePane = !it.singlePane) }
 
+    // ------------------------------------------------------------------ MT「选择当前目录」模式（0x7f0c0025）
+
+    /** 进入「选择当前目录」模式：底栏上方浮出「选择当前目录」按钮 */
+    fun startPickDir(purpose: PickDirPurpose) = update { it.copy(pickDirFor = purpose) }
+
+    /** 取消「选择当前目录」模式 */
+    fun cancelPickDir() = update { it.copy(pickDirFor = null) }
+
+    /**
+     * 确认「选择当前目录」：把活动窗格当前路径交给对应流程。
+     * 返回选中的目录（UI 侧据此调用具体动作），并退出该模式。
+     */
+    fun confirmPickDir(): Pair<PickDirPurpose, VfsUri>? {
+        val st = _state.value
+        val purpose = st.pickDirFor ?: return null
+        val dir = st.focusedPane.uri
+        update { it.copy(pickDirFor = null) }
+        return purpose to dir
+    }
+
     fun consumeStatus() = update { it.copy(status = null) }
 
     fun dismissPreviewRequest() { _previewRequest.value = null }
@@ -1193,6 +1213,15 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun copyToOther(side: PaneSide = _state.value.focused) = startCrossPane(side, TransferOp.COPY)
+
+    /**
+     * MT「选择当前目录」模式的落地动作：把活动窗格的选中项复制到指定目录（[startCrossPane] 的
+     * `overrideDest` 通道，与「复制到对面」共用同一条经过验证的链路）。
+     */
+    fun copyTo(side: PaneSide, dest: VfsUri) = startCrossPane(side, TransferOp.COPY, overrideDest = dest)
+
+    /** MT「选择当前目录」模式的落地动作：移动到指定目录 */
+    fun moveTo(side: PaneSide, dest: VfsUri) = startCrossPane(side, TransferOp.MOVE, overrideDest = dest)
 
     fun moveToOther(side: PaneSide = _state.value.focused) {
         val st = _state.value

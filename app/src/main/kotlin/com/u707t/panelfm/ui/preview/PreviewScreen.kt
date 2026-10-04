@@ -4,6 +4,7 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
@@ -13,11 +14,13 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -31,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
@@ -44,6 +48,7 @@ import androidx.core.content.FileProvider
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.HexInterpreter
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
@@ -516,10 +521,17 @@ private fun TextPreview(container: AppContainer, item: FileMetadata) {
 @Composable
 private fun HexPreview(container: AppContainer, item: FileMetadata) {
     var lines by remember { mutableStateOf<List<Pair<Long, String>>?>(null) }
+    var raw by remember { mutableStateOf(ByteArray(0)) }
     var error by remember { mutableStateOf<String?>(null) }
+    // MT 检查面板 0x7f0c002a：☑ 大端模式 + 逐类型解释（只读）
+    var showInterpreter by remember { mutableStateOf(false) }
+    var bigEndian by remember { mutableStateOf(true) }
+    var cursor by remember { mutableStateOf(0) }
+
     LaunchedEffect(item.uri) {
         try {
             val bytes = readBytes(container, item.uri, HEX_WINDOW.toLong())
+            raw = bytes
             lines = bytes.toHexLines()
         } catch (e: Exception) {
             error = e.message
@@ -529,15 +541,38 @@ private fun HexPreview(container: AppContainer, item: FileMetadata) {
         error != null -> ErrorState("Hex 预览失败：$error")
         lines == null -> LoadingState()
         else -> Column(Modifier.fillMaxSize()) {
-            Text(
-                "${item.name} · ${Fmt.size(item.size)} · 前 ${HEX_WINDOW / 1024} KB（只读）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "${item.name} · ${Fmt.size(item.size)} · 前 ${HEX_WINDOW / 1024} KB（只读）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                // MT 的「检查」面板入口（0x7f0e0016 菜单 / 0x7f0c002a 面板）
+                TextButton(onClick = { showInterpreter = !showInterpreter }) {
+                    Text(if (showInterpreter) "收起解释" else "数值解释")
+                }
+            }
+            if (showInterpreter) {
+                HexInterpreterPanel(raw, cursor, bigEndian, onBigEndian = { bigEndian = it })
+            }
             LazyColumn(Modifier.fillMaxSize()) {
                 items(lines!!) { (offset, row) ->
-                    Row(Modifier.padding(horizontal = 12.dp)) {
+                    val selected = cursor in offset.toInt() until (offset + 16).toInt()
+                    Row(
+                        Modifier
+                            .padding(horizontal = 12.dp)
+                            .background(
+                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                else Color.Transparent,
+                            )
+                            .clickable { cursor = offset.toInt() },
+                    ) {
                         Text(
                             "%08X".format(offset),
                             style = MaterialTheme.typography.labelSmall,
@@ -553,6 +588,65 @@ private fun HexPreview(container: AppContainer, item: FileMetadata) {
                 }
             }
         }
+    }
+}
+
+/** 数值解释面板（复刻 MT 0x7f0c002a 的「检查」：大端模式 + 逐类型解释） */
+@Composable
+private fun HexInterpreterPanel(
+    bytes: ByteArray,
+    offset: Int,
+    bigEndian: Boolean,
+    onBigEndian: (Boolean) -> Unit,
+) {
+    val interpretations = remember(bytes, offset, bigEndian) {
+        if (offset in bytes.indices) HexInterpreter.interpretAll(bytes, offset, bigEndian) else emptyList()
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "偏移 0x%08X".format(offset),
+                style = MaterialTheme.typography.labelMedium,
+                fontFamily = FontFamily.Monospace,
+                modifier = Modifier.weight(1f),
+            )
+            Text("大端模式", style = MaterialTheme.typography.labelSmall)
+            Checkbox(checked = bigEndian, onCheckedChange = onBigEndian)
+        }
+        if (interpretations.isEmpty()) {
+            Text(
+                "该偏移超出已读取范围（点列表任意行可切换偏移）",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            interpretations.forEach { (kind, value) ->
+                Row(Modifier.padding(vertical = 1.dp)) {
+                    Text(
+                        kind.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.width(112.dp),
+                    )
+                    Text(
+                        value,
+                        style = MaterialTheme.typography.labelSmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+        }
+        Text(
+            "MT 的检查面板文案（0x7f1102e0…2e6）：字节 / 字节(无符号) / 短整数 / 短整数(无符号) / 整数 / 长整数 / 浮点数 / UTF8 字符串 / Unicode 字符串",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 4.dp),
+        )
     }
 }
 
