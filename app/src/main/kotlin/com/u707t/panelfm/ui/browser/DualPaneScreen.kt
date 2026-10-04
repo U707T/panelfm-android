@@ -573,9 +573,21 @@ fun DualPaneScreen(
                         .padding(bottom = bottomExtra)
                         .background(MaterialTheme.colorScheme.surface)
                         .pointerInput(Unit) {
-                            // 底栏上滑 → 书签（MT 手册：从底栏上滑调出书签）
-                            detectVerticalDragGestures { _, dragAmount ->
-                                if (dragAmount < -12f && container.settings.value.bookmarkSwipe) onOpenBookmarks()
+                            // 底栏上滑 → 书签（MT 手册：从底栏上滑调出书签）。
+                            // 防误触：累计位移要够（≥ 48px 才触发；单次 12px 太容易误触），
+                            // 且本次手势只触发一次。
+                            var accumulated = 0f
+                            var fired = false
+                            detectVerticalDragGestures(
+                                onDragStart = { accumulated = 0f; fired = false },
+                                onDragEnd = { accumulated = 0f },
+                                onDragCancel = { accumulated = 0f },
+                            ) { _, dragAmount ->
+                                accumulated += dragAmount
+                                if (!fired && accumulated < -48f && container.settings.value.bookmarkSwipe) {
+                                    fired = true
+                                    onOpenBookmarks()
+                                }
                             }
                         }
                         .padding(horizontal = 4.dp),

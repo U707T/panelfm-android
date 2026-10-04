@@ -529,7 +529,9 @@ private fun MtFileRow(
                             when {
                                 // 松手：真正的轻点 = 点击；长按 = 动作菜单；拖过一段距离后松手 = 什么都不做
                                 !change.pressed -> {
-                                    val dragged = abs(dx) > touchSlop || abs(dy) > touchSlop
+                                    // 防误触：判定「拖动过」用 entrySlop 的一半（16dp）而不是系统 touchSlop（约 8dp），
+                                    // 否则手指轻微抖动就会被当成拖动，导致「点了没反应」
+                                    val dragged = abs(dx) > entrySlop * 0.5f || abs(dy) > entrySlop * 0.5f
                                     when {
                                         elapsed >= longPressTimeout -> gestures.onLongPress()
                                         !dragged -> gestures.onTap()
@@ -544,7 +546,7 @@ private fun MtFileRow(
                                 }
                                 // 纵向为主 → 列表滚动，不消费事件（先判断，避免斜向滚动被误判成滑动选择）
                                 abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
-                                // 左右滑动一段距离（≥ 24dp 且横向占优）→ 进入多选
+                                // 左右滑动一段距离（≥ 32dp 且横向占优）→ 进入多选
                                 // （MT 0x7f1106f3「左右滑动文件可直接选择」：两个方向都可进入选择）
                                 downIndex >= 0 && abs(dx) > entrySlop && abs(dx) > abs(dy) -> {
                                     mode = RowGestureMode.SWEEP
