@@ -594,6 +594,9 @@ fun DualPaneScreen(
                 controller.swapPanes()
                 controller.showStatus("已交换窗口")
             }
+            // 标签页：单标签时标签条隐藏（省空间）→ 这里补「新建标签页」入口，
+            // 保证任何时候都能开第二个标签（开完标签条自动出现）
+            MtMenuItem("🗂", "新建标签页") { showMoreMenu = false; controller.newTab(focusSide) }
             if (focused.uri.scheme == "archive") {
                 // MT：压缩包内时，右上角菜单提供「测试压缩包完整性」与解压
                 MtMenuItem("✓", "测试压缩包完整性") { showMoreMenu = false; controller.testArchive(focusSide) }
