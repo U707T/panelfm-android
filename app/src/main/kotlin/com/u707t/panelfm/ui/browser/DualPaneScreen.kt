@@ -5,6 +5,7 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -19,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -77,6 +79,7 @@ import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
+import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
@@ -253,105 +256,148 @@ fun DualPaneScreen(
         },
     ) {
         Column(Modifier.fillMaxSize().safeAreaPadding()) {
-            // ---------------- 顶部栏
-            Row(
+            // ---------------- 顶部栏（复刻 MT 0x7f0c0033 的 09046B）
+            //   MT 的顶栏**始终是深色**（浅色主题 #151515 / 深色 #303030），
+            //   左 ☰、右 ⋮，中间两行**居中**：路径（18sp）+ 统计（13sp）。
+            val topBarBg = if (isSystemInDarkTheme()) MtSpec.TopBarDark else MtSpec.TopBarLight
+            Column(
                 Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surface)
-                    .padding(start = 2.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
+                    .background(topBarBg)
+                    .padding(horizontal = 4.dp, vertical = 6.dp),
             ) {
-                IconTextButton("≡", contentDescription = "打开侧边栏") { scope.launch { drawerState.open() } }
-                Column(
-                    Modifier
-                        .weight(1f)
-                        .padding(horizontal = 2.dp),
-                ) {
-                    // 面包屑：点任意一级跳转；长按复制完整路径（MT 路径栏；压缩包内显示「包名!/内部路径」）
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // ☰ 侧边栏
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickableNoRipple { scope.launch { drawerState.open() } }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = "打开侧边栏"
+                            },
                     ) {
-                        val crumbs: List<Pair<String, VfsUri>> = remember(focused.uri) {
-                            buildList {
-                                if (focused.uri.scheme == "archive") {
-                                    val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
-                                    val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
-                                    val kind = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.entries
-                                        .firstOrNull { it.id == focused.uri.authority }
-                                    if (host != null && kind != null) {
-                                        add((host.name.ifEmpty { "压缩包" }) + "!/" to
-                                            com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, kind, ""))
-                                        val innerSegs = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(focused.uri.path)
-                                            .split('/').filter { it.isNotEmpty() }
-                                        innerSegs.forEachIndexed { i, seg ->
-                                            add("$seg/" to com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(
-                                                host, kind, innerSegs.take(i + 1).joinToString("/")))
-                                        }
+                        Text("☰", style = MaterialTheme.typography.titleLarge, color = MtSpec.TopBarText)
+                    }
+                    // 中间两行居中（MT：路径 + 统计）
+                    Column(
+                        Modifier
+                            .weight(1f)
+                            .padding(horizontal = 4.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Text(
+                            middleEllipsis(focused.uri.displayPath.ifEmpty { "/" }, maxChars = 30),
+                            style = MaterialTheme.typography.titleMedium.copy(
+                                fontSize = MtSpec.TopBarTitleSize,
+                                fontWeight = FontWeight.SemiBold,
+                            ),
+                            color = MtSpec.TopBarText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Clip,
+                        )
+                        Text(
+                            buildString {
+                                append("文件夹: ").append(focused.dirCount)
+                                append("  文件: ").append(focused.fileCount)
+                                focused.space?.let {
+                                    append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total))
+                                }
+                                if (focused.hasSelection) append("  已选: ").append(focused.selection.size)
+                                if (focused.filtered) append("  ·  已过滤")
+                            },
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.TopBarSubSize),
+                            color = MtSpec.TopBarSubText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    // ⋮ 更多菜单
+                    Box(
+                        Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickableNoRipple { showMoreMenu = true; hiddenSub = false }
+                            .padding(horizontal = 12.dp, vertical = 6.dp)
+                            .semantics {
+                                role = Role.Button
+                                contentDescription = "更多菜单"
+                            },
+                    ) {
+                        Text("⋮", style = MaterialTheme.typography.titleLarge, color = MtSpec.TopBarText)
+                    }
+                }
+                // 面包屑（点任意一级跳转；长按复制完整路径）—— 深底上用小号亮字
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val crumbs: List<Pair<String, VfsUri>> = remember(focused.uri) {
+                        buildList {
+                            if (focused.uri.scheme == "archive") {
+                                val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
+                                val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
+                                val kind = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.entries
+                                    .firstOrNull { it.id == focused.uri.authority }
+                                if (host != null && kind != null) {
+                                    add((host.name.ifEmpty { "压缩包" }) + "!/" to
+                                        com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, kind, ""))
+                                    val innerSegs = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(focused.uri.path)
+                                        .split('/').filter { it.isNotEmpty() }
+                                    innerSegs.forEachIndexed { i, seg ->
+                                        add("$seg/" to com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(
+                                            host, kind, innerSegs.take(i + 1).joinToString("/")))
                                     }
+                                }
+                            } else {
+                                val full = focused.uri.displayPath.ifEmpty { "/" }
+                                val segments = full.trim('/').split('/').filter { it.isNotEmpty() }
+                                if (segments.isEmpty()) {
+                                    add("/" to focused.uri.withPath("/"))
                                 } else {
-                                    val full = focused.uri.displayPath.ifEmpty { "/" }
-                                    val segments = full.trim('/').split('/').filter { it.isNotEmpty() }
-                                    if (segments.isEmpty()) {
-                                        add("/" to focused.uri.withPath("/"))
-                                    } else {
-                                        segments.forEachIndexed { i, seg ->
-                                            add("$seg/" to focused.uri.withPath("/" + segments.take(i + 1).joinToString("/")))
-                                        }
+                                    segments.forEachIndexed { i, seg ->
+                                        add("$seg/" to focused.uri.withPath("/" + segments.take(i + 1).joinToString("/")))
                                     }
                                 }
                             }
                         }
-                        val shown = if (crumbs.size > 4) crumbs.takeLast(4) else crumbs
-                        if (crumbs.size > shown.size) {
-                            Text(
-                                "…",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 2.dp),
-                            )
-                        }
-                        shown.forEachIndexed { index, (label, target) ->
-                            Text(
-                                label,
-                                style = MaterialTheme.typography.titleSmall,
-                                color = if (index == shown.lastIndex) MaterialTheme.colorScheme.onSurface
-                                else MaterialTheme.colorScheme.primary,
-                                maxLines = 1,
-                                modifier = Modifier
-                                    .padding(horizontal = 1.dp)
-                                    .combinedClickable(
-                                        onClick = {
-                                            controller.open(
-                                                focusSide,
-                                                target,
-                                                focused.tab.connectionId,
-                                                focused.tab.label,
-                                            )
-                                        },
-                                        onLongClick = {
-                                            clipboard.setText(AnnotatedString(focused.uri.toString()))
-                                            controller.showStatus("已复制路径：${focused.uri.displayPath}")
-                                        },
-                                    ),
-                            )
-                        }
                     }
-                    Text(
-                        buildString {
-                            append("文件夹: ").append(focused.dirCount)
-                            append("  文件: ").append(focused.fileCount)
-                            focused.space?.let {
-                                append("  储存: ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total))
-                            }
-                            if (focused.filtered) append("  ·  已过滤")
-                        },
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                    )
+                    val shown = if (crumbs.size > 4) crumbs.takeLast(4) else crumbs
+                    if (crumbs.size > shown.size) {
+                        Text(
+                            "…",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MtSpec.TopBarSubText,
+                            modifier = Modifier.padding(horizontal = 2.dp),
+                        )
+                    }
+                    shown.forEachIndexed { index, (label, target) ->
+                        Text(
+                            label,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (index == shown.lastIndex) MtSpec.TopBarText else MtSpec.TopBarSubText,
+                            maxLines = 1,
+                            modifier = Modifier
+                                .padding(horizontal = 1.dp)
+                                .combinedClickable(
+                                    onClick = {
+                                        controller.open(
+                                            focusSide,
+                                            target,
+                                            focused.tab.connectionId,
+                                            focused.tab.label,
+                                        )
+                                    },
+                                    onLongClick = {
+                                        clipboard.setText(AnnotatedString(focused.uri.toString()))
+                                        controller.showStatus("已复制路径：${focused.uri.displayPath}")
+                                    },
+                                ),
+                        )
+                    }
                 }
-                IconTextButton("⋮", contentDescription = "更多菜单") { showMoreMenu = true; hiddenSub = false }
             }
 
             HSeparator()
@@ -501,7 +547,7 @@ fun DualPaneScreen(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .height(52.dp + bottomExtraSel)
+                        .height(MtSpec.BottomBarHeight + bottomExtraSel)
                         .padding(bottom = bottomExtraSel)
                         .background(MaterialTheme.colorScheme.surface)
                         .padding(horizontal = 4.dp),
@@ -519,7 +565,7 @@ fun DualPaneScreen(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .height(52.dp + bottomExtra)
+                        .height(MtSpec.BottomBarHeight + bottomExtra)
                         .padding(bottom = bottomExtra)
                         .background(MaterialTheme.colorScheme.surface)
                         .pointerInput(Unit) {
@@ -535,8 +581,7 @@ fun DualPaneScreen(
                     BottomCommand("←", "后退", enabled = focused.tab.back.isNotEmpty()) { controller.back(focusSide) }
                     BottomCommand("→", "前进", enabled = focused.tab.forward.isNotEmpty()) { controller.forward(focusSide) }
                     Box {
-                        BottomCommand("＋", "新建（长按新建文件）", onLongClick = { creatingFile = true }) { showCreateMenu = true }
-                        // MT：新建（＋）弹出菜单
+                        BottomCommand("＋", "新建（长按新建文件）", onLongClick = { creatingFile = true }) { showCreateMenu = true }                        // MT：新建（＋）弹出菜单
                         DropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
                             DropdownMenuItem(
                                 text = { Text("📁  新建文件夹") },
@@ -548,10 +593,11 @@ fun DualPaneScreen(
                             )
                         }
                     }
-                    // MT：⇄ = 交换窗口（一键调换左右窗口内容）；长按 = 过滤
-                    BottomCommand("⇄", "交换窗口（长按过滤）", onLongClick = { filterInput = true }) {
-                        controller.swapPanes()
-                        controller.showStatus("已交换窗口")
+                    // MT 底栏第三个按钮是「同步」（0x7f11069b「同步」）：
+                    // 点击 = 另一窗格跟随本窗格路径；长按 = 过滤（MT 0x7f11028f「长按底部的「同步」按钮也可以进行过滤」）。
+                    // （旧实现把这个位置做成「交换窗口」→ 用户误触会整列对调，是误触投诉的主因）
+                    BottomCommand("⇄", "同步路径到另一窗口（长按过滤）", onLongClick = { filterInput = true }) {
+                        controller.syncPath()
                     }
                     // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
                     BottomCommand(
@@ -1205,7 +1251,9 @@ private fun BottomCommand(
     onClick: () -> Unit,
 ) {
     val base = Modifier
-        .size(46.dp)
+        // MT 底栏：每个按钮是整高点击区（0x7f070031 = 64dp），图标居中
+        .fillMaxHeight()
+        .widthIn(min = 56.dp)
         .clip(RoundedCornerShape(8.dp))
         .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
     val tapAction = onClick
@@ -1239,7 +1287,7 @@ private fun BottomCommand(
     ) {
         Text(
             symbol,
-            style = MaterialTheme.typography.titleLarge,
+            style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Normal,
             color = when {
                 !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f)

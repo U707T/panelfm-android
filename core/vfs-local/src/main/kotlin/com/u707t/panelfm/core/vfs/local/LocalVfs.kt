@@ -116,11 +116,16 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     override suspend fun stat(uri: VfsUri): FileMetadata = withContext(env.dispatchers.io) {
         val f = toFile(uri)
         if (!f.exists() && !Files.isSymbolicLink(f.toPath())) throw VfsException.NotFound(uri)
-        meta(uri, f)
+        // 注意：这里 uri 已经是**文件自身**的 URI，不能再按「父目录 + 文件名」拼一次
+        // （旧实现 meta() 内部统一 child(file.name)，导致 stat 得到 x.jpg/x.jpg → ENOTDIR）
+        metaOf(uri, f)
     }
 
-    private fun meta(parentUri: VfsUri, file: File): FileMetadata {
-        val uri = parentUri.child(file.name)
+    /** 列表用：父目录 URI + 子项 File → 子项元数据 */
+    private fun meta(parentUri: VfsUri, file: File): FileMetadata = metaOf(parentUri.child(file.name), file)
+
+    /** 元数据（uri 必须是该文件/目录**自身**的 URI） */
+    private fun metaOf(uri: VfsUri, file: File): FileMetadata {
         val attrs = runCatching { Os.stat(file.absolutePath) }.getOrNull()
         // lstat 才能识别符号链接（Os.stat 会跟随链接）
         val linkAttrs = runCatching { Os.lstat(file.absolutePath) }.getOrNull()

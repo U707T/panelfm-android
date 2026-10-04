@@ -57,16 +57,23 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.FileIcon
+import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.vfs.FileMetadata
 import kotlin.math.abs
 
-private val ROW_HEIGHT = 56.dp
+/** 行高（MT 实测 48dp：图标 32 + 上下 padding 8×2） */
+private val ROW_HEIGHT = MtSpec.RowHeight
 
-/** 右滑进入多选的最小距离（超过系统 touchSlop，保证「滑动一段距离才触发」） */
-private val SWIPE_ENTRY = 24.dp
+/**
+ * 滑动判定阈值（对齐 MT 手感，降低误触）：
+ *  - [SWIPE_ENTRY]：进入多选的最小横向位移。MT 是「左右滑动文件可直接选择」，
+ *    取 32dp（比系统 touchSlop 大不少，避免轻扫列表时误进多选）；
+ *  - [SWIPE_MENU]：右滑「到底」呼出更多操作的距离。
+ */
+private val SWIPE_ENTRY = 32.dp
 
 /** 右滑「到底」呼出更多操作（MT 0x7f110697「右滑列表项可进行更多操作」）的距离 */
-private val SWIPE_MENU = 96.dp
+private val SWIPE_MENU = 120.dp
 
 /** 行手势的判定阶段 */
 private enum class RowGestureMode { UNDECIDED, SWEEP, LONG_PRESS }
@@ -218,56 +225,7 @@ fun PaneView(
             }
         }
 
-        // ---- 窗格信息行
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .background(
-                    when {
-                        highlight -> MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
-                        focused -> MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                        else -> Color.Transparent
-                    }
-                )
-                .padding(horizontal = 10.dp, vertical = 3.dp),
-        ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    middleEllipsis(pane.uri.displayPath.ifEmpty { "/" }),
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = if (focused) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (focused) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Clip,
-                    modifier = Modifier.weight(1f),
-                )
-                if (pane.hasSelection) {
-                    Text(
-                        "已选: ${pane.selection.size}",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.padding(start = 6.dp),
-                    )
-                }
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    pane.summaryFor(container.settings.value.listDisplayMode),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                pane.space?.let {
-                    Text(
-                        "${(if (it.total > 0) (it.total - it.free) * 100 / it.total else 0)}%",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
+        // ---- 窗格内不再有独立路径栏（复刻 MT：路径与统计统一显示在顶部深色栏里）
 
         // ---- 列表
         Box(Modifier.weight(1f)) {
@@ -434,7 +392,7 @@ fun PaneView(
     }
 }
 
-/** `..` 返回上级（MT 列表首行） */
+/** `..` 返回上级（MT 列表首行；与普通行同样式：32dp 图标 + 8dp 内边距） */
 @Composable
 private fun ParentRow(onClick: () -> Unit) {
     val tapAction = onClick
@@ -448,19 +406,19 @@ private fun ParentRow(onClick: () -> Unit) {
                 role = Role.Button
                 onClick(label = "返回上级") { tapAction(); true }
             }
-            .padding(start = 14.dp, end = 8.dp),
+            .padding(horizontal = MtSpec.RowPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         FileIcon(
             name = "",
             isDirectory = true,
-            size = 40.dp,
-            folderColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            size = MtSpec.RowIcon,
         )
         Text(
             "..",
-            style = MaterialTheme.typography.bodyLarge,
-            modifier = Modifier.padding(start = 12.dp),
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = MtSpec.RowNameSize),
+            color = MtSpec.RowNameLight,
+            modifier = Modifier.padding(start = MtSpec.RowIconGap),
         )
     }
 }
@@ -503,15 +461,22 @@ private fun MtFileRow(
         Modifier
             .fillMaxWidth()
             .height(ROW_HEIGHT)
-            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.13f) else Color.Transparent)
+            // 选中态：MT 用强调蓝的浅色底（浅色主题 #1976d2 @ 12%）
+            .background(
+                if (selected) {
+                    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+                    (if (dark) MtSpec.AccentDark else MtSpec.AccentLight).copy(alpha = 0.14f)
+                } else Color.Transparent
+            )
             // ------------------------------------------------------------------
             // 行手势（MT 语义，统一由单个识别器处理，避免多个识别器互相抢事件）：
             //   · 单击              = 打开 / 预览（多选态 = 切换选中）
-            //   · 向右滑动 ≥ 24dp    = 进入多选（震动确认）；继续滑过行间 = 区间选择（替换语义）
+            //   · 左右滑动 ≥ 32dp    = 进入多选（震动确认）；继续滑过行间 = 区间选择（替换语义）
+            //   · 右滑到底 ≥ 120dp   = 呼出动作菜单（MT 0x7f110697）
             //   · 长按后松手        = 动作菜单（该项自动选中；带 ● 的项可长按触发单窗口操作）
             //   · 纵向拖动          = 交给列表滚动（不消费事件）
             //   · 小幅度拖动后松手  = 不触发点击（避免滑动误开文件）
-            //   （跨窗格复制用动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已按需求移除）
+            //   （跨窗格复制用动作菜单「复制 -> / 移动 ->」或底栏 ⇄；长按拖动已按需求移除）
             // ------------------------------------------------------------------
             .pointerInput(item.uri.toString(), gesturesEnabled) {
                 if (!gesturesEnabled) return@pointerInput
@@ -618,7 +583,7 @@ private fun MtFileRow(
                 onClick(label = "打开") { onTap(); true }
                 onLongClick(label = "操作菜单") { onLongPress(); true }
             }
-            .padding(start = 14.dp, end = 8.dp),
+            .padding(horizontal = MtSpec.RowPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (thumb != null) {
@@ -627,30 +592,33 @@ private fun MtFileRow(
                 contentDescription = null,
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 modifier = Modifier
-                    .size(40.dp)
+                    .size(MtSpec.RowIcon)
                     .clip(RoundedCornerShape(8.dp)),
             )
         } else {
             FileIcon(
                 name = item.name,
                 isDirectory = item.isDirectory,
-                size = 40.dp,
+                size = MtSpec.RowIcon,
                 alpha = alpha,
                 folderColor = if (dimmed) MaterialTheme.colorScheme.onSurfaceVariant
-                else MaterialTheme.colorScheme.onSurface,
+                else MtSpec.FolderGlyphLight,
             )
         }
         Column(
             Modifier
                 .weight(1f)
-                .padding(start = 12.dp),
+                .padding(start = MtSpec.RowIconGap),
         ) {
             Text(
                 item.name,
-                style = MaterialTheme.typography.bodyLarge,
+                style = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = MtSpec.RowNameSize,
+                    fontWeight = FontWeight.Normal,
+                ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = (if (item.isHidden) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface)
+                color = (if (item.isHidden) MtSpec.RowSubLight else MtSpec.RowNameLight)
                     .copy(alpha = alpha),
             )
             Text(
@@ -662,8 +630,8 @@ private fun MtFileRow(
                         append(Fmt.size(item.size))
                     }
                 },
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
+                color = MtSpec.RowSubLight.copy(alpha = alpha),
                 maxLines = 1,
             )
         }
@@ -671,7 +639,7 @@ private fun MtFileRow(
             Text(
                 "✓",
                 style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
+                color = MtSpec.AccentLight,
                 modifier = Modifier.padding(start = 6.dp),
             )
         }
