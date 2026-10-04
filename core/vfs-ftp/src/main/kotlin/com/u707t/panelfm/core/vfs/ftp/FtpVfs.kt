@@ -86,7 +86,9 @@ class FtpVfs(
         }
         c.connectTimeout = cfg.timeoutMs
         c.defaultTimeout = cfg.timeoutMs
-        c.controlEncoding = "UTF-8"
+        // MT「编码」：文件名编码（非法名称回退 UTF-8，避免连不上；MT 文案「编码名称不存在」）
+        c.controlEncoding = runCatching { java.nio.charset.Charset.forName(cfg.encoding).name() }
+            .getOrElse { "UTF-8" }
         c.listHiddenFiles = true
         if (c is FTPSClient && cfg.trustSelfSigned) {
             c.trustManager = InsecureTrustManager

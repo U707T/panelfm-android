@@ -72,6 +72,24 @@ fun AppRoot(container: AppContainer) {
 
     BackHandler(enabled = stack.size > 1) { pop() }
 
+    // MT「退出前双次确认」：在主页连按两次返回才退出（默认关，设置里可开）
+    var exitArmed by remember { mutableStateOf(false) }
+    val settingsForExit by container.settings.collectAsState()
+    BackHandler(enabled = stack.size <= 1 && settingsForExit.confirmExit) {
+        if (exitArmed) {
+            runCatching { (context as? android.app.Activity)?.finish() }
+        } else {
+            exitArmed = true
+            android.widget.Toast.makeText(context, "再按一次退出", android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(exitArmed) {
+        if (exitArmed) {
+            kotlinx.coroutines.delay(2000)
+            exitArmed = false
+        }
+    }
+
     androidx.compose.runtime.DisposableEffect(Unit) {
         onDispose { runCatching { container.browser.persistPaths() } }
     }

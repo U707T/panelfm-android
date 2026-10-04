@@ -12,6 +12,8 @@ data class FtpConfig(
     val implicitTls: Boolean,
     val passive: Boolean,
     val trustSelfSigned: Boolean,
+    /** MT「编码」：控制连接编码（文件名）。默认 UTF-8；中文 FTP 服务器常需 GBK/GB18030 */
+    val encoding: String,
     val timeoutMs: Int = 20_000,
 ) {
     companion object {
@@ -25,6 +27,7 @@ data class FtpConfig(
             implicitTls = config.type.name == "FTPS" && config.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() == true,
             passive = config.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() != false,
             trustSelfSigned = config.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: true,
+            encoding = config.option(ConnectionConfig.OPT_ENCODING)?.takeIf { it.isNotBlank() } ?: "UTF-8",
         )
     }
 }

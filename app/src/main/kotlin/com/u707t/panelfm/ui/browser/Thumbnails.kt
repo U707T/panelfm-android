@@ -42,7 +42,13 @@ object ThumbCache {
         return File(dir, "$hash.png")
     }
 
-    suspend fun load(container: AppContainer, item: FileMetadata, targetPx: Int, allowRemote: Boolean): Bitmap? {
+    suspend fun load(
+        container: AppContainer,
+        item: FileMetadata,
+        targetPx: Int,
+        allowRemote: Boolean,
+        maxBytes: Long = MAX_REMOTE_SIZE,
+    ): Bitmap? {
         val key = keyOf(item)
         memory.get(key)?.let { return it }
         val cached = fileOf(key)?.takeIf { it.exists() }
@@ -53,7 +59,8 @@ object ThumbCache {
                 return bm
             }
         }
-        if (item.uri.scheme != "local" && (!allowRemote || item.size > MAX_REMOTE_SIZE || item.size < 0)) return null
+        // MT「超过 X 大小的图片文件不加载缩略图」（maxBytes = 0 表示不限制）
+        if (item.uri.scheme != "local" && (!allowRemote || item.size < 0 || (maxBytes > 0 && item.size > maxBytes))) return null
 
         val bitmap = withContext(Dispatchers.IO) {
             runCatching {
@@ -72,7 +79,7 @@ object ThumbCache {
                     try {
                         val buf = ByteArray(64 * 1024)
                         var total = 0L
-                        while (total < MAX_REMOTE_SIZE) {
+                        while (maxBytes <= 0 || total < maxBytes) {
                             val n = reader.read(buf, 0, buf.size)
                             if (n < 0) break
                             out.write(buf, 0, n)
@@ -132,10 +139,26 @@ fun rememberThumb(
     }
     val context = androidx.compose.ui.platform.LocalContext.current
     val settings by container.settings.collectAsState()
-    val state = produceState<ImageBitmap?>(initialValue = null, item.uri.toString(), skip, settings.thumbnailsOnMobile) {
+    val state = produceState<ImageBitmap?>(
+        initialValue = null,
+        item.uri.toString(),
+        skip,
+        settings.thumbnailsOnMobile,
+        settings.thumbnailMaxBytes,
+        settings.thumbnailTimeoutSec,
+    ) {
         // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置（切换设置会刷新加载行为）
         val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || settings.thumbnailsOnMobile
-        value = ThumbCache.load(container, item, targetPx, allowRemote)?.asImageBitmap()
+        // MT「缩略图未在 N 秒内加载完成将会取消加载」（0 = 不超时）
+        val timeout = settings.thumbnailTimeoutSec
+        val bitmap = if (timeout > 0) {
+            kotlinx.coroutines.withTimeoutOrNull(timeout * 1000L) {
+                ThumbCache.load(container, item, targetPx, allowRemote, settings.thumbnailMaxBytes)
+            }
+        } else {
+            ThumbCache.load(container, item, targetPx, allowRemote, settings.thumbnailMaxBytes)
+        }
+        value = bitmap?.asImageBitmap()
     }
     return state.value
 }

@@ -231,7 +231,7 @@ fun PaneView(
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    pane.summary(),
+                    pane.summaryFor(container.settings.value.listDisplayMode),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,

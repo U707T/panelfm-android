@@ -81,5 +81,7 @@ data class ConnectionConfig(
 
         /** "false" = 该连接不加载缩略图（缺省加载） */
         const val OPT_LOAD_THUMBS = "loadThumbs"
+        /** MT 的「编码」：FTP/SFTP 的文件名编码（默认 UTF-8，中文服务器常用 GBK/GB18030） */
+        const val OPT_ENCODING = "encoding"
     }
 }

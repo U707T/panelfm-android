@@ -78,7 +78,23 @@ class BrowserController(private val container: AppContainer) {
         }
         // 记忆路径异步恢复（不在主线程 runBlocking —— 冷启动不卡首帧）
         container.scope.launch {
-            if (!container.settings.value.rememberLastPath) return@launch
+            // MT「启动路径 - 左/右窗口」：勾了「首页」就不恢复上次路径，改由 homePath 决定
+            val s0 = container.settings.value
+            if (s0.startAtHome) {
+                val home = s0.homePath?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+                if (home != null && container.locator.find(home) != null) {
+                    update { st ->
+                        st.copy(
+                            left = st.left.copy(tabs = listOf(PaneTab(home, label = home.authority)), sort = st.left.sort),
+                            right = st.right.copy(tabs = listOf(PaneTab(home, label = home.authority)), sort = st.right.sort),
+                        )
+                    }
+                    load(PaneSide.LEFT)
+                    load(PaneSide.RIGHT)
+                }
+                return@launch
+            }
+            if (!s0.rememberLastPath) return@launch
             val (lastLeft, lastRight) = container.prefs.lastPathsSuspend()
             val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
             val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
@@ -1430,6 +1446,25 @@ fun FileMetadata.previewKind(): String = com.u707t.panelfm.core.common.MimeTypes
 fun PaneState.summary(): String = buildString {
     append("文件夹: ").append(dirCount).append("  文件: ").append(fileCount)
     space?.let { append("   ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total)) }
+}
+
+/**
+ * MT「文件列表显示」三档（0x7f110200/201/202）：
+ *  - 0 不显示权限
+ *  - 1 非存储目录下的文件显示「权限+大小」（默认）
+ *  - 2 全部目录下的文件显示「时间+大小」
+ * 这里作用于**底部统计行**：把原本固定显示的「文件夹/文件/已用」按档位调整。
+ */
+fun PaneState.summaryFor(mode: Int): String = when (mode) {
+    0 -> "文件夹: $dirCount  文件: $fileCount"
+    2 -> buildString {
+        append("文件夹: ").append(dirCount).append("  文件: ").append(fileCount)
+        space?.let { append("   已用 ").append(Fmt.size(it.total - it.free)).append(" / 可用 ").append(Fmt.size(it.free)) }
+    }
+    else -> buildString {
+        append("文件夹: ").append(dirCount).append("  文件: ").append(fileCount)
+        space?.let { append("   ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total)) }
+    }
 }
 
 /** 由 VFS 类型给出的人类可读名 */

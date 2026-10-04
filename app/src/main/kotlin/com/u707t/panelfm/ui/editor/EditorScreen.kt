@@ -564,6 +564,10 @@ private suspend fun saveText(
             charset == "UTF-16BE" -> text.toByteArray(Charsets.UTF_16BE)
             else -> text.toByteArray(Charsets.UTF_8)
         }
+        // MT「保存文件时自动将原文件重命名为 .bak 备份文件」
+        if (container.settings.value.backupOnSave && vfs.capabilities.rename) {
+            runCatching { vfs.rename(uri, uri.parent?.child(uri.name + ".bak") ?: uri) }
+        }
         withContext(Dispatchers.IO) {
             val writer = vfs.openWrite(uri, size = bytes.size.toLong(), offset = 0L)
             writer.write(bytes, 0, bytes.size)

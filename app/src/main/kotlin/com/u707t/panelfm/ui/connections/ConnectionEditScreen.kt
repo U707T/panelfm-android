@@ -93,6 +93,8 @@ fun ConnectionEditScreen(
     var trustSelfSigned by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: true) }
     var implicitTls by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() ?: false) }
     var passive by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() ?: true) }
+    // MT「编码」：FTP/FTPS/SFTP 的文件名编码（中文服务器常需 GBK/GB18030）
+    var encoding by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_ENCODING).orEmpty().ifBlank { "UTF-8" }) }
     var userAgent by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_USER_AGENT).orEmpty()) }
     var initialPath by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_INITIAL_PATH).orEmpty()) }
     var hiddenInDrawer by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) == "true") }
@@ -202,6 +204,11 @@ fun ConnectionEditScreen(
         if (initialPath.isNotBlank()) put(ConnectionConfig.OPT_INITIAL_PATH, initialPath.trim())
         if (hiddenInDrawer) put(ConnectionConfig.OPT_HIDDEN_IN_DRAWER, "true")
         if (!loadThumbs) put(ConnectionConfig.OPT_LOAD_THUMBS, "false")
+        if ((type == ConnectionType.FTP || type == ConnectionType.FTPS || type == ConnectionType.SFTP) &&
+            encoding.isNotBlank() && encoding != "UTF-8"
+        ) {
+            put(ConnectionConfig.OPT_ENCODING, encoding.trim())
+        }
         if (type == ConnectionType.SMB) {
             if (smbDomain.isNotBlank()) put(SmbConfig.OPT_DOMAIN, smbDomain.trim())
             if (smbShare.isNotBlank()) put(SmbConfig.OPT_SHARE, smbShare.trim())
@@ -281,10 +288,22 @@ fun ConnectionEditScreen(
 
     fun doTest() {
         busy = true
-        status = null
+        status = "正在测试读取文件列表…"
         scope.launch {
+            // MT（0x7f1102b7）：卡住时给出可操作提示——主/被动模式是最常见的元凶
+            val isFtp = type == ConnectionType.FTP || type == ConnectionType.FTPS
+            val stuckHint = if (isFtp) {
+                "正在测试读取文件列表… (如果卡在这一步，请尝试切换主/被动模式)"
+            } else {
+                "正在测试读取文件列表…"
+            }
+            val hintJob = launch {
+                kotlinx.coroutines.delay(6_000)
+                if (busy) status = stuckHint
+            }
             try {
                 if (!applyUrlIfWebDav()) {
+                    hintJob.cancel()
                     status = badUrlMessage
                     busy = false
                     return@launch
@@ -299,6 +318,7 @@ fun ConnectionEditScreen(
             } catch (e: Exception) {
                 status = "连接失败：" + ((e as? VfsException)?.userMessage ?: e.message)
             } finally {
+                hintJob.cancel()
                 busy = false
             }
         }
@@ -526,6 +546,25 @@ fun ConnectionEditScreen(
             }
             if (type == ConnectionType.FTP || type == ConnectionType.FTPS) {
                 SwitchRow("被动模式（PASV/EPSV，推荐）", passive) { passive = it }
+            }
+            // MT：FTP/FTPS/SFTP 的「编码」（文件名编码；中文 FTP 服务器常用 GBK）
+            if (type == ConnectionType.FTP || type == ConnectionType.FTPS || type == ConnectionType.SFTP) {
+                Text("编码", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 4.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+                    listOf("UTF-8", "GBK", "GB18030", "Big5").forEach { enc ->
+                        TextButton(onClick = { encoding = enc }) {
+                            Text(
+                                enc,
+                                color = if (encoding == enc) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "文件名编码。中文 FTP 服务器列表乱码时改成 GBK / GB18030。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             SwitchRow("在侧拉栏隐藏地址", hiddenInDrawer) { hiddenInDrawer = it }
 
