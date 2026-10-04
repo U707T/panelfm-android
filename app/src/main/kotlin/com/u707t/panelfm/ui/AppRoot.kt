@@ -10,10 +10,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -185,13 +182,9 @@ fun AppRoot(container: AppContainer) {
         )
     }
 
-    Box(
-        Modifier
-            .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            // 全面屏安全区：顶部状态栏 + 左右挖孔/手势 + 底部导航栏
-            .windowInsetsPadding(WindowInsets.safeDrawing),
-    ) {
+    Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        // 注意：安全区内缩由各屏幕自己处理（core.ui.safeAreaPadding）——
+        // 播放器需要真正的整屏（黑色铺满），若在这里统一内缩会把播放器包进「白框」。
         when (val current = stack.last()) {
             Screen.Browser -> DualPaneScreen(
                 container = container,

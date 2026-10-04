@@ -43,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.LocalNetwork
 import com.u707t.panelfm.core.common.Fmt
@@ -83,7 +84,8 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val connections by container.connections.collectAsState()
     val settings by container.settings.collectAsState()
-    val tasks by container.engine.tasks.collectAsState()
+    // 观察 taskEvents（任务状态变化也会刷新），仅用于统计「进行中」数量
+    val tasks by container.engine.taskEvents.collectAsState(initial = emptyList())
 
     var status by remember { mutableStateOf<String?>(null) }
     var connecting by remember { mutableStateOf<Long?>(null) }
@@ -142,6 +144,7 @@ fun HomeScreen(
         Column(
             Modifier
                 .fillMaxSize()
+                .safeAreaPadding()
                 .padding(padding)
                 .verticalScroll(rememberScrollState()),
         ) {
@@ -363,7 +366,8 @@ fun HomeScreen(
             dismissButton = {
                 Row {
                     TextButton(onClick = {
-                        scope.launch { container.registry.closeAll() }
+                        // 只断开这一条连接（旧实现 closeAll() 会把其它连接一起断掉）
+                        container.disconnectConnection(config)
                         menuFor = null
                         status = "已断开会话"
                     }) { Text("断开") }

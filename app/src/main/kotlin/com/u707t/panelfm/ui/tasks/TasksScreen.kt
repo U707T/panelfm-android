@@ -18,6 +18,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.transfer.TaskState
@@ -26,9 +27,10 @@ import com.u707t.panelfm.ui.browser.ThinProgressBar
 /** 任务页：进度 / 速率 / 剩余时间 / 暂停 / 继续 / 取消 / 清空。 */
 @Composable
 fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
-    val tasks by container.engine.tasks.collectAsState()
+    // 用 snapshots（状态变化会重新发射），而不是 tasks（只在列表增删时发射）
+    val tasks by container.engine.snapshots.collectAsState(initial = emptyList())
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -57,8 +59,8 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                     .padding(horizontal = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                tasks.forEach { task ->
-                    val state = task.state.value
+                tasks.forEach { snapshot ->
+                    val state = snapshot.state
                     val progress = when (state) {
                         is TaskState.Running -> if (state.totalBytes > 0) state.doneBytes.toFloat() / state.totalBytes else 0f
                         is TaskState.Done -> 1f
@@ -66,7 +68,7 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                     }
                     Column(Modifier.fillMaxWidth()) {
                         Text(
-                            "${task.title}  (${task.id.take(6)})",
+                            "${snapshot.title}  (${snapshot.id.take(6)})",
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                         )
@@ -88,14 +90,14 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             when (state) {
                                 is TaskState.Running, TaskState.Queued ->
-                                    TextButton(onClick = { task.pause() }) { Text("暂停") }
-                                TaskState.Paused -> TextButton(onClick = { task.resume() }) { Text("继续") }
+                                    TextButton(onClick = { container.engine.findTask(snapshot.id)?.pause() }) { Text("暂停") }
+                                TaskState.Paused -> TextButton(onClick = { container.engine.findTask(snapshot.id)?.resume() }) { Text("继续") }
                                 else -> {}
                             }
                             if (state !is TaskState.Done && state !is TaskState.Cancelled) {
-                                TextButton(onClick = { task.cancel() }) { Text("取消") }
+                                TextButton(onClick = { container.engine.findTask(snapshot.id)?.cancel() }) { Text("取消") }
                             }
-                            TextButton(onClick = { container.engine.remove(task) }) { Text("移除") }
+                            TextButton(onClick = { container.engine.findTask(snapshot.id)?.let { container.engine.remove(it) } }) { Text("移除") }
                         }
                     }
                 }

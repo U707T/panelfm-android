@@ -1,9 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.PanelFM" parent="@android:style/Theme.Material.NoActionBar">
-        <item name="android:windowBackground">@android:color/background_dark</item>
+    <!--
+      启动窗口底色跟随「浅色」主题（深色主题见 values-night/themes.xml）。
+      旧实现固定 background_dark，浅色主题下冷启动会闪一下黑屏（不和谐）。
+    -->
+    <style name="Theme.PanelFM" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
-        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
     </style>
 </resources>

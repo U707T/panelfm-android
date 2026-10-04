@@ -48,19 +48,32 @@ class BrowserController(private val container: AppContainer) {
     private val loadJobs = mutableMapOf<PaneSide, Job>()
 
     init {
-        val settings = container.settings.value
-        com.u707t.panelfm.core.common.Fmt.showSeconds = settings.showSeconds
-        val defaultSort = SortSpec(settings.sortBy, settings.sortAscending, settings.dirsFirst)
-        update {
-            it.copy(
-                splitRatio = settings.splitRatio,
-                left = it.left.copy(sort = defaultSort),
-                right = it.right.copy(sort = defaultSort),
-            )
-        }
+        // 注意：构造时 container.settings 尚未从 DataStore 加载（异步），此处拿到的是默认值；
+        // 持久化设置要等 settings 首次发射后再应用（见下），否则「默认隐藏文件 / 默认单列 /
+        // 全局排序 / 分隔比例」等设置在启动时全部失效。
         load(PaneSide.LEFT)
         load(PaneSide.RIGHT)
         observeTasks()
+        container.scope.launch {
+            var startupApplied = false
+            container.settings.collect { s ->
+                com.u707t.panelfm.core.common.Fmt.showSeconds = s.showSeconds
+                if (!startupApplied) {
+                    startupApplied = true
+                    val defaultSort = SortSpec(s.sortBy, s.sortAscending, s.dirsFirst)
+                    update {
+                        it.copy(
+                            splitRatio = s.splitRatio,
+                            singlePane = s.useSingleColumn,
+                            left = it.left.copy(sort = defaultSort, showHidden = s.showHidden),
+                            right = it.right.copy(sort = defaultSort, showHidden = s.showHidden),
+                        )
+                    }
+                    load(PaneSide.LEFT)
+                    load(PaneSide.RIGHT)
+                }
+            }
+        }
         // 记忆路径异步恢复（不在主线程 runBlocking —— 冷启动不卡首帧）
         container.scope.launch {
             if (!container.settings.value.rememberLastPath) return@launch
@@ -71,21 +84,15 @@ class BrowserController(private val container: AppContainer) {
             update { st ->
                 st.copy(
                     left = if (leftUri != null && st.left.uri.isRoot && container.locator.find(leftUri) != null)
-                        st.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority)), sort = defaultSort)
+                        st.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority)), sort = st.left.sort)
                     else st.left,
                     right = if (rightUri != null && st.right.uri.isRoot && container.locator.find(rightUri) != null)
-                        st.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority)), sort = defaultSort)
+                        st.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority)), sort = st.right.sort)
                     else st.right,
                 )
             }
             if (leftUri != null) load(PaneSide.LEFT)
             if (rightUri != null) load(PaneSide.RIGHT)
-        }
-        // 路径变化时记忆（轻量：只在导航后写一次）
-        container.scope.launch {
-            container.settings.collect { s ->
-                com.u707t.panelfm.core.common.Fmt.showSeconds = s.showSeconds
-            }
         }
     }
 
@@ -606,18 +613,35 @@ class BrowserController(private val container: AppContainer) {
             showStatus("请正好选中 2 个文件再交换文件名")
             return
         }
+        val a = picked[0]
+        val b = picked[1]
+        if (!a.uri.sameMount(b.uri)) {
+            showStatus("两个文件不在同一位置，无法交换文件名")
+            return
+        }
         container.scope.launch {
             try {
-                val a = picked[0]
-                val b = picked[1]
                 val vfs = container.locator.find(a.uri) ?: throw VfsException.Unsupported("会话不可用")
                 val tmpName = ".panelfm.swap.${System.currentTimeMillis()}"
                 val tmp = a.uri.parent?.child(tmpName) ?: throw VfsException.ProtocolError("无法交换")
                 val targetA = a.uri.parent?.child(b.name) ?: throw VfsException.ProtocolError("无法交换")
+                val targetB = b.uri.parent?.child(a.name) ?: throw VfsException.ProtocolError("无法交换")
                 withContext(container.dispatchers.vfs) {
+                    // 三步交换；中途失败则尽力回滚，避免「a 变成临时名、b 丢失」的坏状态
                     vfs.rename(a.uri, tmp)
-                    vfs.rename(b.uri, targetA)
-                    vfs.rename(tmp, b.uri.parent?.child(a.name) ?: tmp)
+                    try {
+                        vfs.rename(b.uri, targetA)
+                        try {
+                            vfs.rename(tmp, targetB)
+                        } catch (e: Exception) {
+                            runCatching { vfs.rename(targetA, b.uri) } // 回滚 b
+                            runCatching { vfs.rename(tmp, a.uri) }     // 回滚 a
+                            throw e
+                        }
+                    } catch (e: Exception) {
+                        runCatching { vfs.rename(tmp, a.uri) }         // 回滚 a
+                        throw e
+                    }
                 }
                 showStatus("已交换「${a.name}」与「${b.name}」")
                 clearSelection(side)
@@ -643,8 +667,15 @@ class BrowserController(private val container: AppContainer) {
                 var trashed = 0
                 if (localOnly.isNotEmpty()) trashed = container.trash.moveToTrash(localOnly)
                 if (remoteOnly.isNotEmpty()) {
-                    val vfs = container.locator.find(remoteOnly.first()) ?: throw VfsException.Unsupported("会话不可用")
-                    withContext(container.dispatchers.vfs) { vfs.delete(remoteOnly) }
+                    // 按 VFS 会话分组删除（选中项可能来自不同会话，旧实现只用第一个的会话 → 其余报错）
+                    val bySession = remoteOnly.groupBy { uri ->
+                        container.locator.find(uri)?.let { System.identityHashCode(it) } ?: -1
+                    }
+                    for ((_, group) in bySession) {
+                        val vfs = container.locator.find(group.first())
+                            ?: throw VfsException.Unsupported("会话不可用：${group.first().authority}")
+                        withContext(container.dispatchers.vfs) { vfs.delete(group) }
+                    }
                 }
                 showStatus(
                     when {
@@ -662,6 +693,10 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun rename(uri: VfsUri, newName: String, side: PaneSide) {
+        if (!isValidChildName(newName)) {
+            showStatus("名称不能包含 / 或 .. 等字符")
+            return
+        }
         container.scope.launch {
             try {
                 val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("会话不可用")
@@ -692,13 +727,24 @@ class BrowserController(private val container: AppContainer) {
                 val side = _state.value.focused
                 when (action) {
                     "swap" -> {
-                        // 交换文件名：目标先改到临时名，源改到目标名，临时名再改成源名
+                        // 交换文件名：目标先改到临时名，源改到目标名，临时名再改成源名（失败则尽力回滚）
                         val tmp = conflict.target.parent?.child(".panelfm.swap.${System.currentTimeMillis()}")
                         if (tmp == null) throw VfsException.ProtocolError("无法交换")
                         withContext(container.dispatchers.vfs) {
                             vfs.rename(conflict.target, tmp)
-                            vfs.rename(conflict.from, conflict.target)
-                            vfs.rename(tmp, conflict.from)
+                            try {
+                                vfs.rename(conflict.from, conflict.target)
+                                try {
+                                    vfs.rename(tmp, conflict.from)
+                                } catch (e: Exception) {
+                                    runCatching { vfs.rename(conflict.target, conflict.from) }
+                                    runCatching { vfs.rename(tmp, conflict.target) }
+                                    throw e
+                                }
+                            } catch (e: Exception) {
+                                runCatching { vfs.rename(tmp, conflict.target) }
+                                throw e
+                            }
                         }
                         showStatus("已交换文件名")
                     }
@@ -832,14 +878,18 @@ class BrowserController(private val container: AppContainer) {
                 withContext(container.dispatchers.vfs) {
                     val reader = vfs.openRead(item.uri, 0, 512 * 1024)
                     try {
+                        // 先整体读字节再按编码识别解码（旧实现逐块 String(buf) 会用平台默认字符集：
+                        // UTF-8 中文在块边界被截断、GBK 文件整段乱码，中文内容搜索几乎不可用）
+                        val out = java.io.ByteArrayOutputStream()
                         val buf = ByteArray(64 * 1024)
-                        val text = buildString {
-                            while (true) {
-                                val n = reader.read(buf, 0, buf.size)
-                                if (n < 0) break
-                                append(String(buf, 0, n))
-                            }
+                        var total = 0
+                        while (total < 512 * 1024) {
+                            val n = reader.read(buf, 0, buf.size)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                            total += n
                         }
+                        val text = com.u707t.panelfm.core.common.TextEncodings.decode(out.toByteArray()).text
                         text.contains(contentQuery, ignoreCase = true)
                     } finally {
                         runCatching { reader.close() }
@@ -884,6 +934,10 @@ class BrowserController(private val container: AppContainer) {
 
     fun createFolder(side: PaneSide, name: String) {
         val dir = pane(side).uri
+        if (!isValidChildName(name)) {
+            showStatus("名称不能包含 / 或 .. 等字符")
+            return
+        }
         container.scope.launch {
             try {
                 val vfs = container.locator.find(dir) ?: throw VfsException.Unsupported("会话不可用")
@@ -898,6 +952,10 @@ class BrowserController(private val container: AppContainer) {
 
     fun createFile(side: PaneSide, name: String) {
         val dir = pane(side).uri
+        if (!isValidChildName(name)) {
+            showStatus("名称不能包含 / 或 .. 等字符")
+            return
+        }
         container.scope.launch {
             try {
                 val vfs = container.locator.find(dir) ?: throw VfsException.Unsupported("会话不可用")
@@ -908,6 +966,13 @@ class BrowserController(private val container: AppContainer) {
                 showStatus((e as? VfsException)?.userMessage ?: "创建失败：${e.message}")
             }
         }
+    }
+
+    /** 新建 / 重命名用的名称校验：拒绝路径分隔符与穿越，避免写到目录之外 */
+    private fun isValidChildName(name: String): Boolean {
+        val n = name.trim()
+        if (n.isEmpty() || n == "." || n == "..") return false
+        return !n.contains('/') && !n.contains('\\') && !n.contains('\u0000')
     }
 
     fun showProperties(item: FileMetadata) = update { it.copy(property = item) }
@@ -1015,7 +1080,13 @@ class BrowserController(private val container: AppContainer) {
         val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(pane.uri.path)
         if (encoded != null) {
             val host = runCatching { VfsUri.parse(VfsUri.decodeHost(encoded)) }.getOrNull()
-            if (host != null) container.forgetArchive(host.toString())
+            if (host != null) {
+                // 先丢弃旧挂载（旧索引），再**重新挂载**——否则 load() 里 locator.find(archive://…)
+                // 找不到会话，面板会变成「未连接」（旧实现漏了重挂载这一步）。
+                container.forgetArchive(host.toString())
+                runCatching { container.openArchive(host) }
+                    .onFailure { showStatus("重新打开压缩包失败：${it.message}") }
+            }
         }
         load(side)
     }
@@ -1260,12 +1331,15 @@ class BrowserController(private val container: AppContainer) {
 
     private fun observeTasks() {
         container.scope.launch {
-            container.engine.tasks.collect { tasks ->
+            // 关键：必须观察 taskEvents（任务状态变化也会发射），否则进度 / 冲突 / 完成都到不了 UI。
+            // 旧实现用 engine.tasks（StateFlow<List>）——列表不增删时永远不发射，
+            // 导致冲突弹窗永不出现（ASK 任务卡死）、进度不更新、任务完成后不刷新。
+            container.engine.taskEvents.collect { tasks ->
                 val active = tasks.filter {
                     val s = it.state.value
                     s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
                 }
-                val snapshots = tasks.take(8).map { it.snapshot() }
+                val snapshots = tasks.take(8).map { it.toSnapshot() }
                 val waitingConflict = tasks.firstOrNull { it.state.value is TaskState.WaitingConflict }
                 val conflict = (waitingConflict?.state?.value as? TaskState.WaitingConflict)?.info
                 update { it.copy(tasks = snapshots, conflict = conflict) }
@@ -1287,39 +1361,20 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun pauseTask(id: String) {
-        container.engine.tasks.value.firstOrNull { it.id == id }?.pause()
+        container.engine.findTask(id)?.pause()
     }
 
     fun resumeTask(id: String) {
-        container.engine.tasks.value.firstOrNull { it.id == id }?.resume()
+        container.engine.findTask(id)?.resume()
     }
 
     fun cancelTask(id: String) {
-        container.engine.tasks.value.firstOrNull { it.id == id }?.cancel()
+        container.engine.findTask(id)?.cancel()
     }
 
     fun clearFinishedTasks() = container.engine.clearFinished()
 
     fun allTasks(): List<TransferTask> = container.engine.tasks.value
-
-    private fun TransferTask.snapshot(): TransferTaskSnapshot {
-        val s = state.value
-        val subtitle = when (s) {
-            is TaskState.Running -> listOf(
-                s.currentName,
-                Fmt.transferred(s.doneBytes, s.totalBytes),
-                Fmt.speed(s.speedBps),
-                if (s.etaSeconds > 0) "剩 ${Fmt.eta(s.etaSeconds)}" else "",
-            ).filter { it.isNotBlank() }.joinToString(" · ")
-            is TaskState.Done -> "完成 ${s.ok} 项" + if (s.failed > 0) "，失败 ${s.failed}" else ""
-            is TaskState.Failed -> s.message
-            is TaskState.Cancelled -> "已取消"
-            is TaskState.Paused -> "已暂停"
-            is TaskState.WaitingConflict -> "等待冲突选择"
-            TaskState.Queued -> "排队中"
-        }
-        return TransferTaskSnapshot(id = id, title = title, subtitle = subtitle, state = s, op = request.op)
-    }
 
     companion object {
         const val HISTORY_LIMIT = 100

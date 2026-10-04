@@ -351,6 +351,9 @@ class SftpVfs(
         override suspend fun commit() {
             if (finished) return
             finished = true
+            // 0 字节文件（touch）可能从未 write → 这里补一次 ensureOpen，
+            // 保证 part 文件真实存在后再 rename（旧实现会「成功」但不产生文件）
+            runCatching { ensureOpen() }
             runCatching { handle?.close() }
             handle = null
             val ch = channel

@@ -95,6 +95,28 @@ class ArchiveVfs(
     /** 条目索引：`/dir/file` → 元数据 */
     private val index = LinkedHashMap<String, Entry>()
 
+    /**
+     * 所有「目录路径」集合（含合成目录）。构建索引时一次性算好：
+     * 旧实现在 list() 里对每个条目做 `items.none { ... }` 线性扫描 → O(n²)，
+     * 几万条目的压缩包列目录会卡住。
+     */
+    private val dirPaths = HashSet<String>()
+
+    private fun rebuildDirPaths() {
+        dirPaths.clear()
+        index.values.forEach { entry ->
+            if (entry.isDirectory) dirPaths.add(entry.path.trimEnd('/'))
+            // 逐级补全中间目录（zip 里可能没有显式目录条目）
+            var p = entry.path.trimEnd('/')
+            var idx = p.lastIndexOf('/')
+            while (idx > 0) {
+                p = p.substring(0, idx)
+                if (!dirPaths.add(p)) break // 已存在则上级也已存在，提前退出
+                idx = p.lastIndexOf('/')
+            }
+        }
+    }
+
     data class Entry(
         val path: String,
         val name: String,
@@ -176,6 +198,7 @@ class ArchiveVfs(
             }
         }
         Logx.i("ArchiveVfs", "index ${host.name}: ${index.size} entries (${Fmt.size(localFile.length())})")
+        rebuildDirPaths()
     }
 
     private fun normalize(raw: String, isDir: Boolean): String? {
@@ -201,17 +224,19 @@ class ArchiveVfs(
         val prefix = if (base.isEmpty()) "" else "$base/"
         val items = ArrayList<FileMetadata>()
         mutex.withLock {
+            // 当前层的合成目录集合（用 dirPaths 一次性判定，避免逐条线性查重 = O(n²)）
+            val childDirs = LinkedHashSet<String>()
             index.values.forEach { entry ->
                 if (!entry.path.startsWith(prefix) || entry.path == base) return@forEach
                 val rest = entry.path.removePrefix(prefix).trimEnd('/')
-                if (rest.isEmpty() || rest.contains('/')) {
-                    // 只展示当前层级；中间目录由合成条目补齐
-                    val dirName = rest.substringBefore('/')
-                    if (dirName.isNotEmpty() && items.none { it.name == dirName }) {
-                        items.add(FileMetadata.dir(uri.child(dirName), dirName))
-                    }
+                if (rest.isEmpty()) return@forEach
+                val slash = rest.indexOf('/')
+                if (slash >= 0) {
+                    // 深层条目：只贡献一个合成目录名
+                    childDirs.add(rest.substring(0, slash))
                     return@forEach
                 }
+                if (entry.isDirectory) childDirs.add(entry.name)
                 if (!options.showHidden && entry.name.startsWith(".")) return@forEach
                 val filter = options.filter
                 if (!filter.isNullOrBlank() && !entry.name.contains(filter, ignoreCase = true)) return@forEach
@@ -225,6 +250,12 @@ class ArchiveVfs(
                         mimeType = if (entry.isDirectory) null else MimeTypes.of(entry.name.substringAfterLast('.', "")),
                     )
                 )
+            }
+            // 合成目录（没有显式目录条目时补齐）
+            childDirs.forEach { dirName ->
+                if (items.none { it.name == dirName }) {
+                    items.add(FileMetadata.dir(uri.child(dirName), dirName))
+                }
             }
         }
         return sortFileItems(items.distinctBy { it.name }, options.sort)
@@ -245,9 +276,8 @@ class ArchiveVfs(
                 mimeType = if (entry.isDirectory) null else MimeTypes.of(entry.name.substringAfterLast('.', "")),
             )
         }
-        // 合成目录（压缩包里没有显式的目录条目）
-        val hasChildren = index.keys.any { it.startsWith("$path/") }
-        if (hasChildren) return FileMetadata.dir(uri, uri.name)
+        // 合成目录（压缩包里没有显式的目录条目）：用一次性构建的 dirPaths 判定，O(1)
+        if (dirPaths.contains(path.trimEnd('/'))) return FileMetadata.dir(uri, uri.name)
         throw VfsException.NotFound(uri)
     }
 

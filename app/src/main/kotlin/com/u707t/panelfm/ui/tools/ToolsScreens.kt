@@ -31,6 +31,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
@@ -51,7 +52,7 @@ fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
     var version by remember { mutableStateOf(0) }
     val items = remember(version) { container.trash.list() }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -128,7 +129,7 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -214,7 +215,7 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
     var url by remember { mutableStateOf("") }
     var log by remember { mutableStateOf("") }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()

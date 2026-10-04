@@ -19,6 +19,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.FileIcon
@@ -30,7 +31,7 @@ fun BookmarksScreen(container: AppContainer, onBack: () -> Unit, onOpen: () -> U
     var version by remember { mutableStateOf(0) }
     val bookmarks = remember(version) { container.browser.bookmarks() }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()

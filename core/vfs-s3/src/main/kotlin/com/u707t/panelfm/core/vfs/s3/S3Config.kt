@@ -7,6 +7,8 @@ import com.u707t.panelfm.core.model.ConnectionConfig
  */
 data class S3Config(
     val endpoint: String,          // http(s)://host[:port]
+    /** UI 打开连接时使用的 URI authority（`host:port`），用于把「连接根」与「Bucket 名」区分开 */
+    val uriAuthority: String,
     val accessKey: String,
     val secretKey: String,
     val region: String,
@@ -31,6 +33,7 @@ data class S3Config(
             val host = if (config.port > 0 && config.port != 80 && config.port != 443) "${config.host}:${config.port}" else config.host
             return S3Config(
                 endpoint = (if (secure) "https://" else "http://") + host,
+                uriAuthority = "${config.host}:${config.port}",
                 accessKey = ak,
                 secretKey = sk,
                 region = config.option(OPT_REGION) ?: "us-east-1",

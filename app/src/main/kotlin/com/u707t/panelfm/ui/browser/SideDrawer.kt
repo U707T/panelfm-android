@@ -84,7 +84,8 @@ fun MtSideDrawer(
     val scope = rememberCoroutineScope()
     val settings by container.settings.collectAsState()
     val connections by container.connections.collectAsState()
-    val tasks by container.engine.tasks.collectAsState()
+    // 观察 taskEvents（任务状态变化也会刷新），仅用于统计「进行中」数量
+    val tasks by container.engine.taskEvents.collectAsState(initial = emptyList())
 
     var drawerMenu by remember { mutableStateOf(false) }
     var protocolSub by remember { mutableStateOf(false) }

@@ -180,12 +180,33 @@ class TransferTask internal constructor(
                 note = if (failed.isEmpty()) null else "失败 ${failed.size} 项",
             )
         } catch (c: VfsException.Cancelled) {
-            withContext(NonCancellable) { runCatching { resumeStore.clearTask(id) } }
+            // 注意：取消时**不清空续传记录**（.part 与记录都保留，下次同一文件传输从断点继续）；
+            // 过期记录由启动时的 purgeStale 清理。
             _state.value = TaskState.Cancelled
         } catch (e: Exception) {
             Logx.e("TransferTask", "task failed: ${e.message}", e)
             _state.value = TaskState.Failed((e as? VfsException)?.userMessage ?: e.message ?: "传输失败")
         }
+    }
+
+    /** UI 用的任务快照（进度 / 冲突 / 完成状态变化时由引擎重新生成） */
+    fun toSnapshot(): TransferTaskSnapshot {
+        val s = _state.value
+        val subtitle = when (s) {
+            is TaskState.Running -> listOf(
+                s.currentName,
+                com.u707t.panelfm.core.common.Fmt.transferred(s.doneBytes, s.totalBytes),
+                com.u707t.panelfm.core.common.Fmt.speed(s.speedBps),
+                if (s.etaSeconds > 0) "剩 ${com.u707t.panelfm.core.common.Fmt.eta(s.etaSeconds)}" else "",
+            ).filter { it.isNotBlank() }.joinToString(" · ")
+            is TaskState.Done -> "完成 ${s.ok} 项" + if (s.failed > 0) "，失败 ${s.failed}" else ""
+            is TaskState.Failed -> s.message
+            is TaskState.Cancelled -> "已取消"
+            is TaskState.Paused -> "已暂停"
+            is TaskState.WaitingConflict -> "等待冲突选择"
+            TaskState.Queued -> "排队中"
+        }
+        return TransferTaskSnapshot(id = id, title = title, subtitle = subtitle, state = s, op = request.op)
     }
 
     /** 顶层条目（服务端快路径按顶层操作，目录内部由协议递归处理） */
@@ -202,6 +223,9 @@ class TransferTask internal constructor(
     /** 冲突处理：返回实际写入目标（null = 跳过） */
     private suspend fun resolveDest(source: VfsUri, desired: VfsUri, destVfs: com.u707t.panelfm.core.vfs.VirtualFileSystem): VfsUri? {
         val existing = runCatching { destVfs.stat(desired) }.getOrNull() ?: return desired
+        // 目标与源是同一个条目（例如把文件夹复制到它自己的父目录）：
+        // 「覆盖」= 无操作——绝不能先删目标再拷贝，那会把源本身删掉（数据丢失）。
+        val sameAsSource = source.sameMount(desired) && source.path.trimEnd('/') == desired.path.trimEnd('/')
         val policy = appliedPolicy ?: request.conflict
         val decided = when (policy) {
             ConflictPolicy.ASK -> askConflict(source, desired, existing)
@@ -209,8 +233,12 @@ class TransferTask internal constructor(
         }
         return when (decided) {
             ConflictPolicy.OVERWRITE -> {
-                runCatching { destVfs.delete(listOf(desired)) }
-                desired
+                if (sameAsSource) {
+                    null
+                } else {
+                    runCatching { destVfs.delete(listOf(desired)) }
+                    desired
+                }
             }
             ConflictPolicy.SKIP -> null
             ConflictPolicy.KEEP_BOTH -> keepBoth(destVfs, desired)
@@ -272,14 +300,26 @@ class TransferTask internal constructor(
         val srcVfs = locator.find(item.source) ?: throw VfsException.Unsupported("源会话已关闭")
         val dstVfs = locator.find(target) ?: throw VfsException.Unsupported("目标会话已关闭")
 
+        // 续传查找：按 (source → dest) 路径匹配（任务 id 每次都变，按 id 查永远命中不了）。
+        // 同时校验源文件修改时间：源被替换（mtime 变化）时不用旧断点，避免拼出损坏文件。
+        val srcMeta = runCatching { srcVfs.stat(item.source) }.getOrNull()
+        val validator = srcMeta?.lastModified?.takeIf { it > 0 }?.toString()
         var startOffset = 0L
         if (dstVfs.capabilities.resumable != Resumability.NONE && item.size > 0) {
-            val entry = resumeStore.find(id, index)
+            val entry = resumeStore.findFor(item.source, target)
             if (entry != null && entry.total == item.size && entry.offset in 1 until item.size &&
-                entry.dest.path == target.path && entry.source.path == item.source.path
+                (validator == null || entry.validator == null || entry.validator == validator)
             ) {
-                startOffset = entry.offset
-                Logx.i("TransferTask", "resume ${target.name} @${startOffset}/${item.size}")
+                // 再校验 .part 的实际长度 ≥ 断点偏移：.part 被清理过 / 不完整时不能续传，
+                // 否则会在偏移处直接写 → 拼出「中间有空洞」的损坏文件（旧实现无此校验）。
+                val partUri = target.parent?.child("." + target.name + ".panelfm.part")
+                val partSize = partUri?.let { runCatching { dstVfs.stat(it).size }.getOrNull() } ?: -1L
+                if (partSize >= entry.offset) {
+                    startOffset = entry.offset
+                    Logx.i("TransferTask", "resume ${target.name} @${startOffset}/${item.size}")
+                } else {
+                    Logx.w("TransferTask", "part missing/short (${partSize} < ${entry.offset}) → restart ${target.name}")
+                }
             }
         }
 
@@ -311,23 +351,23 @@ class TransferTask internal constructor(
                         ResumeEntry(
                             taskId = id, itemIndex = index, source = item.source, dest = target,
                             tempUri = null, offset = written, total = item.size,
-                            validator = null, updatedAt = System.currentTimeMillis(),
+                            validator = validator, updatedAt = System.currentTimeMillis(),
                         )
                     )
                 }
             }
             writer.flush()
             writer.commit()
-            resumeStore.clear(id, index)
+            resumeStore.clearFor(item.source, target)
             return true
         } catch (e: Exception) {
             withContext(NonCancellable) {
-                if (e is VfsException.Cancelled) {
-                    // 用户主动取消：清理临时文件
-                    runCatching { writer.abort() }
-                } else {
-                    // 传输失败：保留 .part，下次可从断点继续（进程被杀同理）
+                if (dstVfs.capabilities.resumable != Resumability.NONE) {
+                    // 可续传目标（本地 / SFTP / SMB）：保留 .part 与断点记录，下次从断点继续
                     runCatching { writer.close() }
+                } else {
+                    // 不可续传目标（FTP / WebDAV / S3 / 压缩包）：清理半成品
+                    runCatching { writer.abort() }
                 }
             }
             throw e

@@ -55,7 +55,8 @@ class AppContainer(val app: Application) {
     val env: VfsEnv = VfsEnv(
         appDirs = appDirs,
         dispatchers = dispatchers,
-        userAgent = "PanelFM/0.1 (Android)",
+        // 全局 UA 走 lambda：设置里改完即时生效（旧实现固定 "0.1"，改设置无效果）
+        userAgent = { _settings.value.userAgent },
         timeoutMs = 30_000L,
         localNetworkAllowed = { LocalNetwork.isGranted(app) },
     )
@@ -130,10 +131,10 @@ class AppContainer(val app: Application) {
         scope.launch {
             prefs.settings.collect { _settings.value = it }
         }
-        // 任务运行时启用前台服务通知（M9）
+        // 任务运行时启用前台服务通知（M9）；用 taskEvents 才能观察到任务的开始/结束
         scope.launch {
             var foregound = false
-            engine.tasks.collect { tasks ->
+            engine.taskEvents.collect { tasks ->
                 val active = tasks.any {
                     val st = it.state.value
                     st !is com.u707t.panelfm.core.transfer.TaskState.Done &&
@@ -150,6 +151,10 @@ class AppContainer(val app: Application) {
             }
         }
         scope.launch { reloadConnections() }
+        // 清理过期断点续传记录（取消/失败留下的记录超过 7 天即丢弃）
+        scope.launch {
+            runCatching { resumeDao.purgeStale(System.currentTimeMillis() - 7L * 24 * 3600 * 1000) }
+        }
         // 定期回收空闲网络会话
         scope.launch {
             while (true) {
@@ -219,7 +224,9 @@ class AppContainer(val app: Application) {
                 java.io.File(path)
             } else {
                 val vfs = locator.find(host) ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("会话不可用")
-                val name = host.name.hashCode().toString(16) + "-" + host.name
+                // 缓存名用「完整 URI」的 hash（旧实现用文件名 hash → 不同目录的同名压缩包会互相覆盖，
+                // 大小恰好相同就会读到错误的压缩包内容）
+                val name = host.toString().hashCode().toString(16) + "-" + host.name
                 val tmp = java.io.File(appDirs.tmpDir, name)
                 if (!tmp.exists() || tmp.length() != vfs.stat(host).size) {
                     val reader = vfs.openRead(host)

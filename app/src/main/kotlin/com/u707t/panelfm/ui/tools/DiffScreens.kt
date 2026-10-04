@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.VfsUri
@@ -110,7 +111,7 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()

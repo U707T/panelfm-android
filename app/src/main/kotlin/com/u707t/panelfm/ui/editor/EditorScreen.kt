@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.TextEncodings
@@ -79,6 +80,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var findCursor by remember { mutableStateOf(-1) }
     var originalMode by remember { mutableStateOf<Int?>(null) }
     var lang by remember { mutableStateOf(SyntaxLanguage.PLAIN) }
+    var confirmDiscard by remember { mutableStateOf(false) }
 
     // ---- 大文件只读分段浏览
     var paged by remember { mutableStateOf(false) }
@@ -156,7 +158,18 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    /** 离开编辑器：未保存时弹「保存 / 放弃 / 取消」，避免手势返回静默丢修改 */
+    fun attemptLeave() {
+        if (!dirty || readOnly) {
+            onBack()
+            return
+        }
+        confirmDiscard = true
+    }
+
+    androidx.activity.compose.BackHandler(enabled = true) { attemptLeave() }
+
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()
@@ -164,14 +177,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = {
-                if (!dirty || readOnly) onBack()
-                else scope.launch {
-                    saveText(container, uri, text, charset, originalMode, { msg -> status = msg }) { ok ->
-                        if (ok) onBack()
-                    }
-                }
-            }) { Text("← 返回") }
+            TextButton(onClick = { attemptLeave() }) { Text("← 返回") }
             Text(
                 (meta?.name ?: uri.name) + if (dirty) " *" else "",
                 style = MaterialTheme.typography.bodyMedium,
@@ -344,6 +350,33 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 )
             }
         }
+    }
+
+    if (confirmDiscard) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmDiscard = false },
+            title = { Text("有未保存的修改") },
+            text = { Text("「${meta?.name ?: uri.name}」已修改但未保存，直接返回会丢失这些修改。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDiscard = false
+                    scope.launch {
+                        saveText(container, uri, text, charset, originalMode, { msg -> status = msg }) { ok ->
+                            if (ok) onBack()
+                        }
+                    }
+                }) { Text("保存并返回") }
+            },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        confirmDiscard = false
+                        onBack()
+                    }) { Text("放弃修改") }
+                    TextButton(onClick = { confirmDiscard = false }) { Text("取消") }
+                }
+            },
+        )
     }
 }
 

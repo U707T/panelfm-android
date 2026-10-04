@@ -490,7 +490,20 @@ class FtpVfs(
             release()
         }
 
-        override fun close() = Unit
+        /**
+         * 非正常结束（失败 / 取消）时兜底：关流、终止挂起命令、**释放控制锁**。
+         * 旧实现是空实现——传输失败时控制连接锁永远不释放，整个 FTP 会话死锁。
+         */
+        override fun close() {
+            if (stream == null && !locked) return
+            runCatching { stream?.close() }
+            stream = null
+            client?.let { c ->
+                runCatching { c.abort() }
+                runCatching { c.completePendingCommand() }
+            }
+            release()
+        }
     }
 }
 

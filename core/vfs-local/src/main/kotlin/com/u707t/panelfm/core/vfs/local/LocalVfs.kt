@@ -161,7 +161,7 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         var done = 0L
         for (u in uris) {
             val f = toFile(u)
-            if (!f.exists()) continue
+            if (!f.exists() && !Files.isSymbolicLink(f.toPath())) continue
             if (!deleteRecursively(f)) throw VfsException.Permission("删除失败：${u.displayPath}")
             done++
             onProgress?.onProgress(done, uris.size.toLong())
@@ -169,7 +169,10 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     }
 
     private fun deleteRecursively(f: File): Boolean {
-        if (f.isDirectory) {
+        // 符号链接：只删链接本身，绝不递归进链接指向的目录
+        // （旧实现用 File.isDirectory 会跟随链接，可能把链接目标里的文件删光——数据丢失）
+        val isLink = runCatching { Files.isSymbolicLink(f.toPath()) }.getOrDefault(false)
+        if (!isLink && f.isDirectory) {
             f.listFiles()?.forEach { if (!deleteRecursively(it)) return false }
         }
         return f.delete()
@@ -181,13 +184,24 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         if (src.absolutePath == dst.absolutePath) return@withContext true
         if (dst.exists()) throw VfsException.Conflict(to)
         dst.parentFile?.mkdirs()
-        // 同卷直接改名（秒级）；跨卷退化为复制 + 删除
+        // 同卷直接改名（秒级）
         if (src.renameTo(dst)) return@withContext true
+        // 跨卷：Files.move 也会抛（EXDEV）→ 复制 + 删除源（此前注释说「退化」但实际不可用，重命名直接失败）
         runCatching {
-            Files.move(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            return@withContext true
-        }
-        false
+            if (src.isDirectory) {
+                java.nio.file.Files.walk(src.toPath()).use { stream ->
+                    stream.forEach { p ->
+                        val target = dst.toPath().resolve(src.toPath().relativize(p))
+                        if (java.nio.file.Files.isDirectory(p)) java.nio.file.Files.createDirectories(target)
+                        else java.nio.file.Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING)
+                    }
+                }
+            } else {
+                java.nio.file.Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            deleteRecursively(src)
+            true
+        }.getOrDefault(false)
     }
 
     override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean = withContext(env.dispatchers.io) {

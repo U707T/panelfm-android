@@ -40,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
@@ -110,7 +111,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
         }
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         // 顶栏：← 返回 · 文件名（单行省略，不会被按钮挤成竖排）· ⋮
         Row(
             Modifier
@@ -154,15 +155,23 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                         onClick = {
                             modeMenu = false
                             val file = runCatching { File(container.localVfs.absolutePath(uri)) }.getOrNull()
-                            if (uri.scheme == "local" && file != null && file.exists()) {
+                            if (uri.scheme != "local") {
+                                error = "网络文件不支持外部应用打开，请先复制到本地"
+                            } else if (file == null || !file.exists()) {
+                                error = "文件不存在（可能已被移动或删除）"
+                            } else {
                                 val shareUri = runCatching {
                                     FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
                                 }.getOrNull()
-                                if (shareUri != null) {
+                                if (shareUri == null) {
+                                    error = "无法生成打开链接"
+                                } else {
                                     val intent = Intent(Intent.ACTION_VIEW)
                                         .setDataAndType(shareUri, meta?.mimeType ?: "*/*")
                                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                    // 旧实现失败时静默（用户以为点了没反应）
                                     runCatching { context.startActivity(intent) }
+                                        .onFailure { error = "没有可用的应用打开该文件类型" }
                                 }
                             }
                         },

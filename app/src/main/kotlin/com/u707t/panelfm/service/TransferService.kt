@@ -38,7 +38,8 @@ class TransferService : Service() {
         createChannel()
         val container = (application as PanelApp).container
         collectJob = scope.launch {
-            container.engine.tasks.collectLatest { tasks ->
+            // 用 taskEvents：任务状态（进度 / 暂停 / 冲突 / 完成）变化时都要刷新通知与前台状态
+            container.engine.taskEvents.collectLatest { tasks ->
                 val active = tasks.filter {
                     val s = it.state.value
                     s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed

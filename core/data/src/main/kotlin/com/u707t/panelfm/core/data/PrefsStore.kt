@@ -17,7 +17,8 @@ enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
-    val dynamicColor: Boolean = true,
+    /** 动态取色默认关闭（MT 观感是固定中性色板，设置里可开） */
+    val dynamicColor: Boolean = false,
     val showHidden: Boolean = false,
     val sortBy: SortBy = SortBy.NAME,
     val sortAscending: Boolean = true,
@@ -75,12 +76,13 @@ class PrefsStore(private val context: Context) {
         val folderSorts = androidx.datastore.preferences.core.stringSetPreferencesKey("folder_sorts")
         val searchHistory = stringPreferencesKey("search_history")
         val fontScaleLevel = intPreferencesKey("font_scale_level")
+        val skipThumbs = booleanPreferencesKey("skip_thumbs_scrolling")
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
         AppSettings(
             themeMode = runCatching { ThemeMode.valueOf(p[Keys.theme] ?: ThemeMode.SYSTEM.name) }.getOrDefault(ThemeMode.SYSTEM),
-            dynamicColor = p[Keys.dynamicColor] ?: true,
+            dynamicColor = p[Keys.dynamicColor] ?: false,
             showHidden = p[Keys.showHidden] ?: false,
             sortBy = runCatching { SortBy.valueOf(p[Keys.sortBy] ?: SortBy.NAME.name) }.getOrDefault(SortBy.NAME),
             sortAscending = p[Keys.sortAsc] ?: true,
@@ -104,6 +106,7 @@ class PrefsStore(private val context: Context) {
                 .toMap(),
             searchHistory = (p[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() },
             fontScaleLevel = p[Keys.fontScaleLevel] ?: 1,
+            skipThumbsWhileScrolling = p[Keys.skipThumbs] ?: true,
         )
     }
 
@@ -117,6 +120,7 @@ class PrefsStore(private val context: Context) {
     suspend fun setDirsFirst(on: Boolean) = context.panelDataStore.edit { it[Keys.dirsFirst] = on }
     suspend fun setMaxConcurrent(n: Int) = context.panelDataStore.edit { it[Keys.maxConcurrent] = n.coerceIn(1, 4) }
     suspend fun setThumbsOnMobile(on: Boolean) = context.panelDataStore.edit { it[Keys.thumbsMobile] = on }
+    suspend fun setSkipThumbsWhileScrolling(on: Boolean) = context.panelDataStore.edit { it[Keys.skipThumbs] = on }
     suspend fun setSingleColumn(on: Boolean) = context.panelDataStore.edit { it[Keys.singleColumn] = on }
     suspend fun setUserAgent(ua: String) = context.panelDataStore.edit { it[Keys.userAgent] = ua }
     suspend fun setTrustSelfSigned(on: Boolean) = context.panelDataStore.edit { it[Keys.trustSelfSigned] = on }

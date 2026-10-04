@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -61,6 +62,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
@@ -142,6 +144,9 @@ fun DualPaneScreen(
     var batchRenameFor by remember { mutableStateOf<List<FileMetadata>?>(null) }
     var compressFormatPicker by remember { mutableStateOf(false) }
     var archiveRename by remember { mutableStateOf<FileMetadata?>(null) }
+    var showTypeFilter by remember { mutableStateOf(false) }
+    /** 双列区域的总宽度（分隔条拖动换算用；旧实现用分隔条自身宽度 10dp → 拖不动） */
+    var panesWidthPx by remember { mutableStateOf(0f) }
 
     // ---------------- 侧边栏（MT：≡ 打开抽屉）
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -208,8 +213,10 @@ fun DualPaneScreen(
         drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet(Modifier.fillMaxWidth(0.86f)) {
-                MtSideDrawer(
-                    container = container,
+                // 抽屉内容顶部加安全区（状态栏），否则「PanelFM」标题会顶到状态栏下面
+                Column(Modifier.safeAreaPadding()) {
+                    MtSideDrawer(
+                        container = container,
                     volumes = volumes,
                     spaces = spaces,
                     connectingId = connecting,
@@ -235,12 +242,13 @@ fun DualPaneScreen(
                     onOpenLanScan = { closeDrawer(); onOpenLanScan() },
                     onAddConnection = { type -> closeDrawer(); onAddConnection(type) },
                     onOpenSettings = { closeDrawer(); onOpenSettings() },
-                    showStatus = { controller.showStatus(it) },
-                )
+                        showStatus = { controller.showStatus(it) },
+                    )
+                }
             }
         },
     ) {
-        Column(Modifier.fillMaxSize()) {
+        Column(Modifier.fillMaxSize().safeAreaPadding()) {
             // ---------------- 顶部栏
             Row(
                 Modifier
@@ -345,7 +353,11 @@ fun DualPaneScreen(
             HSeparator()
 
             // ---------------- 两个窗格
-            Row(Modifier.weight(1f)) {
+            Row(
+                Modifier
+                    .weight(1f)
+                    .onGloballyPositioned { panesWidthPx = it.size.width.toFloat() },
+            ) {
                 val showLeft = !ui.singlePane || ui.focused == PaneSide.LEFT
                 val showRight = !ui.singlePane || ui.focused == PaneSide.RIGHT
                 if (showLeft) {
@@ -354,26 +366,38 @@ fun DualPaneScreen(
                         side = PaneSide.LEFT,
                         pane = ui.left,
                         focused = ui.focused == PaneSide.LEFT,
-                        highlight = ui.highlight && ui.focused == PaneSide.LEFT,
+                        // 操作前两侧路径栏**同时**高亮（源与目标都要看得见；旧实现只高亮 focused 一侧）
+                        highlight = ui.highlight,
                         controller = controller,
                         modifier = Modifier.weight(ui.splitRatio),
                         onRowAction = { rowAction = it },
                     )
                 }
                 if (showLeft && showRight) {
-                    // 可拖动分隔条（MT：左右比例可调）
+                    // 可拖动分隔条（MT：左右比例可调；双击恢复 50/50）
                     Box(
                         Modifier
                             .width(10.dp)
                             .fillMaxHeight()
                             .pointerInput(Unit) {
-                                val widthPx = this.size.width.toFloat().coerceAtLeast(1f)
-                                detectDragGestures { change, dragAmount ->
+                                // 读取 controller 实时比例（pointerInput(Unit) 不会随重组重启，
+                                // 闭包里捕获的 ui.splitRatio 会过期，导致拖动回拉无效）
+                                detectDragGestures(
+                                    onDragEnd = { controller.persistSplitRatio() },
+                                    onDragCancel = { controller.persistSplitRatio() },
+                                ) { change, dragAmount ->
                                     change.consume()
-                                    controller.setSplitRatio(ui.splitRatio + dragAmount.x / widthPx)
+                                    val total = panesWidthPx.coerceAtLeast(1f)
+                                    controller.setSplitRatio(controller.state.value.splitRatio + dragAmount.x / total)
                                 }
                             }
-                            .semantics { contentDescription = "左右窗口分隔条（拖动调整比例）" },
+                            .pointerInput(Unit) {
+                                detectTapGestures(onDoubleTap = {
+                                    controller.setSplitRatio(0.5f)
+                                    controller.persistSplitRatio()
+                                })
+                            }
+                            .semantics { contentDescription = "左右窗口分隔条（拖动调整比例，双击恢复等分）" },
                         contentAlignment = Alignment.Center,
                     ) {
                         Box(
@@ -390,7 +414,7 @@ fun DualPaneScreen(
                         side = PaneSide.RIGHT,
                         pane = ui.right,
                         focused = ui.focused == PaneSide.RIGHT,
-                        highlight = ui.highlight && ui.focused == PaneSide.RIGHT,
+                        highlight = ui.highlight,
                         controller = controller,
                         modifier = Modifier.weight(1f - ui.splitRatio),
                         onRowAction = { rowAction = it },
@@ -524,6 +548,13 @@ fun DualPaneScreen(
                 MtMenuItem("📥", "添加对面选中项到压缩包") { showMoreMenu = false; controller.addToArchive(focusSide) }
             }
             MtMenuItem("⇆", "比较两个目录") { showMoreMenu = false; controller.compareDirectories() }
+            // 视图：单/双窗格切换（设置里有「默认单列」，但运行期没有入口 → 补上）
+            MtMenuItem("◫", if (ui.singlePane) "切换到双窗口" else "切换到单窗口") {
+                showMoreMenu = false
+                controller.toggleSinglePane()
+            }
+            // 类型过滤（MT 的「过滤」下拉：文件夹 / 图片 / 视频 …；此前 filterKind 有状态无入口）
+            MtMenuItem("▽", "类型过滤" + focused.filterKind?.let { "（已过滤）" } ?: "") { showMoreMenu = false; showTypeFilter = true }
             MtMenuItem("⚙", "设置") { showMoreMenu = false; onOpenSettings() }
             MtMenuItem("➡", "退出") {
                 showMoreMenu = false
@@ -678,6 +709,48 @@ fun DualPaneScreen(
             hint = "普通文本=包含；!文本=不包含；/正则；!/正则=正则否定。留空清除。",
             onConfirm = { q -> controller.setSearch(focusSide, q) },
             onDismiss = { filterInput = false },
+        )
+    }
+    // MT 的「过滤」类型下拉（文件夹 / 图片 / 视频 / 音频 / 压缩包 / 文档…）：
+    // 控制器与状态（PaneState.filterKind）早已支持，此前 UI 没有任何入口 → 补齐
+    if (showTypeFilter) {
+        val kinds = listOf(
+            null to "全部类型",
+            "dir" to "文件夹",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.IMAGE.name to "图片",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.VIDEO.name to "视频",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.AUDIO.name to "音频",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.ARCHIVE.name to "压缩包",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.APK.name to "APK",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.PDF.name to "PDF",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.FONT.name to "字体",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.CODE.name to "代码",
+            com.u707t.panelfm.core.common.MimeTypes.Kind.TEXT.name to "文本",
+        )
+        AlertDialog(
+            onDismissRequest = { showTypeFilter = false },
+            title = { Text("类型过滤") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    kinds.forEach { (kind, label) ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickableNoRipple {
+                                    showTypeFilter = false
+                                    controller.setFilter(focusSide, kind)
+                                    controller.refresh(focusSide)
+                                }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = focused.filterKind == kind, onClick = null)
+                            Text(label, style = MaterialTheme.typography.bodyMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showTypeFilter = false }) { Text("关闭") } },
         )
     }
     // MT 的搜索：文件名 + 搜索子目录 + 高级搜索（内容 / 大小范围）
@@ -880,7 +953,10 @@ fun DualPaneScreen(
                             val target = fm.uri.parent?.child(newName)
                             val vfs = container.locator.find(fm.uri)
                             if (target != null && vfs != null) {
-                                val done = runCatching { vfs.rename(fm.uri, target) }.getOrDefault(false)
+                                // 走 VFS 调度器（旧实现直接在 UI 协程里同步调用网络重命名 → 主线程卡顿）
+                                val done = kotlinx.coroutines.withContext(container.dispatchers.vfs) {
+                                    runCatching { vfs.rename(fm.uri, target) }.getOrDefault(false)
+                                }
                                 if (done) ok++
                             }
                         }

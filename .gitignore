@@ -10,3 +10,4 @@ captures/
 key.properties
 *.jks
 *.keystore
+.kotlin/

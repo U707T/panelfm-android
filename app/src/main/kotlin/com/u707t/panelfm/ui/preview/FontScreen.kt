@@ -29,6 +29,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.LoadingState
@@ -51,7 +52,8 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     LaunchedEffect(uri) {
         val tf = withContext(Dispatchers.IO) {
             runCatching {
-                val local = File(container.appDirs.tmpDir, "font-${uri.name.hashCode()}-${uri.name}")
+                // 缓存名用完整 URI 的 hash（不同目录的同名字体不互相覆盖）
+                val local = File(container.appDirs.tmpDir, "font-${uri.toString().hashCode()}-${uri.name}")
                 if (!local.exists()) {
                     val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
                     val reader = vfs.openRead(uri)
@@ -78,7 +80,7 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         }.getOrDefault("")
     }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()

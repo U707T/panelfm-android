@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Box
@@ -13,6 +14,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -42,6 +44,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -125,6 +128,75 @@ fun PaneView(
                 }
             },
     ) {
+        // ---- 标签页条（MT：同窗格多标签时显示；单标签不占地方）
+        // 标签数据与开关早就在控制器里（newTab / switchTab / closeTab），此前没有任何入口，
+        // 属于「功能有、界面缺」——这里补齐：点击切换、✕ 关闭、＋ 新建。
+        if (pane.tabs.size > 1) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+                    .padding(horizontal = 6.dp, vertical = 3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                pane.tabs.forEachIndexed { index, tab ->
+                    val active = index == pane.activeTab
+                    Row(
+                        Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                                else Color.Transparent
+                            )
+                            .clickableNoRipple { controller.switchTab(side, index) }
+                            .padding(start = 8.dp, end = 4.dp, top = 3.dp, bottom = 3.dp)
+                            .semantics {
+                                role = Role.Tab
+                                contentDescription = "标签页 ${tabLabel(tab)}" + if (active) "，当前" else ""
+                                onClick(label = "切换") { controller.switchTab(side, index); true }
+                            },
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            tabLabel(tab),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 88.dp),
+                        )
+                        Text(
+                            "✕",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(4.dp))
+                                .clickableNoRipple { controller.closeTab(side, index) }
+                                .padding(horizontal = 4.dp, vertical = 1.dp)
+                                .semantics {
+                                    role = Role.Button
+                                    contentDescription = "关闭标签页 ${tabLabel(tab)}"
+                                },
+                        )
+                    }
+                }
+                Text(
+                    "＋",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .clickableNoRipple { controller.newTab(side) }
+                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                        .semantics {
+                            role = Role.Button
+                            contentDescription = "新建标签页"
+                        },
+                )
+            }
+        }
+
         // ---- 窗格信息行
         Column(
             Modifier
@@ -206,7 +278,7 @@ fun PaneView(
                     ) { item ->
                         MtFileRow(
                             container = container,
-                            skipThumb = listState.isScrollInProgress,
+                            skipThumb = listState.isScrollInProgress && container.settings.value.skipThumbsWhileScrolling,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
                             dimmed = !focused,
@@ -475,6 +547,10 @@ fun middleEllipsis(path: String, maxChars: Int = 34): String {
     val tail = maxChars - head - 3
     return path.take(head) + "..." + path.takeLast(tail)
 }
+
+/** 标签页显示名：优先连接/卷名，其次路径末级 */
+private fun tabLabel(tab: PaneTab): String =
+    tab.label.ifBlank { tab.uri.name.ifBlank { "/" } }
 
 /** 无涟漪点击 */
 @Composable

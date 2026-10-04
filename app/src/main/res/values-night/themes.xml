@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 深色系统主题下的启动窗口：深底 + 浅色状态栏图标 -->
+    <style name="Theme.PanelFM" parent="@android:style/Theme.Material.NoActionBar">
+        <item name="android:windowBackground">#121417</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+    </style>
+</resources>

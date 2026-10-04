@@ -71,7 +71,14 @@ class S3Vfs(
     override suspend fun connect() {
         _state.value = VfsState.Connecting
         try {
-            withContext(env.dispatchers.vfs) { client.listBuckets() }
+            withContext(env.dispatchers.vfs) {
+                // 有默认 Bucket 时只验证该 Bucket（受限密钥可能没有 ListBuckets 权限，
+                // 旧实现无条件 listBuckets 会让这类连接直接不可用）；
+                // 没有默认 Bucket 才列出全部 Bucket（供一键选择）。
+                val b = cfg.bucket
+                if (b != null) client.listObjects(b, "", delimiter = "/", maxKeys = 1)
+                else client.listBuckets()
+            }
             _state.value = VfsState.Ready
         } catch (e: Exception) {
             val msg = (e as? VfsException)?.userMessage ?: (e.message ?: "连接失败")
@@ -80,8 +87,16 @@ class S3Vfs(
         }
     }
 
-    private fun bucketOf(uri: VfsUri): String? =
-        uri.authority.takeIf { it.isNotBlank() && it != "_" } ?: cfg.bucket
+    /**
+     * 从 URI 解析 Bucket 名。
+     * 约定：`s3://bucket/key`；连接根用端点（host:port）或 `_` 作为 authority —— 这两者都**不是** Bucket 名，
+     * 此时回落到配置的默认 Bucket（没有则返回 null = 列出全部 Bucket）。
+     * （历史 bug：把 `host:port` 当成了 Bucket 名 → 列表请求 404 / 403，S3 完全不可用。）
+     */
+    private fun bucketOf(uri: VfsUri): String? {
+        val a = uri.authority
+        return a.takeIf { it.isNotBlank() && it != "_" && it != cfg.uriAuthority } ?: cfg.bucket
+    }
 
     private fun keyOf(uri: VfsUri): String = uri.path.trim('/')
 
@@ -93,10 +108,10 @@ class S3Vfs(
         val bucket = bucketOf(uri)
         withContext(env.dispatchers.vfs) {
             if (bucket == null) {
-                // 根：列出所有 bucket
+                // 根：列出所有 bucket（保留连接参数 ?c=，否则点进 Bucket 后找不到会话）
                 val buckets = client.listBuckets()
                 val items = buckets.map { name ->
-                    FileMetadata.dir(VfsUri.of(scheme, name, "/"), name)
+                    FileMetadata.dir(VfsUri.of(scheme, name, "/", uri.query), name)
                 }
                 return@withContext sortFileItems(items, options.sort)
             }

@@ -6,7 +6,7 @@ import com.u707t.panelfm.core.transfer.ResumeEntry
 import com.u707t.panelfm.core.transfer.ResumeStore
 import com.u707t.panelfm.core.vfs.VfsUri
 
-/** 断点续传状态持久化：进程被杀也能继续。 */
+/** 断点续传状态持久化：进程被杀也能继续（按 source→dest 路径续传，见 [ResumeStore] 注释）。 */
 class ResumeDao(private val db: PanelDb) : ResumeStore {
 
     override suspend fun save(entry: ResumeEntry) {
@@ -24,30 +24,25 @@ class ResumeDao(private val db: PanelDb) : ResumeStore {
         db.writableDatabase.insertWithOnConflict("resume_entry", null, values, 5 /* CONFLICT_REPLACE */)
     }
 
-    override suspend fun find(taskId: String, itemIndex: Int): ResumeEntry? {
+    override suspend fun findFor(source: VfsUri, dest: VfsUri): ResumeEntry? {
         db.readableDatabase.query(
-            "resume_entry", null, "task_id = ? AND item_index = ?",
-            arrayOf(taskId, itemIndex.toString()), null, null, null,
+            "resume_entry", null, "source = ? AND dest = ?",
+            arrayOf(source.toString(), dest.toString()), null, null, "updated_at DESC", "1",
         ).use { c ->
             if (!c.moveToFirst()) return null
             return c.toEntry()
         }
     }
 
-    override suspend fun clear(taskId: String, itemIndex: Int) {
-        db.writableDatabase.delete("resume_entry", "task_id = ? AND item_index = ?", arrayOf(taskId, itemIndex.toString()))
+    override suspend fun clearFor(source: VfsUri, dest: VfsUri) {
+        db.writableDatabase.delete(
+            "resume_entry", "source = ? AND dest = ?",
+            arrayOf(source.toString(), dest.toString()),
+        )
     }
 
-    override suspend fun clearTask(taskId: String) {
-        db.writableDatabase.delete("resume_entry", "task_id = ?", arrayOf(taskId))
-    }
-
-    override suspend fun all(): List<ResumeEntry> {
-        val out = ArrayList<ResumeEntry>()
-        db.readableDatabase.query("resume_entry", null, null, null, null, null, "updated_at DESC").use { c ->
-            while (c.moveToNext()) out.add(c.toEntry())
-        }
-        return out
+    override suspend fun purgeStale(before: Long) {
+        db.writableDatabase.delete("resume_entry", "updated_at < ?", arrayOf(before.toString()))
     }
 
     private fun Cursor.toEntry(): ResumeEntry = ResumeEntry(

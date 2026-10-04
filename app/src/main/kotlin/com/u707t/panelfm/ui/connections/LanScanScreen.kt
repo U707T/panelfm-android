@@ -21,6 +21,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.LanScanner
 import com.u707t.panelfm.ui.browser.ThinProgressBar
@@ -42,7 +43,7 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
     val counter = remember { AtomicInteger(0) }
     var found by remember { mutableStateOf<List<LanScanner.Host>>(emptyList()) }
 
-    Column(Modifier.fillMaxSize()) {
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
         Row(
             Modifier
                 .fillMaxWidth()

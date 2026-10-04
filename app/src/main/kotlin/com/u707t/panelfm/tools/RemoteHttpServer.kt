@@ -76,9 +76,16 @@ class RemoteHttpServer(private val locator: VfsLocator) {
             if (line.isEmpty()) break
         }
         val path = runCatching { URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
+        // 安全：规整路径并拒绝任何向上穿越（..），避免通过 HTTP 访问到「服务根」之外的文件
+        val safePath = normalizePath(path)
+        if (safePath == null) {
+            val out = BufferedOutputStream(client.getOutputStream())
+            respond(out, 400, "text/plain; charset=utf-8", "非法路径".toByteArray())
+            return
+        }
         val out = BufferedOutputStream(client.getOutputStream())
 
-        val target = root.withPath(if (path == "/") "" else path)
+        val target = root.withPath(if (safePath == "/") "" else safePath)
         val vfs = locator.find(target)
         if (vfs == null) {
             respond(out, 404, "text/plain", "会话不可用（该目录的存储已断开）".toByteArray())
@@ -87,7 +94,7 @@ class RemoteHttpServer(private val locator: VfsLocator) {
 
         val meta = runBlocking { runCatching { vfs.stat(target) }.getOrNull() }
         if (meta == null) {
-            respond(out, 404, "text/plain", "404 未找到：$path".toByteArray())
+            respond(out, 404, "text/plain", "404 未找到：$safePath".toByteArray())
             return
         }
 
@@ -97,11 +104,12 @@ class RemoteHttpServer(private val locator: VfsLocator) {
                 append("<!doctype html><html><head><meta charset=\"utf-8\"><title>PanelFM</title>")
                 append("<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">")
                 append("<style>body{font-family:system-ui;margin:24px}a{display:block;padding:6px 0;text-decoration:none;color:#1a73e8}span{color:#888;margin-left:8px}</style>")
-                append("</head><body><h3>PanelFM · ${root.displayPath}${path}</h3>")
-                if (path != "/") append("<a href=\"${parentOf(path)}\">..</a>")
+                // HTML 转义：文件名可能包含 <>&" 等字符（旧实现会破坏页面甚至注入脚本）
+                append("</head><body><h3>PanelFM · ${escapeHtml(root.displayPath + safePath)}</h3>")
+                if (safePath != "/") append("<a href=\"${escapeHtml(parentOf(safePath))}\">..</a>")
                 items.forEach { item ->
-                    val href = (if (path.endsWith("/")) path else "$path/") + item.name + if (item.isDirectory) "/" else ""
-                    append("<a href=\"$href\">${if (item.isDirectory) "📁" else "📄"} ${item.name}")
+                    val href = (if (safePath.endsWith("/")) safePath else "$safePath/") + item.name + if (item.isDirectory) "/" else ""
+                    append("<a href=\"${escapeHtml(urlEncodePath(href))}\">${if (item.isDirectory) "📁" else "📄"} ${escapeHtml(item.name)}")
                     if (!item.isDirectory) append("<span>${Fmt.size(item.size)}</span>")
                     append("</a>")
                 }
@@ -112,7 +120,9 @@ class RemoteHttpServer(private val locator: VfsLocator) {
             out.write("HTTP/1.1 200 OK\r\n".toByteArray())
             out.write("Content-Type: ${meta.mimeType ?: "application/octet-stream"}\r\n".toByteArray())
             if (meta.size > 0) out.write("Content-Length: ${meta.size}\r\n".toByteArray())
-            out.write("Content-Disposition: attachment; filename=\"${meta.name}\"\r\n".toByteArray())
+            // 文件名进入响应头前过滤引号 / CRLF（防响应头注入）
+            val safeName = meta.name.replace("\"", "_").replace("\r", "").replace("\n", "")
+            out.write("Content-Disposition: attachment; filename=\"${safeName}\"\r\n".toByteArray())
             out.write("Connection: close\r\n\r\n".toByteArray())
             out.flush()
             val stream = runBlocking { vfs.openRead(target) }
@@ -135,6 +145,36 @@ class RemoteHttpServer(private val locator: VfsLocator) {
         val idx = trimmed.lastIndexOf('/')
         return if (idx <= 0) "/" else trimmed.substring(0, idx + 1)
     }
+
+    /**
+     * 路径规整：合并重复斜杠、解析 `.` 与 `..`；任何试图逃出根的路径返回 null（HTTP 400）。
+     * 修复：旧实现直接使用客户端路径，`/../` 可以访问到服务根之外。
+     */
+    private fun normalizePath(raw: String): String? {
+        val segments = ArrayDeque<String>()
+        for (seg in raw.split('/')) {
+            when (seg) {
+                "", "." -> Unit
+                ".." -> if (segments.isEmpty()) return null else segments.removeLast()
+                else -> segments.addLast(seg)
+            }
+        }
+        return "/" + segments.joinToString("/")
+    }
+
+    /** HTML 转义（文件名 / 路径注入页面） */
+    private fun escapeHtml(s: String): String = s
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace("\"", "&quot;")
+        .replace("'", "&#39;")
+
+    /** 逐段 URL 编码（保留 '/'），让含空格 / 中文 / 特殊字符的文件名可点击 */
+    private fun urlEncodePath(path: String): String =
+        path.split('/').joinToString("/") { seg ->
+            java.net.URLEncoder.encode(seg, "UTF-8").replace("+", "%20")
+        }
 
     private fun respond(out: BufferedOutputStream, code: Int, contentType: String, body: ByteArray) {
         out.write("HTTP/1.1 $code\r\n".toByteArray())

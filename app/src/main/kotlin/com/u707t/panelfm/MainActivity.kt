@@ -5,8 +5,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.core.view.WindowCompat
 import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.ui.PanelTheme
 import com.u707t.panelfm.core.ui.fontScaleFactor
@@ -25,6 +27,15 @@ class MainActivity : ComponentActivity() {
                 ThemeMode.SYSTEM -> isSystemInDarkTheme()
                 ThemeMode.DARK -> true
                 ThemeMode.LIGHT -> false
+            }
+            // 状态栏 / 导航栏图标颜色跟随**应用内**主题（enableEdgeToEdge 的 auto 只看系统深色，
+            // 应用内切换浅色主题时会出现「白底白图标」）
+            SideEffect {
+                runCatching {
+                    val controller = WindowCompat.getInsetsController(window, window.decorView)
+                    controller.isAppearanceLightStatusBars = !dark
+                    controller.isAppearanceLightNavigationBars = !dark
+                }
             }
             PanelTheme(
                 darkTheme = dark,

@@ -8,7 +8,8 @@ import com.u707t.panelfm.core.model.ConnectionConfig
 data class VfsEnv(
     val appDirs: AppDirs,
     val dispatchers: PanelDispatchers,
-    val userAgent: String = "PanelFM/0.1 (Android)",
+    /** 全局 User-Agent（WebDAV 等协议使用）；用 lambda 桥接，设置里改完即时生效 */
+    val userAgent: () -> String = { "PanelFM/0.1 (Android)" },
     val timeoutMs: Long = 30_000L,
     /** 是否允许访问局域网（Android 17 运行期授权状态）—— 未授权时网络协议给出明确错误 */
     val localNetworkAllowed: () -> Boolean = { true },

@@ -7,12 +7,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
@@ -242,3 +245,13 @@ fun VSeparator(color: Color = MaterialTheme.colorScheme.outline, width: Dp = 1.d
             .background(color),
     )
 }
+
+/**
+ * 全面屏安全区统一内缩（状态栏 / 挖孔 / 导航栏 / 输入法）。
+ * 普通页面都在根布局加这一个修饰符；**沉浸式全屏页（视频播放器）不加**，
+ * 由该页自己用 statusBarsPadding / navigationBarsPadding 摆放悬浮控件。
+ */
+@Composable
+fun Modifier.safeAreaPadding(): Modifier =
+    windowInsetsPadding(WindowInsets.safeDrawing)
+
