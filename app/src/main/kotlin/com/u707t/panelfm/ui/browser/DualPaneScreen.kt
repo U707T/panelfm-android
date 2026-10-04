@@ -569,6 +569,8 @@ fun DualPaneScreen(
     DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
         if (!hiddenSub) {
             MtMenuItem("⟳", "刷新") { showMoreMenu = false; controller.refresh(focusSide) }
+            // MT：⋮ 菜单里的「输入路径」（现在长按 ↑ 也能调出，这里补上入口便于发现）
+            MtMenuItem("⌨", "输入路径") { showMoreMenu = false; gotoPath = true }
             MtMenuItem("🔍", "搜索") { showMoreMenu = false; showSearch = true }
             MtMenuItem("▣", "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
             MtMenuItem("▽", "过滤") { showMoreMenu = false; filterInput = true }
