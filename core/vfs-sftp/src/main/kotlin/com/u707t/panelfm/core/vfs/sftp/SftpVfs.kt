@@ -60,6 +60,7 @@ class SftpVfs(
         symlinks = true,
         recursiveDelete = false,       // 由本实现自己递归
         touch = true,
+        setModified = true,
         streamingList = false,
         writable = true,
     )
@@ -222,6 +223,23 @@ class SftpVfs(
         withContext(env.dispatchers.vfs) {
             try {
                 client.setStat(uri.path, SftpClient.Attributes().apply { permissions = mode })
+            } catch (e: SftpException) {
+                throw mapSftp(e, uri)
+            }
+        }
+    }
+
+    /** MT「保留文件时间」：SFTP 的 mtime 走 setStat（SSH_FXP_SETSTAT）。 */
+    override suspend fun setModified(uri: VfsUri, epochMillis: Long) = session.metaMutex.withLock {
+        val client = session.meta()
+        withContext(env.dispatchers.vfs) {
+            try {
+                client.setStat(
+                    uri.path,
+                    SftpClient.Attributes().modifyTime(
+                        java.nio.file.attribute.FileTime.fromMillis(epochMillis)
+                    ),
+                )
             } catch (e: SftpException) {
                 throw mapSftp(e, uri)
             }

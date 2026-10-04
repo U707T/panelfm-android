@@ -42,6 +42,13 @@ data class PaneState(
     val fileCount: Int get() = items.size - dirCount
     val filtered: Boolean get() = search.isNotBlank() || filterKind != null
     val selectedItems: List<FileMetadata> get() = items.filter { selection.contains(it.uri.toString()) }
+
+    /** 处于压缩包内时，压缩包自身的文件名（用于「解压到单独的文件夹」命名）；否则 null */
+    val archiveHostName: String?
+        get() = if (uri.scheme != "archive") null
+        else com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(uri.path)
+            ?.let { encoded -> runCatching { VfsUri.parse(VfsUri.decodeHost(encoded)).name }.getOrNull() }
+            ?.takeIf { it.isNotEmpty() }
 }
 
 /** 移动前的二次确认（需求：移动必须确认；跨协议要写明中转语义） */

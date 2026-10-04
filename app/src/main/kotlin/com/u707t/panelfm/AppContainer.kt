@@ -115,6 +115,22 @@ class AppContainer(val app: Application) {
         scope = scope,
     )
 
+    /**
+     * 在 [parent] 下取一个不冲突的子目录名（MT 行为：同名自动加 (1)(2)…）。
+     * 用于「解压到单独的文件夹」，避免直接覆盖已有目录。
+     */
+    suspend fun uniqueChild(parent: com.u707t.panelfm.core.vfs.VfsUri, baseName: String): com.u707t.panelfm.core.vfs.VfsUri {
+        val vfs = locator.find(parent) ?: return parent.child(baseName)
+        val existing = runCatching { vfs.list(parent).map { it.name }.toSet() }.getOrDefault(emptySet())
+        if (baseName !in existing) return parent.child(baseName)
+        var i = 1
+        while (true) {
+            val candidate = "$baseName ($i)"
+            if (candidate !in existing) return parent.child(candidate)
+            i++
+        }
+    }
+
     val browser = BrowserController(this)
 
     /** 本地回收站（删除 → 回收站，可还原） */

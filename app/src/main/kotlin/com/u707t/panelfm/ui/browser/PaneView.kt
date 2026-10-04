@@ -222,7 +222,7 @@ fun PaneView(
                 )
                 if (pane.hasSelection) {
                     Text(
-                        "${pane.selection.size} 项",
+                        "已选 ${pane.selection.size} 项",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.primary,
                         modifier = Modifier.padding(start = 6.dp),

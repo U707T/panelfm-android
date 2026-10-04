@@ -107,12 +107,112 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setBookmarkSwipe(it) }
         }
 
+        SectionLabel("文件")
+        SettingSwitch("保留文件时间（复制/解压/下载后保留原修改时间）", settings.preserveModifiedTime) {
+            scope.launch { container.prefs.setPreserveModifiedTime(it) }
+        }
+        SettingSwitch("启动时进入首页（关闭 = 恢复上次双列路径）", settings.startAtHome) {
+            scope.launch { container.prefs.setStartAtHome(it) }
+        }
+        Text(
+            "文件列表显示：" + listOf(
+                "不显示权限",
+                "非存储目录显示「权限+大小」",
+                "全部目录显示「时间+大小」",
+            )[settings.listDisplayMode],
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0, 1, 2).forEach { mode ->
+                TextButton(onClick = { scope.launch { container.prefs.setListDisplayMode(mode) } }) {
+                    Text(
+                        listOf("权限隐藏", "权限+大小", "时间+大小")[mode],
+                        color = if (mode == settings.listDisplayMode) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        SettingSwitch("保存文件时自动生成 .bak 备份", settings.backupOnSave) {
+            scope.launch { container.prefs.setBackupOnSave(it) }
+        }
+        SettingSwitch("退出前双次确认（连按两次返回才退出）", settings.confirmExit) {
+            scope.launch { container.prefs.setConfirmExit(it) }
+        }
+
         SectionLabel("缩略图")
         SettingSwitch("移动数据下加载缩略图", settings.thumbnailsOnMobile) {
             scope.launch { container.prefs.setThumbsOnMobile(it) }
         }
         SettingSwitch("快速滚动时跳过缩略图加载（MT 同款手感）", settings.skipThumbsWhileScrolling) {
             scope.launch { container.prefs.setSkipThumbsWhileScrolling(it) }
+        }
+        Text(
+            "超过该大小的图片不加载缩略图：" + com.u707t.panelfm.core.common.Fmt.size(settings.thumbnailMaxBytes),
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(1L, 3L, 10L, 0L).forEach { mb ->
+                TextButton(onClick = { scope.launch { container.prefs.setThumbnailMaxBytes(mb * 1024 * 1024) } }) {
+                    Text(
+                        if (mb == 0L) "不限制" else "${mb}MB",
+                        color = if (mb * 1024 * 1024 == settings.thumbnailMaxBytes) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "缩略图加载超时取消：${if (settings.thumbnailTimeoutSec == 0) "不超时" else "${settings.thumbnailTimeoutSec} 秒"}",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0, 3, 5, 10).forEach { sec ->
+                TextButton(onClick = { scope.launch { container.prefs.setThumbnailTimeoutSec(sec) } }) {
+                    Text(
+                        if (sec == 0) "不超时" else "${sec}s",
+                        color = if (sec == settings.thumbnailTimeoutSec) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+
+        SectionLabel("界面")
+        Text(
+            "对话框图标背景：" + listOf("深色背景（自适应）", "浅色背景（自适应）", "无背景（受系统影响）")[settings.dialogIconMode],
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0, 1, 2).forEach { mode ->
+                TextButton(onClick = { scope.launch { container.prefs.setDialogIconMode(mode) } }) {
+                    Text(
+                        listOf("深色", "浅色", "无背景")[mode],
+                        color = if (mode == settings.dialogIconMode) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "底部工具栏下边距（全面屏手势时更舒适）：${settings.bottomBarPaddingDp}dp",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0, 6, 10, 14, 20, 28).forEach { dp ->
+                TextButton(onClick = { scope.launch { container.prefs.setBottomBarPadding(dp) } }) {
+                    Text(
+                        dp.toString(),
+                        color = if (dp == settings.bottomBarPaddingDp) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
         }
 
         SectionLabel("传输")
@@ -131,24 +231,6 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                     Text(
                         n.toString(),
                         color = if (n == settings.maxConcurrentTasks) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
-        SectionLabel("界面")
-        Text(
-            "底部工具栏下边距（全面屏手势时更舒适）：${settings.bottomBarPaddingDp}dp",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 6, 10, 14, 20, 28).forEach { dp ->
-                TextButton(onClick = { scope.launch { container.prefs.setBottomBarPadding(dp) } }) {
-                    Text(
-                        dp.toString(),
-                        color = if (dp == settings.bottomBarPaddingDp) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

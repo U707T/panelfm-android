@@ -81,6 +81,8 @@ fun ConnectionEditScreen(
 
     var type by remember { mutableStateOf(existing?.type ?: initialType ?: ConnectionType.SFTP) }
     var name by remember { mutableStateOf(existing?.name ?: "") }
+    // 网络分组（MT：连接可归组，侧边栏按组展示；DB 有 group_name 字段但此前无 UI）
+    var group by remember { mutableStateOf(existing?.group ?: "") }
     var host by remember { mutableStateOf(existing?.host ?: prefillHost ?: "") }
     var port by remember { mutableStateOf((existing?.port ?: prefillPort ?: type.defaultPort).toString()) }
     var user by remember { mutableStateOf(existing?.user ?: "") }
@@ -239,6 +241,7 @@ fun ConnectionEditScreen(
         port = port.toIntOrNull() ?: type.defaultPort,
         user = user.trim(),
         basePath = basePath.ifBlank { "/" },
+        group = group.trim(),
         options = buildOptions(),
     )
 
@@ -416,6 +419,13 @@ fun ConnectionEditScreen(
                 modifier = Modifier.fillMaxWidth(),
             )
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("备注（显示用）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = group,
+                onValueChange = { group = it },
+                label = { Text("网络分组（可留空；侧边栏按组展示）") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
 
             // ---------------- SFTP 专属
             if (type == ConnectionType.SFTP) {

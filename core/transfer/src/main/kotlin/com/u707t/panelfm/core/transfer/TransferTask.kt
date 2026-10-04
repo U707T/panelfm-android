@@ -32,6 +32,9 @@ class TransferTask internal constructor(
     private val _state = MutableStateFlow<TaskState>(TaskState.Queued)
     val state: StateFlow<TaskState> = _state
 
+    /** MT「保留文件时间」：由 request 决定（设置里可关） */
+    private val preserveModifiedTime: Boolean get() = request.preserveModifiedTime
+
     internal val gate = TransferGate()
 
     private var lastRunning: TaskState.Running? = null
@@ -359,6 +362,10 @@ class TransferTask internal constructor(
             writer.flush()
             writer.commit()
             resumeStore.clearFor(item.source, target)
+            // MT「保留文件时间」：提交后把源文件的 mtime 写回目标（失败静默，不影响传输结果）
+            if (preserveModifiedTime && item.lastModified > 0) {
+                runCatching { dstVfs.setModified(target, item.lastModified) }
+            }
             return true
         } catch (e: Exception) {
             withContext(NonCancellable) {

@@ -188,7 +188,7 @@ fun MtSideDrawer(
                             text = { Row { Text("📁", Modifier.padding(end = 12.dp)); Text("添加网络分组") } },
                             onClick = {
                                 drawerMenu = false
-                                showStatus("网络分组：添加网络存储时在「名称」中用 分组/名称 形式即可归类")
+                                showStatus("网络分组：在「编辑连接 → 网络分组」中填写组名即可；同名分组会自动归拢")
                             },
                         )
                         DropdownMenuItem(
@@ -263,7 +263,7 @@ fun MtSideDrawer(
                 )
             }
 
-            // ===== 网络（「在侧拉栏隐藏地址」的连接不在这里显示）
+            // ===== 网络（「在侧拉栏隐藏地址」的连接不在这里显示；按分组归拢）
             SectionHeader("网络")
             val drawerConnections = connections.filter { it.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) != "true" }
             if (drawerConnections.isEmpty()) {
@@ -274,33 +274,13 @@ fun MtSideDrawer(
                     onClick = { onAddConnection(ConnectionType.SFTP) },
                 )
             }
-            drawerConnections.forEach { config ->
-                MtListRow(
-                    title = config.name.ifBlank { config.host },
-                    subtitle = buildString {
-                        append(config.type.label).append("  ")
-                        if (config.type.scheme == "dav") append("http://")
-                        append(config.host).append(":").append(config.port)
-                        if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
-                    },
-                    icon = {
-                        RoundIconBox(size = 42.dp) {
-                            Text(
-                                config.type.label.take(3).uppercase(),
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.surface,
-                                fontWeight = FontWeight.Bold,
-                            )
-                        }
-                    },
-                    onClick = { onOpenConnection(config) },
-                    onLongClick = { menuFor = config },
-                    trailing = {
-                        if (connectingId == config.id) {
-                            Text("连接中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                        }
-                    },
-                )
+            // 分组名非空的连接按组名分节显示（MT：分组显示网络存储）；空组直接平铺
+            val grouped = drawerConnections.filter { it.group.isNotBlank() }.groupBy { it.group }
+            val ungrouped = drawerConnections.filter { it.group.isBlank() }
+            ungrouped.forEach { config -> DrawerConnectionRow(config, connectingId, onOpenConnection, menuFor = { menuFor = it }) }
+            grouped.forEach { (groupName, list) ->
+                SectionHeader(groupName)
+                list.forEach { config -> DrawerConnectionRow(config, connectingId, onOpenConnection, menuFor = { menuFor = it }) }
             }
 
             // ===== 后台（最近访问；点击在活动窗口打开）
@@ -406,5 +386,41 @@ private fun DrawerTool(title: String, emoji: String, onClick: () -> Unit) {
         subtitle = null,
         icon = { RoundIconBox(size = 42.dp) { Text(emoji, style = MaterialTheme.typography.bodyMedium) } },
         onClick = onClick,
+    )
+}
+
+/** 侧边栏「网络」里的单个连接行（平铺与分组共用） */
+@Composable
+private fun DrawerConnectionRow(
+    config: ConnectionConfig,
+    connectingId: Long?,
+    onOpen: (ConnectionConfig) -> Unit,
+    menuFor: (ConnectionConfig) -> Unit,
+) {
+    MtListRow(
+        title = config.name.ifBlank { config.host },
+        subtitle = buildString {
+            append(config.type.label).append("  ")
+            if (config.type.scheme == "dav") append("http://")
+            append(config.host).append(":").append(config.port)
+            if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
+        },
+        icon = {
+            RoundIconBox(size = 42.dp) {
+                Text(
+                    config.type.label.take(3).uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.surface,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+        },
+        onClick = { onOpen(config) },
+        onLongClick = { menuFor(config) },
+        trailing = {
+            if (connectingId == config.id) {
+                Text("连接中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+        },
     )
 }

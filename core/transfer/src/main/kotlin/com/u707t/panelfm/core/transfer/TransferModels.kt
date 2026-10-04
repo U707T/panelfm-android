@@ -15,6 +15,8 @@ data class TransferRequest(
     val verify: VerifyMode = VerifyMode.NONE,
     /** 无选中项时表示「整个目录」 */
     val wholeDirectory: Boolean = false,
+    /** MT「保留文件时间」：复制/解压/下载完成后把源 mtime 写回目标（默认开，设置可关） */
+    val preserveModifiedTime: Boolean = true,
 )
 
 enum class FastPath { NONE, SERVER_MOVE, SERVER_COPY }
@@ -25,6 +27,8 @@ data class PlanItem(
     val isDirectory: Boolean,
     val size: Long,
     val depth: Int,
+    /** 源文件修改时间（MT「保留文件时间」用；未知 -1） */
+    val lastModified: Long = -1L,
 )
 
 data class OperationPlan(

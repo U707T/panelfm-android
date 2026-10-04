@@ -43,7 +43,7 @@ object LanScanner {
         (from..to).map { "$prefix.$it" }
 
     /**
-     * 并发 TCP 扫描：命中即通过 [onFound] 回调（边扫边出结果）。
+     * 并发 TCP 扫描：命中即通过 [onFound] 回调（边扫边出结果）；每完成一个地址探测回调一次 [onProgress]。
      * [probeBanner] 为 true 时会读第一行（SSH 服务器会回 `SSH-2.0-...`，便于确认协议）。
      */
     suspend fun scan(
@@ -52,14 +52,18 @@ object LanScanner {
         timeoutMs: Int = 400,
         concurrency: Int = 64,
         probeBanner: Boolean = true,
+        onProgress: (Int, Int) -> Unit = { _, _ -> },
         onFound: suspend (Host) -> Unit,
     ) = coroutineScope {
         val semaphore = Semaphore(concurrency.coerceIn(1, 256))
         val targets = prefixes.flatMap { hosts(it) }
+        val total = targets.size
+        val probed = java.util.concurrent.atomic.AtomicInteger(0)
         targets.map { address ->
             async(Dispatchers.IO) {
                 semaphore.withPermit {
                     val banner = probe(address, port, timeoutMs, probeBanner)
+                    onProgress(probed.incrementAndGet(), total)
                     if (banner != null) onFound(Host(address, port, banner.takeIf { it.isNotBlank() }))
                 }
             }

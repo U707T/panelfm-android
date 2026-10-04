@@ -3,11 +3,13 @@ package com.u707t.panelfm.service
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import com.u707t.panelfm.MainActivity
 import com.u707t.panelfm.PanelApp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
@@ -95,10 +97,19 @@ class TransferService : Service() {
     }
 
     private fun buildNotification(title: String, text: String, progress: Int, indeterminate: Boolean): Notification {
+        // 点通知回到 App（旧实现没有 contentIntent：点通知毫无反应，用户以为卡死）
+        val contentIntent = PendingIntent.getActivity(
+            this,
+            0,
+            Intent(this, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val builder = Notification.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setShowWhen(false)

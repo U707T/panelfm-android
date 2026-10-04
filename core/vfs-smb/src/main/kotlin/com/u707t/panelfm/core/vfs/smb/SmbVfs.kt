@@ -71,6 +71,7 @@ class SmbVfs(
         symlinks = false,
         recursiveDelete = false,
         touch = true,
+        setModified = true,        // SMB2 SET_INFO 的 BasicInfo（FileBasicInfo）
         streamingList = false,
         writable = true,
     )
@@ -263,6 +264,35 @@ class SmbVfs(
         } catch (e: Exception) {
             runCatching { writer.abort() }
             throw e
+        }
+    }
+
+    /** MT「保留文件时间」：SMB2 SET_INFO（FileBasicInformation.LastWriteTime）。 */
+    override suspend fun setModified(uri: VfsUri, epochMillis: Long): Unit = mutex.withLock {
+        connectIfNeeded()
+        val (shareName, rel) = split(uri)
+        withContext(env.dispatchers.vfs) {
+            val share = shareOf(shareName)
+            val handle = try {
+                openHandle(share, rel, write = true)
+            } catch (e: Exception) {
+                throw mapError(e, "设置修改时间失败")
+            }
+            try {
+                handle.setFileInformation(
+                    com.hierynomus.msfscc.fileinformation.FileBasicInformation(
+                        com.hierynomus.msfscc.fileinformation.FileBasicInformation.DONT_SET,
+                        com.hierynomus.msfscc.fileinformation.FileBasicInformation.DONT_SET,
+                        com.hierynomus.msdtyp.FileTime.ofEpochMillis(epochMillis),
+                        com.hierynomus.msfscc.fileinformation.FileBasicInformation.DONT_SET,
+                        0L,
+                    )
+                )
+            } catch (e: Exception) {
+                throw mapError(e, "设置修改时间失败")
+            } finally {
+                runCatching { handle.close() }
+            }
         }
     }
 

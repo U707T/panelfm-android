@@ -135,9 +135,12 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
     val isAudioOnly = MimeTypes.kindOf(uri.name.substringAfterLast('.', "")) == MimeTypes.Kind.AUDIO
 
-    // 播放期间屏幕常亮；退出释放播放器
+    // 播放期间屏幕常亮；退出释放播放器；亮度改动退出时恢复
     DisposableEffect(player) {
-        activity?.window?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        val win = activity?.window
+        win?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        // 记录进入时的亮度（-1 = 跟随系统），退出时恢复——否则用户调过亮度后系统亮度被永久改变
+        val originalBrightness = win?.attributes?.screenBrightness ?: -1f
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 error = e.message ?: "播放失败"
@@ -145,7 +148,14 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         }
         player.addListener(listener)
         onDispose {
-            activity?.window?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            win?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            runCatching {
+                val attrs = win?.attributes ?: return@runCatching
+                if (attrs.screenBrightness != originalBrightness) {
+                    attrs.screenBrightness = originalBrightness
+                    win.attributes = attrs
+                }
+            }
             runCatching { player.removeListener(listener) }
             runCatching { player.stop() }
             runCatching { player.release() }

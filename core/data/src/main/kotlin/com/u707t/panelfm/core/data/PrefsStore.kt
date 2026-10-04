@@ -47,6 +47,22 @@ data class AppSettings(
     val searchHistory: List<String> = emptyList(),
     /** 字体大小档位：0 紧凑（0.88）/ 1 适中（0.94，默认）/ 2 标准（1.0） */
     val fontScaleLevel: Int = 1,
+    /** MT「保留文件时间」：复制/解压/下载完成后把源 mtime 写回目标 */
+    val preserveModifiedTime: Boolean = true,
+    /** MT「启动路径 - 左/右窗口」：true = 首页，false = 上次路径 */
+    val startAtHome: Boolean = false,
+    /** MT「文件列表显示」三档：0 不显示权限 / 1 非存储目录显示「权限+大小」 / 2 全部目录显示「时间+大小」 */
+    val listDisplayMode: Int = 1,
+    /** MT「超过 X 大小的图片文件不加载缩略图」（字节，0 = 不限制） */
+    val thumbnailMaxBytes: Long = 3L * 1024 * 1024,
+    /** MT「缩略图未在 N 秒内加载完成将会取消加载」（0 = 不超时） */
+    val thumbnailTimeoutSec: Int = 5,
+    /** MT「退出前双次确认」 */
+    val confirmExit: Boolean = false,
+    /** MT「保存文件时自动将原文件重命名为 .bak 备份文件」 */
+    val backupOnSave: Boolean = false,
+    /** MT「对话框图标」：0 深色背景（自适应）/ 1 浅色背景（自适应）/ 2 无背景 */
+    val dialogIconMode: Int = 0,
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -77,6 +93,15 @@ class PrefsStore(private val context: Context) {
         val searchHistory = stringPreferencesKey("search_history")
         val fontScaleLevel = intPreferencesKey("font_scale_level")
         val skipThumbs = booleanPreferencesKey("skip_thumbs_scrolling")
+        // MT 对齐批次（v0.14.0）：保留文件时间 / 启动路径 / 列表显示 / 缩略图策略 / 退出确认 / .bak / 对话框图标
+        val preserveMtime = booleanPreferencesKey("preserve_mtime")
+        val startAtHome = booleanPreferencesKey("start_at_home")
+        val listDisplayMode = intPreferencesKey("list_display_mode")
+        val thumbMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("thumb_max_bytes")
+        val thumbTimeoutSec = intPreferencesKey("thumb_timeout_sec")
+        val confirmExit = booleanPreferencesKey("confirm_exit")
+        val backupOnSave = booleanPreferencesKey("backup_on_save")
+        val dialogIconMode = intPreferencesKey("dialog_icon_mode")
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -107,6 +132,14 @@ class PrefsStore(private val context: Context) {
             searchHistory = (p[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() },
             fontScaleLevel = p[Keys.fontScaleLevel] ?: 1,
             skipThumbsWhileScrolling = p[Keys.skipThumbs] ?: true,
+            preserveModifiedTime = p[Keys.preserveMtime] ?: true,
+            startAtHome = p[Keys.startAtHome] ?: false,
+            listDisplayMode = (p[Keys.listDisplayMode] ?: 1).coerceIn(0, 2),
+            thumbnailMaxBytes = p[Keys.thumbMaxBytes] ?: (3L * 1024 * 1024),
+            thumbnailTimeoutSec = p[Keys.thumbTimeoutSec] ?: 5,
+            confirmExit = p[Keys.confirmExit] ?: false,
+            backupOnSave = p[Keys.backupOnSave] ?: false,
+            dialogIconMode = (p[Keys.dialogIconMode] ?: 0).coerceIn(0, 2),
         )
     }
 
@@ -140,6 +173,14 @@ class PrefsStore(private val context: Context) {
     suspend fun clearFolderSorts() = context.panelDataStore.edit { it[Keys.folderSorts] = emptySet() }
 
     suspend fun setFontScaleLevel(level: Int) = context.panelDataStore.edit { it[Keys.fontScaleLevel] = level.coerceIn(0, 2) }
+    suspend fun setPreserveModifiedTime(on: Boolean) = context.panelDataStore.edit { it[Keys.preserveMtime] = on }
+    suspend fun setStartAtHome(on: Boolean) = context.panelDataStore.edit { it[Keys.startAtHome] = on }
+    suspend fun setListDisplayMode(mode: Int) = context.panelDataStore.edit { it[Keys.listDisplayMode] = mode.coerceIn(0, 2) }
+    suspend fun setThumbnailMaxBytes(bytes: Long) = context.panelDataStore.edit { it[Keys.thumbMaxBytes] = bytes.coerceAtLeast(0) }
+    suspend fun setThumbnailTimeoutSec(sec: Int) = context.panelDataStore.edit { it[Keys.thumbTimeoutSec] = sec.coerceIn(0, 60) }
+    suspend fun setConfirmExit(on: Boolean) = context.panelDataStore.edit { it[Keys.confirmExit] = on }
+    suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }
+    suspend fun setDialogIconMode(mode: Int) = context.panelDataStore.edit { it[Keys.dialogIconMode] = mode.coerceIn(0, 2) }
 
     suspend fun addSearchQuery(query: String) = context.panelDataStore.edit { prefs ->
         val q = query.trim()

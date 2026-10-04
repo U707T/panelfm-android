@@ -17,6 +17,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -398,6 +403,8 @@ private fun MtActionCell(
 /** 只读信息弹窗（校验值 / 工具结果） */
 @Composable
 fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var copied by remember { mutableStateOf(false) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(title) },
@@ -407,6 +414,15 @@ fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = {
+            // 校验值 / 路径类结果给「复制」入口（此前只能手选，部分内容无法选中）
+            if (message.isNotBlank()) {
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(message))
+                    copied = true
+                }) { Text(if (copied) "已复制" else "复制") }
+            }
+        },
     )
 }
 
@@ -426,4 +442,220 @@ fun InfoRow(label: String, value: String) {
         )
         Text(value, style = MaterialTheme.typography.bodySmall)
     }
+}
+
+// ---------------------------------------------------------------------------
+// 压缩对话框（复刻 MT 0x7f0c0080「创建压缩文件」）
+//
+// MT 布局：文件名 / 格式（Spinner）/ 压缩级别（Spinner，取自 0x7f030020 数组
+// 「仅存储·极速压缩·快速压缩·标准压缩·最大压缩·极限压缩·APK模式」）/ 密码（不加密请留空，👁）
+// / ☐ 同时加密文件名。
+// ---------------------------------------------------------------------------
+
+@Composable
+fun MtCompressDialog(
+    itemCount: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (
+        toOther: Boolean,
+        format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format,
+        fileName: String?,
+        level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level,
+        password: String?,
+        encryptNames: Boolean,
+    ) -> Unit,
+) {
+    var format by remember { mutableStateOf(com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP) }
+    var level by remember { mutableStateOf(com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL) }
+    var fileName by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var showPassword by remember { mutableStateOf(false) }
+    var encryptNames by remember { mutableStateOf(false) }
+    var toOther by remember { mutableStateOf(false) }
+    var formatMenu by remember { mutableStateOf(false) }
+    var levelMenu by remember { mutableStateOf(false) }
+
+    val supportsPassword = format.supportsPassword
+    val levelApplies = format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR &&
+        format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR_GZ &&
+        format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR_BZ2
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("创建压缩文件") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                // 保存位置（MT 的「压缩到另一窗口路径」）
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("保存到：", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    TextButton(onClick = { toOther = false }) {
+                        Text("当前目录", color = if (!toOther) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    }
+                    TextButton(onClick = { toOther = true }) {
+                        Text("另一窗口", color = if (toOther) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface)
+                    }
+                }
+                Text("文件名", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 6.dp))
+                OutlinedTextField(
+                    value = fileName,
+                    onValueChange = { fileName = it },
+                    placeholder = { Text("留空则按选中项自动命名") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // 格式
+                Text("格式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                Box {
+                    TextButton(onClick = { formatMenu = true }) { Text(format.label + "  ▾") }
+                    DropdownMenu(expanded = formatMenu, onDismissRequest = { formatMenu = false }) {
+                        com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.entries.forEach { f ->
+                            DropdownMenuItem(
+                                text = { Text(if (f == format) "☑ ${f.label}" else "☐ ${f.label}") },
+                                onClick = { format = f; formatMenu = false; if (!f.supportsPassword) encryptNames = false },
+                            )
+                        }
+                    }
+                }
+                // 压缩级别
+                if (levelApplies) {
+                    Text("压缩级别", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                    Box {
+                        TextButton(onClick = { levelMenu = true }) { Text(level.label + "  ▾") }
+                        DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
+                            com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.entries.forEach { l ->
+                                DropdownMenuItem(
+                                    text = { Text(if (l == level) "☑ ${l.label}" else "☐ ${l.label}") },
+                                    onClick = { level = l; levelMenu = false },
+                                )
+                            }
+                        }
+                    }
+                }
+                // 密码
+                Text("密码（不加密请留空）", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = { password = it },
+                    enabled = supportsPassword,
+                    singleLine = true,
+                    visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        Box(Modifier.clickable { showPassword = !showPassword }.padding(horizontal = 10.dp)) {
+                            Text(
+                                "👁",
+                                color = if (showPassword) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (!supportsPassword) {
+                    Text(
+                        "只有 ZIP / 7z 支持加密；tar 系列无加密能力。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 2.dp),
+                    )
+                }
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
+                    Checkbox(checked = encryptNames, enabled = supportsPassword, onCheckedChange = { encryptNames = it })
+                    Text("同时加密文件名", style = MaterialTheme.typography.bodyMedium)
+                }
+                Text(
+                    if (encryptNames) "7z：文件名一并加密；ZIP 传统加密无法隐藏文件名，将仅加密内容。"
+                    else "共 $itemCount 项",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onConfirm(
+                    toOther,
+                    format,
+                    fileName.trim().takeIf { it.isNotEmpty() },
+                    if (levelApplies) level else com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
+                    password.takeIf { it.isNotEmpty() },
+                    encryptNames && supportsPassword,
+                )
+            }) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+// ---------------------------------------------------------------------------
+// 解压对话框（复刻 MT 0x7f0c00ce「解压」）
+//
+// MT 布局：○ 解压到单独的文件夹 / ○ 解压到当前目录 / ● 解压到文件夹…（默认）+ 路径输入框
+// + ☐ 基于另一窗口路径。
+// ---------------------------------------------------------------------------
+
+/** 解压目标选项（MT 的三个单选） */
+enum class ExtractTarget { OWN_FOLDER, HERE, PICK_FOLDER }
+
+@Composable
+fun MtExtractDialog(
+    archiveName: String,
+    currentDirPath: String,
+    otherPanePath: String?,
+    onDismiss: () -> Unit,
+    onConfirm: (target: ExtractTarget, customPath: String?) -> Unit,
+) {
+    var target by remember { mutableStateOf(ExtractTarget.PICK_FOLDER) }
+    var customPath by remember { mutableStateOf(currentDirPath) }
+    var useOtherPane by remember { mutableStateOf(false) }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("解压") },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                listOf(
+                    ExtractTarget.OWN_FOLDER to "解压到单独的文件夹（$archiveName）",
+                    ExtractTarget.HERE to "解压到当前目录",
+                    ExtractTarget.PICK_FOLDER to "解压到文件夹…",
+                ).forEach { (t, label) ->
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { target = t }
+                            .padding(vertical = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = target == t, onClick = { target = t })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+                if (target == ExtractTarget.PICK_FOLDER) {
+                    OutlinedTextField(
+                        value = customPath,
+                        onValueChange = { customPath = it },
+                        label = { Text("目标路径") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+                if (otherPanePath != null) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { useOtherPane = !useOtherPane }
+                            .padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Checkbox(checked = useOtherPane, onCheckedChange = { useOtherPane = it })
+                        Text("基于另一窗口路径（$otherPanePath）", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                onConfirm(target, if (target == ExtractTarget.PICK_FOLDER) customPath.trim().takeIf { it.isNotEmpty() } else null)
+            }) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }

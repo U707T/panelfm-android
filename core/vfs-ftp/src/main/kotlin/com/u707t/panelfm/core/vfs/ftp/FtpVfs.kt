@@ -65,6 +65,7 @@ class FtpVfs(
         symlinks = false,
         recursiveDelete = true,
         touch = true,
+        setModified = true,        // MFMT（RFC 3659；服务器不支持时静默忽略）
         streamingList = true,
         writable = true,
     )
@@ -308,6 +309,20 @@ class FtpVfs(
             val ok = c.sendCommand("SITE CHMOD", "$octal ${uri.path}")
             if (c.replyCode >= 400) throw VfsException.Unsupported("服务器不支持 SITE CHMOD")
             Unit
+        }
+    }
+
+    /**
+     * MT「保留文件时间」：FTP 用 MFMT（RFC 3659）。
+     * 服务器不认时返回 5xx，这里抛 Unsupported 由调用方静默忽略（不中断传输）。
+     */
+    override suspend fun setModified(uri: VfsUri, epochMillis: Long): Unit = withControl { c ->
+        withContext(env.dispatchers.vfs) {
+            val stamp = java.time.Instant.ofEpochMilli(epochMillis)
+                .atZone(java.time.ZoneOffset.UTC)
+                .format(java.time.format.DateTimeFormatter.ofPattern("yyyyMMddHHmmss"))
+            c.sendCommand("MFMT", "$stamp ${uri.path}")
+            if (c.replyCode >= 400) throw VfsException.Unsupported("服务器不支持 MFMT")
         }
     }
 

@@ -53,5 +53,15 @@ interface VirtualFileSystem : AutoCloseable {
         throw VfsException.Unsupported("$scheme 不支持修改权限")
     }
 
+    /**
+     * 设置文件修改时间（MT 的「保留文件时间」）。
+     *
+     * 传输 / 解压 / 下载完成后调用，让目标文件保留源文件的 mtime；
+     * 不支持时抛 [VfsException.Unsupported]，由调用方静默忽略（不应中断传输）。
+     */
+    suspend fun setModified(uri: VfsUri, epochMillis: Long) {
+        throw VfsException.Unsupported("$scheme 不支持设置修改时间")
+    }
+
     override fun close() {}
 }

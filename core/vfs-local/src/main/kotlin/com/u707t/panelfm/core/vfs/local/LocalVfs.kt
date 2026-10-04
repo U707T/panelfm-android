@@ -56,6 +56,7 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         symlinks = true,
         recursiveDelete = true,
         touch = true,
+        setModified = true,
         streamingList = false,
         writable = true,
     )
@@ -250,6 +251,16 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     override suspend fun setPermissions(uri: VfsUri, mode: Int) = withContext(env.dispatchers.io) {
         runCatching { Os.chmod(absolutePath(uri), mode) }
             .getOrElse { throw VfsException.Io("chmod 失败：${it.message}") }
+    }
+
+    override suspend fun setModified(uri: VfsUri, epochMillis: Long): Unit = withContext(env.dispatchers.io) {
+        runCatching {
+            java.nio.file.Files.setLastModifiedTime(
+                toFile(uri).toPath(),
+                java.nio.file.attribute.FileTime.fromMillis(epochMillis),
+            )
+        }.getOrElse { throw VfsException.Io("设置修改时间失败：${it.message}") }
+        Unit
     }
 
     override fun close() {

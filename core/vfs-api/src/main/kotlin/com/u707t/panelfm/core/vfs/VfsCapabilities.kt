@@ -26,6 +26,8 @@ data class VfsCapabilities(
     val recursiveDelete: Boolean = false,
     /** 能创建空文件 */
     val touch: Boolean = false,
+    /** 能设置文件修改时间（MT「保留文件时间」） */
+    val setModified: Boolean = false,
     /** 支持流式/分页列目录（大目录边收边渲染） */
     val streamingList: Boolean = false,
     /** 可写 */

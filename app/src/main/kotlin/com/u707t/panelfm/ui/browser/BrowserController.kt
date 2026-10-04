@@ -58,6 +58,8 @@ class BrowserController(private val container: AppContainer) {
             var startupApplied = false
             container.settings.collect { s ->
                 com.u707t.panelfm.core.common.Fmt.showSeconds = s.showSeconds
+                // MT「保留文件时间」：引擎侧统一补进每个 TransferRequest（含解压 / 差异复制等旁路）
+                container.engine.preserveModifiedTime = s.preserveModifiedTime
                 if (!startupApplied) {
                     startupApplied = true
                     val defaultSort = SortSpec(s.sortBy, s.sortAscending, s.dirsFirst)
@@ -300,6 +302,11 @@ class BrowserController(private val container: AppContainer) {
         side: PaneSide = _state.value.focused,
         format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format =
             com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP,
+        fileName: String? = null,
+        level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level =
+            com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
+        password: String? = null,
+        encryptNames: Boolean = false,
     ) {
         val st = _state.value
         val srcPane = st.pane(side)
@@ -309,8 +316,9 @@ class BrowserController(private val container: AppContainer) {
             showStatus("当前目录没有可压缩的项")
             return
         }
-        val base = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
-        val name = "$base.${format.ext}"
+        val base = fileName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
+        val name = if (base.endsWith(".${format.ext}")) base else "$base.${format.ext}"
         val dest = dstPane.uri.child(name)
         update { it.copy(highlight = true, status = "压缩 ${sources.size} 项 → ${dest.displayPath}") }
         container.scope.launch {
@@ -318,9 +326,15 @@ class BrowserController(private val container: AppContainer) {
             update { it.copy(highlight = false) }
             try {
                 com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
-                    .compress(sources, dest, format) { done, _ ->
-                        // 进度节流由 UI 侧省略；这里只在结束时提示
-                    }
+                    .compress(
+                        sources, dest, format,
+                        onProgress = { _, _ ->
+                            // 进度节流由 UI 侧省略；这里只在结束时提示
+                        },
+                        level = level,
+                        password = password,
+                        encryptNames = encryptNames,
+                    )
                 showStatus("已压缩为 ${name}")
                 load(side.other)
             } catch (e: Exception) {
@@ -771,6 +785,24 @@ class BrowserController(private val container: AppContainer) {
     }
 
     fun dismissRenameConflict() = update { it.copy(renameConflict = null) }
+
+    /**
+     * MT「解压到单独的文件夹」：在 [parentDir] 下按压缩包名建一个同名目录再解压进去。
+     * 名字冲突时自动加 (1)(2)…（MT 的行为：不会直接覆盖已有目录）。
+     */
+    fun extractToOwnFolder(side: PaneSide, parentDir: VfsUri) {
+        val pane = pane(side)
+        val archiveName = pane.archiveHostName ?: run {
+            showStatus("无法确定压缩包名称")
+            return
+        }
+        val folderName = archiveName.substringBeforeLast('.', archiveName)
+        container.scope.launch {
+            val target = container.uniqueChild(parentDir, folderName)
+            runCatching { container.locator.find(parentDir)?.mkdir(target) }
+            extractTo(side, target)
+        }
+    }
 
     /** 解压：把当前（压缩包内）选中项复制到指定目录 */
     fun extractTo(side: PaneSide, destDir: VfsUri) {
@@ -1231,8 +1263,16 @@ class BrowserController(private val container: AppContainer) {
     }
 
     /** 压缩到当前目录（MT 的「压缩」）：支持 zip / 7z / tar / tar.gz / tar.bz2 */
-    fun compressHere(side: PaneSide, format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format =
-        com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP) {
+    fun compressHere(
+        side: PaneSide,
+        format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format =
+            com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP,
+        fileName: String? = null,
+        level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level =
+            com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
+        password: String? = null,
+        encryptNames: Boolean = false,
+    ) {
         val st = _state.value
         val pane = st.pane(side)
         val sources = targetSources(side)
@@ -1240,13 +1280,15 @@ class BrowserController(private val container: AppContainer) {
             showStatus("当前目录没有可压缩的项")
             return
         }
-        val base = com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
-        val name = "$base.${format.ext}"
+        val base = fileName?.trim()?.takeIf { it.isNotEmpty() }
+            ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
+        val name = if (base.endsWith(".${format.ext}")) base else "$base.${format.ext}"
         val dest = pane.uri.child(name)
         container.scope.launch {
             showStatus("正在压缩为 ${format.label} → $name")
             try {
-                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator).compress(sources, dest, format)
+                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
+                    .compress(sources, dest, format, level = level, password = password, encryptNames = encryptNames)
                 showStatus("已压缩为 $name")
                 clearSelection(side)
                 load(side)

@@ -42,7 +42,7 @@ class FileOperationPlanner(private val locator: VfsLocator) {
                     },
                     onDir = { dirs++ })
             } else {
-                items += PlanItem(src, destRoot, isDirectory = false, size = meta.size.coerceAtLeast(0), depth = 0)
+                items += PlanItem(src, destRoot, isDirectory = false, size = meta.size.coerceAtLeast(0), depth = 0, lastModified = meta.lastModified)
                 files++
                 bytes += meta.size.coerceAtLeast(0)
                 onScan(files, bytes)
@@ -72,7 +72,7 @@ class FileOperationPlanner(private val locator: VfsLocator) {
             if (child.isDirectory && !child.isSymlink) {
                 collectDir(vfs, child.uri, childDest, depth + 1, items, onFile, onDir)
             } else if (!child.isDirectory) {
-                items += PlanItem(child.uri, childDest, isDirectory = false, size = child.size.coerceAtLeast(0), depth = depth + 1)
+                items += PlanItem(child.uri, childDest, isDirectory = false, size = child.size.coerceAtLeast(0), depth = depth + 1, lastModified = child.lastModified)
                 onFile(child.size.coerceAtLeast(0))
             }
         }

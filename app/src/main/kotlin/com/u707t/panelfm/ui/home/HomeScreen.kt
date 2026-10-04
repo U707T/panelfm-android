@@ -274,7 +274,7 @@ fun HomeScreen(
                 }
             }
 
-            // ---------------- 网络
+            // ---------------- 网络（按分组归拢；分组名在「编辑连接」里填写）
             SectionHeader("网络", expanded = expandNet, onToggle = { expandNet = !expandNet })
             if (expandNet) {
                 if (connections.isEmpty()) {
@@ -285,40 +285,50 @@ fun HomeScreen(
                         onClick = onAddConnection,
                     )
                 }
-                connections.forEach { config ->
-                    MtListRow(
-                        title = config.name.ifBlank { config.host },
-                        subtitle = buildString {
-                            append(config.type.label).append("  ")
-                            append(if (config.type.scheme == "dav") "http://" else "")
-                            append(config.host).append(":").append(config.port)
-                            if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
-                        },
-                        icon = { NetworkBadge(config.type.label.take(3).uppercase()) },
-                        onClick = {
-                            connecting = config.id
-                            scope.launch {
-                                try {
-                                    container.openConnection(config)
-                                    // WebDAV：进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 basePath / 初始路径
-                                    val uri = VfsUri.of(
-                                        config.scheme,
-                                        "${config.host}:${config.port}",
-                                        config.openPath,
-                                        "c=${config.id}",
-                                    )
-                                    container.browser.open(container.browser.state.value.focused, uri, config.id, config.name)
-                                    connecting = null
-                                    onOpenBrowser()
-                                } catch (e: Exception) {
-                                    connecting = null
-                                    status = (e as? VfsException)?.userMessage ?: (e.message ?: "连接失败")
-                                }
-                            }
-                        },
-                        trailing = { if (connecting == config.id) Text("连接中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) },
+
+                /** 打开连接：进入虚拟根 / 初始路径，然后切到双列页（分组与平铺共用） */
+                fun openNetworkConnection(config: ConnectionConfig) {
+                    connecting = config.id
+                    scope.launch {
+                        try {
+                            container.openConnection(config)
+                            // WebDAV：进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 basePath / 初始路径
+                            val uri = VfsUri.of(
+                                config.scheme,
+                                "${config.host}:${config.port}",
+                                config.openPath,
+                                "c=${config.id}",
+                            )
+                            container.browser.open(container.browser.state.value.focused, uri, config.id, config.name)
+                            connecting = null
+                            onOpenBrowser()
+                        } catch (e: Exception) {
+                            connecting = null
+                            status = (e as? VfsException)?.userMessage ?: (e.message ?: "连接失败")
+                        }
+                    }
+                }
+
+                val grouped = connections.filter { it.group.isNotBlank() }.groupBy { it.group }
+                val ungrouped = connections.filter { it.group.isBlank() }
+                ungrouped.forEach { config ->
+                    HomeConnectionRow(
+                        config = config,
+                        connecting = connecting,
+                        onOpen = { openNetworkConnection(config) },
                         onLongClick = { menuFor = config },
                     )
+                }
+                grouped.forEach { (groupName, list) ->
+                    SectionHeader(groupName)
+                    list.forEach { config ->
+                        HomeConnectionRow(
+                            config = config,
+                            connecting = connecting,
+                            onOpen = { openNetworkConnection(config) },
+                            onLongClick = { menuFor = config },
+                        )
+                    }
                 }
             }
 
@@ -408,6 +418,33 @@ private fun NetworkBadge(text: String) {
     ) {
         Text(text, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.surface, fontWeight = FontWeight.Bold)
     }
+}
+
+/** 主页「网络」里的单个连接行（分组与平铺共用） */
+@Composable
+private fun HomeConnectionRow(
+    config: ConnectionConfig,
+    connecting: Long?,
+    onOpen: () -> Unit,
+    onLongClick: () -> Unit,
+) {
+    MtListRow(
+        title = config.name.ifBlank { config.host },
+        subtitle = buildString {
+            append(config.type.label).append("  ")
+            append(if (config.type.scheme == "dav") "http://" else "")
+            append(config.host).append(":").append(config.port)
+            if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
+        },
+        icon = { NetworkBadge(config.type.label.take(3).uppercase()) },
+        onClick = onOpen,
+        onLongClick = onLongClick,
+        trailing = {
+            if (connecting == config.id) {
+                Text("连接中…", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            }
+        },
+    )
 }
 
 @Composable

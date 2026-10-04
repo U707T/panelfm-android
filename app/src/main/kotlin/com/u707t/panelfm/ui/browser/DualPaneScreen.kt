@@ -143,6 +143,7 @@ fun DualPaneScreen(
     var openWithManage by remember { mutableStateOf(false) }
     var batchRenameFor by remember { mutableStateOf<List<FileMetadata>?>(null) }
     var compressFormatPicker by remember { mutableStateOf(false) }
+    var extractDirPicker by remember { mutableStateOf(false) }
     var archiveRename by remember { mutableStateOf<FileMetadata?>(null) }
     var showTypeFilter by remember { mutableStateOf(false) }
     /** 双列区域的总宽度（分隔条拖动换算用；旧实现用分隔条自身宽度 10dp → 拖不动） */
@@ -545,6 +546,11 @@ fun DualPaneScreen(
                     if (dir != null) controller.extractTo(focusSide, dir)
                     else controller.showStatus("无法确定压缩包所在目录")
                 }
+                // MT 0x7f0c00ce「解压」对话框：三个单选（单独的文件夹 / 当前目录 / 文件夹…）+ 基于另一窗口路径
+                MtMenuItem("🗂", "解压…") {
+                    showMoreMenu = false
+                    extractDirPicker = true
+                }
                 MtMenuItem("📥", "添加对面选中项到压缩包") { showMoreMenu = false; controller.addToArchive(focusSide) }
             }
             MtMenuItem("⇆", "比较两个目录") { showMoreMenu = false; controller.compareDirectories() }
@@ -839,43 +845,48 @@ fun DualPaneScreen(
             onDismiss = { permissionFor = null },
         )
     }
-    // 压缩（MT：zip / 7z / tar / tar.gz / tar.bz2，可选「压缩到另一窗口路径」）
-    if (compressFormatPicker) {
-        var toOther by remember { mutableStateOf(false) }
-        AlertDialog(
-            onDismissRequest = { compressFormatPicker = false },
-            title = { Text("压缩") },
-            text = {
-                Column {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            "保存到：",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        TextButton(onClick = { toOther = false }) {
-                            Text(
-                                "当前目录",
-                                color = if (!toOther) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                        TextButton(onClick = { toOther = true }) {
-                            Text(
-                                "另一窗口",
-                                color = if (toOther) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            )
-                        }
-                    }
-                    com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.entries.forEach { fmt ->
-                        TextButton(onClick = {
-                            compressFormatPicker = false
-                            if (toOther) controller.compressToOther(focusSide, fmt)
-                            else controller.compressHere(focusSide, fmt)
-                        }) { Text(fmt.label) }
+    // 解压（复刻 MT 0x7f0c00ce「解压」）
+    if (extractDirPicker) {
+        val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
+        val host = encoded?.let { VfsUri.decodeHost(it) }?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+        val archiveParent = host?.parent
+        val archiveName = host?.name ?: "压缩包"
+        MtExtractDialog(
+            archiveName = archiveName.substringBeforeLast('.', archiveName),
+            currentDirPath = focused.uri.displayPath,
+            otherPanePath = ui.pane(focusSide.other).uri.takeIf { it.scheme != "archive" }?.displayPath,
+            onDismiss = { extractDirPicker = false },
+            onConfirm = { target, customPath ->
+                extractDirPicker = false
+                when (target) {
+                    ExtractTarget.OWN_FOLDER ->
+                        if (archiveParent != null) controller.extractToOwnFolder(focusSide, archiveParent)
+                        else controller.showStatus("无法确定压缩包所在目录")
+                    ExtractTarget.HERE -> controller.extractTo(focusSide, focused.uri)
+                    ExtractTarget.PICK_FOLDER -> {
+                        val path = customPath ?: return@MtExtractDialog
+                        val parsed = runCatching { VfsUri.parse(path) }.getOrNull()
+                        if (parsed != null) controller.extractTo(focusSide, parsed)
+                        else controller.showStatus("路径格式无法识别：$path")
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { compressFormatPicker = false }) { Text("关闭") } },
+        )
+    }
+
+    // 压缩（复刻 MT 0x7f0c0080「创建压缩文件」：文件名 / 格式 / 压缩级别 / 密码 / 同时加密文件名）
+    if (compressFormatPicker) {
+        MtCompressDialog(
+            itemCount = focused.selectedItems.size,
+            onDismiss = { compressFormatPicker = false },
+            onConfirm = { toOther, fmt, fileName, level, pwd, encNames ->
+                compressFormatPicker = false
+                if (toOther) {
+                    controller.compressToOther(focusSide, fmt, fileName, level, pwd, encNames)
+                } else {
+                    controller.compressHere(focusSide, fmt, fileName, level, pwd, encNames)
+                }
+            },
         )
     }
     // 压缩包内重命名（完整路径，可改父目录 = 移动）

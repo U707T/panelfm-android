@@ -58,7 +58,13 @@ class TransferEngine(
 
     @Volatile
     var maxConcurrent: Int = maxConcurrent.coerceIn(1, 4)
-        private set
+
+    /**
+     * MT「保留文件时间」全局默认：设置页写入，enqueue 时补进 request。
+     * 放在引擎上而不是每个调用点，避免漏掉新增的入队路径。
+     */
+    @Volatile
+    var preserveModifiedTime: Boolean = true
 
     init {
         repeat(this.maxConcurrent) { startWorker() }
@@ -101,7 +107,8 @@ class TransferEngine(
 
     fun enqueue(request: TransferRequest): TransferTask {
         val task = TransferTask(
-            request = request,
+            request = if (request.preserveModifiedTime == preserveModifiedTime) request
+            else request.copy(preserveModifiedTime = preserveModifiedTime),
             planner = planner,
             locator = locator,
             resumeStore = resumeStore,

@@ -26,7 +26,6 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.LanScanner
 import com.u707t.panelfm.ui.browser.ThinProgressBar
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * 局域网扫描：并发 TCP 探测 + banner 识别（SSH/FTP/SMB/WebDAV 端口都能扫）。
@@ -40,7 +39,6 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
     var scanning by remember { mutableStateOf(false) }
     var done by remember { mutableStateOf(0) }
     var total by remember { mutableStateOf(0) }
-    val counter = remember { AtomicInteger(0) }
     var found by remember { mutableStateOf<List<LanScanner.Host>>(emptyList()) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
@@ -80,7 +78,6 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
                 onClick = {
                     scanning = true
                     done = 0
-                    counter.set(0)
                     found = emptyList()
                     total = prefixes.size * 254
                     scope.launch {
@@ -89,19 +86,12 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
                             port = port,
                             timeoutMs = 350,
                             concurrency = 64,
+                            // 进度 = 已探测地址数（旧实现用「命中数」当进度 → 进度条几乎永远走不满）
+                            onProgress = { probed, all -> done = probed.coerceAtMost(all) },
                         ) { host ->
-                            done = counter.incrementAndGet()
                             found = (found + host).sortedBy { it.address.substringAfterLast('.').toIntOrNull() ?: 0 }
                         }
                         scanning = false
-                        done = total
-                    }
-                    // 进度用轮询简化：扫描回调里更新 found，扫描结束后收尾
-                    scope.launch {
-                        while (scanning) {
-                            kotlinx.coroutines.delay(200)
-                            done = counter.get()
-                        }
                     }
                 },
             ) { Text(if (scanning) "扫描中…" else "开始扫描") }
