@@ -177,22 +177,28 @@ fun MtListRow(
     Row(
         Modifier
             .fillMaxWidth()
+            // MT 列表行（0x7f0c00e4 语义）：左右 16dp、上下 8dp；图标与文字间距 8dp
             .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(horizontal = 18.dp, vertical = 10.dp),
+            .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         icon()
         Column(
             Modifier
                 .weight(1f)
-                .padding(start = 14.dp),
+                .padding(start = 8.dp),
         ) {
-            Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium, color = titleColor)
+            Text(
+                title,
+                // MT 主标题 16sp（抽屉/主页行）
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
+                color = titleColor,
+            )
             extraBelow?.invoke()
             subtitle?.let {
                 Text(
                     it,
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 2.dp),
                 )
