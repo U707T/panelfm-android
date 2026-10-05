@@ -19,6 +19,7 @@ import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.material3.RadioButton
@@ -154,25 +155,61 @@ fun TextInputDialog(
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var text by remember { mutableStateOf(initial) }
+    // 自动聚焦 + 自动弹键盘 + 回车提交（MT 行为）。
+    // 旧实现是裸输入框：每个对话框都要再点一下才能打字、打完还得移手指去点「确定」——
+    // 而重命名 / 新建 / 跳转恰恰是文件管理器最高频的操作。
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    // 打开即全选（重命名时直接输入就能覆盖原名，不用先删）
+    var field by remember {
+        mutableStateOf(
+            androidx.compose.ui.text.input.TextFieldValue(
+                text = initial,
+                selection = androidx.compose.ui.text.TextRange(0, initial.length),
+            )
+        )
+    }
+    val text = field.text
+    val submit = {
+        if (text.isNotBlank()) {
+            onConfirm(text.trim())
+            onDismiss()
+        }
+    }
+    LaunchedEffect(Unit) {
+        // 等对话框窗口完成首帧布局再请求焦点，否则偶发不生效
+        kotlinx.coroutines.delay(60)
+        runCatching { focusRequester.requestFocus() }
+        keyboard?.show()
+    }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(title, modifier = Modifier.weight(1f))
                 if (history.isNotEmpty()) {
-                    HistoryButton(history) { text = it }
+                    HistoryButton(history) {
+                        field = androidx.compose.ui.text.input.TextFieldValue(it)
+                    }
                 }
             }
         },
         text = {
             Column {
                 OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it },
+                    value = field,
+                    onValueChange = { field = it },
                     label = { Text(label) },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onDone = { submit() },
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
                 )
                 hint?.let {
                     Text(
@@ -185,7 +222,7 @@ fun TextInputDialog(
             }
         },
         confirmButton = {
-            TextButton(enabled = text.isNotBlank(), onClick = { onConfirm(text.trim()); onDismiss() }) { Text("确定") }
+            TextButton(enabled = text.isNotBlank(), onClick = submit) { Text("确定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
     )

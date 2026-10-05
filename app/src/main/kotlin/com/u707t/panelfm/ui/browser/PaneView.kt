@@ -65,6 +65,7 @@ import com.u707t.panelfm.core.ui.MtDividerColor
 import com.u707t.panelfm.core.ui.MtFab
 import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
@@ -463,7 +464,8 @@ private fun ParentRow(onClick: () -> Unit) {
         Text(
             "..",
             style = MaterialTheme.typography.bodyMedium.copy(fontSize = MtSpec.RowNameSize),
-            color = MtSpec.RowNameLight,
+            // 主题感知：深色主题下用 onSurface（旧实现写死近黑色 → 深色下不可读）
+            color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(start = MtSpec.RowIconGap),
         )
     }
@@ -504,7 +506,7 @@ private fun MtFileRow(
         ),
     )
     val haptic = LocalHapticFeedback.current
-    val dark = androidx.compose.foundation.isSystemInDarkTheme()
+    val dark = LocalPanelDarkTheme.current
     // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）
     var rootOffset by remember { mutableStateOf(Offset.Zero) }
     val gestures by rememberUpdatedState(
@@ -680,14 +682,14 @@ private fun MtFileRow(
                 ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = (if (item.isHidden) MtSpec.RowSubLight else MtSpec.RowNameLight)
-                    .copy(alpha = alpha),
+                color = (if (item.isHidden) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface).copy(alpha = alpha),
             )
             Text(
                 // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
                 rowSubtitle(settings.listDisplayMode, item),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
-                color = MtSpec.RowSubLight.copy(alpha = alpha),
+                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
                 maxLines = 1,
             )
         }
@@ -696,7 +698,7 @@ private fun MtFileRow(
             MtVectorIcon(
                 icon = MtIcon.CHECK,
                 size = 18.dp,
-                tint = MtSpec.AccentLight,
+                tint = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.padding(start = 6.dp),
             )
         }

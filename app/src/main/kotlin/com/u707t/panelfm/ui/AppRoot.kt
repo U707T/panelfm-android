@@ -73,12 +73,16 @@ fun AppRoot(container: AppContainer) {
 
     BackHandler(enabled = stack.size > 1) { pop() }
 
-    // MT「退出前双次确认」：在主页连按两次返回才退出（默认关，设置里可开）
+    // 退出：栈底时由这里兜底。
+    //  - 「退出前双次确认」开启 → 连按两次才退出；
+    //  - 关闭（默认）→ 直接退到桌面（moveTaskToBack 而不是 finish：与 MT 一致，
+    //    回来时还在原来的目录，不会丢现场）。
     var exitArmed by remember { mutableStateOf(false) }
     val settingsForExit by container.settings.collectAsState()
-    BackHandler(enabled = stack.size <= 1 && settingsForExit.confirmExit) {
-        if (exitArmed) {
-            runCatching { (context as? android.app.Activity)?.finish() }
+    BackHandler(enabled = stack.size <= 1) {
+        val activity = context as? android.app.Activity
+        if (!settingsForExit.confirmExit || exitArmed) {
+            runCatching { activity?.moveTaskToBack(true) }
         } else {
             exitArmed = true
             android.widget.Toast.makeText(context, "再按一次退出程序", android.widget.Toast.LENGTH_SHORT).show()

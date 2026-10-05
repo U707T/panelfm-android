@@ -91,6 +91,16 @@ fun fontScaleFactor(level: Int): Float = when (level) {
     else -> 0.94f
 }
 
+/**
+ * 当前**应用主题**是否为深色。
+ *
+ * 为什么需要它：项目里多处直接调 `isSystemInDarkTheme()`，但用户可以在设置里
+ * 强制浅色 / 深色。当「应用内浅色 + 系统深色」（或反之）时，那些地方会取错分支 ——
+ * 表现就是「深色主题下文字仍是近黑色，列表几乎不可读」。
+ * 统一读这个 Local（由 [PanelTheme] 提供）。
+ */
+val LocalPanelDarkTheme = androidx.compose.runtime.staticCompositionLocalOf { false }
+
 @Composable
 fun PanelTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
@@ -105,7 +115,13 @@ fun PanelTheme(
         darkTheme -> DarkColors
         else -> LightColors
     }
-    MaterialTheme(colorScheme = colors, typography = androidx.compose.runtime.remember(fontScale) { scaledTypography(fontScale) }, content = content)
+    androidx.compose.runtime.CompositionLocalProvider(LocalPanelDarkTheme provides darkTheme) {
+        MaterialTheme(
+            colorScheme = colors,
+            typography = androidx.compose.runtime.remember(fontScale) { scaledTypography(fontScale) },
+            content = content,
+        )
+    }
 }
 
 /** MT 里面板主色（进度条、选中态） */

@@ -5,7 +5,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.ui.draw.clip
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -50,6 +49,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
@@ -90,7 +90,7 @@ import java.nio.charset.Charset
 @Composable
 fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPanelDarkTheme.current
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
     var value by remember { mutableStateOf(TextFieldValue("")) }
     var original by remember { mutableStateOf("") }

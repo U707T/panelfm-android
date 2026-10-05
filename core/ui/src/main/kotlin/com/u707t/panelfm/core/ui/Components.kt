@@ -103,7 +103,8 @@ fun SectionHeader(
             title,
             // MT 的分段标题：16sp、常规字重、**中灰**（截图实测是 #666 一类的灰，不是纯黑）
             style = MaterialTheme.typography.titleMedium.copy(fontSize = 16.sp, fontWeight = FontWeight.Normal),
-            color = MtSpec.SectionTitleLight,
+            // 主题感知（旧实现写死浅色主题的 #666：深色主题下分段标题偏暗）
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
         if (onToggle != null) {
@@ -111,7 +112,7 @@ fun SectionHeader(
             MtVectorIcon(
                 icon = if (expanded) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN,
                 size = 20.dp,
-                tint = MtSpec.SectionTitleLight,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }

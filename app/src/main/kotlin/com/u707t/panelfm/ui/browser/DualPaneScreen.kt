@@ -5,7 +5,6 @@ import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -78,6 +77,7 @@ import com.u707t.panelfm.core.ui.MtBottomIconButton
 import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
+import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.PaneEdgeShadow
@@ -237,14 +237,27 @@ fun DualPaneScreen(
             upArmed = false
         }
     }
-    androidx.activity.compose.BackHandler(enabled = true) {
+    // 返回键：**只在真有「内部目标」时才拦截**。
+    //
+    // 旧实现 `enabled = true` 无条件拦截，且 else 分支跳主页 —— 它的组合顺序晚于
+    // AppRoot 的退出处理，于是「浏览器 ←→ 主页」来回跳、永远退不出 App，
+    // 设置里的「退出前双次确认」也永远轮不到（死设置）。
+    // 现在：有内部目标（抽屉开 / 加载中 / 多选 / 能返回上级）才消费；否则把返回键
+    // 让给 AppRoot 的退出流程。另外补上 MT 的「已在最上级 → 再按一次返回上级」语义
+    // （旧代码里那段是恒 false 的不可达分支，upArmed 也是死状态）。
+    val canGoUp = focused.uri.parent != null || focused.uri.scheme == "archive"
+    val hasBackTarget = drawerState.isOpen || focused.loading || focused.hasSelection || canGoUp
+    androidx.activity.compose.BackHandler(enabled = hasBackTarget) {
         when {
             drawerState.isOpen -> closeDrawer()
             focused.loading -> controller.cancelLoad(focusSide)
             focused.hasSelection -> controller.clearSelection(focusSide)
-            focused.uri.parent != null || focused.uri.scheme == "archive" -> {
-                // MT：在目录里直接返回上级（不弹窗）；已到根目录再按一次才提示
-                if (focused.uri.parent == null && focused.uri.scheme != "archive") {
+            canGoUp -> {
+                // MT：在目录里直接返回上级（不弹窗）；已在最上级（根目录 / 压缩包顶层）
+                // 才需要「再按一次」。注意 canGoUp 对压缩包恒为 true，
+                // 所以这里的「最上级」判断要按真实父级来算。
+                val atTop = focused.uri.parent == null
+                if (atTop) {
                     if (upArmed) controller.up(focusSide) else {
                         upArmed = true
                         controller.showStatus("再按一次返回上级")
@@ -253,7 +266,6 @@ fun DualPaneScreen(
                     controller.up(focusSide)
                 }
             }
-            else -> onOpenHome()
         }
     }
     ModalNavigationDrawer(
@@ -300,7 +312,7 @@ fun DualPaneScreen(
             //   MT 的顶栏**始终是深色**（浅色主题 #151515 / 深色 #303030）；
             //   结构：TabLayout(0903F9) + ⋮(0902B2) + ＋(090116) + 动作条(09022F) + 1px 分割线(0903F8)
             //   NORMAL 态：动作条整行 GONE；SELECTING 态：出现「复制 / 移动 / 删除」三连（可横向滚动）
-            val topBarBg = if (isSystemInDarkTheme()) MtSpec.TopBarDark else MtSpec.TopBarLight
+            val topBarBg = if (LocalPanelDarkTheme.current) MtSpec.TopBarDark else MtSpec.TopBarLight
             Column(
                 Modifier
                     .fillMaxWidth()

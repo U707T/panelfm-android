@@ -1,7 +1,6 @@
 package com.u707t.panelfm.core.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,7 +47,7 @@ fun DialogIcon(
     modifier: Modifier = Modifier,
     size: Dp = 36.dp,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPanelDarkTheme.current
     val bg = when (mode) {
         DialogIconMode.DARK -> if (dark) Color(0xFFEFEFEF) else Color(0xFF3C3C3C)
         DialogIconMode.LIGHT -> if (dark) Color(0xFF3C3C3C) else Color(0xFFEFEFEF)
@@ -81,7 +80,7 @@ fun DialogIcon(
     modifier: Modifier = Modifier,
     size: Dp = 36.dp,
 ) {
-    val dark = isSystemInDarkTheme()
+    val dark = LocalPanelDarkTheme.current
     // 「深色背景」= 底色取深色（浅色主题下是深底白字；深色主题下自适应转浅底深字）
     val bg = when (mode) {
         DialogIconMode.DARK -> if (dark) Color(0xFFEFEFEF) else Color(0xFF3C3C3C)

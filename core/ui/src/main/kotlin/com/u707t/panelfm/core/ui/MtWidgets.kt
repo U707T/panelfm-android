@@ -58,7 +58,7 @@ import androidx.compose.ui.unit.sp
 
 /** MT 的分割线色（`0x7f06003a`：日 #FFBBBBBB / 夜 #FF505050） */
 val MtDividerColor: Color
-    @Composable get() = if (androidx.compose.foundation.isSystemInDarkTheme()) MtSpec.DividerDark else MtSpec.DividerLight
+    @Composable get() = if (LocalPanelDarkTheme.current) MtSpec.DividerDark else MtSpec.DividerLight
 
 /**
  * 横向分割线：MT 用 **1px**（`dividerHeight=1px` / `0903F8` / `090111/090112`）。

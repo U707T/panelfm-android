@@ -1,7 +1,6 @@
 package com.u707t.panelfm.ui.browser
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -49,6 +48,7 @@ import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtFolderGlyph
 import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.MtListRow
@@ -105,7 +105,7 @@ fun MtSideDrawer(
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
     // MT 0x7f1106fa「再按一次断开连接」：不可逆操作用「连按两次」而不是二次弹窗
     var disconnectArmed by remember { mutableStateOf<Long?>(null) }
-    val systemDark = isSystemInDarkTheme()
+    val appDark = LocalPanelDarkTheme.current
     // 三段折叠态（MT 截图：「本地 / 网络 / 工具」标题右侧都有 ︿，点标题折叠）
     var expandLocal by remember { mutableStateOf(true) }
     var expandNet by remember { mutableStateOf(true) }
@@ -135,7 +135,7 @@ fun MtSideDrawer(
 
     Column(Modifier.fillMaxWidth()) {
         // ---------------- 头部（复刻 MT：深色底 #151515 + 图标 + 名称 + 副标题 + 右上 ⋮）
-        val drawerHeaderBg = if (systemDark) MtSpec.TopBarDark else MtSpec.TopBarLight
+        val drawerHeaderBg = if (appDark) MtSpec.TopBarDark else MtSpec.TopBarLight
         Row(
             Modifier
                 .fillMaxWidth()
@@ -203,7 +203,7 @@ fun MtSideDrawer(
                                     // 勾选 = SYSTEM；取消勾选 = 固定为当前系统生效的亮/暗
                                     container.prefs.setTheme(
                                         if (settings.themeMode == ThemeMode.SYSTEM) {
-                                            if (systemDark) ThemeMode.DARK else ThemeMode.LIGHT
+                                            if (appDark) ThemeMode.DARK else ThemeMode.LIGHT
                                         } else {
                                             ThemeMode.SYSTEM
                                         }
