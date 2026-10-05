@@ -269,4 +269,54 @@ object MtGesture {
     /** 底栏上滑是否构成「打开书签」（MT 0x7f1107ca）。 */
     fun isSwipeBookmark(dyDp: Float, dxDp: Float): Boolean =
         dyDp <= -SwipeBookmarkDp && kotlin.math.abs(dyDp) > kotlin.math.abs(dxDp)
+
+    // ---- 播放器手势（隐藏控件后：左右滑进度 / 右侧竖滑音量 / 左侧竖滑亮度）---------------
+    //
+    // v1.3.6 统一：旧实现三者「进入阈值」与「灵敏度」各不相同 ——
+    //  · 进入：只用系统 touchSlop 判定，且 `abs(dx) > abs(dy)` 在斜滑时会突然在
+    //    进度 / 音量之间跳；一旦锁定方向又不再复核，手改了方向也不跟随；
+    //  · 灵敏度：进度按「一屏宽 = 全长」，音量 / 亮度按「一屏高 = 满量程」，
+    //    同一段手指位移在三者上的效果差得很远（割裂感的来源）。
+    //
+    // 现在照 IRIS `use_gesture.dart` 的口径统一为**与屏幕尺寸无关的固定物理量**，
+    // 并加一条死区 + 主轴优势比，保证「什么方向就是什么功能」。
+
+    /** 播放器手势的进入死区（dp，IRIS 用 8）：位移超过它才开始判定方向 */
+    const val PlayerDeadZoneDp = 8f
+
+    /**
+     * 主轴优势比：某一轴的位移必须至少是另一轴的 [PlayerAxisBias] 倍才锁定方向。
+     *
+     * IRIS 用「绝对值大者胜」，斜滑（dx≈dy）时会来回横跳；加优势比后，
+     * 45° 附近的斜滑**两个方向都不触发**（保持未定态），等用户意图清晰再进入 ——
+     * 这是消除割裂感的关键一条。
+     */
+    const val PlayerAxisBias = 1.4f
+
+    /** 进度灵敏度：每滑动多少 px 代表 1 秒（IRIS = 3） */
+    const val PlayerSeekPxPerSecond = 3f
+
+    /** 音量 / 亮度灵敏度：滑动多少 px 走完满量程（IRIS = 200） */
+    const val PlayerLevelPxFullScale = 200f
+
+    /**
+     * 判定播放器手势方向：横滑返回 true（进度），竖滑返回 false（音量 / 亮度）。
+     * 未达死区或主轴优势不足时返回 null（保持未定态）。
+     */
+    fun playerAxis(dxDp: Float, dyDp: Float): Boolean? {
+        val ax = kotlin.math.abs(dxDp)
+        val ay = kotlin.math.abs(dyDp)
+        if (ax < PlayerDeadZoneDp && ay < PlayerDeadZoneDp) return null
+        return when {
+            ax > ay * PlayerAxisBias -> true
+            ay > ax * PlayerAxisBias -> false
+            else -> null
+        }
+    }
+
+    /** 进度增量：按固定灵敏度换算（横向位移 px → 秒）。 */
+    fun seekDeltaSeconds(dxPx: Float): Long = (dxPx / PlayerSeekPxPerSecond).toLong()
+
+    /** 音量 / 亮度增量（0..1）：按固定灵敏度换算（纵向位移 px → 比例，向上为正）。 */
+    fun levelDelta(dyPx: Float): Float = -dyPx / PlayerLevelPxFullScale
 }

@@ -471,7 +471,9 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 return@awaitEachGesture
             }
             val startPos = down.position
-            val slop = viewConfiguration.touchSlop
+            // 手势判定与灵敏度统一走 MtGesture（照 IRIS：死区 8dp、主轴优势比、3px/秒、200px 满量程），
+            // 三个手势（进度 / 音量 / 亮度）用同一套阈值与增益 —— 消除「进入难易不一、手感割裂」
+            val density = this@pointerInput.density
             var mode = 0   // 0=未定 1=进度 2=右侧音量 3=左侧亮度
             var seekTarget = 0L
             val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
@@ -484,37 +486,43 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 if (mode == 0 && change.isConsumed) break
                 val dx = change.position.x - startPos.x
                 val dy = change.position.y - startPos.y
-                if (mode == 0 && (abs(dx) > slop || abs(dy) > slop)) {
-                    // 开始拖动 → 取消可能已在计时的长按倍速（否则拖到一半会突然 2x）
-                    boostJob.value?.cancel()
-                    boostJob.value = null
-                    speedBoost = false
-                    mode = when {
-                        abs(dx) > abs(dy) -> 1
-                        startPos.x > size.width / 2f -> 2
-                        else -> 3
+                if (mode == 0) {
+                    // 死区 + 主轴优势比：未达阈值 / 斜滑时保持未定，避免在功能之间跳变
+                    val horizontal = com.u707t.panelfm.core.ui.MtGesture
+                        .playerAxis(with(density) { dx.toDp().value }, with(density) { dy.toDp().value })
+                    if (horizontal != null) {
+                        // 开始拖动 → 取消可能已在计时的长按倍速（否则拖到一半会突然 2x）
+                        boostJob.value?.cancel()
+                        boostJob.value = null
+                        speedBoost = false
+                        mode = when {
+                            horizontal -> 1
+                            startPos.x > size.width / 2f -> 2
+                            else -> 3
+                        }
+                        if (mode == 1) seekTarget = player.currentPosition
                     }
-                    if (mode == 1) seekTarget = player.currentPosition
                 }
                 when (mode) {
-                    1 -> if (durationMs > 0 && size.width > 0) {
-                        val delta = (dx / size.width).toDouble() * durationMs
-                        seekTarget = (seekTarget + delta).toLong().coerceIn(0, durationMs)
+                    1 -> if (durationMs > 0) {
+                        // 固定灵敏度（3px = 1 秒），与屏幕宽度无关
+                        val delta = com.u707t.panelfm.core.ui.MtGesture.seekDeltaSeconds(dx) * 1000L
+                        seekTarget = (player.currentPosition + delta).coerceIn(0, durationMs)
                         seekPreview = seekTarget
                         hud = "${clock(positionMs)} → ${clock(seekTarget)} / ${clock(durationMs)}"
                         change.consume()
                     }
-                    2 -> if (size.height > 0) {
-                        val delta = -(dy / size.height).toDouble()
+                    2 -> {
+                        // 固定灵敏度（200px = 满量程）
+                        val delta = com.u707t.panelfm.core.ui.MtGesture.levelDelta(dy)
                         val target = (startVolume + delta * maxVolume).toInt().coerceIn(0, maxVolume)
                         audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
                         volumeRatio = target.toFloat() / maxVolume
                         muted = target == 0
                         change.consume()
                     }
-                    3 -> if (size.height > 0) {
-                        // 应用内亮度：只改遮罩透明度，不动系统/窗口亮度
-                        val delta = -(dy / size.height)
+                    3 -> {
+                        val delta = com.u707t.panelfm.core.ui.MtGesture.levelDelta(dy)
                         val target = (startBrightness + delta).coerceIn(0.05f, 1f)
                         appBrightness = target
                         brightnessRatio = target
