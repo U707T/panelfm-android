@@ -62,12 +62,13 @@ import kotlinx.coroutines.withContext
 
 /**
  * MT 管理器侧边栏（截图复刻）：
- *  - 头部：应用图标 + 名称 + 主题副标题 + 右上 ⋮（主题跟随系统 / 添加网络存储▶ /
- *    添加本地存储 / 添加网络分组 / 管理工具分组 / 设置）
+ *  - 头部：应用图标 + 名称 + 主题副标题 + 右上 ⋮（主题跟随系统 / 添加网络存储▶ / 设置）
  *  - 「本地」：根目录 / 内部存储 / 应用目录，每行带「xx已用，xx可用」+ 蓝色占用条
  *  - 「网络」：已添加的网络存储；点击在活动窗口打开，长按编辑/删除
+ *  - 「后台」：**网络挂载**（MT 语义：只收网络路径，每个挂载一行）
  *  - 「工具」：回收站 / 已安装应用 / 文本编辑器 / 远程管理 / 书签 /
  *    传输任务 / 局域网扫描 / 更多工具
+ * 各段标题右侧 ︿ 可折叠（v1.3.3 修复：网络 / 后台此前未按折叠态门控）。
  * 点击本地 / 网络节点 → 在**活动窗口**打开（MT 语义）。
  */
 @Composable
@@ -101,6 +102,8 @@ fun MtSideDrawer(
     var drawerMenu by remember { mutableStateOf(false) }
     var protocolSub by remember { mutableStateOf(false) }
     var expandMore by remember { mutableStateOf(false) }
+    // 「关于」弹对话框（与首页一致；旧实现把简介塞进 snackbar）
+    var showAbout by remember { mutableStateOf(false) }
     var menuFor by remember { mutableStateOf<ConnectionConfig?>(null) }
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
     // MT 0x7f1106fa「再按一次断开连接」：不可逆操作用「连按两次」而不是二次弹窗
@@ -112,17 +115,17 @@ fun MtSideDrawer(
     var expandTools by remember { mutableStateOf(true) }
     var expandRecent by remember { mutableStateOf(true) }
 
-    // ===== 后台：最近访问路径（MT 抽屉的「后台」段）
+    // ===== 后台：网络挂载（MT 语义 —— 只收网络路径，本地 / 压缩包不属于这里）
     val browserUi by container.browser.state.collectAsState()
     var recentPaths by remember { mutableStateOf<List<com.u707t.panelfm.core.vfs.VfsUri>>(emptyList()) }
     LaunchedEffect(browserUi.left.uri, browserUi.right.uri) {
         recentPaths = withContext(kotlinx.coroutines.Dispatchers.IO) {
-            runCatching { container.bookmarkDao.recentPaths(40) }.getOrDefault(emptyList())
-        }.filter { uri ->
-            uri.toString() != browserUi.left.uri.toString() &&
-                uri.toString() != browserUi.right.uri.toString() &&
-                container.locator.find(uri) != null
-        }.distinctBy { it.toString() }.take(6)
+            drawerNetworkMounts(
+                uris = runCatching { container.bookmarkDao.recentPaths(40) }.getOrDefault(emptyList()),
+                exclude = setOf(browserUi.left.uri.toString(), browserUi.right.uri.toString()),
+                exists = { uri -> container.locator.find(uri) != null },
+            )
+        }
     }
 
     // 「再按一次断开连接」的 2 秒窗口（MT 的 PressAgainMs）
@@ -221,42 +224,9 @@ fun MtSideDrawer(
                             },
                             onClick = { protocolSub = true },
                         )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp)
-                                    Text("添加本地存储", Modifier.padding(start = 14.dp))
-                                }
-                            },
-                            onClick = {
-                                drawerMenu = false
-                                showStatus("已自动枚举：根目录 / 内部存储 / 应用目录；外置 SD 卡（SAF）将在后续版本接入")
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MtVectorIcon(icon = MtIcon.FOLDER, size = 22.dp)
-                                    Text("添加网络分组", Modifier.padding(start = 14.dp))
-                                }
-                            },
-                            onClick = {
-                                drawerMenu = false
-                                showStatus("网络分组：在「编辑连接 → 网络分组」中填写组名即可；同名分组会自动归拢")
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MtVectorIcon(icon = MtIcon.BUILD, size = 22.dp)
-                                    Text("管理工具分组", Modifier.padding(start = 14.dp))
-                                }
-                            },
-                            onClick = {
-                                drawerMenu = false
-                                showStatus("工具分组为默认布局，自定义分组将在后续版本提供")
-                            },
-                        )
+                        // 说明：原「添加本地存储 / 添加网络分组 / 管理工具分组」三个入口只弹一条说明，
+                        // 属于「空承诺」死入口 —— 已移除（按 AUDIT-UX U8：要么实现、要么不显示）；
+                        // 网络分组仍可在「编辑连接 → 网络分组」里填写，功能不受影响。
                         DropdownMenuItem(
                             text = {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -336,63 +306,68 @@ fun MtSideDrawer(
 
             // ===== 网络（「在侧拉栏隐藏地址」的连接不在这里显示；按分组归拢）
             SectionHeader("网络", expanded = expandNet, onToggle = { expandNet = !expandNet })
-            val drawerConnections = connections.filter { it.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) != "true" }
-            if (!expandNet) {
-                // 折叠时不渲染内容（MT 同行为）
-            } else if (drawerConnections.isEmpty()) {
-                MtListRow(
-                    title = "还没有网络存储",
-                    titleSize = 14.sp,
-                    subtitle = "右上角 ⋮ → 添加网络存储（SFTP / FTP / WebDAV / SMB / S3）",
-                    icon = {
-                        RoundIconBox(size = 30.dp) {
-                            MtVectorIcon(icon = MtIcon.PLUS, size = 14.dp, tint = MaterialTheme.colorScheme.surface)
-                        }
-                    },
-                    onClick = { onAddConnection(ConnectionType.SFTP) },
-                )
-            }
-            // 分组名非空的连接按组名分节显示（MT：分组显示网络存储）；空组直接平铺
-            val grouped = drawerConnections.filter { it.group.isNotBlank() }.groupBy { it.group }
-            val ungrouped = drawerConnections.filter { it.group.isBlank() }
-            ungrouped.forEach { config -> DrawerConnectionRow(config, connectingId, onOpenConnection, menuFor = { menuFor = it }) }
-            grouped.forEach { (groupName, list) ->
-                SectionHeader(groupName)
-                list.forEach { config -> DrawerConnectionRow(config, connectingId, onOpenConnection, menuFor = { menuFor = it }) }
-            }
-
-            // ===== 后台（最近访问；点击在活动窗口打开）
-            if (recentPaths.isNotEmpty()) {
-                SectionHeader("后台", expanded = expandRecent, onToggle = { expandRecent = !expandRecent })
-                recentPaths.forEach { uri ->
-                    val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
-                        ?: container.connectionByAuthority(uri.scheme, uri.authority)
+            // 修复：连接行此前未按折叠态门控 —— 点标题箭头会翻转，但内容照旧渲染（「收不起来」）
+            if (expandNet) {
+                val drawerConnections = connections.filter { it.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) != "true" }
+                if (drawerConnections.isEmpty()) {
                     MtListRow(
-                        title = cfg?.name?.ifBlank { null } ?: when (uri.scheme) {
-                            "local" -> "本地存储"
-                            else -> uri.scheme.uppercase()
-                        },
+                        title = "还没有网络存储",
                         titleSize = 14.sp,
-                        subtitle = uri.displayPath.ifEmpty { "/" },
+                        subtitle = "右上角 ⋮ → 添加网络存储（SFTP / FTP / WebDAV / SMB / S3）",
                         icon = {
                             RoundIconBox(size = 30.dp) {
-                                MtVectorIcon(
-                                    icon = when (uri.scheme) {
-                                        "local" -> MtIcon.SD
-                                        "dav" -> MtIcon.CLOUD
-                                        "ftp", "ftps" -> MtIcon.DNS
-                                        "sftp" -> MtIcon.LOCK
-                                        "smb" -> MtIcon.WEB
-                                        "s3" -> MtIcon.CLOUD
-                                        else -> MtIcon.CLOUD
-                                    },
-                                    size = 14.dp,
-                                    tint = MaterialTheme.colorScheme.surface,
-                                )
+                                MtVectorIcon(icon = MtIcon.PLUS, size = 14.dp, tint = MaterialTheme.colorScheme.surface)
                             }
                         },
-                        onClick = { onOpenRecentPath(uri) },
+                        onClick = { onAddConnection(ConnectionType.SFTP) },
                     )
+                } else {
+                    // 分组名非空的连接按组名分节显示（MT：分组显示网络存储）；空组直接平铺
+                    val grouped = drawerConnections.filter { it.group.isNotBlank() }.groupBy { it.group }
+                    val ungrouped = drawerConnections.filter { it.group.isBlank() }
+                    ungrouped.forEach { config -> DrawerConnectionRow(config, connectingId, onOpenConnection, menuFor = { menuFor = it }) }
+                    grouped.forEach { (groupName, list) ->
+                        SectionHeader(groupName)
+                        list.forEach { config -> DrawerConnectionRow(config, connectingId, onOpenConnection, menuFor = { menuFor = it }) }
+                    }
+                }
+            }
+
+            // ===== 后台（网络挂载；点击在活动窗口打开）
+            if (recentPaths.isNotEmpty()) {
+                SectionHeader("后台", expanded = expandRecent, onToggle = { expandRecent = !expandRecent })
+                // 修复：此前未按折叠态门控 —— 点箭头会翻转，但行照旧渲染（「收不起来」）
+                if (expandRecent) {
+                    recentPaths.forEach { uri ->
+                        val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+                            ?: container.connectionByAuthority(uri.scheme, uri.authority)
+                        MtListRow(
+                            title = cfg?.name?.ifBlank { null } ?: when (uri.scheme) {
+                                "local" -> "本地存储"
+                                else -> uri.scheme.uppercase()
+                            },
+                            titleSize = 14.sp,
+                            subtitle = uri.displayPath.ifEmpty { "/" },
+                            icon = {
+                                RoundIconBox(size = 30.dp) {
+                                    MtVectorIcon(
+                                        icon = when (uri.scheme) {
+                                            "local" -> MtIcon.SD
+                                            "dav" -> MtIcon.CLOUD
+                                            "ftp", "ftps" -> MtIcon.DNS
+                                            "sftp" -> MtIcon.LOCK
+                                            "smb" -> MtIcon.WEB
+                                            "s3" -> MtIcon.CLOUD
+                                            else -> MtIcon.CLOUD
+                                        },
+                                        size = 14.dp,
+                                        tint = MaterialTheme.colorScheme.surface,
+                                    )
+                                }
+                            },
+                            onClick = { onOpenRecentPath(uri) },
+                        )
+                    }
                 }
             }
 
@@ -414,9 +389,7 @@ fun MtSideDrawer(
                 DrawerTool("更多工具", if (expandMore) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN) { expandMore = !expandMore }
                 if (expandMore) {
                     DrawerTool("设置", MtIcon.SETTINGS, onOpenSettings)
-                    DrawerTool("关于 PanelFM", MtIcon.INFO) {
-                        showStatus("PanelFM · 双列文件管理器（本地 / SFTP / FTP / FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能")
-                    }
+                    DrawerTool("关于 PanelFM", MtIcon.INFO) { showAbout = true }
                 }
 
             }
@@ -468,6 +441,16 @@ fun MtSideDrawer(
                 }) { Text("删除") }
             },
             dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+        )
+    }
+
+    if (showAbout) {
+        MessageDialog(
+            title = "关于 PanelFM",
+            message = "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}\n\n" +
+                "双列文件管理器：本地 / SFTP（跳板机）/ FTP · FTPS / WebDAV / SMB / S3 / 压缩包。\n\n" +
+                "本项目不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
+            onDismiss = { showAbout = false },
         )
     }
 }

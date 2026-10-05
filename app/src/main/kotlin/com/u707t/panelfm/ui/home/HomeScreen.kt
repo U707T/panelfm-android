@@ -65,6 +65,7 @@ import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVolumes
+import com.u707t.panelfm.ui.browser.MessageDialog
 import kotlinx.coroutines.launch
 
 /**
@@ -107,6 +108,8 @@ fun HomeScreen(
     }
     var deleteTarget by remember { mutableStateOf<ConnectionConfig?>(null) }
     var showTopMenu by remember { mutableStateOf(false) }
+    // 「关于」改弹对话框（旧实现把版本+功能描述塞进 4 秒 snackbar，读不完就消失）
+    var showAbout by remember { mutableStateOf(false) }
 
     var storageGranted by remember {
         mutableStateOf(if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true)
@@ -225,10 +228,7 @@ fun HomeScreen(
                             },
                         )
                         DropdownMenuItem(text = { Text("添加网络存储") }, onClick = { showTopMenu = false; onAddConnection() })
-                        DropdownMenuItem(
-                            text = { Text("添加本地存储") },
-                            onClick = { showTopMenu = false; status = "已自动枚举：根目录 / 内部存储 / 应用目录 / 外置卡（SAF 授权在 M9 接入）" },
-                        )
+                        // 说明：「添加本地存储」原为死入口（只弹说明），已移除（AUDIT-UX U8）。
                         DropdownMenuItem(text = { Text("局域网扫描") }, onClick = { showTopMenu = false; onScanLan() })
                         DropdownMenuItem(text = { Text("设置") }, onClick = { showTopMenu = false; onOpenSettings() })
                     }
@@ -371,7 +371,7 @@ fun HomeScreen(
                 ToolRow("书签", MtIcon.BOOKMARK) { onOpenBookmarks() }
                 ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP) { onOpenTasks() }
                 ToolRow("设置", MtIcon.SETTINGS) { onOpenSettings() }
-                ToolRow("关于", MtIcon.INFO) { status = "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME} · 双列文件管理器（本地 / SFTP · 跳板机 / FTP · FTPS / WebDAV / SMB / S3 / 压缩包），不含逆向功能" }
+                ToolRow("关于", MtIcon.INFO) { showAbout = true }
             }
 
             Box(Modifier.padding(bottom = 96.dp))
@@ -389,6 +389,16 @@ fun HomeScreen(
             kotlinx.coroutines.delay(4000)
             status = null
         }
+    }
+
+    if (showAbout) {
+        MessageDialog(
+            title = "关于 PanelFM",
+            message = "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}\n\n" +
+                "双列文件管理器：本地 / SFTP（跳板机）/ FTP · FTPS / WebDAV / SMB / S3 / 压缩包。\n\n" +
+                "本项目不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
+            onDismiss = { showAbout = false },
+        )
     }
 
     menuFor?.let { config ->
