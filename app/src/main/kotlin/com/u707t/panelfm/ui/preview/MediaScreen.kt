@@ -40,6 +40,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -136,6 +138,19 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     var playlist by remember { mutableStateOf<List<FileMetadata>>(emptyList()) }
     var playlistIndex by remember { mutableStateOf(-1) }
 
+    /**
+     * 控制层（顶栏 / 底部控制条）实测高度（px）。
+     * 手势层据此避让：触点落在控制层内就**完全不参与**播放器手势，
+     * 否则「横向滑动调进度」会和进度条的拖动抢事件（表现就是进度条拖不动）。
+     */
+    var topBarHeightPx by remember { mutableStateOf(0) }
+    var bottomBarHeightPx by remember { mutableStateOf(0) }
+    val liveTopBarPx by rememberUpdatedState(topBarHeightPx)
+    val liveBottomBarPx by rememberUpdatedState(bottomBarHeightPx)
+
+    /** 正在拖动进度条：期间**禁止自动隐藏控制层**（否则拖到一半控件消失，seek 也丢了） */
+    var sliderDragging by remember { mutableStateOf(false) }
+
     val isAudioOnly = MimeTypes.kindOf(uri.name.substringAfterLast('.', "")) == MimeTypes.Kind.AUDIO
 
     /**
@@ -226,10 +241,16 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
     // 控制栏自动隐藏（播放中且未开菜单；锁定时强制隐藏）
     // ⚠️ error != null 时不隐藏：否则「重试 / 用其他应用打开」按钮 4 秒后就点不到了
-    LaunchedEffect(controlsVisible, isPlaying, menuOpen, locked, error) {
-        if (controlsVisible && isPlaying && !menuOpen && !locked && error == null) {
+    LaunchedEffect(controlsVisible, isPlaying, menuOpen, locked, error, sliderDragging) {
+        if (controlsVisible && isPlaying && !menuOpen && !locked && error == null && !sliderDragging) {
             delay(4000)
             controlsVisible = false
+            // 防御：万一控制层在拖拽中被隐藏（旧实现就会这样），
+            // 把预览进度落定并清掉，避免进度条停在半路、播放位置和显示不一致。
+            seekPreview?.let {
+                runCatching { player.seekTo(it) }
+                seekPreview = null
+            }
         }
         if (locked) controlsVisible = false
     }
@@ -334,7 +355,16 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         val audio = context.getSystemService(android.content.Context.AUDIO_SERVICE) as AudioManager
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            if (locked) return@awaitEachGesture
+            if (locked) {
+                // 锁定态下也让用户知道怎么解锁（旧实现只在进入锁定时提示一次）
+                hud = "已锁定，点左侧锁按钮解锁"
+                return@awaitEachGesture
+            }
+            // 触点落在顶栏 / 底部控制条内 → 完全让位给控件本身
+            // （这是「进度条拖不动」的根因：手势层会和滑条抢同一串移动事件）
+            val inControls = down.position.y <= liveTopBarPx ||
+                down.position.y >= size.height - liveBottomBarPx
+            if (inControls) return@awaitEachGesture
             val startPos = down.position
             val slop = viewConfiguration.touchSlop
             var mode = 0   // 0=未定 1=进度 2=右侧音量 3=左侧亮度
@@ -473,7 +503,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 Modifier
                     .fillMaxWidth()
                     .statusBarsPadding()
-                    .padding(horizontal = 8.dp, vertical = 6.dp),
+                    .padding(horizontal = 8.dp, vertical = 6.dp)
+                    .onGloballyPositioned { topBarHeightPx = it.size.height },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
@@ -640,16 +671,28 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                    .padding(horizontal = 20.dp, vertical = 4.dp)
+                    .onGloballyPositioned { bottomBarHeightPx = it.size.height },
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(clock(seekPreview ?: positionMs), color = Color.White, style = MaterialTheme.typography.labelLarge)
                     Slider(
                         value = (seekPreview ?: positionMs).coerceIn(0, durationMs.coerceAtLeast(1)).toFloat(),
-                        onValueChange = { seekPreview = it.toLong() },
+                        onValueChange = {
+                            sliderDragging = true
+                            seekPreview = it.toLong()
+                            // 拖动时就把画面跟在手指后面（松手时再最终落定），
+                            // 不然拖动中画面不动、看不出拖到哪了
+                            player.seekTo(it.toLong())
+                            positionMs = it.toLong()
+                        },
                         onValueChangeFinished = {
-                            seekPreview?.let { player.seekTo(it) }
+                            seekPreview?.let {
+                                player.seekTo(it)
+                                positionMs = it
+                            }
                             seekPreview = null
+                            sliderDragging = false
                         },
                         valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
                         colors = SliderDefaults.colors(
