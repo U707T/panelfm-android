@@ -202,7 +202,15 @@ class ArchiveVfs(
     }
 
     private fun normalize(raw: String, isDir: Boolean): String? {
-        val cleaned = raw.replace('\\', '/').trimStart('/')
+        // 压缩包条目名是不可信输入。拒绝绝对路径与 `..` 段，避免解压时
+        // 通过 `destDir.child(entry.name)` 穿出用户选择的目标目录。
+        val normalized = raw.replace('\\', '/')
+        if (normalized.startsWith('/')) return null
+        val safePath = normalized.trimStart('/')
+        if (safePath.isEmpty()) return null
+        val parts = safePath.split('/')
+        if (parts.any { it == ".." }) return null
+        val cleaned = parts.filter { it.isNotEmpty() && it != "." }.joinToString("/")
         if (cleaned.isEmpty()) return null
         // 目录统一以 '/' 结尾
         return if (isDir && !cleaned.endsWith("/")) "$cleaned/" else cleaned

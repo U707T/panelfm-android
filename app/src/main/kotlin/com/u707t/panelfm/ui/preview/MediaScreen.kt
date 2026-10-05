@@ -221,8 +221,9 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     LaunchedEffect(looping) { player.repeatMode = if (looping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }
 
     // 控制栏自动隐藏（播放中且未开菜单；锁定时强制隐藏）
-    LaunchedEffect(controlsVisible, isPlaying, menuOpen, locked) {
-        if (controlsVisible && isPlaying && !menuOpen && !locked) {
+    // ⚠️ error != null 时不隐藏：否则「重试 / 用其他应用打开」按钮 4 秒后就点不到了
+    LaunchedEffect(controlsVisible, isPlaying, menuOpen, locked, error) {
+        if (controlsVisible && isPlaying && !menuOpen && !locked && error == null) {
             delay(4000)
             controlsVisible = false
         }
@@ -1218,11 +1219,14 @@ class VfsDataSource(
         val vfs = locator.find(vfsUri) ?: throw IOException("会话不可用（存储已断开）")
 
         transferInitializing(dataSpec)
-        // 打开失败时不要把 started 置位：close() 会看到 started=false，只做清理不发 transferEnded
+        // 打开失败时不要把 started 置位：没有 transferStarted 就不能发送 transferEnded。
+        // 否则监听器会收到一个没有开始事件的结束事件，进度统计可能变成负数。
         val r = try {
             vfs.openRead(vfsUri, offset = dataSpec.position)
         } catch (e: Exception) {
-            transferInitializingCleanup()
+            reader = null
+            target = null
+            remaining = -1L
             throw e
         }
         reader = r
@@ -1236,11 +1240,6 @@ class VfsDataSource(
         transferStarted(dataSpec)
         started = true
         return remaining
-    }
-
-    /** 打开失败时的补救：让 Media3 看到一次「结束」，避免内部状态卡住 */
-    private fun transferInitializingCleanup() {
-        runCatching { transferEnded() }
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {

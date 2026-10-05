@@ -85,7 +85,9 @@ class RemoteHttpServer(private val locator: VfsLocator) {
         }
         val out = BufferedOutputStream(client.getOutputStream())
 
-        val target = root.withPath(if (safePath == "/") "" else safePath)
+        // safePath 是相对于启动时 root 的路径；不能用 withPath 直接替换，
+        // 否则启动服务分享一个子目录时会意外暴露整个卷的根目录。
+        val target = if (safePath == "/") root else root.resolve(safePath.trimStart('/'))
         val vfs = locator.find(target)
         if (vfs == null) {
             respond(out, 404, "text/plain", "会话不可用（该目录的存储已断开）".toByteArray())

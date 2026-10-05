@@ -3,6 +3,7 @@ package com.u707t.panelfm.core.transfer
 import com.u707t.panelfm.core.common.PanelDispatchers
 import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.model.TransferOp
+import com.u707t.panelfm.core.model.VerifyMode
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -77,6 +78,134 @@ class TransferRegressionTest {
             store.clearFor(src, dst)
             assertTrue(store.findFor(src, dst) == null)
         }
+    }
+
+    @Test
+    fun `跨会话复制目录保留两者时整棵子树都重映射`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs()
+            .dir("/src")
+            .dir("/src/folder")
+            .file("/src/folder/a.txt", 3)
+        val dstVfs = FakeVfs()
+            .dir("/dst")
+            .dir("/dst/folder")
+            .file("/dst/folder/old.txt", 2)
+        val locator = FakeLocator(mapOf("src" to srcVfs, "dst" to dstVfs))
+        val engine = engine(scope, locator)
+
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("src", "/src/folder")),
+                destDir = uri("dst", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.KEEP_BOTH,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        assertTrue("原目录不能被覆盖", dstVfs.nodes.containsKey("/dst/folder/old.txt"))
+        assertTrue("子文件必须进入保留两者目录", dstVfs.nodes.containsKey("/dst/folder (1)/a.txt"))
+        assertTrue("旧目标目录不能被误写入", !dstVfs.nodes.containsKey("/dst/folder/a.txt"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `跨会话复制目录跳过时不应继续写入子项`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").dir("/src/folder").file("/src/folder/a.txt", 3)
+        val dstVfs = FakeVfs().dir("/dst").dir("/dst/folder").file("/dst/folder/old.txt", 2)
+        val locator = FakeLocator(mapOf("src" to srcVfs, "dst" to dstVfs))
+        val engine = engine(scope, locator)
+
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("src", "/src/folder")),
+                destDir = uri("dst", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.SKIP,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        assertTrue("跳过目录后不能出现新子项", !dstVfs.nodes.containsKey("/dst/folder/a.txt"))
+        assertTrue("已有目标必须保留", dstVfs.nodes.containsKey("/dst/folder/old.txt"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `覆盖删除失败时不能继续写入目标`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs()
+            .dir("/src")
+            .file("/src/a.txt", 3)
+            .dir("/dst")
+            .file("/dst/a.txt", 2)
+        vfs.failDelete = true
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Failed) delay(10) }
+
+        assertTrue("源文件必须仍在", vfs.nodes.containsKey("/src/a.txt"))
+        assertEquals("目标不能在删除失败后被打开写入", 2L, vfs.nodes["/dst/a.txt"]?.size)
+        scope.cancel()
+    }
+
+    @Test
+    fun `目标 openWrite 失败时源 reader 仍然关闭`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").file("/src/a.txt", 10)
+        val dstVfs = FakeVfs().dir("/dst")
+        dstVfs.failOpenWrite = true
+        val locator = FakeLocator(mapOf("src" to srcVfs, "dst" to dstVfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("src", "/src/a.txt")),
+                destDir = uri("dst", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        assertEquals("openWrite 异常路径不能泄漏 reader", srcVfs.openedReaders, srcVfs.closedReaders)
+        val state = task.state.value as TaskState.Done
+        assertEquals(1, state.failed)
+        scope.cancel()
+    }
+
+    @Test
+    fun `VerifyMode HASH 实际校验传输内容`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").file("/src/a.bin", 1024)
+        val dstVfs = FakeVfs().dir("/dst")
+        val locator = FakeLocator(mapOf("src" to srcVfs, "dst" to dstVfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("src", "/src/a.bin")),
+                destDir = uri("dst", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+                verify = VerifyMode.HASH,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals(0, state.failed)
+        assertTrue("校验后的目标内容应存在", dstVfs.nodes.containsKey("/dst/a.bin"))
+        assertTrue(srcVfs.nodes["/src/a.bin"]!!.content.toByteArray().contentEquals(dstVfs.nodes["/dst/a.bin"]!!.content.toByteArray()))
+        scope.cancel()
     }
 
     @Test

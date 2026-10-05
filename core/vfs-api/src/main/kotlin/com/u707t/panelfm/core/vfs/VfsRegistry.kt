@@ -6,6 +6,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 会话注册表：同一连接配置（同口令）在多个窗格 / 多个任务间共享同一个 VFS 实例，
@@ -23,12 +24,15 @@ class VfsRegistry(
     }
 
     private val mutex = Mutex()
-    private val holders = mutableMapOf<String, Holder>()
+    // peek()/sessions() 由 UI 与后台任务并发读取；不能用普通 MutableMap。
+    private val holders = ConcurrentHashMap<String, Holder>()
 
     fun supports(scheme: String): Boolean = factories.containsKey(scheme)
 
     suspend fun acquire(config: ConnectionConfig, secret: String? = null): VfsLease {
-        val key = config.sessionKey
+        // secret 不在 ConnectionConfig.sessionKey 中；必须参与会话隔离，
+        // 否则用户修改密码后会复用旧的已认证连接。
+        val key = sessionKey(config, secret)
         val holder = mutex.withLock {
             holders[key]?.also {
                 it.refs++
@@ -56,13 +60,20 @@ class VfsRegistry(
         }
     }
 
-    fun peek(config: ConnectionConfig): VirtualFileSystem? = holders[config.sessionKey]?.vfs
+    fun peek(config: ConnectionConfig): VirtualFileSystem? = holders.values
+        .filter { it.config.sessionKey == config.sessionKey }
+        .maxByOrNull { it.lastUsed }
+        ?.vfs
 
     fun sessions(): List<VirtualFileSystem> = holders.values.map { it.vfs }
 
     /** 任务运行期间 pin 住会话，避免被空闲回收 */
     suspend fun pin(config: ConnectionConfig, pinned: Boolean) {
-        mutex.withLock { holders[config.sessionKey]?.pinned = pinned }
+        mutex.withLock {
+            holders.values
+                .filter { it.config.sessionKey == config.sessionKey }
+                .forEach { it.pinned = pinned }
+        }
     }
 
     /** 回收空闲会话（默认 5 分钟） */
@@ -90,11 +101,22 @@ class VfsRegistry(
 
     /** 立即关闭某个会话（「断开」/删除连接）：从注册表移除并 close()，不等空闲回收。 */
     suspend fun closeSession(sessionKey: String) {
-        val holder = mutex.withLock { holders.remove(sessionKey) }
-        holder?.let {
+        val holdersToClose = mutex.withLock {
+            holders.entries
+                .filter { it.value.config.sessionKey == sessionKey }
+                .mapNotNull { entry -> holders.remove(entry.key) }
+        }
+        holdersToClose.forEach {
             runCatching { it.vfs.close() }
             Logx.i("VfsRegistry", "close session ${it.config.name}")
         }
+    }
+
+    private fun sessionKey(config: ConnectionConfig, secret: String?): String {
+        val bytes = (secret ?: "").toByteArray(Charsets.UTF_8)
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+        val fingerprint = digest.joinToString("") { "%02x".format(it) }
+        return "${config.sessionKey}|secret=$fingerprint"
     }
 }
 

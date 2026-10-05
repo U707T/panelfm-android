@@ -240,6 +240,26 @@ class ArchiveVfsTest {
         assertTrue("a.txt 应移动到 new/：${newList.map { it.name }}", newList.any { it.name == "a.txt" })
     }
 
+    @Test
+    fun `压缩包路径穿越条目被拒绝`() = runTest {
+        val dir = Files.createTempDirectory("arc-traversal").toFile()
+        val zip = File(dir, "unsafe.zip")
+        ZipOutputStream(zip.outputStream()).use { zos ->
+            listOf("../escape.txt", "/absolute.txt", "safe/ok.txt").forEach { name ->
+                zos.putNextEntry(ZipEntry(name))
+                zos.write(name.toByteArray())
+                zos.closeEntry()
+            }
+        }
+        val host = VfsUri.of("local", "emulated", "/${zip.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, zip, env())
+        vfs.connect()
+        val root = vfs.list(VfsUri.of("archive", "zip", "/" + VfsUri.encodeHost(host.toString()) + "!/"))
+
+        assertTrue("危险条目不能直接出现在根列表", root.none { it.name == ".." || it.name == "escape.txt" || it.name == "absolute.txt" })
+        assertTrue("正常条目仍可浏览", root.any { it.name == "safe" && it.isDirectory })
+    }
+
     /** 极简内存 VFS：只实现压缩测试所需的能力 */
     private class MemoryVfs : VirtualFileSystem {
         override val id = "mem"

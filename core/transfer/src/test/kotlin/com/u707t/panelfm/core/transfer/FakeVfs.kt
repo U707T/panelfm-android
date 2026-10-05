@@ -35,6 +35,10 @@ class FakeVfs(
     class Node(val isDirectory: Boolean, var size: Long = 0, val content: ByteArrayOutputStream = ByteArrayOutputStream())
 
     val nodes = linkedMapOf<String, Node>("/" to Node(true))
+    var failOpenWrite: Boolean = false
+    var failDelete: Boolean = false
+    var openedReaders: Int = 0
+    var closedReaders: Int = 0
 
     override val id: String = "fake:${hashCode()}"
     private val _state = MutableStateFlow<VfsState>(VfsState.Ready)
@@ -46,7 +50,11 @@ class FakeVfs(
     }
 
     fun file(path: String, size: Long): FakeVfs {
-        nodes[path] = Node(false, size)
+        val node = Node(false, size)
+        if (size in 0..1_000_000) {
+            node.content.write(ByteArray(size.toInt()) { (it % 251).toByte() })
+        }
+        nodes[path] = node
         return this
     }
 
@@ -87,6 +95,7 @@ class FakeVfs(
     }
 
     override suspend fun delete(uris: List<VfsUri>, onProgress: ProgressCallback?) {
+        if (failDelete) throw VfsException.Permission("测试：删除目标失败")
         uris.forEach { u ->
             nodes.keys
                 .filter { it == u.path || it.startsWith(u.path.trimEnd('/') + "/") }
@@ -103,15 +112,33 @@ class FakeVfs(
 
     override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean {
         val node = nodes[from.path] ?: return false
-        nodes[to.path] = Node(node.isDirectory, node.size)
+        val copy = Node(node.isDirectory, node.size)
+        copy.content.write(node.content.toByteArray())
+        nodes[to.path] = copy
         return true
     }
 
-    override fun openRead(uri: VfsUri, offset: Long, length: Long): VfsReader =
-        ByteArrayReader(nodes[uri.path]?.content?.toByteArray() ?: ByteArray(0))
+    override fun openRead(uri: VfsUri, offset: Long, length: Long): VfsReader {
+        val delegate = ByteArrayReader(nodes[uri.path]?.content?.toByteArray() ?: ByteArray(0))
+        openedReaders++
+        if (offset > 0) {
+            kotlinx.coroutines.runBlocking { delegate.seek(offset) }
+        }
+        return object : VfsReader by delegate {
+            override fun close() {
+                closedReaders++
+                delegate.close()
+            }
+        }
+    }
 
     override suspend fun openWrite(uri: VfsUri, size: Long?, offset: Long): VfsWriter {
+        if (failOpenWrite) throw VfsException.Permission("测试：无法打开目标写入流")
         val node = nodes.getOrPut(uri.path) { Node(false, size ?: 0) }
+        if (offset == 0L) {
+            node.content.reset()
+            node.size = 0
+        }
         return object : VfsWriter {
             private var written = offset
             override val writtenBytes: Long get() = written

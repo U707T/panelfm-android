@@ -50,4 +50,14 @@ class VfsUriTest {
         assertTrue(VfsUri.parse("s3://photos/a").sameMount(VfsUri.parse("s3://photos/b/c")))
         assertTrue(!VfsUri.parse("s3://photos/a").sameMount(VfsUri.parse("s3://other/a")))
     }
+
+    @Test
+    fun `不同连接号即使主机相同也不是同一挂载点`() {
+        val first = VfsUri.of("sftp", "nas:22", "/home/alice", "c=1")
+        val second = VfsUri.of("sftp", "nas:22", "/home/bob", "c=2")
+        val same = VfsUri.of("sftp", "nas:22", "/home/alice/docs", "c=1")
+        assertTrue(!first.sameMount(second))
+        assertTrue(first.sameMount(same))
+        assertTrue(!first.sameMount(VfsUri.of("sftp", "nas:22", "/home/alice")))
+    }
 }

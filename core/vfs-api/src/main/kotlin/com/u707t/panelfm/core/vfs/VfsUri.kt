@@ -32,8 +32,19 @@ data class VfsUri(
     fun resolve(relative: String): VfsUri =
         copy(path = (if (isRoot) "" else path.trimEnd('/')) + "/" + relative.trimStart('/'))
 
-    /** 是否在同一挂载点（判断服务端快路径是否可行） */
-    fun sameMount(other: VfsUri): Boolean = scheme == other.scheme && authority == other.authority
+    /**
+     * 是否在同一挂载点。
+     *
+     * 同一主机/端口可能同时存在多个连接（不同用户、域或根路径），
+     * `?c=<connectionId>` 是连接隔离边界；不能只比较 scheme + authority，
+     * 否则「目录自包含检查」和「自身覆盖保护」会把两个账号误当成同一挂载点。
+     */
+    fun sameMount(other: VfsUri): Boolean {
+        if (scheme != other.scheme || authority != other.authority) return false
+        val a = VfsUris.connectionId(this)
+        val b = VfsUris.connectionId(other)
+        return if (a != null || b != null) a == b else true
+    }
 
     fun withPath(newPath: String): VfsUri = copy(path = if (newPath.startsWith("/")) newPath else "/$newPath")
 

@@ -45,7 +45,7 @@ class ZipEditor(
                         zf.entries.asSequence().forEach { entry ->
                             val name = entry.name
                             if (matchesPrefix(name, remove)) return@forEach
-                            val target = applyRename(name, rename)
+                            val target = safeEntryName(applyRename(name, rename))
                             if (entry.isDirectory) {
                                 out.putArchiveEntry(ZipArchiveEntry("${target.trimEnd('/')}/").apply { time = entry.time })
                                 out.closeArchiveEntry()
@@ -67,7 +67,7 @@ class ZipEditor(
                     // 追加新文件
                     additions.forEach { (entryName, sourceUri) ->
                         val vfs = locator.find(sourceUri) ?: return@forEach
-                        addEntry(out, vfs, sourceUri, entryName)
+                        addEntry(out, vfs, sourceUri, safeEntryName(entryName))
                     }
                     out.finish()
                 }
@@ -127,22 +127,38 @@ class ZipEditor(
         return name
     }
 
+    /** 任何写入 ZIP 的条目名都必须是相对安全路径，不能携带 `..` 或绝对根。 */
+    private fun safeEntryName(raw: String): String {
+        val normalized = raw.replace('\\', '/')
+        if (normalized.startsWith('/') || normalized.contains('\u0000')) {
+            throw VfsException.IllegalArgument("压缩包条目路径非法：$raw")
+        }
+        val parts = normalized.split('/')
+        if (parts.any { it == ".." }) {
+            throw VfsException.IllegalArgument("压缩包条目不能包含上级路径：$raw")
+        }
+        val clean = parts.filter { it.isNotEmpty() && it != "." }.joinToString("/")
+        if (clean.isEmpty()) throw VfsException.IllegalArgument("压缩包条目路径为空")
+        return if (normalized.endsWith('/')) "$clean/" else clean
+    }
+
     private suspend fun addEntry(
         out: ZipArchiveOutputStream,
         vfs: VirtualFileSystem,
         source: VfsUri,
         entryName: String,
     ) {
+        val safeName = safeEntryName(entryName)
         val meta = vfs.stat(source)
         if (meta.isDirectory) {
-            out.putArchiveEntry(ZipArchiveEntry("${entryName.trimEnd('/')}/").apply { time = System.currentTimeMillis() })
+            out.putArchiveEntry(ZipArchiveEntry("${safeName.trimEnd('/')}/").apply { time = System.currentTimeMillis() })
             out.closeArchiveEntry()
             vfs.list(source).forEach { child ->
-                addEntry(out, vfs, child.uri, "$entryName/${child.name}")
+                addEntry(out, vfs, child.uri, "$safeName/${child.name}")
             }
             return
         }
-        val entry = ZipArchiveEntry(entryName).apply { if (meta.size > 0) size = meta.size }
+        val entry = ZipArchiveEntry(safeName).apply { if (meta.size > 0) size = meta.size }
         out.putArchiveEntry(entry)
         val reader = vfs.openRead(source)
         try {
