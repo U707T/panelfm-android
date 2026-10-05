@@ -96,7 +96,7 @@ fun MtSideDrawer(
     val settings by container.settings.collectAsState()
     val connections by container.connections.collectAsState()
     // 观察 taskEvents（任务状态变化也会刷新），仅用于统计「进行中」数量
-    val tasks by container.engine.taskEvents.collectAsState(initial = emptyList())
+    val tasks by container.engine.snapshots.collectAsState(initial = emptyList())
 
     var drawerMenu by remember { mutableStateOf(false) }
     var protocolSub by remember { mutableStateOf(false) }
@@ -398,7 +398,7 @@ fun MtSideDrawer(
             SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
             if (expandTools) {
                 val active = tasks.count {
-                    val s = it.state.value
+                    val s = it.state
                     s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
                 }
                 DrawerTool("回收站", MtIcon.DELETE, onOpenTrash)

@@ -1,5 +1,6 @@
 package com.u707t.panelfm.ui.preview
 
+import androidx.core.net.toUri
 import android.content.Intent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -329,7 +330,7 @@ private fun rememberAppIcon(packageName: String): ImageBitmap? {
 private fun querySystemApps(context: android.content.Context, mime: String?): List<SystemOpenApp> {
     val pm = context.packageManager
     val type = mime?.takeIf { it.isNotBlank() } ?: "*/*"
-    val dummy = android.net.Uri.parse("content://com.u707t.panelfm.preview/file")
+    val dummy = "content://com.u707t.panelfm.preview/file".toUri()
     val out = LinkedHashMap<String, SystemOpenApp>()
     fun collect(action: String) {
         val intent = Intent(action).apply {

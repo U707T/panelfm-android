@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -132,7 +133,7 @@ fun PaneView(
     // 剪贴板里有没有内容（决定粘贴 FAB 是否出现）
     val clipboardReady = controller.hasClipboard
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
-    val settings = container.settings.value
+    val settings by container.settings.collectAsState()
 
     /** 列表在根坐标系中的顶部（把行内局部坐标换算成列表坐标） */
     var listTopRoot by remember { mutableStateOf(0f) }
@@ -485,6 +486,8 @@ private fun MtFileRow(
     onLongPress: () -> Unit,
     onSwipeMenu: (Int) -> Unit,
 ) {
+    val settings by container.settings.collectAsState()
+
     // 非活动窗格：MT 只靠「活动侧阴影 + 顶栏高亮」表达焦点，**不整体调暗**；
     // 这里保留极轻微淡化（0.85），既区分焦点又不影响可读性（旧值 0.55 太暗、像禁用态）
     val alpha = if (dimmed) 0.85f else 1f
@@ -674,7 +677,7 @@ private fun MtFileRow(
             )
             Text(
                 // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
-                rowSubtitle(container.settings.value.listDisplayMode, item),
+                rowSubtitle(settings.listDisplayMode, item),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
                 color = MtSpec.RowSubLight.copy(alpha = alpha),
                 maxLines = 1,

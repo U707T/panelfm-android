@@ -5,6 +5,7 @@ import android.graphics.Color as AndroidColor
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import androidx.compose.foundation.Image
+import androidx.core.graphics.createBitmap
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -169,7 +170,7 @@ private fun PdfPage(
                         val scale = (1600f / page.width).coerceAtMost(3f)
                         val w = (page.width * scale).toInt().coerceAtLeast(1)
                         val h = (page.height * scale).toInt().coerceAtLeast(1)
-                        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        val bmp = createBitmap(w, h, Bitmap.Config.ARGB_8888)
                         bmp.eraseColor(AndroidColor.WHITE)
                         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                         bmp

@@ -26,6 +26,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -208,6 +209,7 @@ fun ConfirmDialog(title: String, message: String, confirmText: String = "确定"
  */
 @Composable
 fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetadata, onDismiss: () -> Unit) {
+    val settings by container.settings.collectAsState()
     val clipboard = LocalClipboardManager.current
     var meta by remember(item.uri) { mutableStateOf(item) }
     var spaceText by remember(item.uri) { mutableStateOf<String?>(null) }
@@ -239,7 +241,7 @@ fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetada
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // MT「对话框图标」设置（0x7f1102f3/2f4/2f5/2f6）：深色 / 浅色 / 无背景
-                DialogIcon(MtIcon.INFO, DialogIconMode.of(container.settings.value.dialogIconMode))
+                DialogIcon(MtIcon.INFO, DialogIconMode.of(settings.dialogIconMode))
                 Text("属性", modifier = Modifier.padding(start = 10.dp))
             }
         },

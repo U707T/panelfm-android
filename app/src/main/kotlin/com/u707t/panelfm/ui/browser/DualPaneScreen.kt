@@ -133,6 +133,7 @@ fun DualPaneScreen(
     onOpenDiff: (VfsUri, VfsUri) -> Unit,
 ) {
     val ui by container.browser.state.collectAsState()
+    val settings by container.settings.collectAsState()
     val controller = container.browser
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -218,7 +219,7 @@ fun DualPaneScreen(
                     config.openPath,
                     "c=${config.id}",
                 )
-                controller.open(controller.state.value.focused, uri, config.id, config.name)
+                controller.open(ui.focused, uri, config.id, config.name)
                 connecting = null
                 drawerState.close()
             } catch (e: Exception) {
@@ -527,7 +528,7 @@ fun DualPaneScreen(
                                 ) { change, dragAmount ->
                                     change.consume()
                                     val total = panesWidthPx.coerceAtLeast(1f)
-                                    controller.setSplitRatio(controller.state.value.splitRatio + dragAmount.x / total)
+                                    controller.setSplitRatio(ui.splitRatio + dragAmount.x / total)
                                 }
                             }
                             .pointerInput(Unit) {
@@ -617,7 +618,7 @@ fun DualPaneScreen(
                 }
             } else if (focused.hasSelection) {
                 // MT：多选模式下底栏变成「全选 / 反选 / 类选 / …」动态按钮（0x7f11062b/632/633）
-                val bottomExtraSel = container.settings.value.bottomBarPaddingDp.dp
+                val bottomExtraSel = settings.bottomBarPaddingDp.dp
                 Column {
                     DividerPx()
                     Row(
@@ -638,7 +639,7 @@ fun DualPaneScreen(
                     }
                 }
             } else {
-                val bottomExtra = container.settings.value.bottomBarPaddingDp.dp
+                val bottomExtra = settings.bottomBarPaddingDp.dp
                 Column {
                     // MT：底栏上方的 1px 分割线（`090110` / `09007D`）
                     DividerPx()
@@ -661,7 +662,7 @@ fun DualPaneScreen(
                                     onDragCancel = { accumulated = 0f },
                                 ) { _, dragAmount ->
                                     accumulated += dragAmount
-                                    if (!fired && accumulated < -threshold && container.settings.value.bookmarkSwipe) {
+                                    if (!fired && accumulated < -threshold && settings.bookmarkSwipe) {
                                         fired = true
                                         onOpenBookmarks()
                                     }
@@ -979,7 +980,7 @@ fun DualPaneScreen(
             initial = focused.search,
             label = "关键字",
             hint = "普通文本=包含；!文本=不包含；/正则；!/正则=正则否定。留空清除。",
-            history = container.settings.value.inputHistory[PrefsStore.RecordKeys.FILTER].orEmpty(),
+            history = settings.inputHistory[PrefsStore.RecordKeys.FILTER].orEmpty(),
             onConfirm = { q ->
                 controller.setSearch(focusSide, q)
                 if (q.isNotBlank()) scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.FILTER, q) }
@@ -1034,7 +1035,7 @@ fun DualPaneScreen(
     if (showSearch) {
         MtSearchDialog(
             initialQuery = focused.search,
-            history = container.settings.value.searchHistory,
+            history = settings.searchHistory,
             onSearch = { q, field, recursive, minSize, maxSize ->
                 val hasSizeFilter = minSize >= 0 || maxSize >= 0
                 when {
@@ -1279,9 +1280,9 @@ fun DualPaneScreen(
     batchRenameFor?.let { items ->
         BatchRenameDialog(
             items = items,
-            patternHistory = container.settings.value.inputHistory[PrefsStore.RecordKeys.RENAME_PATTERN].orEmpty(),
-            findHistory = container.settings.value.inputHistory[PrefsStore.RecordKeys.RENAME_SEARCH].orEmpty(),
-            replaceHistory = container.settings.value.inputHistory[PrefsStore.RecordKeys.RENAME_REPLACE].orEmpty(),
+            patternHistory = settings.inputHistory[PrefsStore.RecordKeys.RENAME_PATTERN].orEmpty(),
+            findHistory = settings.inputHistory[PrefsStore.RecordKeys.RENAME_SEARCH].orEmpty(),
+            replaceHistory = settings.inputHistory[PrefsStore.RecordKeys.RENAME_REPLACE].orEmpty(),
             onConfirm = { expression, find, replace, useRegex ->
                 scope.launch {
                     container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_PATTERN, expression)
@@ -1436,7 +1437,7 @@ fun DualPaneScreen(
     ui.conflict?.let { info ->
         ConflictDialog(
             info = info,
-            dialogIconMode = container.settings.value.dialogIconMode,
+            dialogIconMode = settings.dialogIconMode,
         ) { policy, applyAll -> controller.resolveConflict(policy, applyAll) }
     }
     ui.diff?.let { diff ->

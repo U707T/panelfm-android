@@ -122,7 +122,6 @@ class TransferService : Service() {
     }
 
     private fun createChannel() {
-        if (Build.VERSION.SDK_INT < 26) return
         val manager = getSystemService(NotificationManager::class.java) ?: return
         if (manager.getNotificationChannel(CHANNEL_ID) == null) {
             manager.createNotificationChannel(
@@ -148,7 +147,7 @@ class TransferService : Service() {
         fun start(context: Context) {
             runCatching {
                 val intent = Intent(context, TransferService::class.java)
-                if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
+                context.startForegroundService(intent)
             }
         }
 

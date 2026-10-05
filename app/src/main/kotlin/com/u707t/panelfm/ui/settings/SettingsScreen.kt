@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
     val settings by container.settings.collectAsState()
+    val browserState by container.browser.state.collectAsState()
     val scope = rememberCoroutineScope()
     var editUserAgent by remember { mutableStateOf(false) }
 
@@ -209,7 +210,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 TextButton(onClick = { container.browser.setBrowseMode(mode) }) {
                     Text(
                         label,
-                        color = if (container.browser.state.value.browseMode == mode) MaterialTheme.colorScheme.primary
+                        color = if (browserState.browseMode == mode) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }

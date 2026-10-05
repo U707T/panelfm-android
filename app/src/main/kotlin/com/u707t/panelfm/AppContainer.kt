@@ -140,6 +140,7 @@ class AppContainer(val app: Application) {
     val remote = RemoteHttpServer(locator)
 
     /** Media3 播放用的统一 VFS 数据源（本地/SFTP/WebDAV/SMB/S3 通吃） */
+    @androidx.media3.common.util.UnstableApi
     val vfsDataSourceFactory = VfsDataSourceFactory(locator, app)
 
     init {

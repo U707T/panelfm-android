@@ -1,5 +1,6 @@
 package com.u707t.panelfm.ui
 
+import androidx.core.net.toUri
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -152,11 +153,16 @@ fun AppRoot(container: AppContainer) {
             text = { Text("Android 11 及以上必须授权，才能像 MT 一样浏览 /storage/emulated/0、Android/data 之外的完整文件系统。\n未授权时会退化为只能访问应用私有目录。") },
             confirmButton = {
                 TextButton(onClick = {
-                    runCatching {
-                        storageLauncher.launch(
-                            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                                .setData(Uri.parse("package:${context.packageName}"))
-                        )
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                        runCatching {
+                            storageLauncher.launch(
+                                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                                    .setData("package:${context.packageName}".toUri())
+                            )
+                        }
+                    } else {
+                        // askStorage 在 API < 30 默认就是 false；这里仅防止未来状态来源变化。
+                        askStorage = false
                     }
                     askStorage = false
                     askLocalNet = !LocalNetwork.isGranted(context)

@@ -1,5 +1,6 @@
 package com.u707t.panelfm.ui.home
 
+import androidx.core.net.toUri
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -88,8 +89,9 @@ fun HomeScreen(
     val scope = rememberCoroutineScope()
     val connections by container.connections.collectAsState()
     val settings by container.settings.collectAsState()
+    val browserState by container.browser.state.collectAsState()
     // 观察 taskEvents（任务状态变化也会刷新），仅用于统计「进行中」数量
-    val tasks by container.engine.taskEvents.collectAsState(initial = emptyList())
+    val tasks by container.engine.snapshots.collectAsState(initial = emptyList())
 
     var status by remember { mutableStateOf<String?>(null) }
     var connecting by remember { mutableStateOf<Long?>(null) }
@@ -137,7 +139,7 @@ fun HomeScreen(
 
     fun openVolume(authority: String, label: String, path: String = "/") {
         container.browser.open(
-            container.browser.state.value.focused,
+            browserState.focused,
             VfsUri.of("local", authority, path),
             connectionId = null,
             label = label,
@@ -239,11 +241,15 @@ fun HomeScreen(
                     detail = "Android 11+ 必须授予后才能完整浏览 /storage/emulated/0。",
                     actionLabel = "去授权",
                     onAction = {
-                        runCatching {
-                            requestStorage.launch(
-                                Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                                    .setData(Uri.parse("package:${context.packageName}"))
-                            )
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            runCatching {
+                                requestStorage.launch(
+                                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
+                                        .setData("package:${context.packageName}".toUri())
+                                )
+                            }
+                        } else {
+                            storageGranted = true
                         }
                     },
                 )
@@ -320,7 +326,7 @@ fun HomeScreen(
                                 config.openPath,
                                 "c=${config.id}",
                             )
-                            container.browser.open(container.browser.state.value.focused, uri, config.id, config.name)
+                            container.browser.open(browserState.focused, uri, config.id, config.name)
                             connecting = null
                             onOpenBrowser()
                         } catch (e: Exception) {
@@ -357,7 +363,7 @@ fun HomeScreen(
             SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
             if (expandTools) {
                 val active = tasks.count {
-                    val s = it.state.value
+                    val s = it.state
                     s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
                 }
                 ToolRow("回收站", MtIcon.DELETE) { onOpenTrash() }

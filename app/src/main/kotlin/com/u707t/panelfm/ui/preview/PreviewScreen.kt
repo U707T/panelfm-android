@@ -62,6 +62,7 @@ import java.io.File
  *  - 播放器、编辑器、字体预览自带整屏界面（整页接管，不再叠加外壳）
  *  - 顶栏复刻 MT：← 返回 · 文件名（单行省略）· ⋮（文本 / 编辑 / Hex / 字体 / 外部应用）
  */
+@androidx.media3.common.util.UnstableApi
 @Composable
 fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -> Unit) {
     val uri = request.uri

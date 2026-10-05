@@ -1,5 +1,6 @@
 package com.u707t.panelfm.ui.preview
 
+import androidx.core.net.toUri
 import android.media.AudioManager
 import android.net.Uri
 import android.os.SystemClock
@@ -98,6 +99,7 @@ import kotlin.math.sin
  *  - 手势：单击显隐（播放中 4s 自动隐藏）；双击左右 ±10s、中间播放暂停；长按 2.0x；横滑进度；竖滑音量 / 亮度
  *  - 同目录音视频自动组成播放列表（⏮ ⏭）
  */
+@androidx.media3.common.util.UnstableApi
 @Composable
 fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () -> Unit) {
     val context = LocalContext.current
@@ -1147,7 +1149,7 @@ internal fun percentDecode(value: String): String =
     java.net.URLDecoder.decode(value, "UTF-8")
 
 /** 把 VFS URI 编码成 Media3 可用的 Uri（自定义 `panelfm://` 方案由 [VfsDataSource] 解回）。 */
-fun mediaUriFor(vfsUri: VfsUri): Uri = Uri.parse(mediaUriString(vfsUri))
+fun mediaUriFor(vfsUri: VfsUri): Uri = mediaUriString(vfsUri).toUri()
 
 /**
  * Media3 数据源工厂：**通用**（`panelfm://` 走统一 VFS，标准 scheme 交给 Media3 自带数据源）。
@@ -1160,6 +1162,7 @@ fun mediaUriFor(vfsUri: VfsUri): Uri = Uri.parse(mediaUriString(vfsUri))
  * 所以这里对非 `panelfm://` 的请求**委托**给 `DefaultDataSource`
  * （它内部按 scheme 分派：file / content / asset / http(s) / data …）。
  */
+@androidx.media3.common.util.UnstableApi
 class VfsDataSourceFactory(
     private val locator: VfsLocator,
     context: android.content.Context,
@@ -1179,6 +1182,7 @@ class VfsDataSourceFactory(
  * 网络数据源会走更宽松的超时与重试。这里传 `true`（保守取值）：
  * 同一套代码既要读本地也要读网络，标成网络只是让 Media3 用更宽容的策略，本地读取不受影响。
  */
+@androidx.media3.common.util.UnstableApi
 class VfsDataSource(
     private val locator: VfsLocator,
     /**
