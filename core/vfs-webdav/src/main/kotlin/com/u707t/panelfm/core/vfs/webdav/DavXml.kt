@@ -56,7 +56,12 @@ object DavXml {
                             val name = path.substringAfterLast('/')
                             if (name.isNotEmpty()) {
                                 out += FileMetadata(
-                                    uri = VfsUri.of(requested.scheme, requested.authority, path),
+                                    // 必须用 requested.copy(...)：它保留 query（含 ?c=<connectionId>）。
+                                    // 旧实现 VfsUri.of(scheme, authority, path) **丢掉了 query**，
+                                    // 于是 stat/list 出来的条目再也找不到原会话 ——
+                                    // 表现就是「点开网络上的视频 → 存储会话不可用」，
+                                    // 以及同主机多账号被判成同一挂载点。
+                                    uri = entryUri(requested, path),
                                     name = name,
                                     isDirectory = isCollection,
                                     size = if (isCollection) -1L else length,
@@ -73,6 +78,15 @@ object DavXml {
         }
         return out
     }
+
+    /**
+     * 由 href 解析出的路径构造条目 URI。
+     *
+     * **必须整体保留请求 URI 的 query**（其中 `?c=<connectionId>` 是会话定位与
+     * 「同主机多账号隔离」的唯一依据）。旧实现用 `VfsUri.of(scheme, authority, path)`
+     * 建 URI、把 query 丢了 —— 于是 stat / list 出来的条目再也找不到原会话。
+     */
+    internal fun entryUri(requested: VfsUri, path: String): VfsUri = requested.copy(path = path)
 
     fun newParser() = Xml.newPullParser().apply {
         setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, true)

@@ -23,6 +23,9 @@ class SessionLocator(private val container: AppContainer) : VfsLocator {
         container.connectionByAuthority(uri.scheme, uri.authority)?.let { config ->
             container.registry.peek(config)?.let { return it }
         }
+        // 兜底 1：按 URI 反查连接（含 S3 的 bucket-authority 形态）后取活会话
+        container.liveSessionFor(uri)?.let { return it }
+        // 兜底 2：历史缓存。只作为最后手段 —— 它可能指向已被回收的会话。
         return container.mountedOf("${uri.scheme}://${uri.authority}")
     }
 }

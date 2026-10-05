@@ -55,7 +55,7 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 // 缓存名用完整 URI 的 hash（不同目录的同名字体不互相覆盖）
                 val local = File(container.appDirs.tmpDir, "font-${uri.toString().hashCode()}-${uri.name}")
                 if (!local.exists()) {
-                    val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
+                    val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
                     val reader = vfs.openRead(uri)
                     try {
                         local.outputStream().use { out ->
@@ -75,7 +75,7 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         }
         typeface = tf
         sizeText = runCatching {
-            val vfs = container.locator.find(uri)
+            val vfs = container.resolveSession(uri)
             vfs?.stat(uri)?.size?.let { Fmt.size(it) }.orEmpty()
         }.getOrDefault("")
     }

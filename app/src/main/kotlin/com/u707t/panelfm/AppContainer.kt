@@ -143,7 +143,7 @@ class AppContainer(val app: Application) {
 
     /** Media3 播放用的统一 VFS 数据源（本地/SFTP/WebDAV/SMB/S3 通吃） */
     @androidx.media3.common.util.UnstableApi
-    val vfsDataSourceFactory = VfsDataSourceFactory(locator, app)
+    val vfsDataSourceFactory = VfsDataSourceFactory(locator, app, resolver = { resolveSession(it) })
 
     init {
         ThumbCache.init(appDirs.thumbsDir)
@@ -201,6 +201,56 @@ class AppContainer(val app: Application) {
 
     fun connectionByAuthority(scheme: String, authority: String): ConnectionConfig? =
         connections.value.firstOrNull { it.scheme == scheme && "${it.host}:${it.port}" == authority }
+
+    /**
+     * 由一个 VFS URI 反查它属于哪个连接配置。
+     *
+     * 三级匹配，覆盖所有 URI 形态：
+     *  1. `?c=<connectionId>`（最精确，支持同主机多账号）；
+     *  2. `authority == host:port`（WebDAV / SFTP / FTP / SMB）；
+     *  3. S3 的 authority 是 **bucket 名**，不是 host:port —— 先按连接的默认 bucket 匹配，
+     *     只有一个 S3 连接时直接采用它。
+     */
+    fun connectionForUri(uri: com.u707t.panelfm.core.vfs.VfsUri): ConnectionConfig? {
+        connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))?.let { return it }
+        connectionByAuthority(uri.scheme, uri.authority)?.let { return it }
+        val sameScheme = connections.value.filter { it.scheme == uri.scheme }
+        sameScheme.firstOrNull { it.option(com.u707t.panelfm.core.vfs.s3.S3Config.OPT_BUCKET) == uri.authority }
+            ?.let { return it }
+        return sameScheme.singleOrNull()
+    }
+
+    /**
+     * 在当前**活着**的会话里找 URI 所属的 VFS。
+     *
+     * 为什么要有这条：`mounted` 表只是历史缓存（会话被空闲回收 / 断开后不会自动清理），
+     * 单靠它会返回一个已经死掉的实例；而 URI 丢了 `?c=` 时（历史书签、旧路径记录、
+     * 解析层丢掉 query）又没法用连接号定位。这里直接以「注册表里真实存在的会话」为准。
+     */
+    fun liveSessionFor(uri: com.u707t.panelfm.core.vfs.VfsUri): com.u707t.panelfm.core.vfs.VirtualFileSystem? {
+        registry.peek(connectionForUri(uri) ?: return null)?.let { return it }
+        // 同 scheme 且只有一个活会话时（典型是单 S3 / 单 WebDAV），直接采信
+        val sameScheme = connections.value.filter { it.scheme == uri.scheme }
+            .mapNotNull { c -> registry.peek(c)?.let { c to it } }
+        if (sameScheme.size == 1) return sameScheme.first().second
+        return null
+    }
+
+    /**
+     * 解析 URI 所属会话；**找不到时自动重连一次**。
+     *
+     * 这是「存储会话不可用（请重新打开该存储）」的正解：把「请用户手动重开存储」
+     * 变成「应用自己重连」。重连失败才把原因交给上层展示。
+     */
+    suspend fun resolveSession(uri: com.u707t.panelfm.core.vfs.VfsUri): com.u707t.panelfm.core.vfs.VirtualFileSystem? {
+        locator.find(uri)?.let { return it }
+        liveSessionFor(uri)?.let { return it }
+        val config = connectionForUri(uri) ?: return null
+        return runCatching {
+            openConnection(config)
+            locator.find(uri) ?: liveSessionFor(uri)
+        }.getOrNull()
+    }
 
     /** 打开（或复用）一个网络连接，返回可用的 VFS 实例；secretOverride 用于「测试连接」尚未落库的口令 */
     suspend fun openConnection(

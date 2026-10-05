@@ -43,6 +43,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -1224,6 +1225,13 @@ fun DualPaneScreen(
     }
     // 打开方式（MT：内置打开方式列表 + 长按设为默认 + 管理）
     openWithFor?.let { item ->
+        // 组合期不查库（旧实现直接在参数里调 controller.defaultOpenMode → 每次重组查一次 SQLite）
+        val openWithDefaultMode by produceState<com.u707t.panelfm.ui.preview.PreviewMode?>(
+            initialValue = null,
+            item.uri,
+        ) {
+            value = controller.defaultOpenModeSuspend(item)
+        }
         val kind = MimeTypes.kindOf(item.extension)
         OpenWithDialog(
             fileName = item.name,
@@ -1244,7 +1252,7 @@ fun DualPaneScreen(
                 OpenWithOption(PreviewMode.APK_INFO, available = kind == MimeTypes.Kind.APK),
                 OpenWithOption(PreviewMode.SYSTEM, available = item.uri.scheme == "local"),
             ),
-            defaultMode = controller.defaultOpenMode(item),
+            defaultMode = openWithDefaultMode,
             onPick = { mode ->
                 openWithFor = null
                 if (mode == PreviewMode.SYSTEM) {
@@ -1265,10 +1273,13 @@ fun DualPaneScreen(
         )
     }
     if (openWithManage) {
-        var entries by remember { mutableStateOf(controller.openModes()) }
+        // 组合期不查库：进入对话框时异步读一次，增删后再刷新
+        var entries by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
+        var reloadAt by remember { mutableStateOf(0) }
+        LaunchedEffect(reloadAt) { entries = controller.openModesSuspend() }
         OpenWithManageDialog(
             entries = entries,
-            onDelete = { ext -> controller.clearOpenMode(ext); entries = controller.openModes() },
+            onDelete = { ext -> controller.clearOpenMode(ext); reloadAt++ },
             onDismiss = { openWithManage = false },
         )
     }

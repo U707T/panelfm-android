@@ -6,6 +6,13 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.PointerInputScope
+import androidx.compose.ui.input.pointer.positionChanged
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
@@ -31,6 +38,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -75,10 +83,12 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
 
     LaunchedEffect(uri) {
         try {
-            val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
+            // resolveSession：会话被回收 / URI 丢过连接号时自动重连，避免整页变成
+            // 「会话不可用」而用户什么都没法做
+            val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
             meta = vfs.stat(uri)
         } catch (e: Exception) {
-            error = e.message ?: "读取失败"
+            error = (e as? com.u707t.panelfm.core.vfs.VfsException)?.userMessage ?: (e.message ?: "读取失败")
         }
     }
 
@@ -245,7 +255,7 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata, onSwitchTo
     LaunchedEffect(item.uri) {
         val parent = item.uri.parent
         val list = if (parent == null) emptyList() else runCatching {
-            val vfs = container.locator.find(parent) ?: return@runCatching emptyList()
+            val vfs = container.resolveSession(parent) ?: return@runCatching emptyList()
             kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
                 vfs.list(parent).filter {
                     !it.isDirectory && MimeTypes.kindOf(it.extension) == MimeTypes.Kind.IMAGE
@@ -310,7 +320,35 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata, onSwitchTo
     }
 }
 
-/** 单张图片：双击 1x/2.5x、捏合 1–5x、双指平移 */
+/** 双击放大的目标倍率 */
+private const val DOUBLE_TAP_SCALE = 2.5f
+private const val MIN_SCALE = 1f
+private const val MAX_SCALE = 5f
+
+/**
+ * 图片查看手势：捏合缩放 + 平移，且**未放大时把单指拖动让给外层 Pager**。
+ *
+ * 为什么不能直接用 `detectTransformGestures`：它一旦越过 touch slop 就会 consume 事件，
+ * 于是「单指横滑切图」永远收不到事件 —— 缩放和翻页互相抢。
+ * 这里只在 `zoom != 1`（双指）或「已放大」（需要拖动查看）时消费。
+ */
+private suspend fun PointerInputScope.detectZoomPan(
+    isZoomed: () -> Boolean,
+    onGesture: (pan: Offset, zoom: Float) -> Unit,
+) = awaitEachGesture {
+    awaitFirstDown(requireUnconsumed = false)
+    do {
+        val event = awaitPointerEvent()
+        val zoom = event.calculateZoom()
+        val pan = event.calculatePan()
+        if (zoom != 1f || isZoomed()) {
+            onGesture(pan, zoom)
+            event.changes.forEach { if (it.positionChanged()) it.consume() }
+        }
+    } while (event.changes.any { it.pressed })
+}
+
+/** 单张图片：双击 1x/2.5x、捏合 1–5x、已放大后拖动查看 */
 @Composable
 private fun ImagePage(
     container: AppContainer,
@@ -341,6 +379,12 @@ private fun ImagePage(
         bitmap == null -> LoadingState("解码中…")
         else -> {
             val bm = bitmap!!
+            // ⚠️ 手势里必须读**当前**值：`pointerInput(bm)` 的 lambda 只在 bm 变化时重建，
+            // 直接捕获 scale/offset 参数会永远停在首次组合时的 `1f` / `Zero`。
+            // 旧实现就是这个问题：每个缩放事件都拿「1f × 本帧增量」→ 放大看不到、
+            // 一松手就弹回 1x（用户观感就是「图片无法放大」）。
+            val liveScale by rememberUpdatedState(scale)
+            val liveOffset by rememberUpdatedState(offset)
             Box(
                 Modifier
                     .fillMaxSize()
@@ -348,29 +392,35 @@ private fun ImagePage(
                     .pointerInput(bm) {
                         detectTapGestures(
                             onDoubleTap = {
-                                if (scale > 1.01f) {
+                                if (liveScale > 1.01f) {
                                     onScale(1f)
                                     onOffset(androidx.compose.ui.geometry.Offset.Zero)
                                 } else {
-                                    onScale(2.5f)
+                                    onScale(DOUBLE_TAP_SCALE)
                                 }
                             },
                         )
                     }
-                    // 捏合缩放 + 平移
+                    // 捏合缩放 + 平移：未放大时把**单指拖动**让给 HorizontalPager（翻页），
+                    // 只在「双指（缩放）」或「已放大后的拖动」时消费事件 ——
+                    // 否则缩放和翻页互相抢事件，两个都会失灵。
                     .pointerInput(bm) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            val next = (scale * zoom).coerceIn(1f, 5f)
-                            onScale(next)
-                            val maxX = (next - 1f) * size.width / 2f
-                            val maxY = (next - 1f) * size.height / 2f
-                            onOffset(
-                                androidx.compose.ui.geometry.Offset(
-                                    (offset.x + pan.x).coerceIn(-maxX, maxX),
-                                    (offset.y + pan.y).coerceIn(-maxY, maxY),
+                        detectZoomPan(
+                            isZoomed = { liveScale > 1.01f },
+                            onGesture = { pan, zoom ->
+                                val base = liveScale
+                                val next = (base * zoom).coerceIn(MIN_SCALE, MAX_SCALE)
+                                val maxX = (next - 1f) * size.width / 2f
+                                val maxY = (next - 1f) * size.height / 2f
+                                val moved = androidx.compose.ui.geometry.Offset(
+                                    (liveOffset.x + pan.x).coerceIn(-maxX, maxX),
+                                    (liveOffset.y + pan.y).coerceIn(-maxY, maxY),
                                 )
-                            )
-                        }
+                                onScale(next)
+                                // 回到适应窗口时把平移一并归零，避免「缩小后画面偏在角落」
+                                onOffset(if (next <= 1.01f) androidx.compose.ui.geometry.Offset.Zero else moved)
+                            },
+                        )
                     },
                 contentAlignment = Alignment.Center,
             ) {

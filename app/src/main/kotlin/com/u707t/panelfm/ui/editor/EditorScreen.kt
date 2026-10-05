@@ -125,7 +125,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     LaunchedEffect(uri) {
         try {
-            val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
+            val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
             val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
             meta = info
             originalMode = info.permissions

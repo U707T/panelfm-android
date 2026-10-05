@@ -160,7 +160,9 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
      */
     suspend fun preflight(vfsUri: VfsUri): String? = withContext(Dispatchers.IO) {
         try {
-            val vfs = container.locator.find(vfsUri) ?: return@withContext "存储会话不可用（可能已断开，请重新打开该存储）"
+            // 会话不在时自动重连一次（把「请重新打开该存储」变成应用自己解决）
+            val vfs = container.resolveSession(vfsUri)
+                ?: return@withContext "存储会话不可用（可能已断开，请重新打开该存储）"
             val meta = vfs.stat(vfsUri)
             if (meta.isDirectory) return@withContext "这是一个文件夹，不是媒体文件"
             if (meta.size == 0L) return@withContext "文件为空（0 字节）"
@@ -280,7 +282,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         val parent = uri.parent
         if (parent != null) {
             runCatching {
-                val vfs = container.locator.find(parent) ?: return@runCatching
+                val vfs = container.resolveSession(parent) ?: return@runCatching
                 val media = withContext(Dispatchers.IO) {
                     vfs.list(parent).filter {
                         !it.isDirectory &&
@@ -1168,13 +1170,18 @@ fun mediaUriFor(vfsUri: VfsUri): Uri = mediaUriString(vfsUri).toUri()
 class VfsDataSourceFactory(
     private val locator: VfsLocator,
     context: android.content.Context,
+    /**
+     * 会话解析器：找不到会话时**允许重连**。
+     * 默认实现只做只读查找（便于单测 / 兼容旧调用点）。
+     */
+    private val resolver: suspend (VfsUri) -> com.u707t.panelfm.core.vfs.VirtualFileSystem? = { locator.find(it) },
 ) : DataSource.Factory {
 
     /** Media3 自带的分派数据源（file:// / content:// / http(s):// …） */
     private val defaultFactory = androidx.media3.datasource.DefaultDataSource.Factory(context)
 
     override fun createDataSource(): DataSource =
-        VfsDataSource(locator, defaultFactory.createDataSource())
+        VfsDataSource(locator, defaultFactory.createDataSource(), resolver)
 }
 
 /**
@@ -1192,6 +1199,8 @@ class VfsDataSource(
      * 见 [VfsDataSourceFactory] 的说明：工厂是唯一的，必须能处理所有 scheme。
      */
     private val delegate: DataSource? = null,
+    /** 会话解析器（可重连）；为 null 时退回只读的 [locator.find] */
+    private val resolver: (suspend (VfsUri) -> com.u707t.panelfm.core.vfs.VirtualFileSystem?)? = null,
 ) : BaseDataSource(true) {
 
     private var reader: VfsReader? = null
@@ -1222,7 +1231,9 @@ class VfsDataSource(
             delegated = true
             return d.open(dataSpec)
         }
-        val vfs = locator.find(vfsUri) ?: throw IOException("会话不可用（存储已断开）")
+        // 数据源跑在 Media3 的加载线程上，这里允许阻塞重连一次
+        val vfs = runBlocking { resolver?.invoke(vfsUri) ?: locator.find(vfsUri) }
+            ?: throw IOException("会话不可用（存储已断开）")
 
         transferInitializing(dataSpec)
         // 打开失败时不要把 started 置位：没有 transferStarted 就不能发送 transferEnded。

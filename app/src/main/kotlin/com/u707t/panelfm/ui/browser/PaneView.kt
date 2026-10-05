@@ -494,7 +494,15 @@ private fun MtFileRow(
     val selectSlop = with(LocalDensity.current) { SWIPE_SELECT.toPx() }
     val menuSlop = with(LocalDensity.current) { SWIPE_MENU.toPx() }
     val longPressSlop = with(LocalDensity.current) { LONG_PRESS_SLOP.toPx() }
-    val thumb = rememberThumb(container, item, targetPx = 96, skip = skipThumb)
+    // 缩略图策略由本行已有的 settings 下传，避免每行再各订阅一次 settings 流
+    val thumb = rememberThumb(
+        container, item, targetPx = 96, skip = skipThumb,
+        policy = ThumbPolicy(
+            onMobileData = settings.thumbnailsOnMobile,
+            maxBytes = settings.thumbnailMaxBytes,
+            timeoutSec = settings.thumbnailTimeoutSec,
+        ),
+    )
     val haptic = LocalHapticFeedback.current
     val dark = androidx.compose.foundation.isSystemInDarkTheme()
     // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）

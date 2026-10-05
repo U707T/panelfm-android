@@ -277,7 +277,7 @@ private suspend fun materializeApk(container: AppContainer, item: FileMetadata):
     val target = File(dir, "pkg-${item.uri.toString().hashCode()}-${item.size}.apk")
     if (target.exists() && target.length() > 0) return target
     val tmp = File(dir, "${target.name}.part")
-    val vfs = container.locator.find(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
+    val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
     vfs.openRead(item.uri).use { reader ->
         tmp.outputStream().use { out ->
             val buf = ByteArray(128 * 1024)

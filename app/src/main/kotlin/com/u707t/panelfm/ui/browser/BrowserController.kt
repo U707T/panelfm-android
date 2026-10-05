@@ -363,29 +363,40 @@ class BrowserController(private val container: AppContainer) {
      *  - 压缩包（未设置默认）→ 进入压缩包内部浏览
      *  - 其它 → 预览（自动识别）
      */
+    /**
+     * 点击列表项（对齐 MT 的「打开方式」逻辑）：
+     *  - 目录 → 进入
+     *  - 该扩展名设置了默认打开方式 → 直接用它
+     *  - 压缩包（未设置默认）→ 进入压缩包内部浏览
+     *  - 其它 → 预览（自动识别）
+     *
+     * 注意：查「默认打开方式」要读数据库。这是**每次点击**都会走的路径，
+     * 绝不能在主线程做（旧实现在点击回调里同步查 SQLite → 列表点起来发涩）。
+     */
     fun openItem(side: PaneSide, item: FileMetadata) {
         if (item.isDirectory) {
             open(side, item.uri)
             return
         }
-        val pref = runCatching { container.previewPrefDao.get(item.extension) }.getOrNull()
-        val mode = com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(pref)
-        when {
-            mode == com.u707t.panelfm.ui.preview.PreviewMode.ARCHIVE -> {
-                openArchiveInPane(side, item)
-                return
-            }
-            mode != null -> {
-                openWith(item, mode)
-                return
+        container.scope.launch {
+            val pref = runCatching { container.previewPrefDao.get(item.extension) }.getOrNull()
+            val mode = com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(pref)
+            when {
+                mode == com.u707t.panelfm.ui.preview.PreviewMode.ARCHIVE -> openArchiveInPane(side, item)
+                mode != null -> openWith(item, mode)
+                else -> {
+                    val isArchive = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind
+                        .ofFileName(item.name) != null
+                    if (isArchive) {
+                        openArchiveInPane(side, item)
+                    } else {
+                        _previewRequest.value = com.u707t.panelfm.ui.preview.PreviewRequest(
+                            item.uri, com.u707t.panelfm.ui.preview.PreviewMode.AUTO,
+                        )
+                    }
+                }
             }
         }
-        val isArchive = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name) != null
-        if (isArchive) {
-            openArchiveInPane(side, item)
-            return
-        }
-        _previewRequest.value = com.u707t.panelfm.ui.preview.PreviewRequest(item.uri, com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
     }
 
     /** 用指定方式打开（打开方式对话框 / 默认值都走这里） */
@@ -416,8 +427,20 @@ class BrowserController(private val container: AppContainer) {
 
     fun openModes(): List<Pair<String, String>> = runCatching { container.previewPrefDao.all() }.getOrDefault(emptyList())
 
+    /** 同上，但明确跑在 IO 上（供 Compose 用，避免组合期查库卡帧）。 */
+    suspend fun openModesSuspend(): List<Pair<String, String>> = withContext(container.dispatchers.io) {
+        runCatching { container.previewPrefDao.all() }.getOrDefault(emptyList())
+    }
+
     fun defaultOpenMode(item: FileMetadata): com.u707t.panelfm.ui.preview.PreviewMode? =
         com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(runCatching { container.previewPrefDao.get(item.extension) }.getOrNull())
+
+    suspend fun defaultOpenModeSuspend(item: FileMetadata): com.u707t.panelfm.ui.preview.PreviewMode? =
+        withContext(container.dispatchers.io) {
+            com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(
+                runCatching { container.previewPrefDao.get(item.extension) }.getOrNull(),
+            )
+        }
 
     /** 文件对比（对齐 MT：两个文件才能在长按菜单里对比） */
     fun startFileDiff(side: PaneSide) {

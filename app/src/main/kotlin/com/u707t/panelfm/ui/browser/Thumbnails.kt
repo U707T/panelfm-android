@@ -122,6 +122,19 @@ object ThumbCache {
     private const val MAX_REMOTE_SIZE = 3L * 1024 * 1024
 }
 
+/**
+ * 缩略图策略参数。
+ *
+ * 为什么不在这里 `collectAsState`：`rememberThumb` 是**每一行**都会调用的，
+ * 每行各自订阅 settings 时，列表滚动期间会产生 N 份订阅与 N 次重组；
+ * 由 PaneView 顶层取一次、按参数下传即可。
+ */
+data class ThumbPolicy(
+    val onMobileData: Boolean,
+    val maxBytes: Long,
+    val timeoutSec: Int,
+)
+
 /** 列表行里的缩略图（不可用/未加载时返回 null，由调用方回退到类型图标） */
 @Composable
 fun rememberThumb(
@@ -129,6 +142,7 @@ fun rememberThumb(
     item: FileMetadata,
     targetPx: Int,
     skip: Boolean,
+    policy: ThumbPolicy,
 ): ImageBitmap? {
     val isImage = !item.isDirectory && MimeTypes.kindOf(item.extension) == MimeTypes.Kind.IMAGE
     if (!isImage || skip) return null
@@ -139,25 +153,22 @@ fun rememberThumb(
         if (cfg?.option(com.u707t.panelfm.core.model.ConnectionConfig.OPT_LOAD_THUMBS) == "false") return null
     }
     val context = androidx.compose.ui.platform.LocalContext.current
-    val settings by container.settings.collectAsState()
     val state = produceState<ImageBitmap?>(
         initialValue = null,
         item.uri.toString(),
         skip,
-        settings.thumbnailsOnMobile,
-        settings.thumbnailMaxBytes,
-        settings.thumbnailTimeoutSec,
+        policy,
     ) {
         // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置（切换设置会刷新加载行为）
-        val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || settings.thumbnailsOnMobile
+        val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || policy.onMobileData
         // MT「缩略图未在 N 秒内加载完成将会取消加载」（0 = 不超时）
-        val timeout = settings.thumbnailTimeoutSec
+        val timeout = policy.timeoutSec
         val bitmap = if (timeout > 0) {
             kotlinx.coroutines.withTimeoutOrNull(timeout * 1000L) {
-                ThumbCache.load(container, item, targetPx, allowRemote, settings.thumbnailMaxBytes)
+                ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
             }
         } else {
-            ThumbCache.load(container, item, targetPx, allowRemote, settings.thumbnailMaxBytes)
+            ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
         }
         value = bitmap?.asImageBitmap()
     }

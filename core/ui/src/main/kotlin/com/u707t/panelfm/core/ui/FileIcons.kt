@@ -75,10 +75,13 @@ fun FileIcon(
                 color = glyph.copy(alpha = glyph.alpha * alpha),
             )
         } else {
-            // 文件：深/彩色底 + 白色「折角文件」剪影
-            FileGlyph(
-                modifier = Modifier.size(size * 0.56f),
+            // 文件：按类型给出**不同图形**（不再所有类型共用同一个「折角文件」剪影 ——
+            // 只靠底色区分的话，列表里一眼看不出是图片还是视频）
+            TypeGlyph(
+                kind = glyphKindOf(name),
+                modifier = Modifier.size(size * 0.58f),
                 color = glyph.copy(alpha = glyph.alpha * alpha),
+                background = bg,
             )
         }
     }
@@ -209,4 +212,199 @@ fun labelOf(name: String): String {
         ext.length <= 4 -> ext
         else -> ext.take(4)
     }
+}
+
+/** 行内图标要用的「图形类型」—— 与 [MimeTypes.Kind] 一一对应，多一个 FOLDER。 */
+enum class GlyphKind { FOLDER, IMAGE, VIDEO, AUDIO, ARCHIVE, APK, FONT, PDF, CODE, TEXT, OTHER }
+
+/** 由文件名推断图形类型 */
+fun glyphKindOf(name: String): GlyphKind {
+    val ext = name.substringAfterLast('.', "").lowercase()
+    return when (MimeTypes.kindOf(ext)) {
+        MimeTypes.Kind.IMAGE -> GlyphKind.IMAGE
+        MimeTypes.Kind.VIDEO -> GlyphKind.VIDEO
+        MimeTypes.Kind.AUDIO -> GlyphKind.AUDIO
+        MimeTypes.Kind.ARCHIVE -> GlyphKind.ARCHIVE
+        MimeTypes.Kind.APK -> GlyphKind.APK
+        MimeTypes.Kind.FONT -> GlyphKind.FONT
+        MimeTypes.Kind.PDF -> GlyphKind.PDF
+        MimeTypes.Kind.CODE -> GlyphKind.CODE
+        MimeTypes.Kind.TEXT -> GlyphKind.TEXT
+        else -> GlyphKind.OTHER
+    }
+}
+
+/**
+ * 按类型绘制的白色剪影（全部用 Canvas 画，不引入图标依赖）。
+ *
+ * @param background 底色。仅 [GlyphKind.APK] 需要它来「挖空」眼睛（负空间）。
+ */
+@Composable
+fun TypeGlyph(
+    kind: GlyphKind,
+    modifier: Modifier = Modifier,
+    color: Color = Color.White,
+    background: Color = Color.Transparent,
+) {
+    Canvas(modifier = modifier) {
+        val w = size.width
+        val h = size.height
+        val stroke = w * 0.10f
+        fun line(x1: Float, y1: Float, x2: Float, y2: Float) =
+            drawLine(color, Offset(x1, y1), Offset(x2, y2), strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+
+        when (kind) {
+            GlyphKind.FOLDER -> Unit // 文件夹走 FolderGlyph，不会到这里
+
+            // 图片：外框 + 太阳 + 山
+            GlyphKind.IMAGE -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.04f, h * 0.12f),
+                    size = Size(w * 0.92f, h * 0.76f),
+                    cornerRadius = CornerRadius(w * 0.14f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke),
+                )
+                drawCircle(color, radius = w * 0.09f, center = Offset(w * 0.30f, h * 0.36f))
+                drawPath(
+                    Path().apply {
+                        moveTo(w * 0.16f, h * 0.78f)
+                        lineTo(w * 0.42f, h * 0.48f)
+                        lineTo(w * 0.60f, h * 0.66f)
+                        lineTo(w * 0.72f, h * 0.54f)
+                        lineTo(w * 0.88f, h * 0.78f)
+                        close()
+                    },
+                    color = color,
+                )
+            }
+
+            // 视频：圆角播放键（三角）
+            GlyphKind.VIDEO -> {
+                drawPath(
+                    Path().apply {
+                        moveTo(w * 0.24f, h * 0.10f)
+                        lineTo(w * 0.86f, h * 0.50f)
+                        lineTo(w * 0.24f, h * 0.90f)
+                        close()
+                    },
+                    color = color,
+                )
+            }
+
+            // 音频：均衡器四柱（比音符更小的尺寸下也清楚）
+            GlyphKind.AUDIO -> {
+                val heights = listOf(0.34f, 0.62f, 0.44f, 0.72f)
+                heights.forEachIndexed { i, hh ->
+                    val x = w * (0.18f + i * 0.22f)
+                    drawLine(
+                        color,
+                        Offset(x, h * (0.5f - hh / 2f)),
+                        Offset(x, h * (0.5f + hh / 2f)),
+                        strokeWidth = stroke * 1.15f,
+                        cap = androidx.compose.ui.graphics.StrokeCap.Round,
+                    )
+                }
+            }
+
+            // 压缩包：箱体 + 中缝拉链
+            GlyphKind.ARCHIVE -> {
+                drawRoundRect(
+                    color = color,
+                    topLeft = Offset(w * 0.12f, h * 0.14f),
+                    size = Size(w * 0.76f, h * 0.72f),
+                    cornerRadius = CornerRadius(w * 0.12f),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke),
+                )
+                drawLine(color, Offset(w * 0.50f, h * 0.14f), Offset(w * 0.50f, h * 0.86f), strokeWidth = stroke * 0.9f)
+                for (i in 0 until 3) {
+                    val y = h * (0.30f + i * 0.20f)
+                    drawLine(color, Offset(w * 0.42f, y), Offset(w * 0.58f, y), strokeWidth = stroke * 0.9f)
+                }
+            }
+
+            // APK：安卓机器人头（天线 + 眼睛负空间）
+            GlyphKind.APK -> {
+                val dome = Path().apply {
+                    moveTo(w * 0.16f, h * 0.74f)
+                    quadraticTo(w * 0.16f, h * 0.26f, w * 0.50f, h * 0.26f)
+                    quadraticTo(w * 0.84f, h * 0.26f, w * 0.84f, h * 0.74f)
+                    close()
+                }
+                drawPath(dome, color = color)
+                drawLine(color, Offset(w * 0.60f, h * 0.20f), Offset(w * 0.72f, h * 0.06f), strokeWidth = stroke * 0.8f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                drawLine(color, Offset(w * 0.40f, h * 0.20f), Offset(w * 0.28f, h * 0.06f), strokeWidth = stroke * 0.8f, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                if (background.alpha > 0.05f) {
+                    drawCircle(background, radius = w * 0.06f, center = Offset(w * 0.36f, h * 0.48f))
+                    drawCircle(background, radius = w * 0.06f, center = Offset(w * 0.64f, h * 0.48f))
+                }
+            }
+
+            // 字体：字母 A（两腿 + 横杠）
+            GlyphKind.FONT -> {
+                line(w * 0.18f, h * 0.86f, w * 0.50f, h * 0.14f)
+                line(w * 0.82f, h * 0.86f, w * 0.50f, h * 0.14f)
+                line(w * 0.31f, h * 0.62f, w * 0.69f, h * 0.62f)
+            }
+
+            // PDF：折角页 + 三条内容线（与 TEXT 的区别是折角）
+            GlyphKind.PDF -> {
+                PageOutline(w, h, color, stroke, fold = true)
+                line(w * 0.30f, h * 0.52f, w * 0.70f, h * 0.52f)
+                line(w * 0.30f, h * 0.68f, w * 0.70f, h * 0.68f)
+            }
+
+            // 代码：< >
+            GlyphKind.CODE -> {
+                line(w * 0.38f, h * 0.24f, w * 0.16f, h * 0.50f)
+                line(w * 0.16f, h * 0.50f, w * 0.38f, h * 0.76f)
+                line(w * 0.62f, h * 0.24f, w * 0.84f, h * 0.50f)
+                line(w * 0.84f, h * 0.50f, w * 0.62f, h * 0.76f)
+            }
+
+            // 文本：三条左对齐横线（无折角）
+            GlyphKind.TEXT -> {
+                line(w * 0.20f, h * 0.28f, w * 0.80f, h * 0.28f)
+                line(w * 0.20f, h * 0.50f, w * 0.80f, h * 0.50f)
+                line(w * 0.20f, h * 0.72f, w * 0.58f, h * 0.72f)
+            }
+
+            // 未知：折角页（沿用旧观感）
+            GlyphKind.OTHER -> PageOutline(w, h, color, stroke, fold = true)
+        }
+    }
+}
+
+/** 圆角「页」轮廓；[fold] = true 时右上角留出折角缺口 */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.PageOutline(
+    w: Float,
+    h: Float,
+    color: Color,
+    stroke: Float,
+    fold: Boolean,
+) {
+    val r = w * 0.14f
+    val foldSize = w * 0.26f
+    val path = Path().apply {
+        if (fold) {
+            moveTo(r, h * 0.06f)
+            lineTo(w - foldSize, h * 0.06f)
+            lineTo(w - 0.06f * w, h * 0.06f + foldSize)
+            lineTo(w - 0.06f * w, h * 0.94f - r)
+            quadraticTo(w - 0.06f * w, h * 0.94f, w - 0.06f * w - r, h * 0.94f)
+            lineTo(r, h * 0.94f)
+            quadraticTo(w * 0.06f, h * 0.94f, w * 0.06f, h * 0.94f - r)
+            lineTo(w * 0.06f, h * 0.06f + r)
+            quadraticTo(w * 0.06f, h * 0.06f, r, h * 0.06f)
+            close()
+        } else {
+            addRoundRect(
+                androidx.compose.ui.geometry.RoundRect(
+                    rect = androidx.compose.ui.geometry.Rect(Offset(w * 0.12f, h * 0.06f), Size(w * 0.76f, h * 0.88f)),
+                    cornerRadius = CornerRadius(r, r),
+                )
+            )
+        }
+    }
+    drawPath(path, color = color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = stroke))
 }

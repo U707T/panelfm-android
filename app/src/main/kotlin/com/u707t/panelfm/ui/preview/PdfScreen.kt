@@ -223,7 +223,7 @@ private suspend fun materializePdf(container: AppContainer, item: FileMetadata):
     val target = File(dir, "doc-${item.uri.toString().hashCode()}-${item.size}.pdf")
     if (target.exists() && target.length() > 0) return target
     val tmp = File(dir, "${target.name}.part")
-    val vfs = container.locator.find(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
+    val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
     vfs.openRead(item.uri).use { reader ->
         tmp.outputStream().use { out ->
             val buf = ByteArray(128 * 1024)

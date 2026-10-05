@@ -159,7 +159,7 @@ class WebDavVfs(
     override suspend fun mkdir(uri: VfsUri, parents: Boolean) = withContext(env.dispatchers.vfs) {
         if (uri.isRoot) return@withContext
         val segments = uri.path.trim('/').split('/').filter { it.isNotEmpty() }
-        var current = VfsUri.of(uri.scheme, uri.authority, "/")
+        var current = uri.copy(path = "/")   // 保留 query（?c=），否则中途 stat 会丢会话
         for ((i, seg) in segments.withIndex()) {
             current = current.child(seg)
             if (!parents && i != segments.lastIndex) continue
