@@ -209,6 +209,131 @@ class TransferRegressionTest {
     }
 
     @Test
+    fun `服务端复制返回 false 时降级为流式复制`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs()
+            .dir("/src")
+            .file("/src/a.txt", 16)
+            .dir("/dst")
+        vfs.failServerSideCopy = true
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals("服务端能力返回 false 后，流式降级不应失败", 0, state.failed)
+        assertTrue("降级后目标文件必须存在", vfs.nodes.containsKey("/dst/a.txt"))
+        assertTrue(
+            "降级后的内容必须与源一致",
+            vfs.nodes["/src/a.txt"]!!.content.toByteArray().contentEquals(vfs.nodes["/dst/a.txt"]!!.content.toByteArray()),
+        )
+        scope.cancel()
+    }
+
+    @Test
+    fun `服务端移动返回 false 时降级为复制后删除源`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs()
+            .dir("/src")
+            .file("/src/a.txt", 16)
+            .dir("/dst")
+        vfs.failRename = true
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.MOVE,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals(0, state.failed)
+        assertTrue("降级移动后目标文件必须存在", vfs.nodes.containsKey("/dst/a.txt"))
+        assertTrue("降级移动成功后源文件必须删除", !vfs.nodes.containsKey("/src/a.txt"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `快路径同名文件 KEEP_BOTH 和 SKIP 都遵守冲突策略`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs()
+            .dir("/src")
+            .file("/src/a.txt", 4)
+            .dir("/dst")
+            .file("/dst/a.txt", 2)
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+
+        val keepBoth = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.KEEP_BOTH,
+            )
+        )
+        withTimeout(10_000) { while (keepBoth.state.value !is TaskState.Done) delay(10) }
+        assertTrue("快路径 KEEP_BOTH 必须保留原目标", vfs.nodes.containsKey("/dst/a.txt"))
+        assertTrue("快路径 KEEP_BOTH 必须创建新目标", vfs.nodes.containsKey("/dst/a (1).txt"))
+
+        val skip = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.SKIP,
+            )
+        )
+        withTimeout(10_000) { while (skip.state.value !is TaskState.Done) delay(10) }
+        assertTrue("快路径 SKIP 不能再创建第三个副本", !vfs.nodes.containsKey("/dst/a (2).txt"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `目录覆盖目录走慢路径合并而不是先删除整个目标`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs()
+            .dir("/src")
+            .dir("/src/folder")
+            .file("/src/folder/new.txt", 4)
+            .dir("/dst")
+            .dir("/dst/folder")
+            .file("/dst/folder/old.txt", 3)
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/folder")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals(0, state.failed)
+        assertTrue("目录覆盖必须保留目标目录内原有文件", vfs.nodes.containsKey("/dst/folder/old.txt"))
+        assertTrue("源文件必须复制进已有目标目录", vfs.nodes.containsKey("/dst/folder/new.txt"))
+        scope.cancel()
+    }
+
+    @Test
     fun `并发下调后运行中的任务数不超过新设定`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         // 两个慢 VFS 会话（不同会话 → 慢路径，transferFile 有 gate.checkpoint 可挂起）

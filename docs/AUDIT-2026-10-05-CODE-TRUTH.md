@@ -351,11 +351,32 @@ core/transfer/TransferRegressionTest.kt | 125 +++++++++++
 
 **建议分批（每批一个主题、独立可回滚）**：
 
+> 执行进度：批 A–D 已在 **v1.1.0** 完成；批 F（下）在 **v1.1.1** 完成。
+> 批 E 中的死代码清理仍待办（§6）。
+
+
 1. **批 A（Critical）**：`core/vfs-archive` 加密读写闭环（C1/C2/C3 + ZipEditor 保留加密 + 端到端测试）
 2. **批 B（Required·设置生效）**：R1/R2/R3/R4 —— 四个「设置项不生效/误导」一次性收口，纯 UI+容器层改动，风险低
 3. **批 C（Required·会话隔离）**：R5 把 `?c=` 收敛到唯一入口，补跨账号测试
 4. **批 D（测试补齐）**：`RemoteHttpServer` 纯函数化 + 单测；`FakeVfs` 加「静默失败」开关补 M2/M3 用例
-5. **批 E（清理）**：§6 死代码删除 + D1–D7 文档处置
+5. **批 E（清理）**：§6 死代码删除（D1–D7 文档处置已完成）
+6. **批 F（契约修复）**：~~服务端快路径失败降级~~ ✅ **v1.1.1 已合并**（原 `.preserved/` 补丁）
+   —— 并顺带修掉「快路径目录覆盖目录会先删整个目标」与「服务端进度不计入统计」两处不一致
+
+### 附：Dependabot 告警核查（v1.1.1）
+
+Push 后 GitHub 报 51 条开放告警。按「是否真的进 APK」逐类核实（用 dex 扫描而非只看报告）：
+
+| 包 | 告警数 | 是否进 APK | 结论 |
+|---|---|---|---|
+| `io.netty:*` | 41 | **否**（dex 里 `Lio/netty/` 命中 0；仅存在 SSHD 里一个可选工厂的**类名字符串**） | 不处理 |
+| `org.bouncycastle:*`（1.79） | 5 | **否**（1.79 只出现在 `androidLintTool` 配置；发布运行时是 **1.85**，两个 critical 的修复版本） | 不处理 |
+| `org.jose4j` / `org.jdom:jdom2` / `org.apache.httpcomponents:httpclient` | 3 | **否** | 不处理 |
+| `commons-lang3` 3.16.0 | 1 | **是**（`Lcommons/lang3` 命中） | ✅ **v1.1.1 抬到 3.21.0** |
+| `kotlin-gradle-plugin` | 1 | 否（构建期） | 不处理 |
+
+> 教训：`./gradlew :app:dependencies` 默认打印**所有**配置，会把构建工具链（AGP lint 工具等）
+> 的依赖混进来。判断「某告警是否真的影响用户」必须以**发布运行时配置** + **APK dex 扫描**为准。
 
 **架构层面（不阻塞，但值得记一笔）**：
 `app` 模块单文件偏大（`BrowserController.kt` 1972 行、`DualPaneScreen.kt` 1787 行、`MediaScreen.kt` 1284 行），

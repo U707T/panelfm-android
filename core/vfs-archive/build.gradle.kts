@@ -28,6 +28,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.commons.compress)
     implementation(libs.xz)          // 7z / xz 支持
+    // commons-compress 传递引入 commons-lang3 3.16.0（< 3.18.0 有非受控递归告警）；
+    // 显式抬到修复版本，避免依赖树里被传递版本钉死。
+    implementation(libs.commons.lang3)
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

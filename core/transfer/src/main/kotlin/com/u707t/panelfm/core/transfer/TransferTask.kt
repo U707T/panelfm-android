@@ -89,61 +89,106 @@ class TransferTask internal constructor(
             val plan = planner.plan(request) { count, bytes ->
                 running(TaskState.Running(0, count, "正在统计…", 0, bytes, 0, -1))
             }
-            val totalBytes = plan.totalBytes
+            val totalPlannedBytes = plan.totalBytes
+            var slowPlan: OperationPlan? = null
 
             // 有校验要求时必须逐文件读取；否则服务端快路径无法证明内容一致。
+            // 快路径返回 false 的含义是「当前协议不支持服务端操作」，必须降级到统一的
+            // 流式慢路径（VirtualFileSystem.serverSideCopy 的契约明确要求引擎降级），
+            // 不能把一个可传输任务错误地终结为失败。
             if (plan.fastPath != FastPath.NONE && request.verify == VerifyMode.NONE) {
                 val roots = rootItems()
+                val fallbackRoots = mutableListOf<FallbackRoot>()
                 roots.forEachIndexed { i, (src, dst) ->
                     gate.checkpoint()
                     val vfs = locator.find(src) ?: throw VfsException.Unsupported("会话已关闭")
-                    val target = resolveDest(src, dst, vfs) ?: run {
-                        skipped++
-                        return@forEachIndexed
-                    }
-                    val success = when (plan.fastPath) {
-                        FastPath.SERVER_MOVE -> vfs.rename(src, target)
-                        FastPath.SERVER_COPY -> vfs.serverSideCopy(src, target)
-                        FastPath.NONE -> false
-                    }
-                    if (success) {
-                        ok++
-                        // rename 天然保留 mtime；服务端复制则显式补回文件 mtime（支持时）。
-                        if (request.preserveModifiedTime) {
-                            val desiredRoot = request.destDir.child(src.name)
-                            plan.items
-                                .filter { !it.isDirectory && isSameOrDescendant(it.source, src) }
-                                .filter { it.lastModified > 0 }
-                                .forEach { item ->
-                                    val targetItem = rebaseDestination(item.dest, desiredRoot, target)
-                                    runCatching { vfs.setModified(targetItem, item.lastModified) }
-                                }
+                    val sourceMeta = vfs.stat(src)
+                    when (val decision = resolveFastPathTarget(src, dst, vfs, sourceMeta)) {
+                        FastPathTarget.Skip -> {
+                            skipped += itemCountForRoot(plan, src)
                         }
-                    } else {
-                        failed += FailedItem(src, "服务端操作失败")
+                        is FastPathTarget.Fallback -> {
+                            // 冲突目录采用慢路径的「目录合并」语义；或者服务端能力在运行时
+                            // 返回 false，均保留已经解析出的最终目标，避免 KEEP_BOTH 二次改名。
+                            fallbackRoots += FallbackRoot(src, decision.target)
+                        }
+                        is FastPathTarget.Execute -> {
+                            val success = when (plan.fastPath) {
+                                FastPath.SERVER_MOVE -> vfs.rename(src, decision.target)
+                                FastPath.SERVER_COPY -> vfs.serverSideCopy(src, decision.target)
+                                FastPath.NONE -> false
+                            }
+                            if (success) {
+                                ok += itemCountForRoot(plan, src)
+                                doneBytes += bytesForRoot(plan, src)
+                                // rename 天然保留 mtime；服务端复制则显式补回文件 mtime（支持时）。
+                                if (request.preserveModifiedTime) {
+                                    val desiredRoot = request.destDir.child(src.name)
+                                    plan.items
+                                        .filter { !it.isDirectory && isSameOrDescendant(it.source, src) }
+                                        .filter { it.lastModified > 0 }
+                                        .forEach { item ->
+                                            val targetItem = rebaseDestination(item.dest, desiredRoot, decision.target)
+                                            runCatching { vfs.setModified(targetItem, item.lastModified) }
+                                        }
+                                }
+                            } else {
+                                fallbackRoots += FallbackRoot(src, decision.target)
+                            }
+                        }
                     }
-                    running(TaskState.Running(i + 1, roots.size, src.name, ok.toLong(), roots.size.toLong(), 0, -1))
+                    running(
+                        TaskState.Running(
+                            i + 1, roots.size, src.name, doneBytes, totalPlannedBytes, 0, -1,
+                        )
+                    )
                 }
-                _state.value = TaskState.Done(
-                    ok = ok,
-                    skipped = skipped,
-                    failed = failed.size,
-                    bytes = plan.items.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0) },
-                    elapsedMs = System.currentTimeMillis() - startedAt,
-                    note = "服务端完成",
-                )
-                return
+
+                if (fallbackRoots.isNotEmpty()) {
+                    val fallbackSources = fallbackRoots.map { it.source }
+                    val fallbackRequest = request.copy(sources = fallbackSources)
+                    val rawFallbackPlan = planner.plan(fallbackRequest)
+                    val rewrittenItems = rawFallbackPlan.items.map { item ->
+                        val root = fallbackRoots
+                            .filter { isSameOrDescendant(item.source, it.source) }
+                            .maxByOrNull { it.source.path.length }
+                        if (root == null) {
+                            item
+                        } else {
+                            val originalRootDest = request.destDir.child(root.source.name)
+                            item.copy(dest = rebaseDestination(item.dest, originalRootDest, root.target))
+                        }
+                    }
+                    // 强制慢路径，避免「服务端返回 false → 重新规划 → 再次进入同一快路径」循环。
+                    slowPlan = rawFallbackPlan.copy(items = rewrittenItems, fastPath = FastPath.NONE)
+                }
+
+                if (slowPlan == null) {
+                    _state.value = TaskState.Done(
+                        ok = ok,
+                        skipped = skipped,
+                        failed = failed.size,
+                        bytes = doneBytes,
+                        elapsedMs = System.currentTimeMillis() - startedAt,
+                        note = "服务端完成",
+                    )
+                    return
+                }
             }
 
+            val executionPlan = slowPlan ?: plan
+            // 即使只有部分根目录降级，进度总量仍应使用整批原始计划的总字节数；
+            // 不能只用 fallback plan，否则已完成的服务端部分会让百分比/ETA 失真。
+            val totalBytes = totalPlannedBytes
             // 慢路径：先解决顶层目录冲突并记录 source → target 映射。
             // KEEP_BOTH / SKIP 必须影响整棵子树，不能只改目录项本身。
-            val dirResolution = resolveDirectoryRoots(plan)
+            val dirResolution = resolveDirectoryRoots(executionPlan)
             val directoryMappings = dirResolution.mappings.toMutableList()
             val skippedRoots = dirResolution.skippedRoots.toMutableSet()
             var lastSampleAt = System.currentTimeMillis()
-            var lastSampleBytes = 0L
+            var lastSampleBytes = doneBytes
 
-            plan.items.forEachIndexed { index, item ->
+            executionPlan.items.forEachIndexed { index, item ->
                 if (skippedRoots.any { root -> isSameOrDescendant(item.source, root) }) {
                     skipped++
                     return@forEachIndexed
@@ -202,7 +247,7 @@ class TransferTask internal constructor(
                                     val eta = if (speed > 0 && totalBytes > doneBytes) (totalBytes - doneBytes) / speed else -1
                                     running(
                                         TaskState.Running(
-                                            index + 1, plan.items.size, target.name,
+                                            index + 1, executionPlan.items.size, target.name,
                                             doneBytes, totalBytes, speed, eta,
                                         )
                                     )
@@ -229,7 +274,7 @@ class TransferTask internal constructor(
 
             // MOVE 只清理成功迁移后留下的空目录；被跳过的子树绝不能顺手删掉。
             if (request.op == TransferOp.MOVE) {
-                val dirs = plan.items
+                val dirs = executionPlan.items
                     .filter { it.isDirectory && skippedRoots.none { root -> isSameOrDescendant(it.source, root) } }
                     .sortedByDescending { it.depth }
                 for (dir in dirs) {
@@ -277,6 +322,61 @@ class TransferTask internal constructor(
         return TransferTaskSnapshot(id = id, title = title, subtitle = subtitle, state = s, op = request.op)
     }
 
+    private sealed interface FastPathTarget {
+        data object Skip : FastPathTarget
+        data class Execute(val target: VfsUri) : FastPathTarget
+        data class Fallback(val target: VfsUri) : FastPathTarget
+    }
+
+    private data class FallbackRoot(
+        val source: VfsUri,
+        val target: VfsUri,
+    )
+
+    private suspend fun resolveFastPathTarget(
+        source: VfsUri,
+        desired: VfsUri,
+        vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
+        sourceMeta: FileMetadata,
+    ): FastPathTarget {
+        val sameAsSource = source.sameMount(desired) &&
+            source.path.trimEnd('/') == desired.path.trimEnd('/')
+        if (sameAsSource) return FastPathTarget.Skip
+
+        val existing = existingOrNull(vfs, desired) ?: return FastPathTarget.Execute(desired)
+        val decision = decideConflict(source, desired, existing, null)
+
+        // 目录覆盖目录不能走「删除目标再服务端复制」：慢路径语义是目录合并，
+        // 需要逐项按冲突策略处理。保留原目标，交给慢路径。
+        if (sourceMeta.isDirectory && existing.isDirectory) {
+            return when (decision) {
+                ConflictPolicy.SKIP -> FastPathTarget.Skip
+                ConflictPolicy.KEEP_BOTH -> FastPathTarget.Execute(keepBoth(vfs, desired))
+                ConflictPolicy.OVERWRITE -> FastPathTarget.Fallback(desired)
+                ConflictPolicy.ASK -> error("未解析的冲突策略")
+            }
+        }
+
+        return when (decision) {
+            ConflictPolicy.SKIP -> FastPathTarget.Skip
+            ConflictPolicy.KEEP_BOTH -> FastPathTarget.Execute(keepBoth(vfs, desired))
+            ConflictPolicy.OVERWRITE -> {
+                // 文件/目录类型冲突：覆盖语义确实要求先移除异型目标。
+                deleteForOverwrite(vfs, desired)
+                FastPathTarget.Execute(desired)
+            }
+            ConflictPolicy.ASK -> error("未解析的冲突策略")
+        }
+    }
+
+    private fun itemCountForRoot(plan: OperationPlan, root: VfsUri): Int =
+        plan.items.count { isSameOrDescendant(it.source, root) }.coerceAtLeast(1)
+
+    private fun bytesForRoot(plan: OperationPlan, root: VfsUri): Long =
+        plan.items
+            .filter { !it.isDirectory && isSameOrDescendant(it.source, root) }
+            .sumOf { it.size.coerceAtLeast(0) }
+
     private data class DirectoryMapping(
         val sourceRoot: VfsUri,
         val targetRoot: VfsUri,
@@ -291,7 +391,7 @@ class TransferTask internal constructor(
     private suspend fun rootItems(): List<Pair<VfsUri, VfsUri>> {
         val result = mutableListOf<Pair<VfsUri, VfsUri>>()
         for (src in request.sources) {
-            val vfs = locator.find(src) ?: continue
+            val vfs = locator.find(src) ?: throw VfsException.Unsupported("源位置不可用：${src.authority}")
             val meta = vfs.stat(src)
             result += src to request.destDir.child(meta.name)
         }

@@ -37,6 +37,8 @@ class FakeVfs(
     val nodes = linkedMapOf<String, Node>("/" to Node(true))
     var failOpenWrite: Boolean = false
     var failDelete: Boolean = false
+    var failServerSideCopy: Boolean = false
+    var failRename: Boolean = false
     var openedReaders: Int = 0
     var closedReaders: Int = 0
 
@@ -105,12 +107,14 @@ class FakeVfs(
     }
 
     override suspend fun rename(from: VfsUri, to: VfsUri): Boolean {
+        if (failRename) return false
         val node = nodes.remove(from.path) ?: return false
         nodes[to.path] = node
         return true
     }
 
     override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean {
+        if (failServerSideCopy) return false
         val node = nodes[from.path] ?: return false
         val copy = Node(node.isDirectory, node.size)
         copy.content.write(node.content.toByteArray())
