@@ -4,6 +4,8 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.snapshotFlow
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -29,21 +31,22 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -64,56 +67,33 @@ import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.MtDividerColor
 import com.u707t.panelfm.core.ui.MtFab
 import com.u707t.panelfm.core.ui.MtGesture
+import com.u707t.panelfm.core.ui.MtRowGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
+import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /** 行高（MT 实测 48dp：图标 32 + 上下 padding 8×2） */
 private val ROW_HEIGHT = MtSpec.RowHeight
 
 // ---------------------------------------------------------------------------
-// 手势阈值集中在 core.ui.MtGesture（文档附录 G.5），这里只做单位换算
+// 手势阈值全部集中在 core.ui.MtGesture（文档附录 G.5 / F.5），
+// 判定逻辑在 core.ui.MtRowGesture（纯逻辑、单测在 MtRowGestureTest）；
+// 这里只做指针事件 → 行号 → 控制器调用的搬运。
 // ---------------------------------------------------------------------------
-
-/** 左右滑动进入多选（MT 0x7f1106f3） */
-private val SWIPE_SELECT = MtGesture.SwipeSelectDp.dp
-
-/** 已多选态右滑出菜单（MT 0x7f110697） */
-private val SWIPE_MENU = MtGesture.SwipeMenuDp.dp
-
-/** 长按触发时间（MT 400ms，比系统默认 500ms 灵敏） */
-private const val LONG_PRESS_MS = MtGesture.LongPressMs
-
-/** 长按位移容差（MT 12dp） */
-private val LONG_PRESS_SLOP = MtGesture.LongPressSlopDp.dp
-
-/** 行手势的判定阶段 */
-private enum class RowGestureMode { UNDECIDED, SWEEP, LONG_PRESS }
-
-/**
- * 行手势回调集合（用 [rememberUpdatedState] 包裹后交给 pointerInput，
- * 避免长手势过程中捕获到过期的 lambda / 布局坐标）。
- */
-private class RowGestures(
-    val rowTop: () -> Offset,
-    val indexAtRoot: (Float) -> Int,
-    val onTap: () -> Unit,
-    val onSwipeSelect: (Int) -> Unit,
-    val onSweepTo: (Int) -> Unit,
-    val onLongPress: () -> Unit,
-    val onSwipeMenu: (Int) -> Unit,
-)
 
 /**
  * 单个窗格（对齐 MT 管理器 `0x7f0c0033`）：
  *  - 列表首行 `..`；行高固定 48dp、行间 **1px** 分割线（MT `dividerHeight=1px`）
- *  - **左右滑动 ≥24dp 且 |dx| > 2|dy| = 进入多选**（MT `0x7f1106f3`）；继续滑过行间 = 区间选择
+ *  - **左右滑动 ≥24dp 且 |dx| > 2|dy| = 进入多选**（MT `0x7f1106f3`）；继续滑过行间 = 区间跟手（MT `0x7f11062f`）
  *  - **已多选态右滑 ≥48dp = 呼出更多操作**（MT `0x7f110697`；文档 F.5 冲突消解顺序第 5 条）
  *  - **长按 400ms = 锚点 + 多选**；**长按第二项 = 连选区间**（MT `0x7f110631`）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
+ *  - 手势挂在**列表**上（一个指针节点）：扫选可以一路扫到屏幕之外（边缘自动滚动），
+ *    绑在行上的话行一被回收手势就断了 —— 见 [ListGestures]
  *  - **每窗格两枚 FAB**（复刻 MT A.2）：📋 粘贴（bottom|end 12dp）/ ✕ 关闭（bottom|end 74dp），
  *    50dp / 图标 20dp / 底色 `#FFFF0000`，**显隐由状态决定**（布局里 MT 都写 visible）
  *  - **加载遮罩**：`#66222222` + 转圈 + 「取消」+ 10sp 百分比（MT `09020D/09020E`）
@@ -135,21 +115,8 @@ fun PaneView(
     val clipboardReady = controller.hasClipboard
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
     val settings by container.settings.collectAsState()
+    val density = LocalDensity.current
 
-    /** 列表在根坐标系中的顶部（把行内局部坐标换算成列表坐标） */
-    var listTopRoot by remember { mutableStateOf(0f) }
-
-    /** 手指 Y（根坐标）→ 列表项下标（-1 = 未命中） */
-    fun indexAtRoot(rootY: Float): Int {
-        val y = rootY - listTopRoot
-        val info = listState.layoutInfo.visibleItemsInfo.firstOrNull { y >= it.offset && y <= it.offset + it.size }
-            ?: return -1
-        val logical = com.u707t.panelfm.core.common.ScrollMemory.toItemIndex(info.index, canGoUp)
-        return if (logical in pane.items.indices) logical else -1
-    }
-
-    /** 本次滑动选择的锚点（按下的那一行）；-1 = 未开始 */
-    var swipeAnchor by remember { mutableStateOf(-1) }
 
     // ------------------------------------------------------------------
     // 滚动位置记忆（复刻 MT：进子目录再返回，列表停在原地，不跳回顶部）
@@ -203,6 +170,92 @@ fun PaneView(
     // 只在「这批内容换了目录」时重启（loadedKey 与 items 是同一次 updatePane 写入的，天然同步）。
     // 刻意**不**把 pane.items.size 放进 key：目录被后台刷新后条数变化会重启 effect，
     // 那样用户正在滚动的列表会被拽回记忆位置（观感是「滚到一半自己跳了」）。
+    /** 手指 Y（**列表本地坐标**）→ 列表项下标（-1 = 未命中；`..` 行也算未命中真实项） */
+    fun indexAtY(localY: Float): Int {
+        val info = listState.layoutInfo.visibleItemsInfo
+            .firstOrNull { localY >= it.offset && localY <= it.offset + it.size }
+            ?: return -1
+        val logical = com.u707t.panelfm.core.common.ScrollMemory.toItemIndex(info.index, canGoUp)
+        return if (logical in pane.items.indices) logical else -1
+    }
+
+    /**
+     * 扫选跟手预览：`previewKey` 那一行横向跟着手指走（阻尼后最多 [MtGesture.SweepPreviewDp]），
+     * 抬手弹回原位。这里只放「目标位移」，实际动画在行内（[MtFileRow]）—— 只让那一行重绘。
+     */
+    var previewKey by remember { mutableStateOf<String?>(null) }
+    var previewTarget by remember { mutableFloatStateOf(0f) }
+    val haptic = LocalHapticFeedback.current
+    val uiScope = rememberCoroutineScope()
+
+    /**
+     * 行手势判定机（纯逻辑在 core.ui.MtRowGesture）。
+     * 放在组合里而不是 `pointerInput` 里：边缘自动滚动的协程也要用它重算区间。
+     */
+    val touchSlopDp = with(LocalDensity.current) { LocalViewConfiguration.current.touchSlop / this.density }
+    val machine = remember(touchSlopDp) { MtRowGesture(touchSlopDp = touchSlopDp) }
+
+    // ------------------------------------------------------------------
+    // 行点击 / 长按 / 右滑菜单（手势层在下面 rowListGestures 里，这里只放「做什么」）
+    // ------------------------------------------------------------------
+
+    /** 单击：多选态 = 切换选中（开启「点击连选」= 区间选择）；否则 = 打开 / 预览 */
+    fun handleRowTap(item: FileMetadata) {
+        if (pane.hasSelection) {
+            if (!controller.tapSelect(side, item)) controller.toggleSelection(side, item.uri)
+        } else {
+            controller.focus(side)
+            // 离开本目录前先把滚动位置存下来（最直接的保障：
+            // 进子目录 / 打开文件都会换内容，之后返回上级要停在原地）
+            saveScrollNow(loadedKey)
+            controller.openItem(side, item)
+        }
+    }
+
+    /** 长按 400ms：锚点 + 多选；再长按另一项 = 连选区间（MT 0x7f110631）；松手弹动作菜单 */
+    fun handleRowLongPress(item: FileMetadata) {
+        controller.longPressSelect(side, item)
+        onRowAction(item)
+    }
+
+    /**
+     * MT 0x7f110697「右滑列表项可进行更多操作」：已多选态右滑 ≥48dp → 弹动作菜单。
+     * 已有多选且包含该项 → 保留多选（菜单作用于整个选择集）；否则只选该项（与长按菜单语义一致）。
+     */
+    fun handleRowSwipeMenu(item: FileMetadata) {
+        controller.focus(side)
+        if (!pane.selection.contains(item.uri.toString())) controller.enterSelectionMode(side, item)
+        onRowAction(item)
+    }
+
+    /**
+     * 列表手势配置（包在 rememberUpdatedState 里：手势跨越多帧，回调必须取**最新一帧**的，
+     * 否则长按 / 扫选过程中目录被刷新，会拿着过期的 items 算出错误的行号）。
+     */
+    val gestures by rememberUpdatedState(
+        ListGestures(
+            enabled = { !pane.loading },
+            indexAtY = { y -> indexAtY(y) },
+            itemAt = { index -> pane.items.getOrNull(index) },
+            keyAt = { index -> pane.items.getOrNull(index)?.uri?.toString() },
+            selectionMode = { pane.hasSelection },
+            onTapRow = { item -> handleRowTap(item) },
+            onLongPressRow = { item -> handleRowLongPress(item) },
+            onSweepStart = { index ->
+                // MT：左右滑动 = 进入多选（按下那一行入选，并开启扫选会话）
+                controller.focus(side)
+                controller.beginSweep(side, index)
+            },
+            onSweepTo = { index -> controller.sweepTo(side, index) },
+            onSweepEnd = { controller.endSweep(side) },
+            onSwipeMenu = { item -> handleRowSwipeMenu(item) },
+            onPreview = { key, x ->
+                previewKey = key
+                previewTarget = x
+            },
+        )
+    )
+
     LaunchedEffect(loadedKey) {
         val key = loadedKey ?: return@LaunchedEffect
         if (pane.items.isEmpty()) return@LaunchedEffect
@@ -278,8 +331,14 @@ fun PaneView(
                     userScrollEnabled = !pane.loading,
                     modifier = Modifier
                         .fillMaxSize()
-                        // 列表顶部（根坐标）：把触摸位置换算成行下标（滑动多选用）
-                        .onGloballyPositioned { coords -> listTopRoot = coords.boundsInRoot().top },
+                        // 行手势挂在**列表**上（见 ListGestures 的注释）
+                        .rowListGestures(
+                            machine = machine,
+                            gestures = { gestures },
+                            listState = listState,
+                            scope = uiScope,
+                            haptic = haptic,
+                        ),
                 ) {
                     if (canGoUp) {
                         item(key = "__parent__") {
@@ -303,57 +362,11 @@ fun PaneView(
                             skipThumb = listState.isScrollInProgress && settings.skipThumbsWhileScrolling,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
-                            selectionMode = pane.hasSelection,
                             dimmed = !focused,
-                            // 加载中（遮罩可见）时行手势整体关闭：避免遮罩期间误开文件 / 误多选
-                            gesturesEnabled = !pane.loading,
-                            tapRange = settings.tapRangeSelect,
-                            indexAtRoot = { rootY -> indexAtRoot(rootY) },
-                            onTap = {
-                                // MT：多选态单击 = 切换选中（开启「点击连选」后 = 区间选择）；
-                                // 否则单击 = 打开 / 预览
-                                if (pane.hasSelection) {
-                                    if (!controller.tapSelect(side, item)) controller.toggleSelection(side, item.uri)
-                                } else {
-                                    controller.focus(side)
-                                    // 离开本目录前先把滚动位置存下来（最直接的保障：
-                                    // 进子目录 / 打开文件都会换内容，之后返回上级要停在原地）
-                                    saveScrollNow(loadedKey)
-                                    controller.openItem(side, item)
-                                }
-                            },
-                            onSwipeSelect = { index ->
-                                // MT：左右滑动 = 进入多选（该项单选）；已有多选时滑动该行 = 加选该行
-                                controller.focus(side)
-                                swipeAnchor = index
-                                val target = pane.items.getOrNull(index)
-                                if (target != null) {
-                                    if (!pane.hasSelection) controller.startSelectionDrag(side, index)
-                                    else controller.addToSelection(side, target.uri)
-                                }
-                            },
-                            onSweepTo = { index ->
-                                val anchor = swipeAnchor
-                                if (anchor >= 0 && index != anchor) controller.setSelectionRange(side, anchor, index)
-                            },
-                            onLongPress = {
-                                // MT：长按 400ms = 锚点 + 进入多选；
-                                // 再长按**另一项** = 连选区间（MT 0x7f110631）；松手弹动作菜单
-                                controller.longPressSelect(side, item)
-                                onRowAction(item)
-                            },
-                            // MT 0x7f110697「右滑列表项可进行更多操作」：已多选态右滑 ≥48dp → 弹动作菜单
-                            onSwipeMenu = { index ->
-                                controller.focus(side)
-                                swipeAnchor = -1
-                                val target = pane.items.getOrNull(index) ?: item
-                                // 已有多选且包含该项 → 保留多选（菜单作用于整个选择集）；
-                                // 否则只选该项（与长按菜单语义一致）。
-                                if (!pane.selection.contains(target.uri.toString())) {
-                                    controller.enterSelectionMode(side, target)
-                                }
-                                onRowAction(target)
-                            },
+                            // 跟手预览：只有被扫到的那一行读这个位移（其余行传 null，不参与重组）
+                            preview = if (previewKey == item.uri.toString()) previewTarget else null,
+                            onTap = { handleRowTap(item) },
+                            onLongPress = { handleRowLongPress(item) },
                         )
                         // MT：列表分隔线 = **1px**（`dividerHeight=1px`，色 `0x7f06003a`）
                         DividerPx()
@@ -477,25 +490,17 @@ private fun MtFileRow(
     skipThumb: Boolean,
     item: FileMetadata,
     selected: Boolean,
-    selectionMode: Boolean,
     dimmed: Boolean,
-    gesturesEnabled: Boolean = true,
-    tapRange: Boolean = false,
-    indexAtRoot: (Float) -> Int,
+    /** 扫选跟手预览：非 null = 这一行正被手指扫过（值 = 目标横向位移 px），抬手弹回 0 */
+    preview: Float?,
     onTap: () -> Unit,
-    onSwipeSelect: (Int) -> Unit,
-    onSweepTo: (Int) -> Unit,
     onLongPress: () -> Unit,
-    onSwipeMenu: (Int) -> Unit,
 ) {
     val settings by container.settings.collectAsState()
 
     // 非活动窗格：MT 只靠「活动侧阴影 + 顶栏高亮」表达焦点，**不整体调暗**；
     // 这里保留极轻微淡化（0.85），既区分焦点又不影响可读性（旧值 0.55 太暗、像禁用态）
     val alpha = if (dimmed) 0.85f else 1f
-    val selectSlop = with(LocalDensity.current) { SWIPE_SELECT.toPx() }
-    val menuSlop = with(LocalDensity.current) { SWIPE_MENU.toPx() }
-    val longPressSlop = with(LocalDensity.current) { LONG_PRESS_SLOP.toPx() }
     // 缩略图策略由本行已有的 settings 下传，避免每行再各订阅一次 settings 流
     val thumb = rememberThumb(
         container, item, targetPx = 96, skip = skipThumb,
@@ -505,131 +510,35 @@ private fun MtFileRow(
             timeoutSec = settings.thumbnailTimeoutSec,
         ),
     )
-    val haptic = LocalHapticFeedback.current
     val dark = LocalPanelDarkTheme.current
-    // 行在根坐标系中的位置（滑动选择的坐标换算需要绝对坐标）
-    var rootOffset by remember { mutableStateOf(Offset.Zero) }
-    val gestures by rememberUpdatedState(
-        RowGestures(
-            rowTop = { rootOffset },
-            indexAtRoot = indexAtRoot,
-            onTap = onTap,
-            onSwipeSelect = onSwipeSelect,
-            onSweepTo = onSweepTo,
-            onLongPress = onLongPress,
-            onSwipeMenu = onSwipeMenu,
-        )
-    )
+    val previewMaxPx = with(LocalDensity.current) { MtGesture.SweepPreviewDp.dp.toPx() }
+    // 跟手位移：用高刚度弹簧追目标值 —— 拖动时几乎零延迟地跟手，抬手（目标回 0）自然弹回。
+    // 动画只影响这一行：读取位置在 graphicsLayer 里（只重绘图层，不带着列表一起重组）。
+    val previewSpec = remember { spring<Float>(dampingRatio = 1f, stiffness = 1400f) }
+    val previewOffset by animateFloatAsState(targetValue = preview ?: 0f, animationSpec = previewSpec)
 
     Row(
         Modifier
             .fillMaxWidth()
             .height(ROW_HEIGHT)
+            // ------------------------------------------------------------------
+            // 扫选跟手预览：整行跟着手指横向走一点，并轻微缩一点（最多 2%）。
+            // 放在 graphicsLayer 里读动画值 —— 只重绘这一层，不触发重组、不影响其它行。
+            // ------------------------------------------------------------------
+            .graphicsLayer {
+                translationX = previewOffset
+                val f = 1f - 0.02f * (abs(previewOffset) / previewMaxPx).coerceIn(0f, 1f)
+                scaleX = f
+                scaleY = f
+            }
             // 选中态：MT 用强调蓝的浅色底（浅色主题 #1976d2 @ 14%）
             .background(
                 if (selected) {
                     if (dark) MtSpec.RowSelectedDark else MtSpec.RowSelectedLight
                 } else Color.Transparent
             )
-            // ------------------------------------------------------------------
-            // 行手势（MT 语义 + 文档附录 F.5 的冲突消解顺序）：
-            //   1. 长按（>400ms，位移 <12dp）      = 锚点 + 进入多选（松手弹动作菜单）
-            //   2. 单击                             = 打开 / 预览（多选态 = 切换选中）
-            //   3. 左右滑动 |dx| ≥ 24dp 且 |dx|>2|dy| = 进入多选；继续滑过行间 = 区间选择
-            //   4. 已多选态右滑 ≥ 48dp              = 呼出该项的更多操作
-            //   5. 纵向拖动                         = 交给列表滚动（不消费事件）
-            // ------------------------------------------------------------------
-            .pointerInput(item.uri.toString(), gesturesEnabled, selectionMode) {
-                if (!gesturesEnabled) return@pointerInput
-                val touchSlop = viewConfiguration.touchSlop
-                val lpSlop = longPressSlop
-                val selSlop = selectSlop
-                val mSlop = menuSlop
-                val selectingAtStart = selectionMode
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val downPos = down.position
-                    val downTime = down.uptimeMillis
-                    val downIndex = gestures.indexAtRoot(gestures.rowTop().y + downPos.y)
-                    var mode = RowGestureMode.UNDECIDED
-                    var lastIndex = downIndex
-                    /** 右滑呼出菜单：只触发一次 */
-                    var menuFired = false
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                        val pos = change.position
-                        val dx = pos.x - downPos.x
-                        val dy = pos.y - downPos.y
-                        val elapsed = change.uptimeMillis - downTime
-
-                        if (mode == RowGestureMode.UNDECIDED) {
-                            when {
-                                // 松手：真正的轻点 = 点击；长按 = 动作菜单；拖过一段距离后松手 = 什么都不做
-                                !change.pressed -> {
-                                    // 防误触：判定「拖动过」用长按位移容差（12dp）而不是系统 touchSlop（约 8dp）
-                                    val dragged = abs(dx) > lpSlop || abs(dy) > lpSlop
-                                    when {
-                                        elapsed >= LONG_PRESS_MS -> gestures.onLongPress()
-                                        !dragged -> gestures.onTap()
-                                    }
-                                    change.consume()
-                                    break
-                                }
-                                // 长按阈值到（MT 400ms）：进入「长按」态（震动提示；松手弹动作菜单）
-                                elapsed >= LONG_PRESS_MS -> {
-                                    mode = RowGestureMode.LONG_PRESS
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                }
-                                // 纵向为主 → 列表滚动，不消费事件（先判断，避免斜向滚动被误判成滑动选择）
-                                abs(dy) > touchSlop && abs(dy) >= abs(dx) -> break
-                                // 左右滑动（≥24dp 且横向 > 纵向×2）→ 进入多选
-                                // （MT 0x7f1106f3「左右滑动文件可直接选择」：两个方向都可进入选择）
-                                downIndex >= 0 && abs(dx) > selSlop && abs(dx) > abs(dy) * 2f -> {
-                                    mode = RowGestureMode.SWEEP
-                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                    gestures.onSwipeSelect(downIndex)
-                                    change.consume()
-                                }
-                            }
-                        }
-
-                        when (mode) {
-                            RowGestureMode.LONG_PRESS -> {
-                                // 长按态：等待松手后弹出动作菜单（不做拖拽）
-                                change.consume()
-                                if (!change.pressed) {
-                                    gestures.onLongPress()
-                                    break
-                                }
-                            }
-                            RowGestureMode.SWEEP -> {
-                                // MT 0x7f110697「右滑列表项可进行更多操作」：
-                                // **已多选态**下继续右滑 ≥48dp → 呼出动作菜单（文档 F.5 第 5 条）。
-                                // 要求横向位移足够大 + 纵向位移仍小（避免向下扫选区间时误弹菜单）。
-                                if (!menuFired && selectingAtStart && dx > mSlop && dx > abs(dy) * 2f && abs(dy) < mSlop) {
-                                    menuFired = true
-                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    gestures.onSwipeMenu(downIndex)
-                                    change.consume()
-                                    break
-                                }
-                                val index = gestures.indexAtRoot(gestures.rowTop().y + pos.y)
-                                if (index >= 0 && index != lastIndex) {
-                                    lastIndex = index
-                                    gestures.onSweepTo(index)
-                                }
-                                change.consume()
-                                if (!change.pressed) break
-                            }
-                            RowGestureMode.UNDECIDED -> Unit
-                        }
-                    }
-                }
-            }
-            .onGloballyPositioned { coords -> rootOffset = coords.boundsInRoot().topLeft }
-            // 无障碍：整行合并为一条朗读（名称 / 类型 / 大小 / 修改时间 + 已选中状态）
+            // 触摸手势（点击 / 长按 / 左右滑动多选 / 右滑菜单）全部挂在**列表**上，
+            // 这里只保留无障碍语义（见 PaneView 里的 ListGestures）。
             .clearAndSetSemantics {
                 contentDescription = buildString {
                     append(item.name)
@@ -637,11 +546,6 @@ private fun MtFileRow(
                     if (!item.isDirectory && item.size >= 0) append("，${Fmt.size(item.size)}")
                     val t = Fmt.time(item.lastModified)
                     if (t.isNotBlank()) append("，修改于 $t")
-                }
-                if (!gesturesEnabled) {
-                    // 加载中：整行不可操作（与手势关闭保持一致）
-                    stateDescription = "正在加载"
-                    return@clearAndSetSemantics
                 }
                 if (selected) stateDescription = "已选中"
                 onClick(label = "打开") { onTap(); true }

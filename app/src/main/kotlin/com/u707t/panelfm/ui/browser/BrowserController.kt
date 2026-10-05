@@ -3,6 +3,7 @@ package com.u707t.panelfm.ui.browser
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
+import com.u707t.panelfm.core.common.MtSelection
 import com.u707t.panelfm.core.model.ConflictDecision
 import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.model.ConnectionConfig
@@ -265,6 +266,8 @@ class BrowserController(private val container: AppContainer) {
                         error = null,
                         space = space,
                         loadedUri = VfsUris.stripped(uri).toString(),
+                        // 内容换了一批 → 扫选会话失效（否则手指还按着，区间会连着新列表乱铺）
+                        selectionSweep = null,
                     )
                 }
                 if (isCurrentLoad(side, generation, uri)) {
@@ -282,6 +285,7 @@ class BrowserController(private val container: AppContainer) {
                         error = (e as? VfsException)?.userMessage ?: (e.message ?: "加载失败"),
                         items = emptyList(),
                         loadedUri = null,
+                        selectionSweep = null,
                     )
                 }
             }
@@ -352,7 +356,7 @@ class BrowserController(private val container: AppContainer) {
             back = newBack,
             forward = if (pushHistory) emptyList() else tab.forward,
         )
-        updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, selection = emptySet()) }
+        updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }).withSelectionCleared() }
         load(side)
     }
 
@@ -519,7 +523,7 @@ class BrowserController(private val container: AppContainer) {
         val prev = tab.back.lastOrNull() ?: return
         flushScroll(side)
         val newTab = tab.copy(back = tab.back.dropLast(1), forward = (tab.forward + tab.uri).takeLast(HISTORY_LIMIT), uri = prev)
-        updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, selection = emptySet()) }
+        updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }).withSelectionCleared() }
         load(side)
     }
 
@@ -528,7 +532,7 @@ class BrowserController(private val container: AppContainer) {
         val next = tab.forward.lastOrNull() ?: return
         flushScroll(side)
         val newTab = tab.copy(forward = tab.forward.dropLast(1), back = (tab.back + tab.uri).takeLast(HISTORY_LIMIT), uri = next)
-        updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, selection = emptySet()) }
+        updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }).withSelectionCleared() }
         load(side)
     }
 
@@ -558,13 +562,13 @@ class BrowserController(private val container: AppContainer) {
         val pane = pane(side)
         val tab = pane.tab
         val tabs = pane.tabs + PaneTab(uri = tab.uri, connectionId = tab.connectionId, label = tab.label)
-        updatePane(side) { it.copy(tabs = tabs, activeTab = tabs.lastIndex, selection = emptySet()) }
+        updatePane(side) { it.copy(tabs = tabs, activeTab = tabs.lastIndex).withSelectionCleared() }
     }
 
     fun switchTab(side: PaneSide, index: Int) {
         val pane = pane(side)
         if (index !in pane.tabs.indices || index == pane.activeTab) return
-        updatePane(side) { it.copy(activeTab = index, selection = emptySet()) }
+        updatePane(side) { it.copy(activeTab = index).withSelectionCleared() }
         load(side)
     }
 
@@ -573,26 +577,34 @@ class BrowserController(private val container: AppContainer) {
         if (pane.tabs.size <= 1) return
         val tabs = pane.tabs.toMutableList().also { it.removeAt(index) }
         val newActive = (pane.activeTab.coerceAtMost(tabs.lastIndex)).let { if (index <= pane.activeTab) (it - 1).coerceAtLeast(0) else it }
-        updatePane(side) { it.copy(tabs = tabs, activeTab = newActive, selection = emptySet()) }
+        updatePane(side) { it.copy(tabs = tabs, activeTab = newActive).withSelectionCleared() }
         load(side)
     }
 
-    // ------------------------------------------------------------------ 选择 / 排序
+    // ------------------------------------------------------------------ 选择 / 多选
+    //
+    // 语义全部收敛在 core.common.MtSelection（纯逻辑 + 单测），这里只负责「把当前列表的 key
+    // 喂进去 / 把结果写回状态」。四类入口：
+    //   1. 滑动  beginSweep → sweepTo → endSweep（MT 0x7f1106f3 / 0x7f11062f）
+    //   2. 长按  longPressSelect（MT 0x7f110631）
+    //   3. 点击  tapSelect / toggleSelection（MT 0x7f110630）
+    //   4. 底栏  全选 / 反选 / 类选（MT 0x7f11062b/632/633）
 
+    /** 当前列表的全部 key（键的闭区间运算都基于它） */
+    private fun keysOf(pane: PaneState): List<String> = pane.items.map { it.uri.toString() }
+
+    /** 多选态单击 = 切换单项 */
     fun toggleSelection(side: PaneSide, uri: VfsUri) {
-        updatePane(side) { pane ->
-            val key = uri.toString()
-            val sel = if (pane.selection.contains(key)) pane.selection - key else pane.selection + key
-            pane.copy(selection = sel)
-        }
+        updatePane(side) { pane -> pane.copy(selection = MtSelection.toggle(pane.selection, uri.toString())) }
     }
 
-    fun selectAll(side: PaneSide) = updatePane(side) { it.copy(selection = it.items.map { item -> item.uri.toString() }.toSet()) }
+    fun selectAll(side: PaneSide) = updatePane(side) { pane ->
+        pane.copy(selection = MtSelection.all(keysOf(pane)))
+    }
 
     /** MT 的「反选」 */
     fun invertSelection(side: PaneSide) = updatePane(side) { pane ->
-        val all = pane.items.map { it.uri.toString() }.toSet()
-        pane.copy(selection = all - pane.selection)
+        pane.copy(selection = MtSelection.invert(pane.selection, keysOf(pane)))
     }
 
     /** MT 的「类选」：与当前选中项同类型（同扩展名分类）的全部选中 */
@@ -606,36 +618,50 @@ class BrowserController(private val container: AppContainer) {
         pane.copy(selection = pane.selection + same)
     }
 
-    /** 区间选择（替换语义）：手指从锚点滑到当前行，选中这段连续区间（MT 手册） */
-    fun setSelectionRange(side: PaneSide, anchorIndex: Int, currentIndex: Int) = updatePane(side) { pane ->
-        val lo = minOf(anchorIndex, currentIndex).coerceAtLeast(0)
-        val hi = maxOf(anchorIndex, currentIndex).coerceAtMost(pane.items.lastIndex)
-        if (hi < lo) pane else pane.copy(selection = pane.items.subList(lo, hi + 1).map { it.uri.toString() }.toSet())
+    /**
+     * 连选区间（**追加**语义）：把两个 key 之间的项加进选择。
+     *
+     * 旧实现是替换语义（`selection = 区间`）—— 已经点选了好几项，再长按连选一段，
+     * 之前的全会消失。MT 的写法是「将会自动选择它们中间所有的项」，是补进去而不是推平。
+     */
+    fun selectRange(side: PaneSide, fromKey: String, toKey: String) = updatePane(side) { pane ->
+        pane.copy(selection = MtSelection.unionRange(pane.selection, keysOf(pane), fromKey, toKey))
     }
 
-    /** 左右滑动进入多选：先选中该行（区间选择的锚点；继续滑过行间 → setSelectionRange） */
-    fun startSelectionDrag(side: PaneSide, index: Int) = updatePane(side) { pane ->
-        if (index !in pane.items.indices) pane
-        else pane.copy(selection = setOf(pane.items[index].uri.toString()))
+    // ---- 扫选（左右滑动直接选择 + 滑动定义区间）
+
+    /**
+     * 左右滑动进入多选（MT `0x7f1106f3`）：**按下那一行**立刻选中，并开启一次扫选会话。
+     *
+     * 锚点取「按下那一行」而不是「跨过 24dp 那一刻手指所在的行」：手指扫过去会飘，
+     * 用后者会出现「明明按的是第 3 行，却从第 5 行开始选」。后续手指滑到哪一行，
+     * 就按 [sweepTo] 把区间铺到哪一行。
+     */
+    fun beginSweep(side: PaneSide, index: Int) = updatePane(side) { pane ->
+        val key = pane.items.getOrNull(index)?.uri?.toString() ?: return@updatePane pane
+        val (selection, sweep) = MtSelection.beginSweep(pane.selection, key)
+        pane.copy(selection = selection, selectionSweep = sweep)
     }
 
-    /** 已有多选时右滑该行 = 加选该行（已选中则保持不变） */
-    fun addToSelection(side: PaneSide, uri: VfsUri) = updatePane(side) {
-        it.copy(selection = it.selection + uri.toString())
+    /**
+     * 扫选跟手：手指（或列表边缘自动滚动）落到新的一行，
+     * 选择 = 「按下时已有的选择」∪ [锚点 .. 这一行]。
+     * 手指往回滑时区间会跟着收回去（划过 = 选中，退回 = 取消）。
+     */
+    fun sweepTo(side: PaneSide, index: Int) = updatePane(side) { pane ->
+        val sweep = pane.selectionSweep ?: return@updatePane pane
+        val key = pane.items.getOrNull(index)?.uri?.toString() ?: return@updatePane pane
+        val next = MtSelection.swept(keysOf(pane), sweep, key) ?: return@updatePane pane
+        if (next == pane.selection) pane else pane.copy(selection = next)
     }
 
-    /** 选中区间（MT：从第一个滑到最后一个即连续选中） */
-    fun selectRange(side: PaneSide, fromIndex: Int, toIndex: Int) = updatePane(side) { pane ->
-        val lo = minOf(fromIndex, toIndex).coerceAtLeast(0)
-        val hi = maxOf(fromIndex, toIndex).coerceAtMost(pane.items.lastIndex)
-        val range = pane.items.subList(lo, hi + 1).map { it.uri.toString() }.toSet()
-        pane.copy(selection = pane.selection + range)
+    /** 手指抬起：结束扫选会话（选择保留，只是不再跟手） */
+    fun endSweep(side: PaneSide) = updatePane(side) { pane ->
+        if (pane.selectionSweep == null) pane else pane.copy(selectionSweep = null)
     }
 
     fun clearSelection(side: PaneSide) {
-        longPressAnchor = null
-        tapAnchor = null
-        updatePane(side) { it.copy(selection = emptySet()) }
+        updatePane(side) { it.withSelectionCleared() }
     }
 
     fun setSearch(side: PaneSide, query: String) {
@@ -818,6 +844,7 @@ class BrowserController(private val container: AppContainer) {
         load(side)
     }
 
+    /** 只选中该项（右滑出菜单前的兜底：菜单随后作用于**整个选择集**） */
     fun enterSelectionMode(side: PaneSide, first: FileMetadata) {
         focus(side)
         updatePane(side) { it.copy(selection = setOf(first.uri.toString())) }
@@ -827,59 +854,64 @@ class BrowserController(private val container: AppContainer) {
      * MT「可通过分别长按两个项目来进行连选」（0x7f110631）：
      * 第一次长按 = 设锚点（只选它）；第二次长按另一项 = 选中两者之间的**全部**（含两端）。
      * 再长按第三次则重新设锚点（与 MT 一致：连选是「两两成对」的操作）。
+     *
+     * 与旧实现的差别（都为了「不静默毁掉用户已经选好的东西」）：
+     *  - 长按的**已选中**项只是把锚点挪过去，不会把其它已选项推平（原来会 `selection = setOf(key)`）；
+     *  - 区间是**追加**（[selectRange]），不再替换；
+     *  - 锚点存在窗格里（[PaneState.selectionAnchor]），左右窗格不串味。
      */
     fun longPressSelect(side: PaneSide, item: FileMetadata) {
         focus(side)
         val pane = pane(side)
-        val index = pane.items.indexOfFirst { it.uri == item.uri }
-        if (index < 0) return
+        if (pane.items.none { it.uri == item.uri }) return
         val key = item.uri.toString()
-        // 已有锚点且锚点 != 当前项 → 连选区间
-        if (longPressAnchor != null && longPressAnchor != key && pane.hasSelection) {
-            val anchorIndex = pane.items.indexOfFirst { it.uri.toString() == longPressAnchor }
-            if (anchorIndex >= 0) {
-                setSelectionRange(side, anchorIndex, index)
-                longPressAnchor = null
-                return
+        val anchor = pane.selectionAnchor
+        when {
+            // 已有锚点且按的是另一项 → 连选区间，并收掉锚点（两两成对）
+            anchor != null && anchor != key && pane.hasSelection -> {
+                updatePane(side) {
+                    it.copy(
+                        selection = MtSelection.unionRange(it.selection, keysOf(it), anchor, key),
+                        selectionAnchor = null,
+                    )
+                }
             }
+            // 已经选中的项：保留整个多选（菜单作用于整个选择集），只把锚点挪到它身上
+            pane.selection.contains(key) -> updatePane(side) { it.copy(selectionAnchor = key) }
+            // 否则：锚点 + 只选它（MT 第一次长按只选中这一项）
+            else -> updatePane(side) { it.copy(selection = setOf(key), selectionAnchor = key) }
         }
-        // 否则设锚点（只选当前项）
-        longPressAnchor = key
-        updatePane(side) { it.copy(selection = setOf(key)) }
     }
 
     /**
      * MT 0x7f110630「开启后点击列表中任意两个项，将会自动选择它们中间所有的项。」
      *
-     * 多选态下点击（不是长按）第二项 = 区间选择；未开启该设置时退回普通的加/减选。
+     * 多选态下点击（不是长按）第二项 = 区间选择（追加）；未开启该设置时退回普通的加/减选。
      * 返回 true 表示已按「点击连选」处理（调用方不需要再走 toggle 分支）。
      */
     fun tapSelect(side: PaneSide, item: FileMetadata): Boolean {
         if (!container.settings.value.tapRangeSelect) return false
         val pane = pane(side)
-        val index = pane.items.indexOfFirst { it.uri == item.uri }
-        if (index < 0) return false
+        if (pane.items.none { it.uri == item.uri }) return false
         val key = item.uri.toString()
-        val anchorKey = tapAnchor
-        if (anchorKey != null && anchorKey != key) {
-            val anchorIndex = pane.items.indexOfFirst { it.uri.toString() == anchorKey }
-            if (anchorIndex >= 0) {
-                setSelectionRange(side, anchorIndex, index)
-                tapAnchor = key
-                return true
+        val anchor = pane.tapAnchor
+        if (anchor != null && anchor != key) {
+            // 第二击：从锚点连到这一项，并把锚点挪过来（可继续延伸：点 3 项 = 连选这 3 项之间）
+            updatePane(side) {
+                it.copy(
+                    selection = MtSelection.unionRange(it.selection, keysOf(it), anchor, key),
+                    tapAnchor = key,
+                )
             }
+            return true
         }
-        tapAnchor = key
-        // 第一次点击：普通加/减选（作为下一次连选的锚点）
-        toggleSelection(side, item.uri)
+        updatePane(side) {
+            val next = MtSelection.toggle(it.selection, key)
+            // 取消选中时不再留锚点：从一项「没被选中」的项开始连选没有意义
+            it.copy(selection = next, tapAnchor = if (next.contains(key)) key else null)
+        }
         return true
     }
-
-    /** 当前窗格长按锚点（连选用；切换窗格/清空选择时重置） */
-    private var longPressAnchor: String? = null
-
-    /** 「点击连选」（0x7f110630）的锚点；与长按锚点分开，避免两种手势互相干扰 */
-    private var tapAnchor: String? = null
 
     // ------------------------------------------------------------------ 单窗格内操作
 

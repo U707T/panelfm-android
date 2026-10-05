@@ -190,6 +190,7 @@ object MtSpec {
  * | 右滑出菜单阈值 | ≥ 48dp | `0x7f110697`「右滑列表项可进行更多操作」 |
  * | 上滑书签热区 | dy < -32dp 且 \|dy\| > \|dx\| | `0x7f1100e0` |
  * | 「再按一次」窗口 | 2000ms | `0x7f11055c/588/587/6fa` |
+ * | 扫选边缘滚动的热区 / 最高速 | 48dp / 14dp 每帧 | 观感值（MT 无对应资源，见 MtGesture 内注释） |
  */
 object MtGesture {
     /** 长按触发时间（ms）：MT 比系统默认（500ms）更灵敏 */
@@ -209,6 +210,23 @@ object MtGesture {
 
     /** 「再按一次 X」的确认窗口（ms） */
     const val PressAgainMs = 2000L
+
+    // ---- 扫选（左右滑动直接选择）的「跟手」参数 ----------------------------------
+    //
+    // 这四个 MT 没有可读的参数来源（APK 里没有对应资源），是按观感定的一档保守值；
+    // 集中放这里，实机试了觉得手感不对只改这一处。
+
+    /** 扫选时列表边缘的自动滚动热区（dp）：手指进到这个范围内就开始滚列表 */
+    const val SweepEdgeDp = 48f
+
+    /** 扫选时边缘自动滚动的最大速度（dp/帧，约 60fps → 840dp/s） */
+    const val SweepMaxStepDp = 14f
+
+    /** 跟手预览：行位移相对手指位移的阻尼（0.25 = 只跟一小段，避免整行滑出屏幕） */
+    const val SweepPreviewDamp = 0.25f
+
+    /** 跟手预览的最大位移（dp） */
+    const val SweepPreviewDp = 16f
 
     /** 横向滑动是否构成「进入多选」（MT 0x7f1106f3 的判定）。 */
     fun isSwipeSelect(dxDp: Float, dyDp: Float): Boolean =
