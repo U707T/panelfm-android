@@ -174,4 +174,19 @@ class MediaUriTest {
     /** 从播放地址里取出解码后的 path 段（等价于 Android 的 `Uri.getLastPathSegment()`） */
     private fun pathOfUrl(url: String): String =
         percentDecode(url.removePrefix("panelfm://vfs/").substringBefore('?'))
+
+    // ------------------------------------------------------------------ 数据源分派（标准 scheme 委托）
+
+    @Test
+    fun `只有 panelfm 方案才走统一 VFS，其余交给 Media3 自带数据源`() {
+        // panelfm:// → 解出 VFS URI（走 VfsDataSource 的 VFS 分支）
+        val vfs = local("/Download", "movie.mp4")
+        assertEquals(vfs.toString(), vfsUriFromMediaUri(mediaUriString(vfs))?.toString())
+        // 标准 scheme（本地 file://、content://、http(s)://）→ 解不出 → 由 DefaultDataSource 处理
+        // （否则 VfsDataSource 会抛「非法媒体地址」，本地视频就播不了）
+        assertNull(vfsUriFromMediaUri("file:///storage/emulated/0/Download/movie.mp4"))
+        assertNull(vfsUriFromMediaUri("content://media/external/video/media/42"))
+        assertNull(vfsUriFromMediaUri("https://example.com/movie.mp4"))
+        assertNull(vfsUriFromMediaUri("http://192.168.1.9:8080/video.mp4"))
+    }
 }

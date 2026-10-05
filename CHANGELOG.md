@@ -3,6 +3,49 @@
 > 版本号规则：`versionName` 带 `-rc` 后缀 → CI 自动发布为 **prerelease**。
 > 发版三步：改 `versionName` → 本文件顶部加段落 → push main（CI 自动构建 + 建 Release）。
 
+## v1.0.5 — 修「左滑出现怪页面」+ 视频播放链路彻底修好 + code review
+
+### 修复：左滑进入多选后出现「黑屏怪页面」（v1.0.3 引入的回归）
+
+**根因**：`MtActionButton` 用了 `Modifier.fillMaxHeight()`，而 v1.0.3 把顶栏合并成
+「一行 Row」后这一行是 **wrap_content**（没有高度约束）。
+一进多选（动作条出现）`fillMaxHeight` 就拿到「整屏剩余高度」→ 顶栏被撑满全屏，
+只剩 ☰ + 路径 + 复制/剪切 + ⋮ 孤零零地排在中间（就是截图里那个页面）。
+
+**修法**：
+1. `MtActionButton` 改成**固定高度** `MtSpec.TopBarHeight`（MT 的顶栏就是固定 56dp，
+   动作项 `layout_height=-1` = match 该行）；
+2. 顶栏那行 Row 也显式 `.height(MtSpec.TopBarHeight)` —— 给整行**有界高度**，
+   行内任何 `fillMaxHeight` 子项都只会填满这一行，不会再撑到整屏（防御同类回归）；
+3. 全项目复查了其余 4 处 `fillMaxHeight`，父容器都有高度约束（Row / 固定高度底栏），无同类问题。
+
+### 修复：视频仍然无法播放（v1.0.4 修得不彻底）
+
+v1.0.4 只修了「后缀判型」，但还有两个致命问题：
+
+1. **`VfsDataSourceFactory` 是唯一的数据源，却不认识标准 scheme**。
+   `DefaultMediaSourceFactory(DataSource.Factory)` 会把唯一这个工厂用于**所有**请求；
+   而 v1.0.5 之前本地文件走 `file://`（`Uri.fromFile`）时，
+   `VfsDataSource.open()` 会抛「非法媒体地址」→ 看起来就是「视频无法播放」。
+   **修法**：`VfsDataSourceFactory` 现在同时持有 Media3 的 `DefaultDataSource.Factory`，
+   `VfsDataSource.open()` 遇到非 `panelfm://` 的请求就**委托**给它
+   （file / content / http(s) / data … 全覆盖），`read`/`close` 也跟着走委托分支。
+2. **本地文件多绕了一层**。现在 `mediaItemFor(uri, localPath)`：本地文件直接 `Uri.fromFile`
+   交给 Media3 自带的 `FileDataSource`，完全绕开「自定义 scheme + VfsDataSource + runBlocking」
+   整条链路；只有网络 / 压缩包内才走 `panelfm://`。
+
+**另外新增**：
+- **播放前预检**（`preflight`）：prepare 之前先 stat + 读 1 字节，
+  把「文件不存在 / 是文件夹 / 0 字节 / 无权限 / 会话断开」直接变成可执行文案，
+  不再让用户对着黑屏猜；
+- **`describePlaybackError` 接受任意 Throwable**（prepare 抛的不一定是 `PlaybackException`），
+  非 Media3 异常也给出可读提示。
+
+### 新增测试
+
+`MediaUriTest` 增加「标准 scheme 应交给 Media3 自带数据源」的断言
+（`file://` / `content://` / `http(s)://` 都不能被 `panelfm://` 的解析器认领）。
+
 ## v1.0.4 — 修复视频无法播放 + code review 修复
 
 ### 修复：视频无法播放（关键）

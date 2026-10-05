@@ -285,7 +285,11 @@ fun MtActionButton(
 ) {
     Row(
         Modifier
-            .fillMaxHeight()
+            // ⚠️ 必须是**固定高度**，不能用 fillMaxHeight：
+            // 顶栏是 wrap_content 的 Row，没有高度约束时 fillMaxHeight 会拿到「整屏剩余高度」，
+            // 一进多选（动作条出现）整个顶栏就被撑满全屏（用户截图里的怪页面就是这个）。
+            // MT 的顶栏本身是固定 56dp（`0x7f070002`），动作项 `layout_height=-1` 就是 match 该行。
+            .height(MtSpec.TopBarHeight)
             .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 15.dp)
             .semantics {

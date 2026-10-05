@@ -136,6 +136,45 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
     val isAudioOnly = MimeTypes.kindOf(uri.name.substringAfterLast('.', "")) == MimeTypes.Kind.AUDIO
 
+    /**
+     * 该 VFS URI 对应的**本地绝对路径**（仅当文件真的在本机磁盘上时返回）。
+     *
+     * 本地文件走 file:// 交给 Media3 原生读取；网络 / 压缩包内返回 null（走 panelfm://）。
+     */
+    fun localPathOf(vfsUri: VfsUri): String? {
+        if (vfsUri.scheme != "local") return null
+        val path = runCatching { container.localVfs.absolutePath(vfsUri) }.getOrNull() ?: return null
+        return if (java.io.File(path).isFile) path else null
+    }
+
+    /** 构造可播放的 MediaItem（本地走 file://，其余走 panelfm://） */
+    fun itemFor(vfsUri: VfsUri): MediaItem = mediaItemFor(vfsUri, localPathOf(vfsUri))
+
+    /**
+     * 播放前的**可读性预检**：能 stat 到、能读出第一个字节。
+     *
+     * 为什么需要：播放器失败时用户只看到黑屏，没有任何线索。
+     * 预检能在 prepare 之前把「文件不存在 / 没权限 / 会话断开」直接变成可执行文案。
+     */
+    suspend fun preflight(vfsUri: VfsUri): String? = withContext(Dispatchers.IO) {
+        try {
+            val vfs = container.locator.find(vfsUri) ?: return@withContext "存储会话不可用（可能已断开，请重新打开该存储）"
+            val meta = vfs.stat(vfsUri)
+            if (meta.isDirectory) return@withContext "这是一个文件夹，不是媒体文件"
+            if (meta.size == 0L) return@withContext "文件为空（0 字节）"
+            vfs.openRead(vfsUri, offset = 0, length = 1).use { reader ->
+                val buf = ByteArray(1)
+                val n = reader.read(buf, 0, 1)
+                if (n <= 0) return@withContext "无法读取文件内容（权限不足或文件已损坏）"
+            }
+            null
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            (e as? com.u707t.panelfm.core.vfs.VfsException)?.userMessage ?: "无法访问文件：${e.message ?: "未知错误"}"
+        }
+    }
+
     // 播放期间屏幕常亮；退出释放播放器；亮度改动退出时恢复
     DisposableEffect(player) {
         val win = activity?.window
@@ -212,19 +251,28 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         val item = playlist.getOrNull(index) ?: return
         playlistIndex = index
         error = null
-        player.setMediaItem(mediaItemFor(item.uri))
-        player.prepare()
-        player.playWhenReady = true
+        scope.launch {
+            preflight(item.uri)?.let { error = it; return@launch }
+            player.setMediaItem(itemFor(item.uri))
+            player.prepare()
+            player.playWhenReady = true
+        }
         controlsVisible = true
     }
 
     // 载入媒体 + 同目录播放列表
     LaunchedEffect(uri) {
-        runCatching {
-            player.setMediaItem(mediaItemFor(uri))
-            player.prepare()
-            player.playWhenReady = true
-        }.onFailure { error = it.message }
+        // 先预检（可读性），失败就直接给出可执行文案，不进入黑屏
+        val pre = runCatching { preflight(uri) }.getOrNull()
+        if (pre != null) {
+            error = pre
+        } else {
+            runCatching {
+                player.setMediaItem(itemFor(uri))
+                player.prepare()
+                player.playWhenReady = true
+            }.onFailure { error = describePlaybackError(it) }
+        }
         controlsVisible = true
         val parent = uri.parent
         if (parent != null) {
@@ -668,11 +716,14 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 ) {
                     TextButton(onClick = {
                         error = null
-                        runCatching {
-                            player.setMediaItem(mediaItemFor(uri))
-                            player.prepare()
-                            player.playWhenReady = true
-                        }.onFailure { error = it.message }
+                        scope.launch {
+                            preflight(uri)?.let { error = it; return@launch }
+                            runCatching {
+                                player.setMediaItem(itemFor(uri))
+                                player.prepare()
+                                player.playWhenReady = true
+                            }.onFailure { error = describePlaybackError(it) }
+                        }
                     }) { Text("重试", color = Color.White) }
                     if (uri.scheme == "local") {
                         TextButton(onClick = {
@@ -946,7 +997,10 @@ private fun clock(ms: Long): String {
  * 对用户没有指导意义。这里按 [PlaybackException.errorCode] 给出下一步动作，
  * 并在末尾附上简短原因，便于用户截图反馈。
  */
-fun describePlaybackError(e: PlaybackException): String {
+fun describePlaybackError(e: Throwable): String {
+    if (e !is PlaybackException) {
+        return "无法开始播放：${e.message ?: e::class.java.simpleName}"
+    }
     val code = when (e.errorCode) {
         PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "文件不存在（可能已被移动或删除）"
         PlaybackException.ERROR_CODE_IO_NO_PERMISSION -> "没有读取权限（可能需要「所有文件访问」授权）"
@@ -998,8 +1052,13 @@ fun describePlaybackError(e: PlaybackException): String {
  *
  * 只给其中任一都可能让 ExoPlayer 选错（或选不到）提取器 → 黑屏 / 播放失败。
  */
-fun mediaItemFor(vfsUri: VfsUri): MediaItem {
-    val builder = MediaItem.Builder().setUri(mediaUriFor(vfsUri))
+fun mediaItemFor(vfsUri: VfsUri, localPath: String? = null): MediaItem {
+    // 本地文件优先走 **file://**：由 Media3 自带的 FileDataSource 直接读，
+    // 完全绕开自定义 scheme + VfsDataSource + runBlocking 那一整条链路
+    // （本地是最常见的场景，少一层就少一类失败可能）。
+    // 网络 / 压缩包内 / 无本地路径时仍走 panelfm://。
+    val uri = if (localPath != null) Uri.fromFile(java.io.File(localPath)) else mediaUriFor(vfsUri)
+    val builder = MediaItem.Builder().setUri(uri)
     mimeTypeForName(vfsUri.name)?.let { builder.setMimeType(it) }
     return builder.build()
 }
@@ -1089,9 +1148,27 @@ internal fun percentDecode(value: String): String =
 /** 把 VFS URI 编码成 Media3 可用的 Uri（自定义 `panelfm://` 方案由 [VfsDataSource] 解回）。 */
 fun mediaUriFor(vfsUri: VfsUri): Uri = Uri.parse(mediaUriString(vfsUri))
 
-/** Media3 数据源工厂：把播放器的读取接到统一 VFS（本地/网络同一套） */
-class VfsDataSourceFactory(private val locator: VfsLocator) : DataSource.Factory {
-    override fun createDataSource(): DataSource = VfsDataSource(locator)
+/**
+ * Media3 数据源工厂：**通用**（`panelfm://` 走统一 VFS，标准 scheme 交给 Media3 自带数据源）。
+ *
+ * ## 为什么必须同时支持标准 scheme
+ *
+ * `DefaultMediaSourceFactory(DataSource.Factory)` 会把**唯一**这个工厂用于所有请求。
+ * 如果只认 `panelfm://`，那么本地文件走 `file://`（`Uri.fromFile`）时
+ * 就会在 `open()` 里抛「非法媒体地址」—— 看起来像「视频无法播放」。
+ * 所以这里对非 `panelfm://` 的请求**委托**给 `DefaultDataSource`
+ * （它内部按 scheme 分派：file / content / asset / http(s) / data …）。
+ */
+class VfsDataSourceFactory(
+    private val locator: VfsLocator,
+    context: android.content.Context,
+) : DataSource.Factory {
+
+    /** Media3 自带的分派数据源（file:// / content:// / http(s):// …） */
+    private val defaultFactory = androidx.media3.datasource.DefaultDataSource.Factory(context)
+
+    override fun createDataSource(): DataSource =
+        VfsDataSource(locator, defaultFactory.createDataSource())
 }
 
 /**
@@ -1101,11 +1178,21 @@ class VfsDataSourceFactory(private val locator: VfsLocator) : DataSource.Factory
  * 网络数据源会走更宽松的超时与重试。这里传 `true`（保守取值）：
  * 同一套代码既要读本地也要读网络，标成网络只是让 Media3 用更宽容的策略，本地读取不受影响。
  */
-class VfsDataSource(private val locator: VfsLocator) : BaseDataSource(true) {
+class VfsDataSource(
+    private val locator: VfsLocator,
+    /**
+     * 标准 scheme（file / content / http(s) …）的委托数据源。
+     * 见 [VfsDataSourceFactory] 的说明：工厂是唯一的，必须能处理所有 scheme。
+     */
+    private val delegate: DataSource? = null,
+) : BaseDataSource(true) {
 
     private var reader: VfsReader? = null
     private var target: VfsUri? = null
     private var remaining: Long = -1L
+
+    /** 本次 open 是否交给了 [delegate]（close / read 也要跟着走） */
+    private var delegated = false
 
     /**
      * 是否已经 `transferStarted`。
@@ -1122,7 +1209,12 @@ class VfsDataSource(private val locator: VfsLocator) : BaseDataSource(true) {
     override fun open(dataSpec: DataSpec): Long {
         // 用纯函数解回（与 mediaUriString 成对，规则写在一处，避免编码/解码不对称）
         val vfsUri = vfsUriFromMediaUri(dataSpec.uri.toString())
-            ?: throw IOException("非法媒体地址：${dataSpec.uri}")
+        if (vfsUri == null) {
+            // 不是 panelfm:// → 标准 scheme，交给 Media3 自带数据源
+            val d = delegate ?: throw IOException("不支持的数据源：${dataSpec.uri}")
+            delegated = true
+            return d.open(dataSpec)
+        }
         val vfs = locator.find(vfsUri) ?: throw IOException("会话不可用（存储已断开）")
 
         transferInitializing(dataSpec)
@@ -1152,6 +1244,7 @@ class VfsDataSource(private val locator: VfsLocator) : BaseDataSource(true) {
     }
 
     override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+        if (delegated) return delegate!!.read(buffer, offset, length)
         if (length == 0) return 0
         if (remaining == 0L) return -1
         val r = reader ?: return -1
@@ -1168,6 +1261,11 @@ class VfsDataSource(private val locator: VfsLocator) : BaseDataSource(true) {
     override fun getUri(): Uri? = target?.let { mediaUriFor(it) }
 
     override fun close() {
+        if (delegated) {
+            delegated = false
+            runCatching { delegate?.close() }
+            return
+        }
         runBlocking { runCatching { reader?.close() } }
         reader = null
         target = null

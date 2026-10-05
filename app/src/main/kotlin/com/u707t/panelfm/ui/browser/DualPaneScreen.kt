@@ -314,7 +314,11 @@ fun DualPaneScreen(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 6.dp),
+                        // 顶栏固定高度（MT `0x7f070002` = 56dp）：
+                        // 给整行一个**有界高度**，行内任何 fillMaxHeight 子项都只会填满这一行，
+                        // 不会把顶栏撑到整屏（曾经的「黑屏怪页面」根因）
+                        .height(MtSpec.TopBarHeight)
+                        .padding(horizontal = 4.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     // ☰ 侧边栏
