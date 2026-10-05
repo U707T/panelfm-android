@@ -510,10 +510,18 @@ class TransferTask internal constructor(
         val reader = vfs.openRead(uri)
         try {
             val buffer = ByteArray(BUFFER_SIZE)
+            var emptyReads = 0
             while (true) {
                 val n = reader.read(buffer, 0, buffer.size)
                 if (n < 0) break
-                if (n > 0) digest.update(buffer, 0, n)
+                if (n == 0) {
+                    if (++emptyReads >= MAX_EMPTY_READS) {
+                        throw VfsException.ProtocolError("读取无进展，源会话可能异常")
+                    }
+                    continue
+                }
+                emptyReads = 0
+                digest.update(buffer, 0, n)
             }
             return digest.digest()
         } finally {
@@ -569,14 +577,22 @@ class TransferTask internal constructor(
         try {
             // openWrite 失败时 writer 仍为 null，但 finally 仍会关闭已经打开的 reader。
             writer = dstVfs.openWrite(target, size = if (item.size > 0) item.size else null, offset = startOffset)
-            val out = writer ?: throw VfsException.Io("无法打开目标写入流")
+            val out = writer
             var written = startOffset
+            var emptyReads = 0
             val buffer = ByteArray(BUFFER_SIZE)
-            if (startOffset > 0) onDelta(0)
+            if (startOffset > 0) onDelta(startOffset)
             while (true) {
                 gate.checkpoint()
                 val n = reader.read(buffer, 0, buffer.size)
                 if (n < 0) break
+                if (n == 0) {
+                    if (++emptyReads >= MAX_EMPTY_READS) {
+                        throw VfsException.ProtocolError("读取无进展，源会话可能异常")
+                    }
+                    continue
+                }
+                emptyReads = 0
                 out.write(buffer, 0, n)
                 written += n
                 onDelta(n.toLong())
@@ -625,5 +641,6 @@ class TransferTask internal constructor(
 
     companion object {
         const val BUFFER_SIZE = 256 * 1024
+        private const val MAX_EMPTY_READS = 3
     }
 }

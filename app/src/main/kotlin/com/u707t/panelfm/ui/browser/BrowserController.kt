@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 双列浏览控制器（应用级单例，转屏/切屏都不丢状态）。
@@ -48,6 +49,10 @@ class BrowserController(private val container: AppContainer) {
     fun dismissDiffRequest() { _diffRequest.value = null }
 
     private val loadJobs = mutableMapOf<PaneSide, Job>()
+    private val loadGeneration = mutableMapOf(
+        PaneSide.LEFT to AtomicLong(0),
+        PaneSide.RIGHT to AtomicLong(0),
+    )
 
     /**
      * 每个窗格各自的「目录 → 滚动位置」记忆（复刻 MT：进子目录再返回，列表停在原地）。
@@ -196,8 +201,21 @@ class BrowserController(private val container: AppContainer) {
 
     // ------------------------------------------------------------------ 列表加载
 
+    private fun isCurrentLoad(side: PaneSide, generation: Long, uri: VfsUri): Boolean =
+        loadGeneration.getValue(side).get() == generation && pane(side).uri == uri
+
+    private fun updateLoad(
+        side: PaneSide,
+        generation: Long,
+        uri: VfsUri,
+        transform: (PaneState) -> PaneState,
+    ) {
+        if (isCurrentLoad(side, generation, uri)) updatePane(side, transform)
+    }
+
     fun load(side: PaneSide) {
         loadJobs[side]?.cancel()
+        val generation = loadGeneration.getValue(side).incrementAndGet()
         val pane = pane(side)
         val uri = pane.uri
         // MT「仅应用于此文件夹」：该路径有记忆排序 → 覆盖当前窗格排序
@@ -205,19 +223,19 @@ class BrowserController(private val container: AppContainer) {
         val effSort = ruleSort ?: pane.sort
         if (effSort != pane.sort) updatePane(side) { it.copy(sort = effSort) }
         // MT 加载遮罩（0x7f0c0033 的 09020D/09020E）：连接 → 枚举 → 过滤 → 完成 分阶段上报百分比
-        updatePane(side) { it.copy(loading = true, loadProgress = 0.05f, error = null) }
+        updateLoad(side, generation, uri) { it.copy(loading = true, loadProgress = 0.05f, error = null) }
         loadJobs[side] = container.scope.launch {
             try {
                 val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("未连接：${uri.authority}（请先在主页添加/打开该存储）")
                 vfs.connect()
-                updatePane(side) { it.copy(loadProgress = 0.3f) }
+                updateLoad(side, generation, uri) { it.copy(loadProgress = 0.3f) }
                 val options = ListOptions(
                     sort = effSort,
                     showHidden = pane.showHidden,
                     filter = null,      // 关键字过滤统一在客户端做（支持 /regex、!/regex、!text）
                 )
                 val listed = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
-                updatePane(side) { it.copy(loadProgress = 0.75f) }
+                updateLoad(side, generation, uri) { it.copy(loadProgress = 0.75f) }
                 val bySearch = listed.filter { matchesSearch(it.name, pane.search) }
                 val items = pane.filterKind?.let { kindName ->
                     bySearch.filter {
@@ -225,10 +243,10 @@ class BrowserController(private val container: AppContainer) {
                             com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kindName
                     }
                 } ?: bySearch
-                updatePane(side) { it.copy(loadProgress = 0.9f) }
+                updateLoad(side, generation, uri) { it.copy(loadProgress = 0.9f) }
                 val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
                 // loadedUri = 「这批 items 属于哪个目录」：滚动位置记忆按它来记，避免串目录
-                updatePane(side) {
+                updateLoad(side, generation, uri) {
                     it.copy(
                         items = items,
                         loading = false,
@@ -238,13 +256,15 @@ class BrowserController(private val container: AppContainer) {
                         loadedUri = VfsUris.stripped(uri).toString(),
                     )
                 }
-                runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
+                if (isCurrentLoad(side, generation, uri)) {
+                    runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
+                }
             } catch (e: kotlinx.coroutines.CancellationException) {
                 // 用户点了遮罩上的「取消」：不是错误，保持当前列表
                 throw e
             } catch (e: Exception) {
                 Logx.w("Browser", "list failed ${uri}: ${e.message}", e)
-                updatePane(side) {
+                updateLoad(side, generation, uri) {
                     it.copy(
                         loading = false,
                         loadProgress = null,
@@ -259,6 +279,7 @@ class BrowserController(private val container: AppContainer) {
 
     /** 取消当前加载（MT 加载遮罩的「取消」，0x7f0c0033 09020F/090210） */
     fun cancelLoad(side: PaneSide) {
+        loadGeneration.getValue(side).incrementAndGet()
         val job = loadJobs.remove(side) ?: return
         job.cancel()
         updatePane(side) { it.copy(loading = false, loadProgress = null) }
@@ -1135,9 +1156,15 @@ class BrowserController(private val container: AppContainer) {
                         val out = java.io.ByteArrayOutputStream()
                         val buf = ByteArray(64 * 1024)
                         var total = 0
+                        var emptyReads = 0
                         while (total < 512 * 1024) {
                             val n = reader.read(buf, 0, buf.size)
                             if (n < 0) break
+                            if (n == 0) {
+                                if (++emptyReads >= 3) break
+                                continue
+                            }
+                            emptyReads = 0
                             out.write(buf, 0, n)
                             total += n
                         }

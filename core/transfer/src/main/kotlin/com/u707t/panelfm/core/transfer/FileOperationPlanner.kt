@@ -31,6 +31,9 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         for (src in request.sources) {
             val vfs = locator.find(src) ?: throw VfsException.Unsupported("源位置不可用：${src.authority}")
             val meta = vfs.stat(src)
+            if (meta.isSymlink) {
+                throw VfsException.Unsupported("暂不支持传输符号链接：${meta.name}")
+            }
             val destRoot = request.destDir.child(meta.name)
             if (meta.isDirectory) {
                 collectDir(vfs = vfs, src = src, dest = destRoot, depth = 0,
@@ -68,8 +71,11 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         items += PlanItem(src, dest, isDirectory = true, size = -1, depth = depth)
         val children = vfs.list(src)
         for (child in children) {
+            if (child.isSymlink) {
+                throw VfsException.Unsupported("暂不支持传输符号链接：${child.name}")
+            }
             val childDest = dest.child(child.name)
-            if (child.isDirectory && !child.isSymlink) {
+            if (child.isDirectory) {
                 collectDir(vfs, child.uri, childDest, depth + 1, items, onFile, onDir)
             } else if (!child.isDirectory) {
                 items += PlanItem(child.uri, childDest, isDirectory = false, size = child.size.coerceAtLeast(0), depth = depth + 1, lastModified = child.lastModified)

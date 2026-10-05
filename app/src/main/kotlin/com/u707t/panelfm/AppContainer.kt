@@ -209,6 +209,28 @@ class AppContainer(val app: Application) {
         return vfs
     }
 
+    /**
+     * 测试未保存的连接配置：lease 只覆盖 connect + list 生命周期，
+     * 不写入 mounted/heldLeases，也不 touch connection 表。
+     */
+    suspend fun testConnection(config: ConnectionConfig, secretOverride: String? = null): Int {
+        val secret = secretOverride
+            ?: withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(config.id)) }
+        val lease = registry.acquire(config, secret)
+        try {
+            val vfs = lease.use()
+            vfs.connect()
+            val uri = com.u707t.panelfm.core.vfs.VfsUri.of(
+                config.scheme,
+                "${config.host}:${config.port}",
+                config.openPath,
+            )
+            return withContext(dispatchers.vfs) { vfs.list(uri).size }
+        } finally {
+            lease.close()
+        }
+    }
+
     /** 断开单个连接（侧边栏「断开」/ 删除连接）：释放租约、摘掉挂载表并立即关闭会话 */
     fun disconnectConnection(config: ConnectionConfig) {
         heldLeases.remove(config.sessionKey)?.let { runCatching { it.close() } }

@@ -339,12 +339,8 @@ fun ConnectionEditScreen(
                     return@launch
                 }
                 val config = buildConfig()
-                val vfs = container.openConnection(config, secretOverride = buildSecret())
-                val items = vfs.list(
-                    // WebDAV 进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 openPath
-                    VfsUri.of(config.scheme, "${config.host}:${config.port}", config.openPath)
-                )
-                status = "连接成功：根目录 ${items.size} 项"
+                val count = container.testConnection(config, secretOverride = buildSecret())
+                status = "连接成功：根目录 $count 项"
             } catch (e: Exception) {
                 status = "连接失败：" + ((e as? VfsException)?.userMessage ?: e.message)
             } finally {
