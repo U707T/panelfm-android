@@ -13,6 +13,10 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.gestures.detectDragGestures
+import kotlin.math.roundToInt
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -30,8 +34,6 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -141,6 +143,12 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     var brightnessRatio by remember { mutableStateOf<Float?>(null) }
     var playlist by remember { mutableStateOf<List<FileMetadata>>(emptyList()) }
     var playlistIndex by remember { mutableStateOf(-1) }
+    /** 按文件本来的顺序（关闭随机时恢复它） */
+    var orderedPlaylist by remember { mutableStateOf<List<FileMetadata>>(emptyList()) }
+    /** 随机播放开关（照 IRIS：打开即重新洗牌，关闭恢复原顺序） */
+    var shuffle by remember { mutableStateOf(false) }
+    /** 已缓冲到的位置（进度条第二层） */
+    var bufferedMs by remember { mutableStateOf(0L) }
 
     /**
      * 控制层（顶栏 / 底部控制条）实测高度（px）。
@@ -154,6 +162,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
     /** 正在拖动进度条：期间**禁止自动隐藏控制层**（否则拖到一半控件消失，seek 也丢了） */
     var sliderDragging by remember { mutableStateOf(false) }
+    /** 拖动进度条之前是否在播放（松手后据此决定续播，照 IRIS） */
+    var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
 
     val isAudioOnly = MimeTypes.kindOf(uri.name.substringAfterLast('.', "")) == MimeTypes.Kind.AUDIO
 
@@ -227,6 +237,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         while (true) {
             isPlaying = player.isPlaying
             positionMs = player.currentPosition.coerceAtLeast(0)
+            bufferedMs = player.bufferedPosition.coerceAtLeast(0)
             val d = player.duration
             durationMs = if (d in 1..(24L * 3600 * 1000)) d else 0
             delay(250)
@@ -300,6 +311,30 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         }
     }
 
+    /**
+     * 以 [current] 为第一首、其余随机打乱（照 IRIS：打开随机立刻重新洗牌，
+     * 当前曲目排在最前，之后按这份顺序把整个列表播完）。
+     */
+    fun shuffledFrom(list: List<FileMetadata>, current: String?): List<FileMetadata> {
+        val head = list.firstOrNull { it.uri.toString() == current }
+        val rest = list.filter { it.uri.toString() != current }.shuffled()
+        return listOfNotNull(head) + rest
+    }
+
+    /** 切换随机播放：开 → 重新洗牌；关 → 恢复文件本来的顺序。两者都把当前曲目保持在这首 */
+    fun toggleShuffle() {
+        val current = playlist.getOrNull(playlistIndex)?.uri?.toString()
+            ?: playlistIndex.let { if (it >= 0) playlist.getOrNull(it)?.uri?.toString() else null }
+        shuffle = !shuffle
+        playlist = if (shuffle) {
+            shuffledFrom(orderedPlaylist.ifEmpty { playlist }, current)
+        } else {
+            orderedPlaylist.ifEmpty { playlist }
+        }
+        playlistIndex = playlist.indexOfFirst { it.uri.toString() == current }
+        hud = if (shuffle) "随机播放：开" else "随机播放：关"
+    }
+
     fun playAt(index: Int) {
         val item = playlist.getOrNull(index) ?: return
         playlistIndex = index
@@ -337,8 +372,10 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                             MimeTypes.kindOf(it.extension) in listOf(MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO)
                     }
                 }
-                playlist = media
-                playlistIndex = media.indexOfFirst { it.uri.toString() == uri.toString() }
+                orderedPlaylist = media
+                // 若开着随机，切换文件后仍按随机顺序播放（当前曲目置顶）
+                playlist = if (shuffle) shuffledFrom(media, uri.toString()) else media
+                playlistIndex = playlist.indexOfFirst { it.uri.toString() == uri.toString() }
             }
         }
     }
@@ -650,20 +687,21 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         }
 
         // ---- 右缘音量竖条 / 左缘亮度竖条（滑动时出现）
+        // ---- 音量（右）/ 亮度（左）：中央悬浮面板（照 IRIS：图标 + 横条 + 百分比）
         volumeRatio?.let { r ->
-            VerticalLevelBar(
+            LevelPanel(
                 ratio = r,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .padding(end = 6.dp),
+                kind = LevelKind.VOLUME,
+                modifier = Modifier.align(Alignment.Center),
             )
         }
         brightnessRatio?.let { r ->
-            VerticalLevelBar(
+            LevelPanel(
                 ratio = r,
-                modifier = Modifier
-                    .align(Alignment.CenterStart)
-                    .padding(start = 6.dp),
+                kind = LevelKind.BRIGHTNESS,
+                modifier = Modifier.align(Alignment.Center),
+                // 亮度改的是**应用内**遮罩，文案写明避免误解为系统亮度
+                label = "亮度 ${(r * 100).roundToInt()}%",
             )
         }
 
@@ -699,6 +737,44 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             LaunchedEffect(locked) { hud = "已锁定，点左侧锁按钮解锁" }
         }
 
+        // ---- 迷你进度浮层（照 IRIS）：控制层收起时（例如双击进退后），
+        // 仍能在不唤出整套控件的情况下看到「文件名 + 细进度条 + 时间」。
+        if (!controlsVisible && !locked && durationMs > 0 && hud != null) {
+            Text(
+                title,
+                color = Color.White,
+                style = MaterialTheme.typography.labelLarge,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .statusBarsPadding()
+                    .padding(start = 16.dp, top = 12.dp)
+                    .fillMaxWidth(0.72f),
+            )
+            Column(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth(),
+            ) {
+                Canvas(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(3.dp),
+                ) {
+                    val f = ((seekPreview ?: positionMs).toFloat() / durationMs).coerceIn(0f, 1f)
+                    drawRect(Color.White.copy(alpha = 0.25f))
+                    drawRect(Color.White, size = Size(size.width * f, size.height))
+                }
+                Text(
+                    "${clock(seekPreview ?: positionMs)} / ${clock(durationMs)}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 4.dp),
+                )
+            }
+        }
+
         // ---- 底部：进度行 + 矢量图标控制行（悬浮）
         if (controlsVisible && !locked) {
             Column(
@@ -711,30 +787,32 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(clock(seekPreview ?: positionMs), color = Color.White, style = MaterialTheme.typography.labelLarge)
-                    Slider(
-                        value = (seekPreview ?: positionMs).coerceIn(0, durationMs.coerceAtLeast(1)).toFloat(),
-                        onValueChange = {
+                    // 进度条照 IRIS：4dp 圆角轨道 + 三层（未播 / **已缓冲** / 已播）+ 6dp 圆拇指。
+                    // 拖动期间暂停播放（IRIS 同款做法），松手后按拖动前的播放状态决定是否续播。
+                    PlayerSlider(
+                        positionMs = seekPreview ?: positionMs,
+                        durationMs = durationMs,
+                        bufferedMs = bufferedMs,
+                        dragging = sliderDragging,
+                        onSeekStart = {
+                            wasPlayingBeforeSeek = player.isPlaying
+                            if (wasPlayingBeforeSeek) player.pause()
                             sliderDragging = true
-                            seekPreview = it.toLong()
-                            // 拖动时就把画面跟在手指后面（松手时再最终落定），
-                            // 不然拖动中画面不动、看不出拖到哪了
-                            player.seekTo(it.toLong())
-                            positionMs = it.toLong()
                         },
-                        onValueChangeFinished = {
+                        onSeek = { target ->
+                            seekPreview = target
+                            player.seekTo(target)
+                            positionMs = target
+                        },
+                        onSeekEnd = {
                             seekPreview?.let {
                                 player.seekTo(it)
                                 positionMs = it
                             }
                             seekPreview = null
                             sliderDragging = false
+                            if (wasPlayingBeforeSeek) player.play()
                         },
-                        valueRange = 0f..durationMs.coerceAtLeast(1).toFloat(),
-                        colors = SliderDefaults.colors(
-                            thumbColor = Color.White,
-                            activeTrackColor = Color.White,
-                            inactiveTrackColor = Color.White.copy(alpha = 0.28f),
-                        ),
                         modifier = Modifier
                             .weight(1f)
                             .padding(horizontal = 10.dp),
@@ -748,6 +826,15 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     horizontalArrangement = Arrangement.SpaceEvenly,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    IconButton(
+                        label = if (shuffle) "随机播放：开" else "随机播放：关",
+                        // 打开态高亮（IRIS：未开启时颜色降到 60%）
+                        enabled = playlist.size > 1 || playlist.isNotEmpty(),
+                        onClick = { toggleShuffle() },
+                        dim = !shuffle,
+                    ) {
+                        drawShuffle()
+                    }
                     IconButton("上一集", enabled = playlistIndex > 0, onClick = { playAt(playlistIndex - 1) }) {
                         drawSkip(next = false)
                     }
@@ -836,18 +923,26 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
 /** 图标按钮：固定触控尺寸 + 矢量绘制内容（禁用整体降透明度） */
 @Composable
-private fun IconButton(label: String, enabled: Boolean = true, large: Boolean = false, onClick: () -> Unit, draw: DrawScope.() -> Unit) {
+private fun IconButton(
+    label: String,
+    enabled: Boolean = true,
+    large: Boolean = false,
+    /** 开关类按钮的「关闭态」：降不透明度（IRIS 同款视觉） */
+    dim: Boolean = false,
+    onClick: () -> Unit,
+    draw: DrawScope.() -> Unit,
+) {
     Box(
         Modifier
-            .size(if (large) 56.dp else 48.dp)
+            .size(if (large) 56.dp else 44.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(if (large) 12.dp else 10.dp),
+            .padding(if (large) 12.dp else 9.dp),
     ) {
         Canvas(
             Modifier
                 .fillMaxSize()
-                .alpha(if (enabled) 1f else 0.35f),
+                .alpha(if (!enabled) 0.35f else if (dim) 0.55f else 1f),
         ) { draw() }
     }
 }
@@ -1043,25 +1138,242 @@ private fun DrawScope.drawSpeaker(muted: Boolean) {
     }
 }
 
-/** 右缘音量 / 左缘亮度竖条 */
+/**
+ * 播放进度条（照 IRIS）。
+ *
+ * 视觉：4dp 圆角轨道 + **三层**——未播（暗）/ **已缓冲**（中）/ 已播（亮），6dp 圆拇指；
+ * 交互：按下即暂停并进入拖动态、拖动实时 seek、松手按拖动前的状态续播；
+ * 触摸热区 28dp（视觉只有 4dp，太细会拖不住）。
+ */
 @Composable
-private fun VerticalLevelBar(ratio: Float, modifier: Modifier = Modifier) {
+private fun PlayerSlider(
+    positionMs: Long,
+    durationMs: Long,
+    bufferedMs: Long,
+    dragging: Boolean,
+    onSeekStart: () -> Unit,
+    onSeek: (Long) -> Unit,
+    onSeekEnd: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    var widthPx by remember { mutableStateOf(0f) }
+    val total = durationMs.coerceAtLeast(1L)
+    val posF = (positionMs.toFloat() / total).coerceIn(0f, 1f)
+    val bufF = (bufferedMs.toFloat() / total).coerceIn(0f, 1f)
+    var dragFraction by remember { mutableStateOf<Float?>(null) }
+
     Box(
         modifier
-            .width(4.dp)
-            .height(148.dp)
-            .clip(RoundedCornerShape(2.dp))
-            .background(Color.White.copy(alpha = 0.25f)),
-        contentAlignment = Alignment.BottomCenter,
+            .height(28.dp)
+            .onGloballyPositioned { widthPx = it.size.width.toFloat() }
+            // 点按轨道 = 直接跳转（照 IRIS 的 Slider 行为）
+            .pointerInput(durationMs) {
+                detectTapGestures { offset ->
+                    if (durationMs > 0 && widthPx > 0f) {
+                        onSeek(((offset.x / widthPx).coerceIn(0f, 1f) * durationMs).toLong())
+                    }
+                }
+            }
+            // 拖动 = 暂停 → 实时 seek → 松手续播
+            .pointerInput(durationMs) {
+                detectDragGestures(
+                    onDragStart = {
+                        dragFraction = posF
+                        onSeekStart()
+                    },
+                    onDrag = { change, dragAmount ->
+                        change.consume()
+                        if (widthPx > 0f && durationMs > 0) {
+                            val next = ((dragFraction ?: posF) + dragAmount.x / widthPx).coerceIn(0f, 1f)
+                            dragFraction = next
+                            onSeek((next * durationMs).toLong())
+                        }
+                    },
+                    onDragEnd = { dragFraction = null; onSeekEnd() },
+                    onDragCancel = { dragFraction = null; onSeekEnd() },
+                )
+            },
+        contentAlignment = Alignment.CenterStart,
     ) {
-        Box(
-            Modifier
-                .fillMaxWidth()
-                .height((148 * ratio.coerceIn(0f, 1f)).dp)
-                .clip(RoundedCornerShape(2.dp))
-                .background(Color.White),
+        Canvas(Modifier.fillMaxSize()) {
+            val w = size.width
+            val h = size.height
+            val trackTop = (h - 4.dp.toPx()) / 2f
+            val trackH = 4.dp.toPx()
+            val radius = androidx.compose.ui.geometry.CornerRadius(trackH / 2f)
+            val shown = dragFraction ?: posF
+
+            // 1) 未播
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.27f),
+                topLeft = Offset(0f, trackTop),
+                size = Size(w, trackH),
+                cornerRadius = radius,
+            )
+            // 2) 已缓冲
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.47f),
+                topLeft = Offset(0f, trackTop),
+                size = Size(w * bufF.coerceAtLeast(shown), trackH),
+                cornerRadius = radius,
+            )
+            // 3) 已播
+            drawRoundRect(
+                color = Color.White.copy(alpha = 0.87f),
+                topLeft = Offset(0f, trackTop),
+                size = Size(w * shown, trackH),
+                cornerRadius = radius,
+            )
+            // 拇指（拖动时更大）
+            drawCircle(
+                color = Color.White,
+                radius = if (dragging) 8.dp.toPx() / 2f * 1.6f else 6.dp.toPx() / 2f * 1.6f,
+                center = Offset(w * shown, h / 2f),
+            )
+        }
+    }
+}
+
+/**
+ * 音量 / 亮度浮层（照 IRIS：**中央悬浮面板** = 图标 + 横能量条 + 百分比）。
+ * 比旧的「贴边细竖条」清楚得多，也更容易看出当前值。
+ */
+@Composable
+private fun LevelPanel(
+    ratio: Float,
+    kind: LevelKind,
+    modifier: Modifier = Modifier,
+    label: String? = null,
+) {
+    val r = ratio.coerceIn(0f, 1f)
+    Row(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(Color.Black.copy(alpha = 0.55f))
+            .padding(start = 12.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Canvas(Modifier.size(24.dp)) {
+            when (kind) {
+                LevelKind.VOLUME -> drawVolume(r)
+                LevelKind.BRIGHTNESS -> drawBrightness(r)
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Column {
+            Box(
+                Modifier
+                    .width(120.dp)
+                    .height(6.dp)
+                    .clip(RoundedCornerShape(3.dp))
+                    .background(Color.White.copy(alpha = 0.28f)),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxHeight()
+                        .fillMaxWidth(r)
+                        .clip(RoundedCornerShape(3.dp))
+                        .background(Color.White),
+                )
+            }
+            Text(
+                label ?: "${(r * 100).roundToInt()}%",
+                color = Color.White.copy(alpha = 0.85f),
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+        }
+    }
+}
+
+private enum class LevelKind { VOLUME, BRIGHTNESS }
+
+/** 喇叭剪影（音量 = 0 时画一道斜杠） */
+private fun DrawScope.drawVolume(ratio: Float) {
+    val w = size.width
+    val h = size.height
+    val path = Path().apply {
+        moveTo(w * 0.06f, h * 0.36f)
+        lineTo(w * 0.26f, h * 0.36f)
+        lineTo(w * 0.50f, h * 0.16f)
+        lineTo(w * 0.50f, h * 0.84f)
+        lineTo(w * 0.26f, h * 0.64f)
+        lineTo(w * 0.06f, h * 0.64f)
+        close()
+    }
+    drawPath(path, color = Color.White)
+    if (ratio > 0.001f) {
+        // 两道声波（音量越大越完整）
+        drawArc(
+            color = Color.White,
+            startAngle = -50f, sweepAngle = 100f, useCenter = false,
+            topLeft = Offset(w * 0.42f, h * 0.30f),
+            size = Size(w * 0.34f, h * 0.40f),
+            style = Stroke(width = w * 0.06f, cap = StrokeCap.Round),
+        )
+        if (ratio > 0.5f) {
+            drawArc(
+                color = Color.White,
+                startAngle = -50f, sweepAngle = 100f, useCenter = false,
+                topLeft = Offset(w * 0.50f, h * 0.16f),
+                size = Size(w * 0.46f, h * 0.68f),
+                style = Stroke(width = w * 0.06f, cap = StrokeCap.Round),
+            )
+        }
+    } else {
+        drawLine(
+            Color.White,
+            Offset(w * 0.58f, h * 0.30f),
+            Offset(w * 0.86f, h * 0.70f),
+            strokeWidth = w * 0.07f,
+            cap = StrokeCap.Round,
         )
     }
+}
+
+/** 太阳剪影：中心圆 + 八根光芒（亮度越低光芒越短） */
+private fun DrawScope.drawBrightness(ratio: Float) {
+    val w = size.width
+    val h = size.height
+    val c = Offset(w / 2f, h / 2f)
+    drawCircle(Color.White, radius = w * 0.20f, center = c)
+    val inner = w * (0.30f + 0.04f * ratio)
+    val outer = w * (0.34f + 0.14f * ratio)
+    for (i in 0 until 8) {
+        val a = Math.toRadians((i * 45).toDouble())
+        val dx = cos(a).toFloat()
+        val dy = sin(a).toFloat()
+        drawLine(
+            Color.White,
+            Offset(c.x + dx * inner, c.y + dy * inner),
+            Offset(c.x + dx * outer, c.y + dy * outer),
+            strokeWidth = w * 0.07f,
+            cap = StrokeCap.Round,
+        )
+    }
+}
+
+/** 随机播放：两条交叉箭头 */
+private fun DrawScope.drawShuffle() {
+    val w = size.width
+    val h = size.height
+    val st = w * 0.08f
+    // 上线：左 → 右上
+    drawLine(Color.White, Offset(w * 0.10f, h * 0.30f), Offset(w * 0.74f, h * 0.30f), strokeWidth = st, cap = StrokeCap.Round)
+    drawLine(Color.White, Offset(w * 0.74f, h * 0.30f), Offset(w * 0.82f, h * 0.30f), strokeWidth = st, cap = StrokeCap.Round)
+    // 下线：左 → 右下
+    drawLine(Color.White, Offset(w * 0.10f, h * 0.70f), Offset(w * 0.74f, h * 0.70f), strokeWidth = st, cap = StrokeCap.Round)
+    // 右端箭头
+    fun arrow(cx: Float, cy: Float, up: Boolean) {
+        val d = if (up) -1f else 1f
+        drawLine(Color.White, Offset(cx, cy), Offset(cx - w * 0.10f, cy + d * h * 0.10f), strokeWidth = st, cap = StrokeCap.Round)
+        drawLine(Color.White, Offset(cx, cy), Offset(cx - w * 0.10f, cy - d * h * 0.10f), strokeWidth = st, cap = StrokeCap.Round)
+    }
+    arrow(w * 0.88f, h * 0.30f, up = true)
+    arrow(w * 0.88f, h * 0.70f, up = false)
+    // 交叉示意
+    drawLine(Color.White, Offset(w * 0.34f, h * 0.30f), Offset(w * 0.58f, h * 0.70f), strokeWidth = st * 0.8f, cap = StrokeCap.Round)
+    drawLine(Color.White, Offset(w * 0.34f, h * 0.70f), Offset(w * 0.58f, h * 0.30f), strokeWidth = st * 0.8f, cap = StrokeCap.Round)
 }
 
 /** 秒表格式：m:ss / h:mm:ss */
