@@ -15,6 +15,21 @@ val releaseStoreFile = configuredStoreFile?.let { path ->
 val hasReleaseKey = releaseStoreFile?.isFile == true
 val isCi = System.getenv("CI")?.equals("true", ignoreCase = true) == true
 
+// CI 缺 keystore 时必须硬失败（禁止发布 debug 签名的 release APK），
+// 但**只能在真的要出 release 时才失败**。
+//
+// 旧实现把校验写在 `buildTypes { release { ... } }` 里 = 配置期无条件执行：
+// CI 的 `testDebugUnitTest` job 并不解码 keystore（那是 android job 的事），
+// 于是「跑单元测试」也会直接抛 GradleException —— 整个 CI 因为一个跟测试无关的
+// 签名问题全红。改为在任务图解析完成后、且图里确实有 release 任务时才失败。
+gradle.taskGraph.whenReady {
+    if (isCi && !hasReleaseKey && allTasks.any { it.name.contains("Release", ignoreCase = true) }) {
+        throw GradleException(
+            "CI release build requires key.properties and an existing release keystore",
+        )
+    }
+}
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -47,9 +62,7 @@ android {
     buildTypes {
         val stable = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         release {
-            if (isCi && !hasReleaseKey) {
-                throw GradleException("CI release build requires key.properties and an existing release keystore")
-            }
+            // 缺 keystore 的 CI 硬失败已上移到 taskGraph.whenReady（见文件头注释）
             signingConfig = stable
             isMinifyEnabled = false
             isShrinkResources = false
