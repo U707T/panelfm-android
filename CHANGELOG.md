@@ -7,6 +7,68 @@
 > 不再作为任何结论的依据（其中大量资源 ID 推断无法从本仓库复核）。这些段落保留为历史记录，
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`。
 
+## v1.1.0 — 审计修复：加密压缩包闭环 + 失效设置收口 + 应用图标
+
+> 依据 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`（基线 `6ca18f4`）逐条修复。
+> 该报告里 **C1/C2/C3 三条 Critical 与 R1–R4 四条 Required 全部在本版处理完毕**。
+
+### 修复（Critical）：加密压缩包「能建不能读」
+
+旧版本存在三条互相独立的硬伤，且都被同一类缺口掩盖 —— **没有任何测试验证过
+「PanelFM 自己能不能读回自己加密的包」**：
+
+- **ZIP 带口令压缩 100% 失败且写出 0 字节**：`addRawArchiveEntry` 见到 entry 上的
+  encryption 标志就抛 `UnsupportedZipFeatureException`。
+  现改为整包交给仓库里**本来就有、却从未接线**的 `EncryptedZipWriter`（自研流式写侧）。
+- **加密 7z 能创建、读不回来**：`SevenZFile` 从未传口令 → `PasswordRequiredException`。
+  现 `ArchiveVfs` 支持口令，7z 挂载时透传。
+- **加密 ZIP 读不回来**：commons-compress 1.27.1 **根本没有**加密 ZIP 读实现
+  （`ZipFile` 无 password 参数，只有一个 `PasswordRequiredException` 异常类型）。
+  新增 `ZipCryptoStream.kt` 自研解密（12 字节加密头 + 连续密钥流），
+  并按 APPNOTE 用 **DOS 时间高字节**（`ZipUtil.toDosTime`，不是 epoch 右移）校验口令。
+- 加密 ZIP 条目读完即比对 CRC：ZipCrypto 只用 1 个字节判口令，256 次里有 1 次会放过错误口令，
+  CRC 是唯一能真正判定内容对错的手段。
+- 加密包**不允许**应用内增删改名（整包重写会破坏加密），给出可执行中文文案而不是底层英文异常。
+- `EncryptedZipWriter` 补齐压缩级别与「仅存储」支持（此前加密路径忽略用户在压缩对话框里的选择）。
+
+### 修复（Required）：四个「设置项不生效」
+
+- **`trustSelfSigned` 是死开关**：设置页能开、协议层硬编码 `false`。现经 `VfsEnv` 桥接为
+  全局兜底默认值（连接级设置优先），改完即时生效。
+- **信任开关对 S3 静默无效**：`S3Client` 此前完全没配 TLS。现已接入；
+  同时把「信任自签证书」开关**按协议显示** —— SFTP / SMB 并不读取该选项，
+  继续显示只会让用户以为自己放开了校验。
+- **任务并发重启失效**：设置页只在点按钮那一刻生效，冷启动回到默认 2。现启动时读回。
+- **浏览模式（单列/双列/自动）不持久化**：「自动切换」永远留不住。现落盘并在启动读回。
+
+### 修复（Required）：同主机多账号会话隔离
+
+`?c=<connectionId>` 此前只有两处**手工拼串**产生，书签 / 最近路径 / 同步路径 / 返回上级
+全都漏掉 → 同主机不同账号会被 `VfsUri.sameMount` 判成同一挂载点，
+`isInside` 误报「目标在源内部」直接拒绝操作。现统一由 `AppContainer.uriForConnection()`
+与 `BrowserController.open()` 注入，所有入口一致。
+
+### 其他
+
+- `VfsException.Auth.userMessage` 改为优先使用具体原因（固定文案「请检查用户名/密码」
+  会把「压缩包口令不对」「主机密钥变化」的用户引向错误方向）。
+- 「信任自签证书」实现从 WebDAV / FTP 各一份收敛为 `core:vfs-api/TlsTrust` 单一实现。
+- 应用图标改为 PNG 多密度资源（mdpi–xxxhdpi），移除自适应图标 XML。
+
+### 测试
+
+- 新增 `EncryptedArchiveRoundTripTest`（9 项）：**压缩(带口令) → 重新挂载 → 列目录 → 读内容**
+  的端到端闭环，覆盖 ZIP/7z、STORED/DEFLATE、嵌套目录、二进制一致、随机读、错误口令文案、
+  加密包拒绝改写。这组用例就是上述三条 Critical 的回归防线。
+- 新增 `ConnectionIsolationTest`（7 项）：锁死 `?c=` 补全前后的 `sameMount` 行为。
+- 全量：**9 个模块 232 用例全绿**（此前 223）。
+
+### 已知未做（不是本版范围）
+
+`docs/AUDIT-2026-10-05-CODE-TRUTH.md` §6 的死代码清理、§3 的性能项，
+以及 `.preserved/unmerged-batch2-fastpath-fallback.patch`（服务端快路径失败降级，
+违反 `VirtualFileSystem.serverSideCopy` 的接口契约）仍在待办。
+
 ## v1.0.6 — MT 对齐全面复核 + 传输安全加固
 
 - 传输引擎补齐目录冲突策略：`跳过 / 覆盖 / 保留两者` 对整棵子树生效，不再出现目录已选「保留两者」但子文件写入旧目录的问题。

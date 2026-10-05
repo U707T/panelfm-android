@@ -4,9 +4,4 @@
     <issue id="UnsafeOptInUsageError">
         <option name="opt-in" value="androidx.media3.common.util.UnstableApi" />
     </issue>
-    <!-- Adaptive icons must stay in mipmap-anydpi-v26 even though minSdk is 26;
-         moving them to mipmap-anydpi breaks AAPT adaptive-icon resolution. -->
-    <issue id="ObsoleteSdkInt">
-        <ignore path="app/src/main/res/mipmap-anydpi-v26" />
-    </issue>
 </lint>

@@ -23,6 +23,10 @@ import java.util.zip.Deflater
 class EncryptedZipWriter(
     private val out: OutputStream,
     password: String,
+    /** Deflater 压缩级别（0–9）；[store] 为 true 时忽略 */
+    private val deflateLevel: Int = Deflater.DEFAULT_COMPRESSION,
+    /** 「仅存储」：条目以 STORED（method 0）写入，不做压缩 */
+    private val store: Boolean = false,
 ) {
     private val password = password
     private var keys = ZipCrypto.Keys(password)
@@ -98,7 +102,8 @@ class EncryptedZipWriter(
 
         // bit0 = 加密，bit3 = data descriptor，bit11 = UTF-8 名字
         val flags = 0x0001 or 0x0008 or 0x0800
-        write(u32(0x04034b50L)); write(u16(20)); write(u16(flags)); write(u16(8))
+        val method = if (store) METHOD_STORED else METHOD_DEFLATED
+        write(u32(0x04034b50L)); write(u16(20)); write(u16(flags)); write(u16(method))
         write(u16(time)); write(u16(date)); write(u32(0)); write(u32(0)); write(u32(0))
         write(u16(nameBytes.size)); write(u16(0)); write(nameBytes)
 
@@ -108,40 +113,54 @@ class EncryptedZipWriter(
         write(header)
 
         val crc = CRC32()
-        // nowrap = true：ZIP 里存的是**裸 deflate**，不能带 zlib 头（否则解出来是 78 9c 开头 → inflate 失败）
-        val deflater = Deflater(Deflater.DEFAULT_COMPRESSION, true)
         var uncompressed = 0L
         var compressed = 0L
-        val defBuf = ByteArray(DEFLATE_CHUNK)
         val plainBuf = ByteArray(64 * 1024)
 
-        try {
+        if (store) {
+            // 「仅存储」：明文直接加密搬运。注意顺序 —— 必须**先 CRC 后加密**，
+            // 因为 encrypt() 会原地改写 plainBuf，先加密会把 CRC 算在密文上。
             while (true) {
-                // reader 把明文写进 plainBuf 并返回字节数；-1 表示 EOF。
-                // （早期版本用 () -> Int 让调用方写自己的缓冲区，结果写侧永远压到全零——务必保持此签名）
                 val n = reader(plainBuf)
                 if (n < 0) break
                 crc.update(plainBuf, 0, n)
                 uncompressed += n
-                deflater.setInput(plainBuf, 0, n)
-                while (!deflater.needsInput()) {
+                keys.encrypt(plainBuf, 0, n)
+                write(plainBuf, 0, n)
+                compressed += n
+            }
+        } else {
+            // nowrap = true：ZIP 里存的是**裸 deflate**，不能带 zlib 头（否则解出来是 78 9c 开头 → inflate 失败）
+            val deflater = Deflater(deflateLevel, true)
+            val defBuf = ByteArray(DEFLATE_CHUNK)
+            try {
+                while (true) {
+                    // reader 把明文写进 plainBuf 并返回字节数；-1 表示 EOF。
+                    // （早期版本用 () -> Int 让调用方写自己的缓冲区，结果写侧永远压到全零——务必保持此签名）
+                    val n = reader(plainBuf)
+                    if (n < 0) break
+                    crc.update(plainBuf, 0, n)
+                    uncompressed += n
+                    deflater.setInput(plainBuf, 0, n)
+                    while (!deflater.needsInput()) {
+                        val m = deflater.deflate(defBuf)
+                        if (m <= 0) break
+                        keys.encrypt(defBuf, 0, m)
+                        write(defBuf, 0, m)
+                        compressed += m
+                    }
+                }
+                deflater.finish()
+                while (!deflater.finished()) {
                     val m = deflater.deflate(defBuf)
                     if (m <= 0) break
                     keys.encrypt(defBuf, 0, m)
                     write(defBuf, 0, m)
                     compressed += m
                 }
+            } finally {
+                deflater.end()
             }
-            deflater.finish()
-            while (!deflater.finished()) {
-                val m = deflater.deflate(defBuf)
-                if (m <= 0) break
-                keys.encrypt(defBuf, 0, m)
-                write(defBuf, 0, m)
-                compressed += m
-            }
-        } finally {
-            deflater.end()
         }
 
         val crcValue = crc.value
@@ -152,7 +171,7 @@ class EncryptedZipWriter(
         check4GB("条目 $name", compressed + ZipCrypto.HEADER_LENGTH)
         check4GB("条目 $name", uncompressed)
         central += CentralRecord(
-            nameBytes, 8, flags, time, date, crcValue,
+            nameBytes, method, flags, time, date, crcValue,
             compressed + ZipCrypto.HEADER_LENGTH, uncompressed, localOffset,
         )
         if (uncompressedSize >= 0 && uncompressed != uncompressedSize) {
@@ -194,5 +213,7 @@ class EncryptedZipWriter(
 
     private companion object {
         const val DEFLATE_CHUNK = 64 * 1024
+        const val METHOD_STORED = 0
+        const val METHOD_DEFLATED = 8
     }
 }

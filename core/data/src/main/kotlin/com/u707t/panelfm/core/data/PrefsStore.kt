@@ -26,6 +26,8 @@ data class AppSettings(
     val maxConcurrentTasks: Int = 2,
     val thumbnailsOnMobile: Boolean = false,
     val useSingleColumn: Boolean = false,
+    /** 浏览模式三档：AUTO / SINGLE / DUAL（设置页可改，重启保留） */
+    val browseMode: String = "AUTO",
     val userAgent: String = "PanelFM/0.1 (Android)",
     val trustSelfSigned: Boolean = false,
     /** 「设为首页」的路径（URI 字符串），空 = 内部存储根 */
@@ -94,6 +96,7 @@ class PrefsStore(private val context: Context) {
         val maxConcurrent = intPreferencesKey("max_concurrent")
         val thumbsMobile = booleanPreferencesKey("thumbs_mobile")
         val singleColumn = booleanPreferencesKey("single_column")
+        val browseMode = stringPreferencesKey("browse_mode")
         val userAgent = stringPreferencesKey("user_agent")
         val trustSelfSigned = booleanPreferencesKey("trust_self_signed")
         val homePath = stringPreferencesKey("home_path")
@@ -144,6 +147,7 @@ class PrefsStore(private val context: Context) {
             maxConcurrentTasks = p[Keys.maxConcurrent] ?: 2,
             thumbnailsOnMobile = p[Keys.thumbsMobile] ?: false,
             useSingleColumn = p[Keys.singleColumn] ?: false,
+            browseMode = p[Keys.browseMode] ?: "AUTO",
             userAgent = p[Keys.userAgent] ?: "PanelFM/0.1 (Android)",
             trustSelfSigned = p[Keys.trustSelfSigned] ?: false,
             homePath = p[Keys.homePath],
@@ -192,6 +196,12 @@ class PrefsStore(private val context: Context) {
     suspend fun setThumbsOnMobile(on: Boolean) = context.panelDataStore.edit { it[Keys.thumbsMobile] = on }
     suspend fun setSkipThumbsWhileScrolling(on: Boolean) = context.panelDataStore.edit { it[Keys.skipThumbs] = on }
     suspend fun setSingleColumn(on: Boolean) = context.panelDataStore.edit { it[Keys.singleColumn] = on }
+
+    /** 浏览模式（AUTO / SINGLE / DUAL）。与 [setSingleColumn] 同步写，避免两个开关打架。 */
+    suspend fun setBrowseMode(mode: String) = context.panelDataStore.edit {
+        it[Keys.browseMode] = mode
+        it[Keys.singleColumn] = (mode == "SINGLE")
+    }
     suspend fun setUserAgent(ua: String) = context.panelDataStore.edit { it[Keys.userAgent] = ua }
     suspend fun setTrustSelfSigned(on: Boolean) = context.panelDataStore.edit { it[Keys.trustSelfSigned] = on }
 

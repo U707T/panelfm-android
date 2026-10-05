@@ -4,7 +4,9 @@ package com.u707t.panelfm.core.vfs.archive
  * ZIP 传统加密（ZipCrypto / PKWARE，`ZipArchiveOutputStream` 写不出来的那套）。
  *
  * 背景：commons-compress 1.27 **只能读**加密 ZIP（`ZipArchiveInputStream(in, password)`），
- * 没有写侧 API。MT 的「密码（不加密请留空）」对 zip 用的正是传统加密，所以写侧自研。
+ * 没有写侧 API —— `addRawArchiveEntry` 见到 encryption 标志会抛
+ * `UnsupportedZipFeatureException: encryption`，`putArchiveEntry` 又会把 compressedSize 算错
+ * （少算 12 字节加密头）。所以写侧由 [EncryptedZipWriter] 自研，本文件只负责密钥流。
  *
  * 算法（PKWARE APPNOTE 6.1）：
  *  - 密钥由口令初始化出 3 个 32 位状态字（key0/1/2）

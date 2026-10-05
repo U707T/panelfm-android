@@ -7,12 +7,7 @@ import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
-import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
-import javax.net.ssl.SSLContext
-import javax.net.ssl.SSLSocketFactory
-import javax.net.ssl.TrustManager
-import javax.net.ssl.X509TrustManager
 
 /** WebDAV 连接参数（从 ConnectionConfig 派生）。 */
 data class DavConfig(
@@ -87,22 +82,6 @@ class DavRedirectInterceptor : Interceptor {
     }
 }
 
-/** 信任自签证书（仅对该连接生效，不动全局）。 */
-object InsecureTls {
-
-    val trustManager: X509TrustManager = object : X509TrustManager {
-        override fun checkClientTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun checkServerTrusted(chain: Array<out X509Certificate>?, authType: String?) = Unit
-        override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
-    }
-
-    val socketFactory: SSLSocketFactory by lazy {
-        SSLContext.getInstance("TLS").apply {
-            init(null, arrayOf<TrustManager>(trustManager), java.security.SecureRandom())
-        }.socketFactory
-    }
-}
-
 object DavHttp {
 
     fun client(cfg: DavConfig): OkHttpClient {
@@ -135,7 +114,10 @@ object DavHttp {
             }
         }
         if (cfg.secure && cfg.trustSelfSigned) {
-            builder.sslSocketFactory(InsecureTls.socketFactory, InsecureTls.trustManager)
+            builder.sslSocketFactory(
+                com.u707t.panelfm.core.vfs.TlsTrust.socketFactory,
+                com.u707t.panelfm.core.vfs.TlsTrust.trustManager,
+            )
             builder.hostnameVerifier { _, _ -> true }
         }
         return builder.build()

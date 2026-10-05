@@ -91,7 +91,7 @@ class FtpVfs(
             .getOrElse { "UTF-8" }
         c.listHiddenFiles = true
         if (c is FTPSClient && cfg.trustSelfSigned) {
-            c.trustManager = InsecureTrustManager
+            c.trustManager = com.u707t.panelfm.core.vfs.TlsTrust.trustManager
         }
         return c
     }
@@ -525,15 +525,9 @@ class FtpVfs(
 }
 
 /** 自签证书：仅用于用户显式勾选「信任自签」的 FTPS 连接。 */
-object InsecureTrustManager : javax.net.ssl.X509TrustManager {
-    override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) = Unit
-    override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>?, authType: String?) = Unit
-    override fun getAcceptedIssuers(): Array<java.security.cert.X509Certificate> = emptyArray()
-}
-
 class FtpVfsFactory(private val schemeName: String = "ftp") : VfsFactory {
     override val scheme: String get() = schemeName
 
     override fun create(config: ConnectionConfig, secret: String?, env: VfsEnv): VirtualFileSystem =
-        FtpVfs(FtpConfig.from(config, secret), env)
+        FtpVfs(FtpConfig.from(config, secret, env.trustSelfSignedDefault()), env)
 }

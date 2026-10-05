@@ -1,6 +1,9 @@
 # PanelFM 代码审计报告（以代码为准 · 2026-10-05）
 
 > **本报告取代此前所有 Panelfm-Android 分析文档。** 旧文档已不再作为依据，逐条列在文末「§7 过时文档清单」。
+>
+> **修复状态（v1.1.0）**：C1 / C2 / C3 与 R1 / R2 / R3 / R4 / R5 均已修复并有回归测试，
+> 详见 `CHANGELOG.md` 的 v1.1.0 段落。§6 死代码清理与 §3 性能项仍待办。
 > 基线：`main` @ `6ca18f4c5f9946e83e36d11f7dcf68db5a56735d`（versionName `1.0.6` / versionCode 36）
 > 方法：只读源码 + 只读构建产物；**结论均给出可复核证据**（文件:行号 / 可复现命令 / 实测输出）。
 > 不引用任何既有文档的结论；旧文档与代码冲突处，一律以代码为准并在此显式记录。
@@ -40,6 +43,9 @@
 
 ### C1. ZIP 口令压缩路径 100% 失败，且写出 0 字节（`ArchiveCompressor.addEncryptedZipFile`）
 
+> ✅ **v1.1.0 已修复**：改走 `EncryptedZipWriter`（`ArchiveCompressor.compressEncryptedZip`），
+> 回归测试 `EncryptedArchiveRoundTripTest.ZIP 带口令压缩后能被自己读回`。
+
 **证据（实测，探针已删除）**：用 `ArchiveCompressor(locator).compress(sources, dest, Format.ZIP, password = "pw")`：
 
 ```
@@ -70,6 +76,9 @@
 
 ### C2. 加密 7z 能创建、但自己读不回来（`ArchiveVfs` 无口令入口）
 
+> ✅ **v1.1.0 已修复**：`ArchiveVfs` 增加 `password`，7z 经 `SevenZFile.setPassword` 透传。
+> 回归测试 `EncryptedArchiveRoundTripTest.7z 带口令压缩后能被自己读回`。
+
 **证据（实测，探针已删除）**：`compress(..., Format.SEVEN_Z, password = "pw")` → 成功，149 字节；随后
 `ArchiveVfs(dest, SEVEN_Z, tmpFile, env).connect()` → 成功、`list("/")` → `[src]`；再
 `openRead("src/a.txt")`：
@@ -89,6 +98,16 @@ org.apache.commons.compress.PasswordRequiredException:
 UI 在打开加密包时弹口令框；错误口令给可读文案（不是 `PasswordRequiredException`）。
 
 ### C3. 加密 ZIP 也读不回来（同一根因的 ZIP 侧）
+
+> ✅ **v1.1.0 已修复**：新增 `ZipCryptoStream.kt` 自研解密（commons-compress 无加密 ZIP 读实现）。
+> 实现过程中发现并修掉两个**只有实测才能暴露**的问题：
+> ① 校验字节必须用 `ZipUtil.toDosTime(...)[1]`，`ze.time` 是 epoch 毫秒、右移 8 位会得到完全不同的字节
+> （表现为「正确口令被判成错误口令」）；
+> ② `VfsException.Auth.userMessage` 原先忽略具体 message，把「口令不正确」显示成「请检查用户名/密码/密钥」。
+>
+> 关于「ZipEditor 静默去掉加密」：**实测推翻了这条假设** —— `zf.getInputStream(加密条目)` 会抛
+> `UnsupportedZipFeatureException` 让整包重写失败，即数据是安全的、只是不可用。
+> v1.1.0 改为提前拦截并给出可执行文案（回归测试 `加密 ZIP 不允许内部增删改名`）。
 
 **证据（实测，探针已删除）**：用 `EncryptedZipWriter` 产出加密 zip（152 字节，能被 commons-compress 用口令读回），
 交给 `ArchiveVfs(ZIP).openRead("a.txt")`：
@@ -110,6 +129,8 @@ C3 的读取失败「挡住」了（到不了那一步），但一旦修好 C3�
 
 ### R1. `settings.trustSelfSigned` 是死开关：设置页写、协议层不读
 
+> ✅ **v1.1.0 已修复**：经 `VfsEnv.trustSelfSignedDefault` 桥接（连接级选项优先）。
+
 - 写入：`SettingsScreen.kt:253` `SettingSwitch("默认信任自签证书（新的 WebDAV 连接）", settings.trustSelfSigned)`
 - 读取：`WebDavVfsFactory.create()` → `DavHttp.client(...)` 硬编码 `trustSelfSignedDefault = false`（`WebDavVfs.kt:546`）
 - 全项目对 `settings.trustSelfSigned` 的消费点：**0**（仅设置页自己显示）
@@ -117,6 +138,8 @@ C3 的读取失败「挡住」了（到不了那一步），但一旦修好 C3�
 → 用户打开这个开关，行为没有任何变化。
 
 ### R2. 「信任自签证书」开关对 SFTP / SMB / S3 无效，但 UI 对所有协议都显示
+
+> ✅ **v1.1.0 已修复**：S3 接入 TLS 策略；开关改为**只对真正读取该选项的协议显示**（WebDAV/FTP/FTPS/S3）。
 
 `ConnectionEditScreen.kt:594` 对**所有协议类型**都渲染「信任自签证书 / 信任所有 HTTPS 证书」，
 但只有 WebDAV（`DavHttp.kt:41`）与 FTP/FTPS（`FtpConfig.kt:29`）读 `OPT_TRUST_SELF_SIGNED`：
@@ -132,6 +155,8 @@ S3 + 自签 HTTPS（自建 MinIO 的常见形态）**必然握手失败，且开
 
 ### R3. 任务并发设置重启后失效
 
+> ✅ **v1.1.0 已修复**：`AppContainer` 在 settings 首次发射时调用 `engine.updateConcurrency`。
+
 - `TransferEngine` 构造默认 `maxConcurrent = 2`（`TransferEngine.kt:64`）
 - `updateConcurrency(n)` 只在 `SettingsScreen.kt:262` 被调用（点按钮那一刻）
 - `AppSettings.maxConcurrentTasks` 在启动路径上**没有**被应用（`grep -rn maxConcurrentTasks` → 仅 SettingsScreen 两处）
@@ -139,6 +164,8 @@ S3 + 自签 HTTPS（自建 MinIO 的常见形态）**必然握手失败，且开
 → 选 4 个并发，重启回到 2。**修法**：`AppContainer` 初始化时（settings 首次发射后）调用 `engine.updateConcurrency(s.maxConcurrentTasks)`。
 
 ### R4. 浏览模式（单列/双列/自动）不持久化
+
+> ✅ **v1.1.0 已修复**：新增 `PrefsStore.browseMode`，启动读回。
 
 设置页「界面 → 浏览模式」三个按钮直接调 `container.browser.setBrowseMode(mode)`，而
 `setBrowseMode()`（`BrowserController.kt:171`）只 `update { copy(browseMode = mode) }`，**不写任何持久化**；
@@ -149,6 +176,9 @@ S3 + 自签 HTTPS（自建 MinIO 的常见形态）**必然握手失败，且开
 **修法**：`PrefsStore` 增加 `browseMode` 键，让「默认单列显示」变成它的快捷方式。
 
 ### R5. `?c=<connectionId>` 隔离链路不完整 → 同主机多账号仍会误判
+
+> ✅ **v1.1.0 已修复**：`AppContainer.uriForConnection()` + `BrowserController.open()` 统一注入。
+> 回归测试 `ConnectionIsolationTest`（7 项）。
 
 - `VfsUris.withConnection()`（唯一的 URI 加 `c=` 的 API）**零生产调用点**（只在 `VfsUriTest` 里用）
 - `c=` 只由两处**手工字符串拼接**产生：`HomeScreen.kt:323`、`DualPaneScreen.kt:216`
@@ -163,6 +193,8 @@ S3 + 自签 HTTPS（自建 MinIO 的常见形态）**必然握手失败，且开
 或让 `BrowserController.open()` 在写入 `PaneTab` 时同步把 `c=` 落到 `VfsUri`。
 
 ### R6. `docs/BUG-AUDIT.md` 的「批次索引」与代码状态不符，且文件未提交
+
+> ✅ **v1.1.0 已处理**：文件已删除（见 §7 D3）。
 
 - 文档状态表：第二批「进行中」、第三批「待开始」
 - 实际：`f65f506`（第二批·核心修复）、`5dd9531`（第三批·安全加固）、`6ca18f4`（第三批·依赖加固）**已提交**

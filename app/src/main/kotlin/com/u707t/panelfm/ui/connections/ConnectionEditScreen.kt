@@ -591,10 +591,17 @@ fun ConnectionEditScreen(
             }
 
             // ---------------- 开关项（MT 样式：右侧 Switch）
-            SwitchRow(
-                if (type == ConnectionType.WEBDAV) "信任所有 HTTPS 证书" else "信任自签证书",
-                trustSelfSigned,
-            ) { trustSelfSigned = it }
+            // 只对**真正读取该选项**的协议显示开关。
+            // 旧实现对所有协议都渲染，导致 SFTP / SMB 用户打开后毫无效果（静默无效的开关
+            // 比没有开关更糟：用户会以为自己已经放开了校验）。
+            if (type == ConnectionType.WEBDAV || type == ConnectionType.FTP ||
+                type == ConnectionType.FTPS || type == ConnectionType.S3
+            ) {
+                SwitchRow(
+                    if (type == ConnectionType.WEBDAV) "信任所有 HTTPS 证书" else "信任自签证书",
+                    trustSelfSigned,
+                ) { trustSelfSigned = it }
+            }
             if (type == ConnectionType.S3) {
                 SwitchRow("使用 HTTPS/TLS", secure) { secure = it }
             }

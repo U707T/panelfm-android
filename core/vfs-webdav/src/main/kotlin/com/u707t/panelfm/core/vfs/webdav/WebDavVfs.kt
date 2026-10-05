@@ -543,7 +543,7 @@ class WebDavVfsFactory : VfsFactory {
 
     override fun create(config: ConnectionConfig, secret: String?, env: VfsEnv): VirtualFileSystem =
         WebDavVfs(
-            cfg = DavConfig.from(config, secret, env.userAgent(), trustSelfSignedDefault = false),
+            cfg = DavConfig.from(config, secret, env.userAgent(), trustSelfSignedDefault = env.trustSelfSignedDefault()),
             env = env,
         )
 }

@@ -43,6 +43,18 @@ class ArchiveVfs(
     /** 本地可随机访问的副本（ZIP 增量写时需要重写它并回传到 host） */
     val localFile: File,
     private val env: VfsEnv,
+    /**
+     * 压缩包口令（加密包必需）。
+     *
+     * 为什么放在构造器而不是 [connect]：`openEntryStream` 每次顺序读都要**重新打开**
+     * 7z/tar 容器（见该函数注释），口令必须随时可用。
+     *
+     * 注意 commons-compress 1.27.1 的能力边界：
+     *  - 7z：`SevenZFile` 支持 `setPassword`，**能**读加密内容；
+     *  - ZIP：`ZipFile` **没有** password 参数（只有一个 `PasswordRequiredException`），
+     *    所以加密 ZIP 由 [ZipCryptoReader] 自行解密（见 [openEntryStream]）。
+     */
+    val password: String? = null,
 ) : VirtualFileSystem {
 
     enum class ArchiveKind(val id: String, val label: String) {
@@ -142,6 +154,7 @@ class ArchiveVfs(
         index.clear()
         when (kind) {
             ArchiveKind.ZIP -> {
+                // 列目录只需中央目录，加密包也能列出（但内容读不出来 → 由 openEntryStream 解密）
                 val zf = ZipFile.builder().setFile(localFile).get()
                 zipFile = zf
                 zf.entries.asSequence().forEach { e ->
@@ -159,7 +172,9 @@ class ArchiveVfs(
                 }
             }
             ArchiveKind.SEVEN_Z -> {
-                val sz = SevenZFile.builder().setFile(localFile).get()
+                // 7z 的口令在构造时给出：加密包的头也可能是加密的（MT 的「同时加密文件名」），
+                // 不给口令连条目名都读不出来。
+                val sz = sevenZFile()
                 sevenZ = sz
                 var e = sz.nextEntry
                 while (e != null) {
@@ -214,6 +229,13 @@ class ArchiveVfs(
         if (cleaned.isEmpty()) return null
         // 目录统一以 '/' 结尾
         return if (isDir && !cleaned.endsWith("/")) "$cleaned/" else cleaned
+    }
+
+    /** 按是否需要口令打开 7z（口令为空时走无参构造，行为与旧实现一致）。 */
+    private fun sevenZFile(): SevenZFile {
+        val builder = SevenZFile.builder().setFile(localFile)
+        if (!password.isNullOrEmpty()) builder.setPassword(password)
+        return builder.get()
     }
 
     private fun openTar(): TarArchiveInputStream {
@@ -308,6 +330,16 @@ class ArchiveVfs(
         private var stream: InputStream? = null
         private var pos = start
 
+        /**
+         * 加密 ZIP 条目的 CRC 校验器。
+         *
+         * ZipCrypto 的「口令是否正确」只靠加密头里**一个字节**判定，256 次里有 1 次会放过错误口令，
+         * 之后读出的是乱码；数据损坏也一样无声。CRC 是唯一能真正判定内容对错的手段，
+         * 所以在读完（EOF）时比对中央目录里的 CRC。
+         */
+        private var crc: java.util.zip.CRC32? = null
+        private var crcExpected: Long = -1L
+
         override val size: Long? get() = index[path]?.size
 
         override val supportsSeek: Boolean get() = kind == ArchiveKind.ZIP
@@ -324,15 +356,33 @@ class ArchiveVfs(
         override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
             ensureOpen()
             val n = stream!!.read(buffer, offset, length)
-            if (n > 0) pos += n
+            if (n > 0) {
+                pos += n
+                crc?.update(buffer, offset, n)
+            } else if (n < 0) {
+                verifyCrcOnce()
+            }
             return n
+        }
+
+        /** 读尽后校验一次（重复调用只校验一次，EOF 会被反复探测） */
+        private fun verifyCrcOnce() {
+            val c = crc ?: return
+            crc = null
+            if (crcExpected >= 0 && c.value != crcExpected) {
+                throw VfsException.ProtocolError(
+                    "加密条目内容校验失败：${path.substringAfterLast('/')}（口令错误或数据已损坏）",
+                )
+            }
         }
 
         override suspend fun readFullyAt(position: Long, length: Int): ByteArray = withContext(env.dispatchers.io) {
             if (kind != ArchiveKind.ZIP) throw VfsException.Unsupported("该压缩格式不支持随机读取")
             val entry = index[path] ?: throw VfsException.NotFound(VfsUri.of("archive", kind.id, "/$path"))
             val zf = zipFile ?: throw VfsException.ProtocolError("压缩包未打开")
-            zf.getInputStream(entry.source as org.apache.commons.compress.archivers.zip.ZipArchiveEntry).use { input ->
+            // 统一走 openEntryStream：加密条目在那里被解密（readFullyAt 不能直接用
+            // ZipFile.getInputStream，否则加密包在随机读路径上会再次抛 UnsupportedZipFeatureException）
+            openEntryStream(path, 0L).use { input ->
                 var skipped = 0L
                 while (skipped < position) {
                     val s = input.skip(position - skipped)
@@ -355,6 +405,12 @@ class ArchiveVfs(
             // 导致每读一块都重开流并 skip 到当前位置 → 大文件 O(n²) 灾难）
             if (stream != null) return
             stream = withContext(env.dispatchers.io) { openEntryStream(path, pos) }
+            // 只在「从头顺序读到尾」时校验 CRC；seek 后续读会重开流、CRC 不完整，不校验
+            val ze = index[path]?.source as? org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+            if (pos == 0L && ze != null && ze.generalPurposeBit.usesEncryption() && !ze.isDirectory) {
+                crc = java.util.zip.CRC32()
+                crcExpected = ze.crc
+            }
         }
 
         override fun close() {
@@ -369,11 +425,32 @@ class ArchiveVfs(
         val raw: InputStream = when (kind) {
             ArchiveKind.ZIP -> {
                 val zf = zipFile ?: throw VfsException.ProtocolError("压缩包未打开")
-                zf.getInputStream(entry.source as org.apache.commons.compress.archivers.zip.ZipArchiveEntry)
+                val ze = entry.source as org.apache.commons.compress.archivers.zip.ZipArchiveEntry
+                if (ze.generalPurposeBit.usesEncryption()) {
+                    // 加密条目：commons-compress 读不了（1.27.1 无加密读实现），走自研解密。
+                    // getRawInputStream 给出的正是「12 字节加密头 + 密文」，与写侧格式对齐。
+                    val rawStream = zf.getRawInputStream(ze)
+                    val check = if (ze.generalPurposeBit.usesDataDescriptor()) {
+                        // bit3 置位时校验字节是 **DOS 时间的高字节**（APPNOTE 允许的写法，写侧即如此）。
+                        // 注意 `ze.time` 是 epoch 毫秒、不是 DOS 时间，必须经 ZipUtil 转换 ——
+                        // 直接右移 8 位会得到完全不同的字节，导致「正确口令被判成错误口令」。
+                        org.apache.commons.compress.archivers.zip.ZipUtil.toDosTime(ze.time)[1]
+                    } else {
+                        ZipCrypto.checkByteFor(ze.crc)
+                    }
+                    ZipCryptoReader.decrypt(
+                        raw = rawStream,
+                        password = password ?: throw VfsException.Auth("该压缩包已加密，请输入口令"),
+                        checkByte = check,
+                        method = ze.method,
+                    )
+                } else {
+                    zf.getInputStream(ze)
+                }
             }
             ArchiveKind.SEVEN_Z -> {
                 // 7z 顺序读取：重新打开并跳到目标条目
-                val sz = SevenZFile.builder().setFile(localFile).get()
+                val sz = sevenZFile()
                 var e = sz.nextEntry
                 while (e != null && e.name != (entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry).name) {
                     e = sz.nextEntry

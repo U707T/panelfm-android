@@ -402,7 +402,7 @@ class S3Vfs(
         override val scheme: String get() = "s3"
 
         override fun create(config: ConnectionConfig, secret: String?, env: VfsEnv): VirtualFileSystem =
-            S3Vfs(S3Config.from(config, secret), env)
+            S3Vfs(S3Config.from(config, secret, env.trustSelfSignedDefault()), env)
     }
 
     companion object {

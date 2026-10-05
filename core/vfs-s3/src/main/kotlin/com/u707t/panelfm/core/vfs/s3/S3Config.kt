@@ -17,6 +17,10 @@ data class S3Config(
     val downloadDomain: String?,
     val bucket: String?,
     val timeoutMs: Long,
+    /** 是否使用 HTTPS（endpoint 前缀已含，这里保留给 TLS 策略判断） */
+    val secure: Boolean = endpoint.startsWith("https://"),
+    /** 「信任自签证书」（自建 MinIO 等）；连接级选项优先，其次全局默认 */
+    val trustSelfSigned: Boolean = false,
 ) {
     companion object {
         const val OPT_REGION = "region"
@@ -24,7 +28,12 @@ data class S3Config(
         const val OPT_DOWNLOAD_DOMAIN = "downloadDomain"
         const val OPT_BUCKET = "bucket"
 
-        fun from(config: ConnectionConfig, secret: String?): S3Config {
+        fun from(
+            config: ConnectionConfig,
+            secret: String?,
+            /** 连接未显式设置时的兜底默认值（来自全局设置） */
+            trustSelfSignedDefault: Boolean = false,
+        ): S3Config {
             // secret 约定为 `accessKey:secretKey`（第一位是 AK）
             val parts = (secret ?: "").split(':', limit = 2)
             val ak = config.user.ifBlank { parts.getOrNull(0).orEmpty() }
@@ -41,6 +50,9 @@ data class S3Config(
                 downloadDomain = config.option(OPT_DOWNLOAD_DOMAIN)?.takeIf { it.isNotBlank() },
                 bucket = config.option(OPT_BUCKET)?.takeIf { it.isNotBlank() },
                 timeoutMs = 30_000L,
+                secure = secure,
+                trustSelfSigned = config.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean()
+                    ?: trustSelfSignedDefault,
             )
         }
     }

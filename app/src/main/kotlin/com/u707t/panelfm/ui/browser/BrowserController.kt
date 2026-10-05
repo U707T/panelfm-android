@@ -81,10 +81,13 @@ class BrowserController(private val container: AppContainer) {
                 if (!startupApplied) {
                     startupApplied = true
                     val defaultSort = SortSpec(s.sortBy, s.sortAscending, s.dirsFirst)
+                    // 读回持久化的浏览模式；老数据没有该键时退回 useSingleColumn 派生值
+                    val savedMode = runCatching { BrowseMode.valueOf(s.browseMode) }.getOrNull()
+                        ?: if (s.useSingleColumn) BrowseMode.SINGLE else BrowseMode.DUAL
                     update {
                         it.copy(
                             splitRatio = s.splitRatio,
-                            browseMode = if (s.useSingleColumn) BrowseMode.SINGLE else BrowseMode.DUAL,
+                            browseMode = savedMode,
                             left = it.left.copy(sort = defaultSort, showHidden = s.showHidden),
                             right = it.right.copy(sort = defaultSort, showHidden = s.showHidden),
                         )
@@ -167,8 +170,16 @@ class BrowserController(private val container: AppContainer) {
         it.copy(browseMode = if (it.effectiveBrowseMode == BrowseMode.SINGLE) BrowseMode.DUAL else BrowseMode.SINGLE)
     }
 
-    /** 设置浏览模式三档（MT「单列 / 双列 / 自动切换」） */
-    fun setBrowseMode(mode: BrowseMode) = update { it.copy(browseMode = mode) }
+    /**
+     * 设置浏览模式三档（MT「单列 / 双列 / 自动切换」）。
+     *
+     * 必须持久化：旧实现只改内存状态，重启就回落到 `useSingleColumn` 派生值，
+     * 「自动切换」永远留不住（见审计报告 R4）。
+     */
+    fun setBrowseMode(mode: BrowseMode) {
+        update { it.copy(browseMode = mode) }
+        container.scope.launch { container.prefs.setBrowseMode(mode.name) }
+    }
 
     /** 界面按屏宽写入（供 [BrowseMode.AUTO] 判定） */
     fun setWideEnough(wide: Boolean) = update { if (it.wideEnough == wide) it else it.copy(wideEnough = wide) }
@@ -304,16 +315,39 @@ class BrowserController(private val container: AppContainer) {
     fun open(side: PaneSide, uri: VfsUri, connectionId: Long? = null, label: String? = null, pushHistory: Boolean = true) {
         val pane = pane(side)
         val tab = pane.tab
-        if (tab.uri == uri) {
+        // 连接号必须落在 URI 上（`?c=`），否则同主机多账号会被 VfsUri.sameMount 判成同一挂载点：
+        // `FileOperationPlanner.isInside` 会误报「目标在源内部」直接拒绝操作，
+        // `isSameOrDescendant` 会让 KEEP_BOTH / SKIP 的子树映射判错。
+        // 旧实现只在「从主页/抽屉打开连接」时手工拼 c=，书签、最近路径、同步、返回上级都漏了；
+        // 这里统一补上，让所有入口一致（已经是同一个连接的 URI 则原样保留）。
+        val effectiveConnId = connectionId ?: tab.connectionId
+        val stamped = if (effectiveConnId != null && uri.scheme != "local" && uri.scheme != "archive") {
+            VfsUris.withConnection(uri, effectiveConnId)
+        } else {
+            uri
+        }
+        if (tab.uri == stamped) {
             load(side)
             return
         }
+        return openStamped(side, stamped, effectiveConnId, label, pushHistory)
+    }
+
+    private fun openStamped(
+        side: PaneSide,
+        uri: VfsUri,
+        connectionId: Long?,
+        label: String?,
+        pushHistory: Boolean,
+    ) {
+        val pane = pane(side)
+        val tab = pane.tab
         // 离开当前目录前先把滚动位置存下来（返回时才能停在原地）
         flushScroll(side)
         val newBack = if (pushHistory) (tab.back + tab.uri).takeLast(HISTORY_LIMIT) else tab.back
         val newTab = tab.copy(
             uri = uri,
-            connectionId = connectionId ?: tab.connectionId,
+            connectionId = connectionId,
             label = label ?: tab.label,
             back = newBack,
             forward = if (pushHistory) emptyList() else tab.forward,

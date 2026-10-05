@@ -59,6 +59,8 @@ class AppContainer(val app: Application) {
         userAgent = { _settings.value.userAgent },
         timeoutMs = 30_000L,
         localNetworkAllowed = { LocalNetwork.isGranted(app) },
+        // 全局「默认信任自签证书」：只作为连接未显式设置时的兜底
+        trustSelfSignedDefault = { _settings.value.trustSelfSigned },
     )
 
     // ---------------------------------------------------------------- 持久化
@@ -146,7 +148,16 @@ class AppContainer(val app: Application) {
     init {
         ThumbCache.init(appDirs.thumbsDir)
         scope.launch {
-            prefs.settings.collect { _settings.value = it }
+            var concurrencyApplied = false
+            prefs.settings.collect { s ->
+                _settings.value = s
+                // 并发数必须在这里落地：设置页只在「点按钮那一刻」调 updateConcurrency，
+                // 冷启动不补这一步的话，用户选的 1/3/4 会在重启后悄悄回到默认 2。
+                if (!concurrencyApplied) {
+                    concurrencyApplied = true
+                    engine.updateConcurrency(s.maxConcurrentTasks)
+                }
+            }
         }
         // 任务运行时启用前台服务通知（M9）；用 taskEvents 才能观察到任务的开始/结束
         scope.launch {
@@ -247,6 +258,23 @@ class AppContainer(val app: Application) {
     }
 
     fun mountedOf(key: String): com.u707t.panelfm.core.vfs.VirtualFileSystem? = mounted[key]
+
+    /**
+     * 生成「属于某连接」的 URI：统一在这里补 `?c=<connectionId>`。
+     *
+     * 为什么必须收敛到一处：会话隔离（`VfsUri.sameMount`、书签 / 最近路径 / 同步路径等入口）
+     * 全都依赖 URI 上带着连接号。旧实现只有两个地方手工拼 `"c=${'$'}{config.id}"`，
+     * 其余入口（书签、最近路径、同步、返回上级）都不带 —— 于是同主机不同账号会被
+     * `sameMount` 判成同一挂载点，`isInside` 误报「目标在源内部」直接拒绝操作。
+     */
+    fun uriForConnection(
+        config: com.u707t.panelfm.core.model.ConnectionConfig,
+        path: String = config.openPath,
+    ): com.u707t.panelfm.core.vfs.VfsUri =
+        com.u707t.panelfm.core.vfs.VfsUris.withConnection(
+            com.u707t.panelfm.core.vfs.VfsUri.of(config.scheme, "${'$'}{config.host}:${'$'}{config.port}", path),
+            config.id,
+        )
 
     fun archiveOf(hostUri: String): ArchiveVfs? = archives[hostUri]
 

@@ -45,6 +45,18 @@ class S3Client(private val cfg: S3Config) {
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .writeTimeout(0, TimeUnit.MILLISECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
+        .apply {
+            // 自签 HTTPS（自建 MinIO / 私有 S3 网关）必须显式放开校验。
+            // 旧实现这里完全没有 TLS 配置，导致「信任自签证书」开关对 S3 静默无效、
+            // 连接必然握手失败。仅当用户对该连接开启该选项时才生效。
+            if (cfg.secure && cfg.trustSelfSigned) {
+                sslSocketFactory(
+                    com.u707t.panelfm.core.vfs.TlsTrust.socketFactory,
+                    com.u707t.panelfm.core.vfs.TlsTrust.trustManager,
+                )
+                hostnameVerifier { _, _ -> true }
+            }
+        }
         .build()
 
     // ------------------------------------------------------------------ URL 构造

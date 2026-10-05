@@ -35,6 +35,17 @@ class ZipEditor(
         val hostVfs = locator.find(host) ?: throw VfsException.Unsupported("压缩包所在位置不可写")
         if (!hostVfs.capabilities.writable) throw VfsException.Unsupported("该位置不可写，无法修改压缩包")
 
+        // 加密 ZIP：整包重写必须**逐条重新加密**才能保住加密，而本类拿不到口令、
+        // 也不该把「改一个文件名」变成一次全包重加密。直接拒绝并给出可执行文案，
+        // 而不是让 commons-compress 抛 UnsupportedZipFeatureException（英文技术串）。
+        // 注意：旧行为不是「静默去掉加密」——`zf.getInputStream(加密条目)` 会抛
+        // UnsupportedZipFeatureException 让整包重写失败，即数据是安全的、只是不可用。
+        if (hasEncryptedEntries()) {
+            throw VfsException.Unsupported(
+                "该 ZIP 已加密，暂不支持在应用内增删改名；请先解压后用「压缩」重新打包。",
+            )
+        }
+
         val tmp = File.createTempFile("panelfm-zip-", ".zip")
         try {
             withContext(Dispatchers.IO) {
@@ -95,6 +106,14 @@ class ZipEditor(
             runCatching { tmp.delete() }
         }
     }
+
+    /** 包内是否有加密条目（有则整包重写会失败，必须提前拦下） */
+    private fun hasEncryptedEntries(): Boolean = runCatching {
+        org.apache.commons.compress.archivers.zip.ZipFile.builder()
+            .setFile(archive.localFile).get().use { zf ->
+                zf.entries.asSequence().any { it.generalPurposeBit.usesEncryption() }
+            }
+    }.getOrDefault(false)
 
     /** 删除要能作用到「目录及其所有子项」：条目名 == 键 或 以 键+"/" 开头 */
     private fun matchesPrefix(name: String, keys: Set<String>): Boolean {

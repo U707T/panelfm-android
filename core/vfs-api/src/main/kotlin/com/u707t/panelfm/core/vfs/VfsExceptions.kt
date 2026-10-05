@@ -37,7 +37,9 @@ sealed class VfsException(message: String, val code: Int? = null, cause: Throwab
         get() {
             val msg = message ?: ""
             return when (this) {
-                is Auth -> "认证失败：请检查用户名 / 密码 / 密钥"
+                // 有具体原因时用具体原因：认证失败未必是「用户名/密码」问题
+                // （例如压缩包口令、主机密钥变化、私钥口令），固定文案会把用户引向错误的方向。
+                is Auth -> msg.ifEmpty { "认证失败：请检查用户名 / 密码 / 密钥" }
                 is NotFound -> "文件不存在：${uri.name}"
                 is Conflict -> "已存在同名项：${uri.name}"
                 is Permission -> msg.ifEmpty { "没有权限" }

@@ -319,13 +319,9 @@ fun HomeScreen(
                     scope.launch {
                         try {
                             container.openConnection(config)
-                            // WebDAV：进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 basePath / 初始路径
-                            val uri = VfsUri.of(
-                                config.scheme,
-                                "${config.host}:${config.port}",
-                                config.openPath,
-                                "c=${config.id}",
-                            )
+                            // WebDAV：进入虚拟根（basePath 是挂载点，由协议层拼回）；其余协议进入 basePath / 初始路径。
+                            // 连接号统一由 AppContainer 注入（避免各处手工拼串漏掉 c=）。
+                            val uri = container.uriForConnection(config)
                             container.browser.open(browserState.focused, uri, config.id, config.name)
                             connecting = null
                             onOpenBrowser()

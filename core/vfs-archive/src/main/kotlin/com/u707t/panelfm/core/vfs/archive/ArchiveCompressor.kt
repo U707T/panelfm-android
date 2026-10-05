@@ -90,6 +90,12 @@ class ArchiveCompressor(private val locator: VfsLocator) {
             compressSevenZ(sources, destFile, onProgress, level, pwd, encryptNames)
             return
         }
+        if (format == Format.ZIP && pwd != null) {
+            // 加密 ZIP 走 [EncryptedZipWriter]：commons-compress 的 addRawArchiveEntry
+            // 见到 encryption 标志就抛 UnsupportedZipFeatureException，根本写不出来。
+            compressEncryptedZip(sources, destFile, onProgress, level, pwd)
+            return
+        }
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
         val writer = destVfs.openWrite(destFile, size = null, offset = 0L)
         var doneBytes = 0L
@@ -111,17 +117,16 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                     Format.SEVEN_Z -> error("unreachable")
                 }
                 archive.use { out ->
-                    val zipKeys = pwd?.let { ZipCrypto.Keys(it) }
                     sources.forEach { source ->
                         val vfs = locator.find(source) ?: return@forEach
                         val meta = vfs.stat(source)
                         if (meta.isDirectory) {
-                            entries += addDirectory(out, format, vfs, source, meta.name, zipKeys) { bytes ->
+                            entries += addDirectory(out, format, vfs, source, meta.name) { bytes ->
                                 doneBytes += bytes
                                 onProgress?.onProgress(doneBytes, -1)
                             }
                         } else {
-                            addFile(out, format, vfs, source, meta.name, meta.size, zipKeys)
+                            addFile(out, format, vfs, source, meta.name, meta.size)
                             doneBytes += meta.size.coerceAtLeast(0)
                             entries++
                         }
@@ -243,7 +248,6 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
         dir: VfsUri,
         prefix: String,
-        keys: ZipCrypto.Keys?,
         onBytes: (Long) -> Unit,
     ): Int {
         var count = 0
@@ -253,9 +257,9 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         vfs.list(dir).forEach { child ->
             val name = "$prefix/${child.name}"
             if (child.isDirectory) {
-                count += addDirectory(zip, format, vfs, child.uri, name, keys, onBytes)
+                count += addDirectory(zip, format, vfs, child.uri, name, onBytes)
             } else {
-                addFile(zip, format, vfs, child.uri, name, child.size, keys)
+                addFile(zip, format, vfs, child.uri, name, child.size)
                 onBytes(child.size.coerceAtLeast(0))
                 count++
             }
@@ -268,15 +272,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         else -> TarArchiveEntry(name).apply { modTime = java.util.Date() }
     }
 
-    /**
-     * 写一个文件条目。
-     *
-     * 加密路径（[keys] 非空，仅 ZIP）必须绕开 `ZipArchiveOutputStream.putArchiveEntry`：
-     * 它不知道 ZipCrypto 会多出 12 字节加密头，会把 compressedSize 算错。
-     * 所以加密时**自己压缩**（Deflater），把 `compressedSize = 12 + 压缩后长度`、
-     * `crc`、`method`、`generalPurposeBit(encryption)` 都填好，再走 `addRawArchiveEntry`
-     * （raw = 数据已就绪，commons-compress 原样搬运，不做二次压缩）。
-     */
+    /** 写一个文件条目（非加密路径；加密 ZIP 见 [compressEncryptedZip]）。 */
     private suspend fun addFile(
         zip: ArchiveOutputStream<out ArchiveEntry>,
         format: Format,
@@ -284,12 +280,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         file: VfsUri,
         entryName: String,
         size: Long,
-        keys: ZipCrypto.Keys?,
     ) {
-        if (format == Format.ZIP && keys != null) {
-            addEncryptedZipFile(zip, vfs, file, entryName, keys)
-            return
-        }
         val entry: ArchiveEntry = if (format == Format.ZIP) {
             ZipArchiveEntry(entryName).apply { if (size > 0) setSize(size) }
         } else {
@@ -312,65 +303,77 @@ class ArchiveCompressor(private val locator: VfsLocator) {
     }
 
     /**
-     * 加密 ZIP 条目：本地读完 → 压缩（Deflater）→ ZipCrypto 加密（头 12 字节 + 数据）→ raw 写入。
-     * 文件较大时全程在内存里过一遍压缩结果；单个文件通常可控（配合调用方的体积提示）。
+     * 加密 ZIP（ZipCrypto）：整包交给 [EncryptedZipWriter] 手写容器格式。
+     *
+     * 为什么不能复用 [compress] 的 ZipArchiveOutputStream：commons-compress 的
+     * `addRawArchiveEntry` 内部会做 `checkRequestedFeatures`，只要 entry 带 encryption 标志就抛
+     * `UnsupportedZipFeatureException`；而 `putArchiveEntry` 又不知道 ZipCrypto 会多出 12 字节加密头，
+     * 会把 compressedSize 算错。所以加密 ZIP 必须整包走自研写侧。
+     *
+     * 目录条目不加密（与主流实现一致）；文件按 [Level] 决定 STORED / DEFLATE。
      */
-    private suspend fun addEncryptedZipFile(
-        zip: ArchiveOutputStream<out ArchiveEntry>,
-        vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
-        file: VfsUri,
-        entryName: String,
-        keys: ZipCrypto.Keys,
+    private suspend fun compressEncryptedZip(
+        sources: List<VfsUri>,
+        destFile: VfsUri,
+        onProgress: ProgressCallback?,
+        level: Level,
+        password: String,
     ) {
-        // ① 读原始数据 + CRC
-        val rawBytes = java.io.ByteArrayOutputStream()
-        val crc = java.util.zip.CRC32()
-        val reader = vfs.openRead(file)
+        val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
+        val writer = destVfs.openWrite(destFile, size = null, offset = 0L)
+        var doneBytes = 0L
+        var entries = 0
         try {
-            val buf = ByteArray(64 * 1024)
-            while (true) {
-                val n = reader.read(buf, 0, buf.size)
-                if (n < 0) break
-                crc.update(buf, 0, n)
-                rawBytes.write(buf, 0, n)
+            withContext(Dispatchers.IO) {
+                val zip = EncryptedZipWriter(
+                    out = SuspendOutputStream(writer),
+                    password = password,
+                    deflateLevel = level.deflateLevel,
+                    store = level.store,
+                )
+                suspend fun addOne(vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem, uri: VfsUri, name: String) {
+                    val meta = vfs.stat(uri)
+                    if (meta.isDirectory) {
+                        zip.putDirectory(name, System.currentTimeMillis())
+                        entries++
+                        vfs.list(uri).forEach { child ->
+                            addOne(vfs, child.uri, "$name/${child.name}")
+                        }
+                    } else {
+                        val reader = vfs.openRead(uri)
+                        try {
+                            zip.putFileStreaming(
+                                name = name,
+                                epochMillis = meta.lastModified.takeIf { it > 0 } ?: System.currentTimeMillis(),
+                                uncompressedSize = meta.size.coerceAtLeast(0),
+                            ) { buf ->
+                                // 阻塞式读取（已在本模块的 IO 上下文里）
+                                val n = kotlinx.coroutines.runBlocking { reader.read(buf, 0, buf.size) }
+                                if (n <= 0) -1 else n
+                            }
+                        } finally {
+                            runCatching { reader.close() }
+                        }
+                        entries++
+                        doneBytes += meta.size.coerceAtLeast(0)
+                        onProgress?.onProgress(doneBytes, -1)
+                    }
+                }
+                sources.forEach { source ->
+                    val vfs = locator.find(source) ?: return@forEach
+                    addOne(vfs, source, vfs.stat(source).name)
+                }
+                zip.finish()
             }
-        } finally {
-            runCatching { reader.close() }
+            writer.commit()
+            Logx.i(
+                "ArchiveCompressor",
+                "compressed $entries entries → $destFile (level=${level.label}, encrypted=true, zipcrypto)",
+            )
+        } catch (e: Exception) {
+            runCatching { writer.abort() }
+            throw if (e is VfsException) e else VfsException.Io("压缩失败：${e.message}", e)
         }
-        val raw = rawBytes.toByteArray()
-        val crcValue = crc.value
-
-        // ② Deflate 压缩
-        val compressed = java.io.ByteArrayOutputStream()
-        val deflater = java.util.zip.Deflater(java.util.zip.Deflater.DEFAULT_COMPRESSION)
-        try {
-            val def = java.util.zip.DeflaterOutputStream(compressed, deflater)
-            def.write(raw)
-            def.finish()
-        } finally {
-            deflater.end()
-        }
-        val deflated = compressed.toByteArray()
-
-        // ③ ZipCrypto：12 字节加密头 + 加密数据（连续加密，密钥状态跨头与数据）
-        val payload = ByteArray(ZipCrypto.HEADER_LENGTH + deflated.size)
-        val header = ZipCrypto.encryptHeader(keys, ZipCrypto.checkByteFor(crcValue))
-        System.arraycopy(header, 0, payload, 0, header.size)
-        System.arraycopy(deflated, 0, payload, header.size, deflated.size)
-        keys.encrypt(payload, header.size, deflated.size)
-
-        // ④ 元信息：compressedSize 必须含 12 字节头；crc 用**明文**的 CRC
-        val entry = ZipArchiveEntry(entryName).apply {
-            setSize(raw.size.toLong())
-            compressedSize = payload.size.toLong()
-            this.crc = crcValue
-            method = ZipArchiveEntry.DEFLATED
-            generalPurposeBit.useEncryption(true)
-            time = System.currentTimeMillis()
-        }
-
-        @Suppress("UNCHECKED_CAST")
-        (zip as ZipArchiveOutputStream).addRawArchiveEntry(entry, java.io.ByteArrayInputStream(payload))
     }
 
     /** 把 suspend 的 VfsWriter 适配成 java.io.OutputStream（阻塞写，运行在 IO 线程） */
