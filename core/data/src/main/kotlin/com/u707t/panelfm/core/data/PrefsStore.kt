@@ -129,6 +129,8 @@ class PrefsStore(private val context: Context) {
         val tapRangeSelect = booleanPreferencesKey("tap_range_select")
         // MT 对齐（v1.0）：输入框历史（recordKey → 历史值）
         val inputHistory = androidx.datastore.preferences.core.stringSetPreferencesKey("input_history")
+        // 「上次打开的文件」：格式 "<mode>|<uri>|<epochMillis>"；用于意外退出/直接退出后自动回到那里
+        val lastOpenedPreview = stringPreferencesKey("last_opened_preview")
     }
 
     /** MT 的 recordKey 常量（与 MT 的 app:recordKey 同名，便于日后对表） */
@@ -282,6 +284,37 @@ class PrefsStore(private val context: Context) {
         val p = context.panelDataStore.data.first()
         return p[Keys.lastLeft] to p[Keys.lastRight]
     }
+
+    // ------------------------------------------------------------------ 上次打开的文件
+
+    data class LastOpened(val mode: String, val uri: String, val at: Long)
+
+    /**
+     * 记录「当前正打开着的文件」。
+     * 退出/被杀时如果这一条还在（用户没主动返回），下次启动会自动回到它 ——
+     * 覆盖「看视频时被系统杀掉」「直接退出 App」两种场景。
+     */
+    suspend fun saveLastOpenedPreview(mode: String, uri: String) = context.panelDataStore.edit { prefs ->
+        prefs[Keys.lastOpenedPreview] = "$mode|$uri|${System.currentTimeMillis()}"
+    }
+
+    /** 用户主动离开预览（返回）→ 不再是「打开着的文件」，下次启动不自动跳回 */
+    suspend fun clearLastOpenedPreview() = context.panelDataStore.edit { prefs ->
+        prefs.remove(Keys.lastOpenedPreview)
+    }
+
+    suspend fun lastOpenedPreview(): LastOpened? =
+        context.panelDataStore.data.first()[Keys.lastOpenedPreview]?.let { raw ->
+            val first = raw.indexOf('|')
+            val last = raw.lastIndexOf('|')
+            if (first <= 0 || last <= first) return@let null
+            val at = raw.substring(last + 1).toLongOrNull() ?: return@let null
+            LastOpened(
+                mode = raw.substring(0, first),
+                uri = raw.substring(first + 1, last),
+                at = at,
+            )
+        }
 
     suspend fun setHomePath(uri: String?) = context.panelDataStore.edit { prefs ->
         if (uri == null) prefs.remove(Keys.homePath) else prefs[Keys.homePath] = uri

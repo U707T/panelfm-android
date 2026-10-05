@@ -62,6 +62,7 @@ import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -80,6 +81,19 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
     var effective by remember { mutableStateOf(request.mode) }
     var editing by remember { mutableStateOf(request.mode == PreviewMode.EDITOR) }
     var modeMenu by remember { mutableStateOf(false) }
+
+    // 记录「当前打开着的文件」：进程被杀 / 直接退出后，下次启动自动回到这里。
+    // 用户主动返回（onDispose）会清掉这条记录，所以「看完返回列表再退出」不会自动跳回。
+    LaunchedEffect(uri) {
+        runCatching { container.prefs.saveLastOpenedPreview(request.mode.name, uri.toString()) }
+    }
+    androidx.compose.runtime.DisposableEffect(uri) {
+        onDispose {
+            runCatching {
+                container.scope.launch { container.prefs.clearLastOpenedPreview() }
+            }
+        }
+    }
 
     LaunchedEffect(uri) {
         try {

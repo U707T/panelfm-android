@@ -3,7 +3,6 @@ package com.u707t.panelfm.ui.preview
 import androidx.core.net.toUri
 import android.media.AudioManager
 import android.net.Uri
-import android.os.SystemClock
 import android.view.WindowManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -46,6 +45,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -84,6 +84,7 @@ import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsReader
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -134,6 +135,9 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     var seekPreview by remember { mutableStateOf<Long?>(null) }
     var hud by remember { mutableStateOf<String?>(null) }
     var volumeRatio by remember { mutableStateOf<Float?>(null) }
+    /** 应用内亮度（1 = 原始，越小越暗）。**不改系统/窗口亮度**，只叠一层黑色遮罩。 */
+    var appBrightness by remember { mutableStateOf(1f) }
+    /** 滑亮度时短暂显示的百分比提示（null = 不显示） */
     var brightnessRatio by remember { mutableStateOf<Float?>(null) }
     var playlist by remember { mutableStateOf<List<FileMetadata>>(emptyList()) }
     var playlistIndex by remember { mutableStateOf(-1) }
@@ -198,8 +202,6 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     DisposableEffect(player) {
         val win = activity?.window
         win?.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        // 记录进入时的亮度（-1 = 跟随系统），退出时恢复——否则用户调过亮度后系统亮度被永久改变
-        val originalBrightness = win?.attributes?.screenBrightness ?: -1f
         val listener = object : Player.Listener {
             override fun onPlayerError(e: PlaybackException) {
                 // 面向用户的文案：Media3 的原始 message 是英文技术细节（如
@@ -211,13 +213,9 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         player.addListener(listener)
         onDispose {
             win?.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-            runCatching {
-                val attrs = win?.attributes ?: return@runCatching
-                if (attrs.screenBrightness != originalBrightness) {
-                    attrs.screenBrightness = originalBrightness
-                    win.attributes = attrs
-                }
-            }
+            // 亮度不再写窗口（旧实现会改 window.attributes.screenBrightness，
+            // 用户观感是「改了手机亮度」且退出后若没恢复就残留）。现在纯应用内遮罩，
+            // 无需恢复：离开本页即自然消失。
             runCatching { player.removeListener(listener) }
             runCatching { player.stop() }
             runCatching { player.release() }
@@ -239,21 +237,50 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     LaunchedEffect(muted) { player.volume = if (muted) 0f else 1f }
     LaunchedEffect(looping) { player.repeatMode = if (looping) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF }
 
-    // 控制栏自动隐藏（播放中且未开菜单；锁定时强制隐藏）
-    // ⚠️ error != null 时不隐藏：否则「重试 / 用其他应用打开」按钮 4 秒后就点不到了
-    LaunchedEffect(controlsVisible, isPlaying, menuOpen, locked, error, sliderDragging) {
+    // ------------------------------------------------------------------ 控制层显隐
+    // 照 IRIS：显隐由明确的 show/hide 驱动，并用**令牌**让自动隐藏在每次唤出时重新计时。
+    var controlsToken by remember { mutableStateOf(0) }
+
+    fun showControls() {
+        controlsVisible = true
+        controlsToken++
+    }
+
+    fun hideControls() {
+        controlsVisible = false
+    }
+
+    fun toggleControls() {
+        if (controlsVisible) hideControls() else showControls()
+    }
+
+    /**
+     * 触点是否落在**当前正显示着**的控制层内。
+     *
+     * 必须带 `controlsVisible`：控制层隐藏后，[topBarHeightPx] / [bottomBarHeightPx]
+     * 只是残留的测量值；若继续按它们避让，屏幕顶部/底部两条带（用户最常点的地方）
+     * 会完全不响应 —— 这正是「控件消失后唤不醒」的原因之一。
+     */
+    fun isInsideControls(x: Float, y: Float, width: Int, height: Int): Boolean =
+        controlsVisible && (y <= liveTopBarPx || y >= height - liveBottomBarPx)
+
+    // 控制栏自动隐藏（照 IRIS：唤出时重新计时；播放中、无交互、无错误才收起）
+    // ⚠️ controlsToken 参与 key —— 每次「唤出」都会重置计时器。
+    //    旧实现只用 controlsVisible 作 key：已经显示时再唤出不会重置，4 秒后照样消失。
+    // ⚠️ error != null 时不隐藏：否则「重试 / 用其他应用打开」按钮 4 秒后就点不到了。
+    LaunchedEffect(controlsVisible, controlsToken, isPlaying, menuOpen, locked, error, sliderDragging) {
         if (controlsVisible && isPlaying && !menuOpen && !locked && error == null && !sliderDragging) {
-            delay(4000)
-            controlsVisible = false
-            // 防御：万一控制层在拖拽中被隐藏（旧实现就会这样），
-            // 把预览进度落定并清掉，避免进度条停在半路、播放位置和显示不一致。
+            delay(5000)
+            // 收起前把未落定的拖动进度落定，避免进度条停在半路、显示与播放位置不一致
             seekPreview?.let {
                 runCatching { player.seekTo(it) }
                 seekPreview = null
             }
+            controlsVisible = false
         }
         if (locked) controlsVisible = false
     }
+
     LaunchedEffect(hud) {
         if (hud != null) {
             delay(1200)
@@ -299,7 +326,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 player.playWhenReady = true
             }.onFailure { error = describePlaybackError(it) }
         }
-        controlsVisible = true
+        showControls()
         val parent = uri.parent
         if (parent != null) {
             runCatching {
@@ -321,82 +348,93 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         player.seekTo(target)
     }
 
-    var lastTapAt by remember { mutableStateOf(0L) }
-    var lastTapX by remember { mutableStateOf(0f) }
-
-    /** 单击 = 显隐控制栏；双击 = 左/右 ±10s、中间播放暂停 */
-    fun registerTap(x: Float, width: Int) {
-        val now = SystemClock.uptimeMillis()
-        if (now - lastTapAt in 1..300 && abs(x - lastTapX) < width * 0.3f) {
-            lastTapAt = 0L
-            when {
-                x < width / 3f -> {
-                    seekBy(-10_000)
-                    hud = "-10s"
-                }
-                x > width * 2 / 3f -> {
-                    seekBy(+10_000)
-                    hud = "+10s"
-                }
-                else -> if (player.isPlaying) player.pause() else player.play()
+    /** 双击：左 / 右 1/3 快退 / 快进 10 秒；中间播放暂停 */
+    fun doubleTapSeek(x: Float, width: Int) {
+        when {
+            x < width / 3f -> {
+                seekBy(-10_000)
+                hud = "-10s"
             }
-        } else {
-            lastTapAt = now
-            lastTapX = x
-            scope.launch {
-                delay(310)
-                if (lastTapAt == now && !locked) controlsVisible = !controlsVisible
+            x > width * 2 / 3f -> {
+                seekBy(+10_000)
+                hud = "+10s"
             }
+            else -> if (player.isPlaying) player.pause() else player.play()
         }
     }
 
-    // ---- 手势层：单击 / 双击 / 长按倍速 / 横滑进度 / 竖滑音量（右）·亮度（左）
-    val gestureModifier = Modifier.pointerInput(Unit) {
+    // ---- 手势层（照 IRIS：**点按与拖动交给两个独立识别器**，互不牵连）
+    //   点按：detectTapGestures —— 单击显隐 / 双击进退 / 长按 2 倍速
+    //   拖动：自定义循环 —— 横滑调进度 / 右竖滑音量 / 左竖滑应用内亮度
+    //
+    //   旧实现把四件事塞进同一个手写状态机：单击要等 310ms 才能判定（连点两下就落进
+    //   双击分支、永远不显示控件），长按/拖动/单击还会互相干扰。拆开后各自简单可靠。
+    // 长按倍速的任务句柄：拖动开始时要能取消它（照 IRIS：onPanStart 取消长按）
+    val boostJob = remember { mutableStateOf<Job?>(null) }
+
+    val tapModifier = Modifier.pointerInput(Unit) {
+        var wokeThisGesture = false
+        detectTapGestures(
+            onPress = { offset ->
+                wokeThisGesture = false
+                if (!locked && !controlsVisible && !isInsideControls(offset.x, offset.y, size.width, size.height)) {
+                    // 隐藏态：按下**立即**唤出（不等双击判定窗口）
+                    showControls()
+                    wokeThisGesture = true
+                }
+                // 长按 = 2 倍速（松手恢复）。只对「画面区域」生效：
+                // 长按控制条上的按钮不该触发倍速。
+                if (!locked && !isInsideControls(offset.x, offset.y, size.width, size.height)) {
+                    boostJob.value = scope.launch {
+                        delay(viewConfiguration.longPressTimeoutMillis)
+                        speedBoost = true
+                        hud = "2x"
+                    }
+                }
+                tryAwaitRelease()
+                boostJob.value?.cancel()
+                boostJob.value = null
+                speedBoost = false
+            },
+            onTap = {
+                if (!wokeThisGesture) toggleControls()
+                wokeThisGesture = false
+            },
+            onDoubleTap = { offset ->
+                if (!locked) doubleTapSeek(offset.x, size.width)
+                wokeThisGesture = false
+            },
+        )
+    }
+
+    val dragModifier = Modifier.pointerInput(Unit) {
         val audio = context.getSystemService(android.content.Context.AUDIO_SERVICE) as AudioManager
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            if (locked) {
-                // 锁定态下也让用户知道怎么解锁（旧实现只在进入锁定时提示一次）
-                hud = "已锁定，点左侧锁按钮解锁"
+            if (locked) return@awaitEachGesture
+            // 落在控制层内 → 完全让位（进度条拖动、按钮点击不受干扰）
+            if (isInsideControls(down.position.x, down.position.y, size.width, size.height)) {
                 return@awaitEachGesture
             }
-            // 触点落在顶栏 / 底部控制条内 → 完全让位给控件本身
-            // （这是「进度条拖不动」的根因：手势层会和滑条抢同一串移动事件）
-            val inControls = down.position.y <= liveTopBarPx ||
-                down.position.y >= size.height - liveBottomBarPx
-            if (inControls) return@awaitEachGesture
             val startPos = down.position
             val slop = viewConfiguration.touchSlop
             var mode = 0   // 0=未定 1=进度 2=右侧音量 3=左侧亮度
-            var boost = false
-            var released = false
             var seekTarget = 0L
             val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             val startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
-            val window = activity?.window
-            val startBrightness = window?.attributes?.screenBrightness?.takeIf { it >= 0f } ?: 0.5f
-            val longWatcher = scope.launch {
-                delay(viewConfiguration.longPressTimeoutMillis)
-                if (!released && mode == 0) {
-                    boost = true
-                    speedBoost = true
-                }
-            }
+            val startBrightness = appBrightness
             while (true) {
                 val event = awaitPointerEvent()
                 val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                val pos = change.position
-                val dx = pos.x - startPos.x
-                val dy = pos.y - startPos.y
-
-                // 事件已被滑条 / 按钮等组件消费：让位，不参与播放器手势
-                if (mode == 0 && !boost && change.isConsumed) {
-                    longWatcher.cancel()
-                    break
-                }
-
-                if (mode == 0 && !boost && (abs(dx) > slop || abs(dy) > slop)) {
-                    longWatcher.cancel()
+                // 已被控件消费 → 让位，不参与播放器手势
+                if (mode == 0 && change.isConsumed) break
+                val dx = change.position.x - startPos.x
+                val dy = change.position.y - startPos.y
+                if (mode == 0 && (abs(dx) > slop || abs(dy) > slop)) {
+                    // 开始拖动 → 取消可能已在计时的长按倍速（否则拖到一半会突然 2x）
+                    boostJob.value?.cancel()
+                    boostJob.value = null
+                    speedBoost = false
                     mode = when {
                         abs(dx) > abs(dy) -> 1
                         startPos.x > size.width / 2f -> 2
@@ -405,58 +443,45 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     if (mode == 1) seekTarget = player.currentPosition
                 }
                 when (mode) {
-                    1 -> {
-                        if (durationMs > 0 && size.width > 0) {
-                            val delta = (dx / size.width).toDouble() * durationMs
-                            seekTarget = (seekTarget + delta).toLong().coerceIn(0, durationMs)
-                            seekPreview = seekTarget
-                            hud = "${clock(positionMs)} → ${clock(seekTarget)} / ${clock(durationMs)}"
-                            change.consume()
-                        }
+                    1 -> if (durationMs > 0 && size.width > 0) {
+                        val delta = (dx / size.width).toDouble() * durationMs
+                        seekTarget = (seekTarget + delta).toLong().coerceIn(0, durationMs)
+                        seekPreview = seekTarget
+                        hud = "${clock(positionMs)} → ${clock(seekTarget)} / ${clock(durationMs)}"
+                        change.consume()
                     }
-                    2 -> {
-                        if (size.height > 0) {
-                            val delta = -(dy / size.height).toDouble()
-                            val target = (startVolume + delta * maxVolume).toInt().coerceIn(0, maxVolume)
-                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-                            volumeRatio = target.toFloat() / maxVolume
-                            muted = target == 0
-                            change.consume()
-                        }
+                    2 -> if (size.height > 0) {
+                        val delta = -(dy / size.height).toDouble()
+                        val target = (startVolume + delta * maxVolume).toInt().coerceIn(0, maxVolume)
+                        audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
+                        volumeRatio = target.toFloat() / maxVolume
+                        muted = target == 0
+                        change.consume()
                     }
-                    else -> {
-                        if (size.height > 0 && window != null) {
-                            val delta = -(dy / size.height)
-                            val target = (startBrightness + delta).coerceIn(0.02f, 1f)
-                            val attrs = window.attributes
-                            attrs.screenBrightness = target
-                            window.attributes = attrs
-                            brightnessRatio = target
-                            change.consume()
-                        }
+                    3 -> if (size.height > 0) {
+                        // 应用内亮度：只改遮罩透明度，不动系统/窗口亮度
+                        val delta = -(dy / size.height)
+                        val target = (startBrightness + delta).coerceIn(0.05f, 1f)
+                        appBrightness = target
+                        brightnessRatio = target
+                        change.consume()
                     }
                 }
-
                 if (!change.pressed) {
-                    released = true
-                    longWatcher.cancel()
-                    if (boost) {
-                        speedBoost = false
-                    } else when (mode) {
-                        1 -> {
-                            seekPreview?.let { player.seekTo(it) }
-                            seekPreview = null
+                    if (mode == 1) {
+                        seekPreview?.let {
+                            player.seekTo(it)
+                            positionMs = it
                         }
-                        2, 3 -> Unit
-                        // 被按钮 / 滑条消费的点击不再当作「单击画面」
-                        else -> if (!change.isConsumed) registerTap(pos.x, size.width)
+                        seekPreview = null
                     }
                     break
                 }
             }
-            if (boost) speedBoost = false
         }
     }
+
+    val gestureModifier = tapModifier.then(dragModifier)
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // 视频面（或音频占位）
@@ -496,6 +521,16 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
         // 手势层（覆盖整屏；按钮在它之上优先接收事件）
         Box(Modifier.fillMaxSize().then(gestureModifier))
+
+        // 应用内亮度遮罩：叠在画面上、控件之下。
+        // 无 pointerInput 的 Box 不参与事件消费 → 不会挡住下面的手势层。
+        if (appBrightness < 0.999f) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = (1f - appBrightness) * 0.85f)),
+            )
+        }
 
         // ---- 顶部：← / 文件名 / ⋮（悬浮，无底条）
         if (controlsVisible && !locked) {

@@ -141,6 +141,31 @@ fun AppRoot(container: AppContainer) {
         runCatching { container.browser.openHomeIfConfigured() }
     }
 
+    /**
+     * 恢复「上次打开着的文件」。
+     *
+     * 场景：看视频时被系统杀掉 / 直接退出 App —— 重新打开应当回到那个文件。
+     * 判定：记录还在（用户没主动从预览返回）+ 24 小时内 + 文件仍可访问。
+     */
+    var resumeChecked by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        if (resumeChecked) return@LaunchedEffect
+        resumeChecked = true
+        val last = runCatching { container.prefs.lastOpenedPreview() }.getOrNull() ?: return@LaunchedEffect
+        if (System.currentTimeMillis() - last.at > 24L * 3600 * 1000) return@LaunchedEffect
+        val target = runCatching { VfsUri.parse(last.uri) }.getOrNull() ?: return@LaunchedEffect
+        val reachable = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            runCatching {
+                val vfs = container.resolveSession(target) ?: return@runCatching false
+                !vfs.stat(target).isDirectory
+            }.getOrDefault(false)
+        }
+        if (!reachable) return@LaunchedEffect
+        val mode = runCatching { com.u707t.panelfm.ui.preview.PreviewMode.valueOf(last.mode) }
+            .getOrDefault(com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
+        push(Screen.Preview(com.u707t.panelfm.ui.preview.PreviewRequest(target, mode)))
+    }
+
     LaunchedEffect(Unit) {
         if (Build.VERSION.SDK_INT >= 33) {
             val granted = context.checkSelfPermission("android.permission.POST_NOTIFICATIONS") ==
