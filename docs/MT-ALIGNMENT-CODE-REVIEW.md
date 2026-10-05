@@ -68,15 +68,32 @@
 - 新增连接会话时必须考虑 secret 变化、同主机多账号、断开和空闲回收；不能只用 host/port 做身份。
 - 参考 MT 文案时区分“资源/布局事实”和“根据行为推断的语义”，推断项必须在代码或测试中有落点。
 
-## 5. 验证命令
+
+## 6. 基础审计与推广规则
+
+本项目每批基础修复必须按以下顺序执行，不能用 Lint baseline 掩盖新错误：
 
 ```bash
-cd /workspace/panelfm-android
-./gradlew test
+./gradlew testDebugUnitTest assembleDebug --offline --console=plain
+./gradlew lintDebug --offline --console=plain
+./gradlew test --console=plain
 ```
 
-本轮重点验证：
+提交前还必须检查：
 
 ```bash
-./gradlew :core:transfer:test :core:vfs-api:test :core:vfs-archive:test
+git diff --check
+git status --short
+git grep -nI -E 'ghp_|github_pat_|AKIA|BEGIN .* PRIVATE KEY|local.properties|\.env'
 ```
+
+规则：
+
+- API 版本差异优先用 `values-vNN` 资源目录或运行时版本判断解决；不能用无条件 `@SuppressLint`。
+- Compose 中不得在组合期直接读取 `StateFlow.value`；使用 `collectAsState()`，任务列表优先观察快照流而不是内部任务对象状态。
+- Media3 等明确标记为不稳定的 API，集中在项目 Lint opt-in 配置或明确的模块入口声明；不得逐处静默 suppress。
+- 自适应图标等平台资源即使 Lint 给出目录建议，也要以 AAPT 实际资源链接为准；变更资源目录后必须重跑 Debug 构建。
+- 依赖漏洞升级、TLS 信任策略、AGP/Kotlin 迁移和 Release 签名策略属于高风险主题，必须单独成批、补兼容性测试后处理。
+- 构建产物、Token、keystore、密码和本地配置不进入仓库；测试中的官方固定向量必须明确标注为非生产凭据。
+
+推广方式：所有 `core/*` 模块和 `app` 共用根目录 `lint.xml` 的 opt-in 规则；新模块接入时复制本节命令到其项目说明，并在 CI 增加对应的 `lintDebug`/`testDebugUnitTest` 任务，不得只依赖本地 IDE 检查。

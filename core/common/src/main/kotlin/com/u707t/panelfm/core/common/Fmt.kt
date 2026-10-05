@@ -3,6 +3,7 @@ package com.u707t.panelfm.core.common
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
+import java.util.Locale
 import kotlin.math.abs
 
 /** 全应用统一的显示格式化（大小 / 时间 / 速度 / 剩余时间）。 */
@@ -47,7 +48,7 @@ object Fmt {
             v /= 1024.0
             i++
         }
-        return String.format("%.2f %s", v, units[i])
+        return String.format(Locale.ROOT, "%.2f %s", v, units[i])
     }
 
     /** 紧凑大小（无空格，MT 顶栏「储存: 384.9G/479.5G」的写法） */
@@ -68,7 +69,7 @@ object Fmt {
         val h = seconds / 3600
         val m = (seconds % 3600) / 60
         val s = seconds % 60
-        return if (h > 0) String.format("%d:%02d:%02d", h, m, s) else String.format("%d:%02d", m, s)
+        return if (h > 0) String.format(Locale.ROOT, "%d:%02d:%02d", h, m, s) else String.format(Locale.ROOT, "%d:%02d", m, s)
     }
 
     fun duration(ms: Long): String = eta(ms / 1000)
