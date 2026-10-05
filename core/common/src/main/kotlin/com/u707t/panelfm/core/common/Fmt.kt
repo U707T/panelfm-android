@@ -27,8 +27,24 @@ object Fmt {
      * 不带秒也不带世纪 —— 这是 MT 列表的默认写法，所以这里默认用它。
      */
     var datePattern: String = "yy-MM-dd HH:mm"
+        set(value) {
+            field = value
+            cachedListTimeFmt = null
+        }
 
-    private val listTimeFmt: DateTimeFormatter get() = DateTimeFormatter.ofPattern(datePattern)
+    /**
+     * 列表时间格式器缓存。
+     *
+     * `DateTimeFormatter.ofPattern` 每次调用都要重新解析模式（有实测开销），
+     * 而列表副标题在滚动时会被**每一行**反复调用 → 旧实现等于在滚动期间持续重建 formatter。
+     * 这里按 [datePattern] 缓存，模式变化（`showSeconds` 切换）时置空重建。
+     */
+    @Volatile
+    private var cachedListTimeFmt: DateTimeFormatter? = null
+
+    private val listTimeFmt: DateTimeFormatter
+        get() = cachedListTimeFmt ?: DateTimeFormatter.ofPattern(datePattern).also { cachedListTimeFmt = it }
+
     private val fullTimeFmt = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
 
     private val units = arrayOf("B", "K", "M", "G", "T", "P")

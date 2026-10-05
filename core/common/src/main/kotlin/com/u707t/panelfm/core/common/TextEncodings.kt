@@ -13,7 +13,14 @@ object TextEncodings {
 
     data class Decoded(val charset: String, val text: String)
 
-    private val utf8Strict = Charsets.UTF_8.newDecoder()
+    /**
+     * ⚠️ `CharsetDecoder` **不是线程安全**的（内部持有可变状态）。
+     *
+     * 旧实现把它缓存在单例里复用，而解码会被预览 / 搜索 / 缩略图 / 传输多个线程同时调用，
+     * 并发时会读到彼此的中间状态（表现为随机判定「不是 UTF-8」而误回退 GBK，或直接抛
+     * `IllegalStateException`）。这里改为每次新建：一次解码只建一个 decoder，开销可忽略。
+     */
+    private fun strictUtf8Decoder() = Charsets.UTF_8.newDecoder()
         .onMalformedInput(CodingErrorAction.REPORT)
         .onUnmappableCharacter(CodingErrorAction.REPORT)
 
@@ -37,8 +44,7 @@ object TextEncodings {
     }
 
     fun isValidUtf8(bytes: ByteArray): Boolean = try {
-        utf8Strict.reset()
-        utf8Strict.decode(ByteBuffer.wrap(bytes))
+        strictUtf8Decoder().decode(ByteBuffer.wrap(bytes))
         true
     } catch (e: CharacterCodingException) {
         false
