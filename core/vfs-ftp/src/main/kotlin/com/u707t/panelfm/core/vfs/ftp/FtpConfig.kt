@@ -26,7 +26,7 @@ data class FtpConfig(
             tls = config.type.name == "FTPS" || config.option("tls")?.toBoolean() == true,
             implicitTls = config.type.name == "FTPS" && config.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() == true,
             passive = config.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() != false,
-            trustSelfSigned = config.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: true,
+            trustSelfSigned = config.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: false,
             encoding = config.option(ConnectionConfig.OPT_ENCODING)?.takeIf { it.isNotBlank() } ?: "UTF-8",
         )
     }

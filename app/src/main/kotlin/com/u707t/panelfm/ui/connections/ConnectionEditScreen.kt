@@ -94,7 +94,7 @@ fun ConnectionEditScreen(
     var showPassword by remember { mutableStateOf(false) }
     var basePath by remember { mutableStateOf(existing?.basePath ?: "/") }
     var secure by remember { mutableStateOf(existing?.option("secure")?.toBoolean() ?: false) }
-    var trustSelfSigned by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: true) }
+    var trustSelfSigned by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: false) }
     var implicitTls by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() ?: false) }
     var passive by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() ?: true) }
     // MT「编码」：FTP/FTPS/SFTP 的文件名编码（中文服务器常需 GBK/GB18030）

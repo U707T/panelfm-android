@@ -1,12 +1,19 @@
+import java.io.File
 import java.util.Properties
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
-// 发布签名：优先读 android/key.properties（本地或 CI 注入）；缺失时回退 debug 签名，保证随时可构建。
+// 发布签名：优先读 android/key.properties（本地或 CI 注入）；本地可回退 debug，CI 缺 key 时硬失败，禁止发布 debug 签名 APK。
 val keystoreProps = Properties().apply {
     val f = rootProject.file("key.properties")
     if (f.exists()) f.inputStream().use { load(it) }
 }
-val hasReleaseKey = keystoreProps.getProperty("storeFile") != null
+val configuredStoreFile = keystoreProps.getProperty("storeFile")
+val releaseStoreFile = configuredStoreFile?.let { path ->
+    val file = File(path)
+    (if (file.isAbsolute) file else File(projectDir, path)).canonicalFile
+}
+val hasReleaseKey = releaseStoreFile?.isFile == true
+val isCi = System.getenv("CI")?.equals("true", ignoreCase = true) == true
 
 plugins {
     alias(libs.plugins.android.application)
@@ -40,6 +47,9 @@ android {
     buildTypes {
         val stable = if (hasReleaseKey) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
         release {
+            if (isCi && !hasReleaseKey) {
+                throw GradleException("CI release build requires key.properties and an existing release keystore")
+            }
             signingConfig = stable
             isMinifyEnabled = false
             isShrinkResources = false
