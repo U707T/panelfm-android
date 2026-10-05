@@ -7,6 +7,9 @@ import android.view.WindowManager
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
@@ -25,6 +28,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
@@ -75,6 +79,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtIconButton
+import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.ui.browser.clickableNoRipple
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.MimeTypes
@@ -96,7 +102,9 @@ import kotlin.math.sin
 /**
  * 媒体播放（MT 风格 · 纯悬浮控制层）：
  *  - 顶：← / 文件名 / ⋮（倍速 · 循环 · 画面 · 静音），全部悬浮在画面上（无灰条）
- *  - 底：`当前时间 ——— 进度条 ——— 总时长` ＋ 矢量图标控制行 `|◀ ↺10 ⏯ 15↻ ▶|`
+ *  - 底：`当前时间 ——— 进度条 ——— 总时长` ＋ 矢量图标控制行：
+ *    `⤨  |◀  ↺10  ⏯（居中）  15↻  ▶|  ☰`（7 键均分，播放键正好居中；最右 = 播放列表）
+ *  - 播放列表：右侧滑出面板，当前项高亮 + 打开时自动滚到当前项，点按切换
  *  - 左缘：锁定小圆钮；右缘：静音小圆钮；右缘竖条 = 音量，左缘竖条 = 亮度（滑动时出现）
  *  - 手势：单击显隐（播放中 4s 自动隐藏）；双击左右 ±10s、中间播放暂停；长按 2.0x；横滑进度；竖滑音量 / 亮度
  *  - 同目录音视频自动组成播放列表（⏮ ⏭）
@@ -146,6 +154,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     var shuffle by remember { mutableStateOf(false) }
     /** 已缓冲到的位置（进度条第二层） */
     var bufferedMs by remember { mutableStateOf(0L) }
+    /** 播放列表面板（右侧滑出；底栏最右按钮开关） */
+    var showPlaylist by remember { mutableStateOf(false) }
 
     /**
      * 控制层（顶栏 / 底部控制条）实测高度（px）。
@@ -286,8 +296,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     // ⚠️ controlsToken 参与 key —— 每次「唤出」都会重置计时器。
     //    旧实现只用 controlsVisible 作 key：已经显示时再唤出不会重置，4 秒后照样消失。
     // ⚠️ error != null 时不隐藏：否则「重试 / 用其他应用打开」按钮 4 秒后就点不到了。
-    LaunchedEffect(controlsVisible, controlsToken, isPlaying, menuOpen, locked, error, sliderDragging) {
-        if (controlsVisible && isPlaying && !menuOpen && !locked && error == null && !sliderDragging) {
+    LaunchedEffect(controlsVisible, controlsToken, isPlaying, menuOpen, showPlaylist, locked, error, sliderDragging) {
+        if (controlsVisible && isPlaying && !menuOpen && !showPlaylist && !locked && error == null && !sliderDragging) {
             delay(5000)
             // 收起前把未落定的拖动进度落定，避免进度条停在半路、显示与播放位置不一致
             seekPreview?.let {
@@ -783,7 +793,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
                     .navigationBarsPadding()
-                    .padding(horizontal = 20.dp, vertical = 4.dp)
+                    .padding(horizontal = 14.dp, vertical = 4.dp)
                     .onGloballyPositioned { bottomBarHeightPx = it.size.height },
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
@@ -820,6 +830,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     )
                     Text(clock(durationMs), color = Color.White, style = MaterialTheme.typography.labelLarge)
                 }
+                // 7 键 SpaceEvenly：第 4 键（播放/暂停，large）**正好落在屏幕正中**，
+                // 左右各 3 键对称（随机 … 播放列表），比旧版 6 键时播放键偏右更和谐。
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -856,6 +868,118 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                         onClick = { playAt(playlistIndex + 1) },
                     ) {
                         drawSkip(next = true)
+                    }
+                    // 播放列表（最右）：右侧滑出面板（当前项高亮，点按切换）
+                    IconButton(
+                        "播放列表",
+                        enabled = playlist.isNotEmpty(),
+                        onClick = { showPlaylist = !showPlaylist },
+                    ) {
+                        drawPlaylist()
+                    }
+                }
+            }
+        }
+
+        // ---- 播放列表面板（右侧滑出；当前项高亮 + 打开时自动滚到当前项）
+        if (showPlaylist && playlist.isNotEmpty()) {
+            // 遮罩：点空白关闭（无涟漪）
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.45f))
+                    .clickableNoRipple { showPlaylist = false },
+            )
+            Column(
+                Modifier
+                    .align(Alignment.CenterEnd)
+                    .fillMaxHeight()
+                    .fillMaxWidth(0.86f)
+                    .widthIn(max = 360.dp)
+                    .clip(RoundedCornerShape(topStart = MtSpec.CornerLarge, bottomStart = MtSpec.CornerLarge))
+                    .background(Color(0xF0121212))
+                    // 面板空白处吞掉点击，避免落到手势层误切换控制层
+                    .clickableNoRipple { }
+                    .statusBarsPadding()
+                    .navigationBarsPadding(),
+            ) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(start = 16.dp, end = 8.dp, top = 6.dp, bottom = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("播放列表", color = Color.White, style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (playlistIndex in playlist.indices) "${playlistIndex + 1} / ${playlist.size}" else "${playlist.size} 个",
+                            color = Color.White.copy(alpha = 0.65f),
+                            style = MaterialTheme.typography.labelSmall,
+                        )
+                    }
+                    MtIconButton(
+                        icon = MtIcon.CLOSE,
+                        contentDescription = "关闭播放列表",
+                        tint = Color.White,
+                        onClick = { showPlaylist = false },
+                    )
+                }
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(1.dp)
+                        .background(Color.White.copy(alpha = 0.12f)),
+                )
+                val listState = rememberLazyListState()
+                LaunchedEffect(Unit) {
+                    // 打开时滚到当前项附近（前留两行），长列表不用手动找
+                    if (playlistIndex > 0) listState.scrollToItem((playlistIndex - 2).coerceAtLeast(0))
+                }
+                LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                    itemsIndexed(playlist) { index, item ->
+                        val current = index == playlistIndex
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    playAt(index)
+                                    showPlaylist = false
+                                }
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "${index + 1}",
+                                color = if (current) MtSpec.AccentDark else Color.White.copy(alpha = 0.5f),
+                                style = MaterialTheme.typography.labelMedium,
+                                modifier = Modifier.width(26.dp),
+                            )
+                            Text(
+                                item.name,
+                                color = if (current) MtSpec.AccentDark else Color.White.copy(alpha = 0.88f),
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f),
+                            )
+                            if (current) {
+                                Canvas(
+                                    Modifier
+                                        .padding(start = 8.dp)
+                                        .size(10.dp),
+                                ) {
+                                    drawPath(
+                                        Path().apply {
+                                            moveTo(size.width * 0.06f, size.height * 0.10f)
+                                            lineTo(size.width * 0.94f, size.height * 0.50f)
+                                            lineTo(size.width * 0.06f, size.height * 0.90f)
+                                            close()
+                                        },
+                                        MtSpec.AccentDark,
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -935,10 +1059,10 @@ private fun IconButton(
 ) {
     Box(
         Modifier
-            .size(if (large) 56.dp else 44.dp)
+            .size(if (large) 54.dp else 42.dp)
             .clip(CircleShape)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(if (large) 12.dp else 9.dp),
+            .padding(if (large) 11.dp else 8.dp),
     ) {
         Canvas(
             Modifier
@@ -1380,27 +1504,69 @@ private fun DrawScope.drawBrightness(ratio: Float) {
     }
 }
 
-/** 随机播放：两条交叉箭头 */
+/**
+ * 随机播放：两条 **S 形交叉箭头**（照 IRIS 的 `shuffle_rounded` 观感）。
+ *
+ * 旧版是「两条横线 + 中间一个 X + 两个箭头」拼出来的，接近乱线 —— 重画为
+ * 左右各一条平滑曲线、在中间交叉后接到末端「＞」箭头，远看就是一个标准的随机图标。
+ */
 private fun DrawScope.drawShuffle() {
     val w = size.width
     val h = size.height
-    val st = w * 0.08f
-    // 上线：左 → 右上
-    drawLine(Color.White, Offset(w * 0.10f, h * 0.30f), Offset(w * 0.74f, h * 0.30f), strokeWidth = st, cap = StrokeCap.Round)
-    drawLine(Color.White, Offset(w * 0.74f, h * 0.30f), Offset(w * 0.82f, h * 0.30f), strokeWidth = st, cap = StrokeCap.Round)
-    // 下线：左 → 右下
-    drawLine(Color.White, Offset(w * 0.10f, h * 0.70f), Offset(w * 0.74f, h * 0.70f), strokeWidth = st, cap = StrokeCap.Round)
-    // 右端箭头
-    fun arrow(cx: Float, cy: Float, up: Boolean) {
-        val d = if (up) -1f else 1f
-        drawLine(Color.White, Offset(cx, cy), Offset(cx - w * 0.10f, cy + d * h * 0.10f), strokeWidth = st, cap = StrokeCap.Round)
-        drawLine(Color.White, Offset(cx, cy), Offset(cx - w * 0.10f, cy - d * h * 0.10f), strokeWidth = st, cap = StrokeCap.Round)
+    val st = w * 0.085f
+    val stroke = Stroke(width = st, cap = StrokeCap.Round)
+    // 左上 → 右下的 S 曲线
+    drawPath(
+        Path().apply {
+            moveTo(w * 0.08f, h * 0.30f)
+            cubicTo(w * 0.36f, h * 0.30f, w * 0.44f, h * 0.70f, w * 0.70f, h * 0.70f)
+            lineTo(w * 0.80f, h * 0.70f)
+        },
+        Color.White,
+        style = stroke,
+    )
+    // 左下 → 右上的 S 曲线
+    drawPath(
+        Path().apply {
+            moveTo(w * 0.08f, h * 0.70f)
+            cubicTo(w * 0.36f, h * 0.70f, w * 0.44f, h * 0.30f, w * 0.70f, h * 0.30f)
+            lineTo(w * 0.80f, h * 0.30f)
+        },
+        Color.White,
+        style = stroke,
+    )
+    // 末端「＞」箭头
+    fun head(y: Float) {
+        drawLine(Color.White, Offset(w * 0.92f, y), Offset(w * 0.76f, y - h * 0.13f), strokeWidth = st, cap = StrokeCap.Round)
+        drawLine(Color.White, Offset(w * 0.92f, y), Offset(w * 0.76f, y + h * 0.13f), strokeWidth = st, cap = StrokeCap.Round)
     }
-    arrow(w * 0.88f, h * 0.30f, up = true)
-    arrow(w * 0.88f, h * 0.70f, up = false)
-    // 交叉示意
-    drawLine(Color.White, Offset(w * 0.34f, h * 0.30f), Offset(w * 0.58f, h * 0.70f), strokeWidth = st * 0.8f, cap = StrokeCap.Round)
-    drawLine(Color.White, Offset(w * 0.34f, h * 0.70f), Offset(w * 0.58f, h * 0.30f), strokeWidth = st * 0.8f, cap = StrokeCap.Round)
+    head(h * 0.70f)
+    head(h * 0.30f)
+}
+
+/** 播放列表：三条横线 + 右下播放三角（照 playlist_play 的通用观感） */
+private fun DrawScope.drawPlaylist() {
+    val w = size.width
+    val h = size.height
+    val lh = h * 0.08f
+    fun line(y: Float, x2: Float) {
+        drawRoundRect(
+            color = Color.White,
+            topLeft = Offset(w * 0.06f, y),
+            size = Size(w * (x2 - 0.06f), lh),
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(lh / 2),
+        )
+    }
+    line(h * 0.22f, 0.94f)
+    line(h * 0.46f, 0.94f)
+    line(h * 0.70f, 0.50f)
+    val tri = Path().apply {
+        moveTo(w * 0.55f, h * 0.56f)
+        lineTo(w * 0.94f, h * 0.76f)
+        lineTo(w * 0.55f, h * 0.96f)
+        close()
+    }
+    drawPath(tri, Color.White)
 }
 
 /** 秒表格式：m:ss / h:mm:ss */
