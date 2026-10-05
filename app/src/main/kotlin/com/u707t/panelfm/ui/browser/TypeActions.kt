@@ -1,0 +1,87 @@
+package com.u707t.panelfm.ui.browser
+
+import com.u707t.panelfm.core.common.MimeTypes
+
+/**
+ * 按文件类型决定的**二级菜单项**（MT 的长按菜单会随选中项类型变化）。
+ *
+ * MT 语义（对照 `mt_strings_zh.txt`）：
+ *  - 压缩包：`解压到当前目录`(0x7f110251) / `解压到单独的文件夹`(0x7f110252) /
+ *    `解压到文件夹…`(0x7f110250)、`浏览压缩包`(0x7f1100ed)
+ *  - APK：`安装`(0x7f110044)、`Apk信息`(0x7f1100e8)、`提取安装包`(0x7f110248)
+ *  - 图片：`查看图片`(0x7f1100f2) · 音频：`播放音乐`(0x7f1100eb) ·
+ *    字体：`查看字体`(0x7f1100f0) · 文本/代码：`编辑文本`(0x7f1100f9)
+ *  - 通用：`打开方式…`(0x7f11040d)
+ *
+ * 这里只产出「该显示哪一项」，不依赖 Compose，便于单测。
+ */
+object TypeActions {
+
+    const val ACTION_EXTRACT_HERE = "extract_here"
+    const val ACTION_EXTRACT_OWN_FOLDER = "extract_own_folder"
+    const val ACTION_EXTRACT_PICK = "extract_pick_folder"
+    const val ACTION_BROWSE_ARCHIVE = "browse_archive"
+    const val ACTION_INSTALL = "install_apk"
+    const val ACTION_APK_INFO = "apk_info"
+    const val ACTION_EXTRACT_APK_ICON = "extract_apk_icon"
+    const val ACTION_OPEN_INTERNAL = "open_internal"
+    const val ACTION_OPEN_WITH = "open_with"
+
+    fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
+
+    fun isApk(kind: MimeTypes.Kind): Boolean = kind == MimeTypes.Kind.APK
+
+    /** 可直接用内置查看器打开（图片 / 音频 / 视频 / 字体 / PDF / 文本 / 代码） */
+    fun hasBuiltinViewer(kind: MimeTypes.Kind): Boolean = kind in setOf(
+        MimeTypes.Kind.IMAGE, MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO,
+        MimeTypes.Kind.FONT, MimeTypes.Kind.PDF, MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE,
+    )
+
+    /** MT 的内置查看标签（菜单文案；null = 该类型没有内置查看器） */
+    fun viewerLabel(kind: MimeTypes.Kind): String? = when (kind) {
+        MimeTypes.Kind.IMAGE -> "查看图片"
+        MimeTypes.Kind.AUDIO -> "播放音乐"
+        MimeTypes.Kind.VIDEO -> "播放视频"
+        MimeTypes.Kind.FONT -> "查看字体"
+        MimeTypes.Kind.PDF -> "查看 PDF"
+        MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> "查看文本"
+        else -> null
+    }
+
+    /**
+     * 长按菜单里「按类型追加」的二级菜单项 id。
+     *
+     * @param isDirectory    目录不参与类型菜单
+     * @param inArchive      压缩包内部：解压 / 安装不可用（MT 提示「请先解压文件到本地目录后再进行该操作」0x7f11024f）
+     * @param apkInstallable APK 是否可直接安装（网络 / 压缩包内需先复制到本地）
+     */
+    fun typedActionIds(
+        extension: String,
+        isDirectory: Boolean,
+        inArchive: Boolean,
+        apkInstallable: Boolean,
+    ): List<String> {
+        if (isDirectory) return emptyList()
+        val kind = kindOf(extension)
+        return buildList {
+            when (kind) {
+                MimeTypes.Kind.ARCHIVE -> {
+                    if (!inArchive) {
+                        add(ACTION_EXTRACT_HERE)
+                        add(ACTION_EXTRACT_OWN_FOLDER)
+                        add(ACTION_EXTRACT_PICK)
+                    }
+                    add(ACTION_BROWSE_ARCHIVE)
+                }
+                MimeTypes.Kind.APK -> {
+                    if (!inArchive && apkInstallable) add(ACTION_INSTALL)
+                    add(ACTION_APK_INFO)
+                    add(ACTION_EXTRACT_APK_ICON)
+                }
+                else -> Unit
+            }
+            if (hasBuiltinViewer(kind)) add(ACTION_OPEN_INTERNAL)
+            add(ACTION_OPEN_WITH)
+        }
+    }
+}

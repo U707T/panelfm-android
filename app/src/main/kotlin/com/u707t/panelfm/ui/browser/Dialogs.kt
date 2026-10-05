@@ -152,6 +152,14 @@ fun TextInputDialog(
     label: String = "名称",
     hint: String? = null,
     history: List<String> = emptyList(),
+    /**
+     * 是否允许提交**空文本**。
+     *
+     * 过滤 / 搜索这类「留空 = 清除条件」的输入必须打开它 ——
+     * 旧实现一律 `if (text.isNotBlank())` 才提交，导致过滤设上以后**无法取消**
+     * （提示写着「留空清除」，实际点了确定没有任何反应）。
+     */
+    allowEmpty: Boolean = false,
     onConfirm: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -171,8 +179,8 @@ fun TextInputDialog(
     }
     val text = field.text
     val submit = {
-        if (text.isNotBlank()) {
-            onConfirm(text.trim())
+        if (allowEmpty || text.isNotBlank()) {
+            onConfirm(if (allowEmpty) text.trim() else text.trim())
             onDismiss()
         }
     }
@@ -222,9 +230,17 @@ fun TextInputDialog(
             }
         },
         confirmButton = {
-            TextButton(enabled = text.isNotBlank(), onClick = submit) { Text("确定") }
+            TextButton(enabled = allowEmpty || text.isNotBlank(), onClick = submit) { Text("确定") }
         },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+        dismissButton = {
+            Row {
+                // 「清除」只在允许空提交时出现（过滤 / 搜索：一键清空条件）
+                if (allowEmpty && initial.isNotBlank()) {
+                    TextButton(onClick = { onConfirm(""); onDismiss() }) { Text("清除") }
+                }
+                TextButton(onClick = onDismiss) { Text("取消") }
+            }
+        },
     )
 }
 
@@ -373,6 +389,11 @@ data class MtAction(
     /** 带 ● ：长按可触发「单窗口操作」 */
     val singleWindow: Boolean = false,
     val enabled: Boolean = true,
+    /**
+     * 分组：MT 的菜单分「通用动作」与「按文件类型出现的动作」两类，
+     * 后者在面板里单独起一行小标题（见 [MtActionSheet]）。
+     */
+    val section: String? = null,
 )
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
@@ -432,8 +453,20 @@ fun MtActionSheet(
                     )
                 }
                 androidx.compose.foundation.layout.Spacer(Modifier.padding(vertical = 6.dp))
-                // 两列网格（MT 截图2 布局）
+                // 两列网格（MT 截图2 布局）；带 section 的项前插一行小标题
+                //（按文件类型的二级菜单：压缩包的解压、APK 的安装等）
+                var lastSection: String? = null
                 actions.chunked(2).forEach { row ->
+                    val section = row.firstOrNull()?.section
+                    if (section != null && section != lastSection) {
+                        Text(
+                            section,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+                        )
+                    }
+                    lastSection = section
                     Row(Modifier.fillMaxWidth()) {
                         row.forEach { action ->
                             MtActionCell(action, Modifier.weight(1f), onAction, onLongAction)

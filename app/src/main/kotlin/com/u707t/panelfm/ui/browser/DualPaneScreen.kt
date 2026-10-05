@@ -68,6 +68,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.foundation.layout.Spacer
 import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.HSeparator
@@ -170,6 +171,8 @@ fun DualPaneScreen(
     var batchRenameFor by remember { mutableStateOf<List<FileMetadata>?>(null) }
     var compressFormatPicker by remember { mutableStateOf(false) }
     var extractDirPicker by remember { mutableStateOf(false) }
+    /** 长按文件列表里的**压缩包文件**时的解压目标选择（null = 未触发） */
+    var extractDialogFor by remember { mutableStateOf<FileMetadata?>(null) }
     var archiveRename by remember { mutableStateOf<FileMetadata?>(null) }
     var showTypeFilter by remember { mutableStateOf(false) }
     /** 双列区域的总宽度（分隔条拖动换算用；旧实现用分隔条自身宽度 10dp → 拖不动） */
@@ -411,6 +414,21 @@ fun DualPaneScreen(
                                 onShare = { item: FileMetadata ->
                                     shareItem(container, context, item) { msg -> controller.showStatus(msg) }
                                 },
+                                onTypedAction = { id, it ->
+                                    // 与长按菜单同一套处理（复用同一份实现，避免两处行为漂移）
+                                    when (id) {
+                                        TypeActions.ACTION_EXTRACT_HERE -> controller.extractTo(focusSide, focused.uri)
+                                        TypeActions.ACTION_INSTALL -> installApk(container, context, it) { msg ->
+                                            controller.showStatus(msg)
+                                        }
+                                        TypeActions.ACTION_APK_INFO -> controller.openWith(
+                                            it, com.u707t.panelfm.ui.preview.PreviewMode.APK_INFO,
+                                        )
+                                        TypeActions.ACTION_OPEN_INTERNAL -> controller.openWith(
+                                            it, com.u707t.panelfm.ui.preview.PreviewMode.AUTO,
+                                        )
+                                    }
+                                },
                             )
                         }
                     }
@@ -617,7 +635,16 @@ fun DualPaneScreen(
                         if (picked != null) {
                             val (purposeNow, dir) = picked
                             when (purposeNow) {
-                                PickDirPurpose.EXTRACT -> controller.extractTo(focusSide, dir)
+                                PickDirPurpose.EXTRACT -> {
+                                    // 两种来源：长按压缩包文件的「解压到文件夹…」 / 压缩包内选中项的解压
+                                    val pending = controller.pendingArchiveExtract
+                                    if (pending != null) {
+                                        controller.clearPendingArchiveExtract()
+                                        controller.extractArchiveTo(pending, dir)
+                                    } else {
+                                        controller.extractTo(focusSide, dir)
+                                    }
+                                }
                                 PickDirPurpose.COPY_TO -> controller.copyTo(side = focusSide, dest = dir)
                                 PickDirPurpose.MOVE_TO -> controller.moveTo(side = focusSide, dest = dir)
                             }
@@ -754,6 +781,16 @@ fun DualPaneScreen(
             MtMenuRow(MtIcon.SEARCH, "搜索") { showMoreMenu = false; showSearch = true }
             MtMenuRow(MtIcon.SELECT_ALL, "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
             MtMenuRow(MtIcon.LOW_PRIORITY, "过滤") { showMoreMenu = false; filterInput = true }
+            // 已过滤时给一个显式出口（不必再打开对话框清空）
+            if (focused.filtered) {
+                MtMenuRow(MtIcon.CLOSE, "清除过滤") {
+                    showMoreMenu = false
+                    controller.setSearch(focusSide, "")
+                    controller.setFilter(focusSide, null)
+                    controller.refresh(focusSide)
+                    controller.showStatus("已清除过滤")
+                }
+            }
             MtMenuRow(MtIcon.SORT, "排序方式") { showMoreMenu = false; showSortDialog = true }
             // 隐藏文件 ▶（MT：带勾选态的子菜单）
             MtMenuRow(MtIcon.EYE_OFF, "隐藏文件", trailing = MtIcon.CHEVRON_R) { hiddenSub = true }
@@ -867,6 +904,37 @@ fun DualPaneScreen(
                 add(MtAction("open_with", "打开方式…", MtIcon.CHECK, enabled = !anyDirectory))
                 add(MtAction("clipboard", "复制到剪贴板", MtIcon.PASTE))
                 add(MtAction("bookmark", "添加书签", MtIcon.BOOKMARK))
+
+                // ---- 按文件类型的二级菜单（MT 语义）：压缩包解压 / APK 安装等
+                val inArchive = focused.uri.scheme == "archive"
+                val single = picked.singleOrNull()
+                if (single != null && !single.isDirectory) {
+                    val kind = TypeActions.kindOf(single.extension)
+                    val installable = single.uri.scheme == "local"
+                    val ids = TypeActions.typedActionIds(
+                        extension = single.extension,
+                        isDirectory = false,
+                        inArchive = inArchive,
+                        apkInstallable = installable,
+                    )
+                    if (ids.isNotEmpty()) {
+                        val section = "对「${single.name}」"
+                        ids.forEach { id ->
+                            val (label, icon) = when (id) {
+                                TypeActions.ACTION_EXTRACT_HERE -> "解压到当前目录" to MtIcon.ARCHIVE
+                                TypeActions.ACTION_EXTRACT_OWN_FOLDER -> "解压到单独的文件夹" to MtIcon.FOLDER
+                                TypeActions.ACTION_EXTRACT_PICK -> "解压到文件夹…" to MtIcon.FOLDER
+                                TypeActions.ACTION_BROWSE_ARCHIVE -> "浏览压缩包" to MtIcon.EXPLORE
+                                TypeActions.ACTION_INSTALL -> "安装" to MtIcon.GET_APP
+                                TypeActions.ACTION_APK_INFO -> "APK 信息" to MtIcon.ANDROID
+                                TypeActions.ACTION_EXTRACT_APK_ICON -> "提取图标" to MtIcon.IMAGE
+                                TypeActions.ACTION_OPEN_INTERNAL -> (TypeActions.viewerLabel(kind) ?: "查看") to MtIcon.EYE
+                                else -> "打开方式…" to MtIcon.CHECK
+                            }
+                            add(MtAction(id, label, icon, section = section))
+                        }
+                    }
+                }
             },
             onAction = { id ->
                 rowAction = null
@@ -898,6 +966,31 @@ fun DualPaneScreen(
                     "bookmark" -> {
                         controller.addBookmark(focusSide)
                     }
+
+                    // ---- 按类型的二级菜单（MT 语义）
+                    TypeActions.ACTION_EXTRACT_HERE ->
+                        controller.extractTo(focusSide, focused.uri)
+                    TypeActions.ACTION_EXTRACT_OWN_FOLDER -> {
+                        val parent = focused.uri.parent
+                        if (parent != null) controller.extractToOwnFolder(focusSide, parent)
+                    }
+                    TypeActions.ACTION_EXTRACT_PICK -> {
+                        extractDialogFor = item
+                    }
+                    TypeActions.ACTION_BROWSE_ARCHIVE -> {
+                        controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.ARCHIVE)
+                    }
+                    TypeActions.ACTION_INSTALL -> installApk(container, context, item) { msg ->
+                        controller.showStatus(msg)
+                    }
+                    TypeActions.ACTION_APK_INFO -> {
+                        controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.APK_INFO)
+                    }
+                    TypeActions.ACTION_EXTRACT_APK_ICON -> extractApkIcon(container, context, item) { msg ->
+                        controller.showStatus(msg)
+                    }
+                    TypeActions.ACTION_OPEN_INTERNAL -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
+                    TypeActions.ACTION_OPEN_WITH -> openWithFor = item
                 }
             },
             onLongAction = { id ->
@@ -990,9 +1083,14 @@ fun DualPaneScreen(
             label = "关键字",
             hint = "普通文本=包含；!文本=不包含；/正则；!/正则=正则否定。留空清除。",
             history = settings.inputHistory[PrefsStore.RecordKeys.FILTER].orEmpty(),
+            // 允许留空提交 = 清除过滤（旧实现空文本不提交 → 过滤设上就取消不了）
+            allowEmpty = true,
             onConfirm = { q ->
                 controller.setSearch(focusSide, q)
+                // 「清除」时把类型过滤也一并取消，否则列表仍被类型条件卡住
+                if (q.isBlank() && focused.filterKind != null) controller.setFilter(focusSide, null)
                 if (q.isNotBlank()) scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.FILTER, q) }
+                controller.refresh(focusSide)
             },
             onDismiss = { filterInput = false },
         )
@@ -1180,26 +1278,42 @@ fun DualPaneScreen(
         )
     }
     // 解压（复刻 MT 0x7f0c00ce「解压」）
-    if (extractDirPicker) {
+    //  · extractDirPicker = 在压缩包**内部**时打开（目标默认本目录）
+    //  · extractDialogFor = 在文件列表里长按**压缩包本身**时打开（MT 的三项：当前目录 / 单独文件夹 / 文件夹…）
+    if (extractDirPicker || extractDialogFor != null) {
+        val pickedArchive = extractDialogFor
         val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(focused.uri.path)
         val host = encoded?.let { VfsUri.decodeHost(it) }?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
-        val archiveParent = host?.parent
-        val archiveName = host?.name ?: "压缩包"
+        val archiveParent = pickedArchive?.uri?.parent ?: host?.parent
+        val archiveName = pickedArchive?.name ?: host?.name ?: "压缩包"
         MtExtractDialog(
             archiveName = archiveName.substringBeforeLast('.', archiveName),
-            currentDirPath = focused.uri.displayPath,
+            currentDirPath = (pickedArchive?.uri ?: focused.uri).displayPath,
             otherPanePath = ui.pane(focusSide.other).uri.takeIf { it.scheme != "archive" }?.displayPath,
-            onDismiss = { extractDirPicker = false },
+            onDismiss = { extractDirPicker = false; extractDialogFor = null },
             onConfirm = { target, customPath ->
+                val archiveItem = pickedArchive
                 extractDirPicker = false
-                when (target) {
-                    ExtractTarget.OWN_FOLDER ->
-                        if (archiveParent != null) controller.extractToOwnFolder(focusSide, archiveParent)
-                        else controller.showStatus("无法确定压缩包所在目录")
-                    ExtractTarget.HERE -> controller.extractTo(focusSide, focused.uri)
-                    ExtractTarget.PICK_FOLDER -> {
-                        // MT 0x7f0c0025：进入「选择当前目录」模式，用户浏览到目标后点底栏的确认按钮
-                        controller.startPickDir(PickDirPurpose.EXTRACT)
+                extractDialogFor = null
+                if (archiveItem != null) {
+                    // 长按文件列表里的压缩包：按三项语义解压该压缩包
+                    when (target) {
+                        ExtractTarget.OWN_FOLDER -> archiveItem.uri.parent?.let {
+                            controller.extractArchiveTo(archiveItem, it, ownFolder = true)
+                        } ?: controller.showStatus("无法确定压缩包所在目录")
+                        ExtractTarget.HERE -> controller.extractArchiveTo(archiveItem, focused.uri)
+                        ExtractTarget.PICK_FOLDER -> controller.startPickArchiveExtract(archiveItem)
+                    }
+                } else {
+                    when (target) {
+                        ExtractTarget.OWN_FOLDER ->
+                            if (archiveParent != null) controller.extractToOwnFolder(focusSide, archiveParent)
+                            else controller.showStatus("无法确定压缩包所在目录")
+                        ExtractTarget.HERE -> controller.extractTo(focusSide, focused.uri)
+                        ExtractTarget.PICK_FOLDER -> {
+                            // MT 0x7f0c0025：进入「选择当前目录」模式，用户浏览到目标后点底栏的确认按钮
+                            controller.startPickDir(PickDirPurpose.EXTRACT)
+                        }
                     }
                 }
             },
@@ -1493,11 +1607,23 @@ private fun TopActionItems(
     onMoveTo: () -> Unit,
     onProperties: (FileMetadata) -> Unit,
     onShare: (FileMetadata) -> Unit,
+    /** 按类型的二级动作（压缩包解压 / APK 安装 / APK 信息 / 内置查看） */
+    onTypedAction: (String, FileMetadata) -> Unit = { _, _ -> },
 ) {
     val picked = focused.selectedItems
     val twoFiles = picked.size == 2 && picked.none { it.isDirectory }
     val anyDirectory = picked.any { it.isDirectory }
     val inArchive = focused.uri.scheme == "archive"
+    // 单选时的类型化动作（与长按菜单同一套判定）
+    val typedSingle = picked.singleOrNull()?.takeIf { !it.isDirectory }
+    val typedIds = typedSingle?.let {
+        TypeActions.typedActionIds(
+            extension = it.extension,
+            isDirectory = false,
+            inArchive = inArchive,
+            apkInstallable = it.uri.scheme == "local",
+        )
+    }.orEmpty()
 
     // MT 0x7f0c0034：前三项 = 复制 / 移动 / 删除（图标 22dp + 文字 14sp + 左右 padding 15dp）
     MtActionButton(MtIcon.COPY, crossPaneLabel("复制", focusSide)) { controller.copyToOther(focusSide) }
@@ -1512,6 +1638,21 @@ private fun TopActionItems(
     }
     MtActionButton(MtIcon.ARCHIVE, "压缩", enabled = picked.isNotEmpty() && !inArchive) {
         if (picked.isNotEmpty()) onCompress()
+    }
+    // ---- 按类型的动作（MT：选中的是压缩包就给「解压」，是 APK 就给「安装 / APK 信息」）
+    if (typedSingle != null && typedIds.isNotEmpty()) {
+        if (typedIds.contains(TypeActions.ACTION_EXTRACT_HERE)) {
+            MtActionButton(MtIcon.ARCHIVE, "解压") { onTypedAction(TypeActions.ACTION_EXTRACT_HERE, typedSingle) }
+        }
+        if (typedIds.contains(TypeActions.ACTION_INSTALL)) {
+            MtActionButton(MtIcon.GET_APP, "安装") { onTypedAction(TypeActions.ACTION_INSTALL, typedSingle) }
+        }
+        if (typedIds.contains(TypeActions.ACTION_APK_INFO)) {
+            MtActionButton(MtIcon.ANDROID, "APK 信息") { onTypedAction(TypeActions.ACTION_APK_INFO, typedSingle) }
+        }
+        if (typedIds.contains(TypeActions.ACTION_OPEN_INTERNAL)) {
+            MtActionButton(MtIcon.EYE, "查看") { onTypedAction(TypeActions.ACTION_OPEN_INTERNAL, typedSingle) }
+        }
     }
     MtActionButton(MtIcon.COMPARE, "文件对比", enabled = twoFiles) { controller.startFileDiff(focusSide) }
     // MT 0x7f0c0025「选择当前目录」：复制 / 移动的目标改成「浏览后确认」
@@ -1687,8 +1828,7 @@ private fun MtSortManageDialog(
 }
 
 /** 分享：本地文件走 FileProvider（可分享给任何应用） */
-internal fun shareItem(
-    container: AppContainer,
+internal fun shareItem(    container: AppContainer,
     context: android.content.Context,
     item: FileMetadata,
     onMessage: (String) -> Unit,
@@ -1775,8 +1915,7 @@ internal fun openWithSystem(
 }
 
 @Composable
-private fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserController, onOpenTasks: () -> Unit) {
-    val state = snapshot.state
+private fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserController, onOpenTasks: () -> Unit) {    val state = snapshot.state
     val progress = when (state) {
         is TaskState.Running -> if (state.totalBytes > 0) state.doneBytes.toFloat() / state.totalBytes else 0f
         is TaskState.Done -> 1f
@@ -1802,5 +1941,99 @@ private fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserControlle
             TextButton(onClick = onOpenTasks) { Text("详情", style = MaterialTheme.typography.labelSmall) }
         }
         ThinProgressBar(progress)
+    }
+}
+
+/**
+ * 安装 APK（MT `0x7f110044`「安装」）。
+ *
+ * 只做「交给系统安装器」这一档（MT 还有 Shizuku / Root 两档，需要额外授权，
+ * 本项目不引入）：本地文件走 FileProvider + `ACTION_VIEW(application/vnd.android.package-archive)`；
+ * 网络文件提示先复制到本地（与「分享」一致的口径）。
+ */
+internal fun installApk(
+    container: AppContainer,
+    context: android.content.Context,
+    item: FileMetadata,
+    onMessage: (String) -> Unit,
+) {
+    if (!item.name.lowercase().endsWith(".apk")) {
+        onMessage("只有 APK 文件可以安装")
+        return
+    }
+    if (item.uri.scheme != "local") {
+        onMessage("网络 / 压缩包内的 APK 请先复制到本地再安装")
+        return
+    }
+    val file = runCatching { java.io.File(container.localVfs.absolutePath(item.uri)) }.getOrNull()
+    if (file == null || !file.exists()) {
+        onMessage("文件不存在")
+        return
+    }
+    val uri = runCatching {
+        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+    }.getOrNull()
+    if (uri == null) {
+        onMessage("无法生成安装链接")
+        return
+    }
+    val intent = Intent(Intent.ACTION_VIEW)
+        .setDataAndType(uri, "application/vnd.android.package-archive")
+        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    runCatching { context.startActivity(intent) }
+        .onFailure { onMessage("没有可用的安装器") }
+}
+
+/**
+ * 提取 APK 图标到同目录（MT `0x7f110248`「提取安装包」的轻量版：
+ * 只取应用图标存成 PNG，命名 `<apk 名>-icon.png`，重名自动加序号）。
+ */
+internal fun extractApkIcon(
+    container: AppContainer,
+    context: android.content.Context,
+    item: FileMetadata,
+    onMessage: (String) -> Unit,
+) {
+    if (item.uri.scheme != "local") {
+        onMessage("请先复制到本地再提取图标")
+        return
+    }
+    container.scope.launch {
+        val result: Result<android.graphics.Bitmap> = runCatching {
+            val file = java.io.File(container.localVfs.absolutePath(item.uri))
+            val pm = context.packageManager
+            val info = pm.getPackageArchiveInfo(file.absolutePath, 0)
+                ?: throw IllegalStateException("无法解析 APK")
+            val appInfo = info.applicationInfo ?: throw IllegalStateException("无法解析应用信息")
+            appInfo.sourceDir = file.absolutePath
+            appInfo.publicSourceDir = file.absolutePath
+            val drawable = appInfo.loadIcon(pm) ?: throw IllegalStateException("无图标")
+            drawable.toBitmap(192, 192)
+        }
+        result.onSuccess { bitmap ->
+            val out = runCatching {
+                val parent = item.uri.parent ?: item.uri
+                val base = item.name.substringBeforeLast('.', item.name) + "-icon"
+                val target = container.uniqueChild(parent, "$base.png")
+                val vfs = container.locator.find(target)
+                    ?: throw IllegalStateException("目标存储不可用")
+                val bos = java.io.ByteArrayOutputStream()
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, bos)
+                val bytes = bos.toByteArray()
+                val w = vfs.openWrite(target, bytes.size.toLong(), 0L)
+                try {
+                    w.write(bytes, 0, bytes.size)
+                    w.commit()
+                } catch (e: Throwable) {
+                    runCatching { w.abort() }
+                    throw e
+                }
+                target.name
+            }
+            out.onSuccess { name ->
+                onMessage("已提取图标：$name")
+                container.browser.refreshAll()
+            }.onFailure { onMessage("保存图标失败：${it.message}") }
+        }.onFailure { onMessage("提取图标失败：${it.message}") }
     }
 }

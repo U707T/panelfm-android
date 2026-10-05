@@ -78,6 +78,14 @@ data class PaneState(
     val dirCount: Int get() = items.count { it.isDirectory }
     val fileCount: Int get() = items.size - dirCount
     val filtered: Boolean get() = search.isNotBlank() || filterKind != null
+
+    /**
+     * 清除过滤条件（搜索关键字 + 类型过滤）。
+     *
+     * 单独抽出来是因为**只清关键字会把类型过滤留下**，用户仍然看到「已过滤」、
+     * 列表也不恢复 —— v1.3.5 起「清除过滤 / 留空确定」都走这里。
+     */
+    fun clearedFilter(): PaneState = if (filtered) copy(search = "", filterKind = null) else this
     val selectedItems: List<FileMetadata> get() = items.filter { selection.contains(it.uri.toString()) }
 
     /**

@@ -191,7 +191,10 @@ class BrowserController(private val container: AppContainer) {
     fun startPickDir(purpose: PickDirPurpose) = update { it.copy(pickDirFor = purpose) }
 
     /** 取消「选择当前目录」模式 */
-    fun cancelPickDir() = update { it.copy(pickDirFor = null) }
+    fun cancelPickDir() {
+        pendingArchiveExtract = null
+        update { it.copy(pickDirFor = null) }
+    }
 
     /**
      * 确认「选择当前目录」：把活动窗格当前路径交给对应流程。
@@ -1136,6 +1139,63 @@ class BrowserController(private val container: AppContainer) {
         )
         clearSelection(side)
     }
+
+    /**
+     * 解压**文件列表里的压缩包文件**（MT 长按菜单的「解压到当前目录 / 解压到单独的文件夹」）。
+     *
+     * 与 [extractTo] 的区别：那个是在**压缩包内部**选中若干条目再解压；
+     * 这里是在文件列表里直接对 `.zip` 文件本身解压 —— 整包展开到目标目录。
+     *
+     * @param ownFolder true = 先在 [destDir] 下建一个与压缩包同名的目录再解压进去
+     *                  （MT `0x7f110252`「解压到单独的文件夹」，重名自动加 (1)）
+     */
+    fun extractArchiveTo(item: FileMetadata, destDir: VfsUri, ownFolder: Boolean = false) {
+        val archiveName = item.name.substringBeforeLast('.', item.name)
+        val kind = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind.ofFileName(item.name)
+        if (kind == null) {
+            showStatus("不支持的压缩格式：${item.name}")
+            return
+        }
+        container.scope.launch {
+            val target = if (ownFolder) {
+                val dir = container.uniqueChild(destDir, archiveName)
+                runCatching { container.locator.find(destDir)?.mkdir(dir) }
+                    .onFailure {
+                        showStatus("创建目录失败：${it.message}")
+                        return@launch
+                    }
+                dir
+            } else {
+                destDir
+            }
+            // 压缩包挂载的**根 URI**（整包内容都在它下面）
+            val root = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, kind)
+            update { it.copy(status = "解压 ${item.name} → ${target.displayPath}") }
+            container.engine.enqueue(
+                TransferRequest(
+                    sources = listOf(root),
+                    destDir = target,
+                    op = TransferOp.COPY,
+                    conflict = ConflictPolicy.ASK,
+                )
+            )
+        }
+    }
+
+    /** 「解压到文件夹…」：进入选择目录模式，确认后解压该压缩包（供 [extractArchiveTo] 用） */
+    fun startPickArchiveExtract(item: FileMetadata) {
+        pendingArchiveExtract = item
+        startPickDir(PickDirPurpose.EXTRACT)
+    }
+
+    /** 清除待解压的压缩包（选择目录流程结束后调用，避免串到下一次解压） */
+    fun clearPendingArchiveExtract() {
+        pendingArchiveExtract = null
+    }
+
+    /** 待解压的压缩包（配合「解压到文件夹…」的选择目录模式） */
+    var pendingArchiveExtract: FileMetadata? = null
+        private set
 
     /** 压缩包完整性测试（ZIP：逐条读取校验 CRC） */
     fun testArchive(side: PaneSide) {
