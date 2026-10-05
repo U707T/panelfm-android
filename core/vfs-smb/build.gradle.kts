@@ -28,6 +28,8 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     // SMB2/3：SMBJ（DFS 关闭 → 不触发 JNA 的本地库加载）
     implementation(libs.smbj)
+    // SMBJ 0.13.0 拉入旧版 Bouncy Castle；显式约束到已修复安全版本。
+    implementation(libs.bouncycastle)
     implementation(libs.slf4j.nop)
 
     testImplementation(libs.junit)

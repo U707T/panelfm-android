@@ -13,9 +13,14 @@
 - `usesCleartextTraffic=true` 暂时保留，因为 FTP、HTTP WebDAV、部分 S3/MinIO endpoint 仍可能需要明文连接；后续应改为按协议/域名的 Network Security Config，而不是全局关闭。
 - “信任自签证书”仍是显式用户开关；下一步应把当前 trust-all 实现替换为按连接保存证书/公钥指纹的信任模型。
 
+## 已完成的依赖修复
+
+- SMBJ 0.13.0 原本解析到 `org.bouncycastle:bcprov-jdk18on:1.75`；已显式约束到 `1.85`，消除当前实际 runtime tree 中的 Bouncy Castle 高危告警。
+- `org.tukaani:xz` 已从 `1.10` 升到 `1.12`，归档模块回归通过。
+- Dependabot 返回但未出现在当前 runtime tree 的 Netty/jose4j/jdom/httpclient 告警暂不盲目添加，后续以 CI dependency submission 和实际 dependency insight 复核。
+
 ## 尚未处理（独立高风险批次）
 
-- Gradle/传递依赖漏洞升级：先生成依赖树和漏洞清单，再逐组升级并跑协议回归。
 - R8/minify/shrinkResources：需要为 Media3、反射和各网络协议补 keep 规则后再开启。
 - FTP/WebDAV 自定义 TrustManager：不能用 lint suppress 代替安全实现，应增加真实证书/自签证书测试。
 - APK/数据库备份迁移策略：关闭 backup 后如需用户迁移，应提供显式、加密、可审计的导出流程。
