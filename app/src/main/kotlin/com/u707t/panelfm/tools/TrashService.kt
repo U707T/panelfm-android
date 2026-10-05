@@ -95,13 +95,21 @@ class TrashService(
 
     /** 把本地文件移入回收站；返回成功数量（非本地 URI 会被忽略） */
     suspend fun moveToTrash(uris: List<VfsUri>): Int = withContext(Dispatchers.IO) {
-        var ok = 0
         val entries = list().toMutableList()
+        val pending = ArrayList<Entry>()      // 本轮新增
+        val movedPairs = ArrayList<Pair<File, File>>()   // (源, 回收站内位置) 用于失败回滚
+
         uris.forEach { uri ->
             if (uri.scheme != "local") return@forEach
             val src = File(localVfs.absolutePath(uri))
             if (!src.exists()) return@forEach
-            val trashName = "${System.currentTimeMillis()}-${src.name}"
+            // 同名多选时用递增后缀，避免同一毫秒内互相覆盖（trashName 曾是纯时间戳 + 原名）
+            var trashName = "${System.currentTimeMillis()}-${src.name}"
+            var seq = 1
+            while (File(dir, trashName).exists() && seq < 1000) {
+                trashName = "${System.currentTimeMillis()}-$seq-${src.name}"
+                seq++
+            }
             val dest = File(dir, trashName)
             val moved = runCatching { src.renameTo(dest) }.getOrDefault(false) ||
                 runCatching {
@@ -110,7 +118,7 @@ class TrashService(
                     true
                 }.getOrDefault(false)
             if (moved) {
-                val entry = Entry(
+                pending += Entry(
                     id = trashName,
                     name = src.name,
                     originalPath = localVfs.absolutePath(uri),
@@ -119,18 +127,23 @@ class TrashService(
                     deletedAt = System.currentTimeMillis(),
                     isDirectory = dest.isDirectory,
                 )
-                // 索引写失败必须把文件放回原处：否则文件既不在原目录、也不在索引里，
-                // 用户看到的是「删掉了但回收站里没有」= 事实上的静默丢数据。
-                if (save(entries + entry)) {
-                    entries += entry
-                    ok++
-                } else {
-                    runCatching { dest.renameTo(src) }
-                    Logx.e("TrashService", "index save failed, rolled back ${src.name}")
-                }
+                movedPairs += src to dest
             }
         }
-        ok
+        if (pending.isEmpty()) return@withContext 0
+
+        // 一次性写索引（旧实现每个文件写一次 = O(n²) IO）。
+        // 写失败必须把已移动的文件**全部放回原处**：否则文件既不在原目录、也不在索引里，
+        // 用户看到的是「删掉了但回收站里没有」= 事实上的静默丢数据。
+        return@withContext if (save(entries + pending)) {
+            pending.size
+        } else {
+            movedPairs.asReversed().forEach { (src, dest) ->
+                runCatching { dest.renameTo(src) }
+            }
+            Logx.e("TrashService", "index save failed, rolled back ${movedPairs.size} item(s)")
+            0
+        }
     }
 
     suspend fun restore(entry: Entry): Boolean = withContext(Dispatchers.IO) {
@@ -178,14 +191,16 @@ class TrashService(
 
     suspend fun purge(entry: Entry) = withContext(Dispatchers.IO) {
         val deleted = runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
-        if (deleted) save(list().filterNot { it.id == entry.id })
+        if (deleted && !save(list().filterNot { it.id == entry.id })) {
+            Logx.w("TrashService", "purge index update failed: ${entry.name}")
+        }
     }
 
     suspend fun purgeAll() = withContext(Dispatchers.IO) {
         val remaining = list().filterNot { entry ->
             runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
         }
-        save(remaining)
+        if (!save(remaining)) Logx.w("TrashService", "purgeAll index update failed")
     }
 
     fun describe(entry: Entry): String = "${entry.name} · ${Fmt.size(entry.size)}"

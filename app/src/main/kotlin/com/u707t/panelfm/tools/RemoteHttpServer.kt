@@ -22,7 +22,7 @@ import java.net.URLDecoder
  *  - 旧实现是「单线程串行 + 无 socket 超时」：一个慢客户端（只连不发 / 下载到一半暂停）
  *    就会占死唯一的处理线程，整个服务对其他浏览器假死。
  *  - 现在每连接一个守护线程，并用 [MAX_CONCURRENT] 做上限，防止被恶意连接打爆；
- *    socket 设 SO_TIMEOUT，读请求头 / 写响应都有超时兜底。
+ *    socket 的 SO_TIMEOUT 约束请求读取，下载写阻塞则由连接上限兜底（尚无独立 write timeout）。
  */
 class RemoteHttpServer(private val locator: VfsLocator) {
 
