@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -124,10 +125,10 @@ fun UsageBar(
     used: Long,
     total: Long,
     modifier: Modifier = Modifier,
-    height: Dp = 3.dp,
+    height: Dp = 1.5.dp,
 ) {
     val ratio = if (total > 0) (used.toDouble() / total).coerceIn(0.0, 1.0) else 0.0
-    // MT 的占用条：细线 + 右侧百分比（截图实测「────── 80%」），
+    // MT 的占用条：细线 + 右侧百分比（截图实测「────── 80%」，线高约 5px ≈ 1.5dp），
     // 百分比与横线**基线对齐**、间距 6dp，横线本身不圆角（MT 是直角细线）
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier.fillMaxWidth()) {
         Box(
@@ -145,8 +146,9 @@ fun UsageBar(
         }
         Text(
             text = "${(ratio * 100).toInt()}%",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 行高收紧：labelSmall 默认 16sp 行高会把整行撑起来；颜色与横线同取强调蓝（MT 实测）
+            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
+            color = AccentBlue,
             modifier = Modifier.padding(start = 6.dp),
         )
     }
@@ -173,7 +175,7 @@ fun RoundIconBox(size: Dp = 40.dp, background: Color = MaterialTheme.colorScheme
     ) { content() }
 }
 
-/** 列表行：左图标 + 标题 + 副标题 + 右侧附加内容（MT 首页列表） */
+/** 列表行：左图标 + 标题 + 副标题 + 右侧附加内容（MT 首页 / 抽屉列表） */
 @Composable
 fun MtListRow(
     title: String,
@@ -184,6 +186,8 @@ fun MtListRow(
     trailing: @Composable (() -> Unit)? = null,
     extraBelow: @Composable (() -> Unit)? = null,
     titleColor: Color = MaterialTheme.colorScheme.onSurface,
+    /** 标题字号：抽屉行 MT 实测 ≈14sp（旧默认 16sp 渲染偏大）；主页行仍用 16sp */
+    titleSize: TextUnit = 16.sp,
 ) {
     Row(
         Modifier
@@ -201,17 +205,17 @@ fun MtListRow(
         ) {
             Text(
                 title,
-                // MT 主标题 16sp（抽屉/主页行）
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 16.sp),
+                // 行高收紧（bodyLarge 默认行高 24sp 会把行撑高，MT 行距明显更紧）
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = titleSize, lineHeight = 20.sp),
                 color = titleColor,
             )
             extraBelow?.invoke()
             subtitle?.let {
                 Text(
                     it,
-                    style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize, lineHeight = 13.sp),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 2.dp),
+                    modifier = Modifier.padding(top = 1.dp),
                 )
             }
         }

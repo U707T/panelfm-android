@@ -314,22 +314,23 @@ fun MtSideDrawer(
                     title = volume.label,
                     subtitle = space?.let { com.u707t.panelfm.core.ui.usageText(it.total - it.free, it.free) } ?: volume.path,
                     icon = {
-                        RoundIconBox(size = 42.dp) {
+                        RoundIconBox(size = 30.dp) {
                             MtVectorIcon(
                                 icon = when (volume.authority) {
                                     "root" -> MtIcon.ANDROID
                                     "app" -> MtIcon.LAYERS
                                     else -> MtIcon.SD
                                 },
-                                size = 24.dp,
+                                size = 14.dp,
                                 tint = MaterialTheme.colorScheme.surface,
                             )
                         }
                     },
                     onClick = { onOpenVolume(volume) },
                     extraBelow = space?.let {
-                        { UsageBar(used = it.total - it.free, total = it.total, modifier = Modifier.padding(top = 6.dp, end = 8.dp)) }
+                        { UsageBar(used = it.total - it.free, total = it.total, modifier = Modifier.padding(top = 4.dp, end = 8.dp)) }
                     },
+                    titleSize = 14.sp,
                 )
             }
 
@@ -341,10 +342,11 @@ fun MtSideDrawer(
             } else if (drawerConnections.isEmpty()) {
                 MtListRow(
                     title = "还没有网络存储",
+                    titleSize = 14.sp,
                     subtitle = "右上角 ⋮ → 添加网络存储（SFTP / FTP / WebDAV / SMB / S3）",
                     icon = {
-                        RoundIconBox(size = 42.dp) {
-                            MtVectorIcon(icon = MtIcon.PLUS, size = 24.dp, tint = MaterialTheme.colorScheme.surface)
+                        RoundIconBox(size = 30.dp) {
+                            MtVectorIcon(icon = MtIcon.PLUS, size = 14.dp, tint = MaterialTheme.colorScheme.surface)
                         }
                     },
                     onClick = { onAddConnection(ConnectionType.SFTP) },
@@ -370,9 +372,10 @@ fun MtSideDrawer(
                             "local" -> "本地存储"
                             else -> uri.scheme.uppercase()
                         },
+                        titleSize = 14.sp,
                         subtitle = uri.displayPath.ifEmpty { "/" },
                         icon = {
-                            RoundIconBox(size = 42.dp) {
+                            RoundIconBox(size = 30.dp) {
                                 MtVectorIcon(
                                     icon = when (uri.scheme) {
                                         "local" -> MtIcon.SD
@@ -383,7 +386,7 @@ fun MtSideDrawer(
                                         "s3" -> MtIcon.CLOUD
                                         else -> MtIcon.CLOUD
                                     },
-                                    size = 24.dp,
+                                    size = 14.dp,
                                     tint = MaterialTheme.colorScheme.surface,
                                 )
                             }
@@ -473,10 +476,11 @@ fun MtSideDrawer(
 private fun DrawerTool(title: String, icon: MtIcon, onClick: () -> Unit) {
     MtListRow(
         title = title,
+        titleSize = 14.sp,
         subtitle = null,
         icon = {
-            RoundIconBox(size = 42.dp) {
-                MtVectorIcon(icon = icon, size = 24.dp, tint = MaterialTheme.colorScheme.surface)
+            RoundIconBox(size = 30.dp) {
+                MtVectorIcon(icon = icon, size = 14.dp, tint = MaterialTheme.colorScheme.surface)
             }
         },
         onClick = onClick,
@@ -493,6 +497,7 @@ private fun DrawerConnectionRow(
 ) {
     MtListRow(
         title = config.name.ifBlank { config.host },
+        titleSize = 14.sp,
         subtitle = buildString {
             append(config.type.label).append("  ")
             if (config.type.scheme == "dav") append("http://")
@@ -500,10 +505,10 @@ private fun DrawerConnectionRow(
             if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
         },
         icon = {
-            RoundIconBox(size = 42.dp) {
+            RoundIconBox(size = 30.dp) {
                 Text(
                     config.type.label.take(3).uppercase(),
-                    style = MaterialTheme.typography.labelSmall,
+                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
                     color = MaterialTheme.colorScheme.surface,
                     fontWeight = FontWeight.Bold,
                 )

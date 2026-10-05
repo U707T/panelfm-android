@@ -362,7 +362,6 @@ fun PaneView(
                             skipThumb = listState.isScrollInProgress && settings.skipThumbsWhileScrolling,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
-                            dimmed = !focused,
                             // 跟手预览：只有被扫到的那一行读这个位移（其余行传 null，不参与重组）
                             preview = if (previewKey == item.uri.toString()) previewTarget else null,
                             onTap = { handleRowTap(item) },
@@ -476,7 +475,7 @@ private fun ParentRow(onClick: () -> Unit) {
         )
         Text(
             "..",
-            style = MaterialTheme.typography.bodyMedium.copy(fontSize = MtSpec.RowNameSize),
+            style = MaterialTheme.typography.bodyMedium.copy(fontSize = MtSpec.RowNameSize, lineHeight = 17.sp),
             // 主题感知：深色主题下用 onSurface（旧实现写死近黑色 → 深色下不可读）
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.padding(start = MtSpec.RowIconGap),
@@ -490,7 +489,6 @@ private fun MtFileRow(
     skipThumb: Boolean,
     item: FileMetadata,
     selected: Boolean,
-    dimmed: Boolean,
     /** 扫选跟手预览：非 null = 这一行正被手指扫过（值 = 目标横向位移 px），抬手弹回 0 */
     preview: Float?,
     onTap: () -> Unit,
@@ -498,9 +496,8 @@ private fun MtFileRow(
 ) {
     val settings by container.settings.collectAsState()
 
-    // 非活动窗格：MT 只靠「活动侧阴影 + 顶栏高亮」表达焦点，**不整体调暗**；
-    // 这里保留极轻微淡化（0.85），既区分焦点又不影响可读性（旧值 0.55 太暗、像禁用态）
-    val alpha = if (dimmed) 0.85f else 1f
+    // 窗格焦点用「活动侧阴影 + 顶栏计数」表达即可；MT 2.14.5 实测**两窗格颜色一致**，
+    // 不做整体调暗（旧实现非活动窗格淡化 0.85，同机对比时明显偏灰）。
     // 缩略图策略由本行已有的 settings 下传，避免每行再各订阅一次 settings 流
     val thumb = rememberThumb(
         container, item, targetPx = 96, skip = skipThumb,
@@ -568,9 +565,6 @@ private fun MtFileRow(
                 name = item.name,
                 isDirectory = item.isDirectory,
                 size = MtSpec.RowIcon,
-                alpha = alpha,
-                folderColor = if (dimmed) MtSpec.FolderGlyphLight.copy(alpha = 0.75f)
-                else MtSpec.FolderGlyphLight,
             )
         }
         Column(
@@ -582,18 +576,19 @@ private fun MtFileRow(
                 item.name,
                 style = MaterialTheme.typography.bodyMedium.copy(
                     fontSize = MtSpec.RowNameSize,
+                    lineHeight = 17.sp,
                     fontWeight = FontWeight.Normal,
                 ),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                color = (if (item.isHidden) MaterialTheme.colorScheme.onSurfaceVariant
-                else MaterialTheme.colorScheme.onSurface).copy(alpha = alpha),
+                color = if (item.isHidden) MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.onSurface,
             )
             Text(
                 // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
                 rowSubtitle(settings.listDisplayMode, item),
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize),
-                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = alpha),
+                style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize, lineHeight = 13.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
             )
         }

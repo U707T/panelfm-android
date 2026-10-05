@@ -11,12 +11,17 @@ object Fmt {
 
     /**
      * 是否在列表时间中显示秒（设置项）。
-     * MT 的默认格式本来就带秒，这个开关用于切到「不带秒」的紧凑写法。
+     *
+     * MT 列表默认写法是 `26-10-04 13:16`（`yy-MM-dd HH:mm`，无秒）。
+     * 这个开关只切「秒」：关 = `yy-MM-dd HH:mm`，开 = `yy-MM-dd HH:mm:ss`。
+     *
+     * 注意：旧实现关掉秒时会切成 `yyyy-MM-dd HH:mm`（世纪也补全），
+     * 与 MT 实测的 `26-10-05 16:28` 长相不符 —— v1.3.2 修正。
      */
     var showSeconds: Boolean = false
         set(value) {
             field = value
-            datePattern = if (value) "yyyy-MM-dd HH:mm:ss" else "yyyy-MM-dd HH:mm"
+            datePattern = if (value) "yy-MM-dd HH:mm:ss" else "yy-MM-dd HH:mm"
         }
 
     /**

@@ -11,8 +11,8 @@ import androidx.compose.ui.unit.sp
  * 改 UI 时优先引用这里的常量，不要各写各的魔法数字。
  *
  * 数据来源：
- *  - 行布局 `0x7f0c00e4`（主列表项）：图标 32dp / 名称 15sp / 副标题 10sp / 间距 8dp
- *  - 行布局 `0x7f0c00e2`（LinearLayout 版）：padding 8dp + 文本左 10dp + 名称上下 1dp
+ *  - 行布局 `0x7f0c00e4` / `0x7f0c00e2` + **MT 2.14.5 同机截图逐像素复测**（2026-10-05 重校）：
+ *    行距 ≈40dp / 图标 ≈28dp / 名称 ≈13sp / 副标题 10sp / 图标后间距 ≈6dp
  *  - 颜色：`0x7f060043`（主文字 #ee000000 / 夜间 #eed0d0d0）、`0x7f060047`（次文字 #99000000）
  *  - 顶栏：`attr 0x7f040110`（标题栏背景）= 浅色主题 **#ff151515**、深色主题 #ff303030
  *  - 强调色：`0x7f0400ed` = #ff1976d2（浅）/ #ff42a5f5（深）
@@ -21,27 +21,32 @@ import androidx.compose.ui.unit.sp
 object MtSpec {
 
     // ------------------------------------------------------------------ 列表行（0x7f0c00e4 / 0x7f0c00e2）
+    //
+    // v1.3.2 尺寸重校：对着 **MT 2.14.5 同机截图** 逐像素复测（1280px 宽屏、3.268px/dp）：
+    //  - MT 行距 130px ≈ 39.8dp（不是旧表里的 48dp）；图标 90px ≈ 27.5dp（不是 32dp）；
+    //  - 名称墨高 33px ≈ 13sp（15sp 渲染到 38px，明显偏大）；副标题 24px，10sp 正确。
+    // 结论：把行高 / 图标 / 名称号整体收一档，即本段常量。
 
-    /** 行内图标尺寸（0x7f0c00e4 的 0901B6 = 32dp） */
-    val RowIcon = 32.dp
+    /** 行内图标尺寸（MT 2.14.5 实测渲染 ≈27.5dp；取整 28dp） */
+    val RowIcon = 28.dp
 
-    /** 图标与文字之间的间距（layout_marginStart/Left = 8dp） */
-    val RowIconGap = 8.dp
+    /** 图标与文字之间的间距（MT 实测渲染 ≈5.5dp；取整 6dp） */
+    val RowIconGap = 6.dp
 
-    /** 行内边距（0x7f0c00e2 的 padding = 8dp） */
-    val RowPadding = 8.dp
+    /** 行内边距（MT 实测渲染左缘 ≈5dp；取 6dp，与 gap 对称） */
+    val RowPadding = 6.dp
 
-    /** 文件名文字大小（15sp） */
-    val RowNameSize = 15.sp
+    /** 文件名文字大小（MT 实测墨高 33px ≈ 13sp） */
+    val RowNameSize = 13.sp
 
-    /** 副标题（时间 / 大小）文字大小 = 10sp */
+    /** 副标题（时间 / 大小）文字大小 = 10sp（MT 实测墨高 24px，10sp 正确） */
     val RowSubSize = 10.sp
 
     /** 名称行上下 padding（0x7f0c00e2 的 1dp） */
     val RowNamePadding = 1.dp
 
-    /** 行最小高度：图标 32 + 上下 padding 8*2 = 48dp（与 MT 的 48dp dimen 一致） */
-    val RowHeight = 48.dp
+    /** 行高：MT 实测行距 130px ≈ 39.8dp（图标 27.5 + 上下 6×2 ≈ 40） */
+    val RowHeight = 40.dp
 
     // ------------------------------------------------------------------ 顶栏（0x7f0c0033 的 09046B）
 
@@ -56,8 +61,8 @@ object MtSpec {
     /** 顶栏标题文字（路径，居中，18sp） */
     val TopBarTitleSize = 18.sp
 
-    /** 顶栏副标题文字（统计，居中，13sp） */
-    val TopBarSubSize = 13.sp
+    /** 顶栏副标题文字（统计；MT 实测墨高 33px ≈ 12sp） */
+    val TopBarSubSize = 12.sp
 
     // ------------------------------------------------------------------ 二级页面顶栏（统一规格）
 
@@ -170,16 +175,17 @@ object MtSpec {
     val SectionTitleDark = Color(0xFFBBBBBB)
 
     // ------------------------------------------------------------------ 列表行图标方块（对照 MT 截图）
+    //
+    // v1.3.2 复测：MT 2.14.5 同机截图里文件夹方块底色 ≈ #2B2B2B（此前记录 #3C3C3C 偏浅）。
 
     /**
      * 行内图标方块底色。
      *
-     * **MT 实测（截图）：深底 + 白剪影** —— 文件夹是近黑圆角方块（`#FF3C3C3C`）
-     * 里画白色文件夹剪影；文件是**按类型着色**的方块 + 白色类型缩写。
-     * （早前有一版误判成「浅底 + 深剪影」，与 MT 截图不符，已改回。）
+     * **MT 实测（2.14.5 截图逐像素）**：深底 + 白剪影 —— 文件夹是近黑圆角方块
+     * （≈ `#FF2B2B2B`）里画白色文件夹剪影；文件是**按类型着色**的方块 + 白色类型图形。
      */
-    val FolderTileLight = Color(0xFF3C3C3C)
-    val FolderTileDark = Color(0xFF3C3C3C)
+    val FolderTileLight = Color(0xFF2B2B2B)
+    val FolderTileDark = Color(0xFF2B2B2B)
 
     /** 文件行图标方块底色（按类型着色，见 [FileIcons]） */
     val FileTileLight = Color(0xFF546E7A)

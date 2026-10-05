@@ -271,7 +271,7 @@ fun DualPaneScreen(
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
-            ModalDrawerSheet(Modifier.fillMaxWidth(0.86f)) {
+            ModalDrawerSheet(Modifier.fillMaxWidth(0.84f)) {
                 // 抽屉内容顶部加安全区（状态栏），否则「PanelFM」标题会顶到状态栏下面
                 Column(Modifier.safeAreaPadding()) {
                     MtSideDrawer(
@@ -683,12 +683,12 @@ fun DualPaneScreen(
                     ) {
                         // MT 底栏：后退 / 前进 / 新建 / 同步 / 上级（§1.5 + G.3.3）
                         MtBottomIconButton(
-                            icon = MtIcon.BACK,
+                            icon = MtIcon.CHEVRON_L,
                             label = "后退",
                             enabled = focused.tab.back.isNotEmpty(),
                         ) { controller.back(focusSide) }
                         MtBottomIconButton(
-                            icon = MtIcon.FORWARD,
+                            icon = MtIcon.CHEVRON_R,
                             label = "前进",
                             enabled = focused.tab.forward.isNotEmpty(),
                         ) { controller.forward(focusSide) }
