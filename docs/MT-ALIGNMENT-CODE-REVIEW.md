@@ -1,7 +1,7 @@
 # PanelFM × MT 2.14.5 对齐与 Code Review 记录
 
 > 基准：`/workspace/mt-analysis/MT-UI-功能-逻辑-解析.md`（MT 2.14.5 v8a）
-> 项目：`panelfm-android`，当前基线 `v1.0.5`
+> 项目：`panelfm-android`，当前基线 `v1.0.6`
 > 审核日期：2026-10-05
 >
 > 本文不是 MT 逆向功能的实现计划。PanelFM 只对齐文件管理器、预览器、双窗格和相关交互；Dex/ARSC/AXML、插件、账号/VIP、Root/Shizuku 等能力明确不做。

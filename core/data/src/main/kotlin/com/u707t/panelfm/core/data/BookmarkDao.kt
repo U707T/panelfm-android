@@ -62,7 +62,11 @@ class BookmarkDao(private val db: PanelDb) {
         db.readableDatabase.query(
             "path_history", arrayOf("uri"), null, null, null, null, "visited_at DESC", limit.toString(),
         ).use { c ->
-            while (c.moveToNext()) out.add(VfsUri.parse(c.getString(0)))
+            while (c.moveToNext()) {
+                // 历史表可能残留旧版本 / 手改的非法 URI；一条坏数据不能让整个「最近使用」崩掉
+                val raw = c.getString(0) ?: continue
+                runCatching { VfsUri.parse(raw) }.getOrNull()?.let { out.add(it) }
+            }
         }
         return out
     }
@@ -72,7 +76,9 @@ class BookmarkDao(private val db: PanelDb) {
         return Bookmark(
             id = getLong(getColumnIndexOrThrow("id")),
             connectionId = if (isNull(connIndex)) null else getLong(connIndex),
-            uri = VfsUri.parse(getString(getColumnIndexOrThrow("uri"))),
+            // 同上：非法 URI 退化为「根目录」而不是抛异常（书签列表必须能打开）
+            uri = runCatching { VfsUri.parse(getString(getColumnIndexOrThrow("uri"))) }
+                .getOrDefault(VfsUri.of("local", "emulated", "/")),
             name = getString(getColumnIndexOrThrow("name")),
             createdAt = getLong(getColumnIndexOrThrow("created_at")),
         )

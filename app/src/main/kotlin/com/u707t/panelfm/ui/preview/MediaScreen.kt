@@ -990,7 +990,9 @@ private fun clock(ms: Long): String {
     val h = total / 3600
     val m = (total % 3600) / 60
     val s = total % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, s) else "%d:%02d".format(m, s)
+    // Locale.ROOT：数字格式不能跟随系统 locale（如阿拉伯语会把 0 显示成 ٠）
+    return if (h > 0) "%d:%02d:%02d".format(java.util.Locale.ROOT, h, m, s)
+    else "%d:%02d".format(java.util.Locale.ROOT, m, s)
 }
 
 /**

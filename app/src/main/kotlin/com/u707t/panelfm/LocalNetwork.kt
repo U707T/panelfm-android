@@ -20,9 +20,13 @@ object LocalNetwork {
         return context.checkSelfPermission(PERMISSION) == PackageManager.PERMISSION_GRANTED
     }
 
-    fun isNeverAskAgain(context: Context): Boolean = false
-
-    /** 兼容旧 API 的自检（避免 lint 报 Manifest 常量缺失） */
+    /**
+     * 兼容旧 API 的存储权限自检（API ≤ 28 需要 WRITE_EXTERNAL_STORAGE）。
+     *
+     * 注意：本函数**不会**被 UI 调用（当前最低支持 API 26，但引导走的是
+     * `MANAGE_EXTERNAL_STORAGE` 系统页），保留它只是为了避免在 Manifest 常量缺失时
+     * lint 报错；若后续要接入旧机型权限请求，应在这里返回真实的授权状态。
+     */
     fun legacyStorageGranted(context: Context): Boolean =
         if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.P) {
             context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED

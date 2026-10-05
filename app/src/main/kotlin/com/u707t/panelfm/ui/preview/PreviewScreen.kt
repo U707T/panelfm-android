@@ -612,7 +612,7 @@ private fun HexPreview(container: AppContainer, item: FileMetadata) {
                             .clickable { cursor = offset.toInt() },
                     ) {
                         Text(
-                            "%08X".format(offset),
+                            "%08X".format(java.util.Locale.ROOT, offset),
                             style = MaterialTheme.typography.labelSmall,
                             fontFamily = FontFamily.Monospace,
                             color = MaterialTheme.colorScheme.primary,
@@ -694,7 +694,7 @@ private fun ByteArray.toHexLines(): List<Pair<Long, String>> {
     while (offset < size) {
         val end = minOf(offset + 16, size.toLong()).toInt()
         val chunk = copyOfRange(offset.toInt(), end)
-        val hex = chunk.joinToString(" ") { "%02X".format(it) }.padEnd(16 * 3 - 1)
+        val hex = chunk.joinToString(" ") { "%02X".format(java.util.Locale.ROOT, it) }.padEnd(16 * 3 - 1)
         val ascii = chunk.map { if (it in 32..126) it.toInt().toChar() else '.' }.joinToString("")
         out.add(offset to "$hex  |$ascii|")
         offset = end.toLong()

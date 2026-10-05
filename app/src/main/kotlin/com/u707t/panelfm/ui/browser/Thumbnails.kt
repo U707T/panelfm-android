@@ -37,8 +37,9 @@ object ThumbCache {
 
     private fun fileOf(key: String): File? {
         val dir = cacheDir ?: return null
+        // Locale.ROOT：哈希文件名必须是固定 ASCII（本地化数字会让不同语言下缓存 key 不一致）
         val hash = MessageDigest.getInstance("SHA-1").digest(key.toByteArray())
-            .joinToString("") { "%02x".format(it) }
+            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
         return File(dir, "$hash.png")
     }
 

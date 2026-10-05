@@ -14,15 +14,22 @@ import javax.crypto.spec.GCMParameterSpec
 /**
  * 口令保险箱：Android Keystore 主密钥（AES-256-GCM）+ 每条独立 IV，密文存 SQLite。
  * 不依赖已废弃的 androidx.security-crypto。
+ *
+ * 失败语义（重要）：
+ *  - [put] 返回是否成功；**失败不能被当成保存成功**（旧实现 runCatching 后只记日志，
+ *    UI 依然提示「已保存」→ 用户下次连接才发现口令丢了，且无任何线索）。
+ *  - [get] 任何异常（密文损坏 / Keystore 被系统重置 / 设备迁移）都返回 null，
+ *    绝不向上抛：调用方在组合期读取它，抛异常会直接崩界面。
  */
 class SecretStore(private val db: PanelDb) {
 
-    fun put(ref: String, plain: String?) {
+    /** @return true = 已写入（或已删除）；false = 写入失败，调用方必须提示用户 */
+    fun put(ref: String, plain: String?): Boolean {
         if (plain.isNullOrEmpty()) {
             delete(ref)
-            return
+            return true
         }
-        runCatching {
+        return runCatching {
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, masterKey())
             val iv = cipher.iv
@@ -34,23 +41,25 @@ class SecretStore(private val db: PanelDb) {
                 put("updated_at", System.currentTimeMillis())
             }
             db.writableDatabase.insertWithOnConflict("secret", null, values, 5 /* REPLACE */)
+            true
         }.onFailure { Logx.e("SecretStore", "put failed: ${it.message}", it) }
+            .getOrDefault(false)
     }
 
-    fun get(ref: String): String? {
+    fun get(ref: String): String? = runCatching {
         db.readableDatabase.query("secret", arrayOf("cipher", "iv"), "ref = ?", arrayOf(ref), null, null, null)
             .use { c ->
-                if (!c.moveToFirst()) return null
+                if (!c.moveToFirst()) return@runCatching null
                 val cipherText = Base64.decode(c.getString(0), Base64.NO_WRAP)
                 val iv = Base64.decode(c.getString(1), Base64.NO_WRAP)
-                return runCatching {
+                runCatching {
                     val cipher = Cipher.getInstance(TRANSFORMATION)
                     cipher.init(Cipher.DECRYPT_MODE, masterKey(), GCMParameterSpec(128, iv))
                     String(cipher.doFinal(cipherText), Charsets.UTF_8)
                 }.onFailure { Logx.e("SecretStore", "decrypt failed (key invalidated?): ${it.message}", it) }
                     .getOrNull()
             }
-    }
+    }.onFailure { Logx.e("SecretStore", "get failed: ${it.message}", it) }.getOrNull()
 
     fun delete(ref: String) {
         db.writableDatabase.delete("secret", "ref = ?", arrayOf(ref))

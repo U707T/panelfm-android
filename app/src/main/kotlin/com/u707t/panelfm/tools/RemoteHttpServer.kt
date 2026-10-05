@@ -7,7 +7,6 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.runBlocking
 import java.io.BufferedOutputStream
 import java.io.BufferedReader
-import java.io.FileOutputStream
 import java.io.InputStreamReader
 import java.net.Inet4Address
 import java.net.NetworkInterface
@@ -18,11 +17,17 @@ import java.net.URLDecoder
 /**
  * 远程管理（内置只读 HTTP 服务）：电脑浏览器访问手机目录，直接浏览与下载。
  * 走统一 VFS，所以本地 / SFTP / WebDAV / S3 目录都能通过它暴露到局域网（默认只读，更安全）。
+ *
+ * 并发与超时（基础加固）：
+ *  - 旧实现是「单线程串行 + 无 socket 超时」：一个慢客户端（只连不发 / 下载到一半暂停）
+ *    就会占死唯一的处理线程，整个服务对其他浏览器假死。
+ *  - 现在每连接一个守护线程，并用 [MAX_CONCURRENT] 做上限，防止被恶意连接打爆；
+ *    socket 设 SO_TIMEOUT，读请求头 / 写响应都有超时兜底。
  */
 class RemoteHttpServer(private val locator: VfsLocator) {
 
     private var serverSocket: ServerSocket? = null
-    private var thread: Thread? = null
+    private val clients = java.util.concurrent.atomic.AtomicInteger(0)
 
     val running: Boolean get() = serverSocket?.isClosed == false
 
@@ -30,9 +35,9 @@ class RemoteHttpServer(private val locator: VfsLocator) {
     fun start(root: VfsUri): String? {
         if (running) return currentUrl
         return runCatching {
-            val socket = ServerSocket(0)
+            val socket = ServerSocket(0).apply { soTimeout = 1000 }
             serverSocket = socket
-            thread = Thread({ serve(socket, root) }, "panelfm-remote").apply {
+            Thread({ serve(socket, root) }, "panelfm-remote").apply {
                 isDaemon = true
                 start()
             }
@@ -51,16 +56,31 @@ class RemoteHttpServer(private val locator: VfsLocator) {
     fun stop() {
         runCatching { serverSocket?.close() }
         serverSocket = null
-        thread = null
         currentUrl = ""
     }
 
     private fun serve(socket: ServerSocket, root: VfsUri) {
         while (!socket.isClosed) {
-            val client = runCatching { socket.accept() }.getOrNull() ?: break
-            runCatching { handle(client, root) }
-                .onFailure { Logx.w("RemoteHttp", "handle failed: ${it.message}") }
-            runCatching { client.close() }
+            // soTimeout=1s：让 accept 定期醒来，stop() 关闭 socket 后能及时退出循环
+            val client = runCatching { socket.accept() }.getOrNull() ?: continue
+            if (clients.get() >= MAX_CONCURRENT) {
+                runCatching {
+                    client.getOutputStream().write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n".toByteArray())
+                }
+                runCatching { client.close() }
+                continue
+            }
+            clients.incrementAndGet()
+            Thread({
+                try {
+                    client.soTimeout = READ_TIMEOUT_MS
+                    runCatching { handle(client, root) }
+                        .onFailure { Logx.w("RemoteHttp", "handle failed: ${it.message}") }
+                } finally {
+                    runCatching { client.close() }
+                    clients.decrementAndGet()
+                }
+            }, "panelfm-remote-conn").apply { isDaemon = true; start() }
         }
     }
 
@@ -195,4 +215,12 @@ class RemoteHttpServer(private val locator: VfsLocator) {
             .firstOrNull { !it.isLoopbackAddress }
             ?.hostAddress
     }.getOrNull()
+
+    private companion object {
+        /** 同时处理的连接上限（每个连接一个线程，防止被连接洪水打爆） */
+        const val MAX_CONCURRENT = 8
+
+        /** 请求头读取 / 响应写入的 socket 超时 */
+        const val READ_TIMEOUT_MS = 30_000
+    }
 }

@@ -1745,8 +1745,9 @@ class BrowserController(private val container: AppContainer) {
                     crc?.update(buf, 0, n)
                     digest?.update(buf, 0, n)
                 }
-                crc?.let { "%08x".format(it.value) }
-                    ?: digest!!.digest().joinToString("") { "%02x".format(it) }
+                // Locale.ROOT：校验值必须是固定 ASCII 十六进制（本地化数字会让「比对校验值」失去意义）
+                crc?.let { "%08x".format(java.util.Locale.ROOT, it.value) }
+                    ?: digest!!.digest().joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
             } finally {
                 runCatching { reader.close() }
             }

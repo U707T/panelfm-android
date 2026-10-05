@@ -266,19 +266,38 @@ fun ConnectionEditScreen(
                     busy = false
                     return@launch
                 }
+                // 端口范围校验：旧实现 filter 掉非数字后就存，`99999` 这类值会一路写进 DB，
+                // 直到连接时才以「连接被拒绝」的形式暴露，用户很难联想到是配置问题。
+                val portNumber = port.toIntOrNull() ?: type.defaultPort
+                if (portNumber !in 1..65535) {
+                    status = "端口必须在 1–65535 之间（当前：$port）"
+                    busy = false
+                    return@launch
+                }
                 val config = buildConfig()
                 val secret = buildSecret()
                 if (existing != null) {
                     val oldSecret = runCatching { container.loadSecret(existing.id) }.getOrNull()
+                    val secretSaved = container.saveSecret(config.id, secret)
+                    if (!secretSaved) {
+                        status = "配置未保存：口令写入失败（系统密钥库不可用）。请稍后重试。"
+                        busy = false
+                        return@launch
+                    }
                     container.connectionDao.update(config)
-                    container.saveSecret(config.id, secret)
                     // 会话键或口令变化 → 断掉旧会话，下次打开用新配置
                     if (existing.sessionKey != config.sessionKey || oldSecret != secret) {
                         container.disconnectConnection(existing)
                     }
                 } else {
                     val id = container.connectionDao.insert(config)
-                    container.saveSecret(id, secret)
+                    if (!container.saveSecret(id, secret)) {
+                        // 新连接的 secret 写失败时不留下半成品配置。
+                        container.connectionDao.delete(id)
+                        status = "连接未创建：口令写入失败（系统密钥库不可用）。请重试。"
+                        busy = false
+                        return@launch
+                    }
                 }
                 container.reloadConnections()
                 busy = false
@@ -309,6 +328,13 @@ fun ConnectionEditScreen(
                 if (!applyUrlIfWebDav()) {
                     hintJob.cancel()
                     status = badUrlMessage
+                    busy = false
+                    return@launch
+                }
+                val portNumber = port.toIntOrNull() ?: type.defaultPort
+                if (portNumber !in 1..65535) {
+                    hintJob.cancel()
+                    status = "端口必须在 1–65535 之间（当前：$port）"
                     busy = false
                     return@launch
                 }
@@ -408,7 +434,7 @@ fun ConnectionEditScreen(
                 )
                 MtTextField(
                     value = port,
-                    onValueChange = { port = it.filter { ch -> ch.isDigit() } },
+                    onValueChange = { text -> port = text.filter { ch -> ch.isDigit() }.take(5) },
                     label = "端口",
                     placeholder = "0",
                     keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,

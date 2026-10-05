@@ -260,22 +260,6 @@ class PrefsStore(private val context: Context) {
         return p[Keys.lastLeft] to p[Keys.lastRight]
     }
 
-    fun lastPaths(): Pair<String?, String?> {
-        // 注意：DataStore 是异步的，这里用 runBlocking 只为启动时读取一次
-        return runCatching {
-            kotlinx.coroutines.runBlocking {
-                var l: String? = null
-                var r: String? = null
-                context.panelDataStore.data.collect { p ->
-                    l = p[Keys.lastLeft]
-                    r = p[Keys.lastRight]
-                    throw kotlinx.coroutines.CancellationException()
-                }
-                l to r
-            }
-        }.getOrElse { null to null }
-    }
-
     suspend fun setHomePath(uri: String?) = context.panelDataStore.edit { prefs ->
         if (uri == null) prefs.remove(Keys.homePath) else prefs[Keys.homePath] = uri
     }

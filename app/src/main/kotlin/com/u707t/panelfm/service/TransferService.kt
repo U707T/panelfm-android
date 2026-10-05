@@ -76,13 +76,21 @@ class TransferService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // 通知渠道 + 立即进入前台，避免 Android 8+ 的 ANR/崩溃
+        // 通知渠道 + 立即进入前台，避免 Android 8+ 的 ANR/崩溃。
+        // ⚠️ startForeground 失败时不能「装作没事」继续运行：系统要求
+        // startForegroundService 后 5 秒内必须进入前台，否则直接抛
+        // ForegroundServiceDidNotStartInTimeException 崩掉进程。
+        // 失败时主动 stopSelf()，让传输在应用进程内继续（数据不丢，只是没通知）。
         createChannel()
-        startForegroundSafe(buildNotification("PanelFM", "传输任务准备中…", 0, indeterminate = true))
+        val ok = startForegroundSafe(buildNotification("PanelFM", "传输任务准备中…", 0, indeterminate = true))
+        if (!ok) {
+            stopSelf()
+            return START_NOT_STICKY
+        }
         return START_STICKY
     }
 
-    private fun startForegroundSafe(notification: Notification) {
+    private fun startForegroundSafe(notification: Notification): Boolean =
         runCatching {
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
@@ -90,7 +98,7 @@ class TransferService : Service() {
                 startForeground(NOTIFICATION_ID, notification)
             }
         }.onFailure { Logx.w("TransferService", "startForeground failed: ${it.message}") }
-    }
+            .isSuccess
 
     private fun stopForegroundCompat() {
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }

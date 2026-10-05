@@ -262,7 +262,7 @@ private fun signerSummary(pkg: PackageInfo): String = runCatching {
     infos.firstOrNull()?.let { sig ->
         val md = java.security.MessageDigest.getInstance("SHA-256")
         val digest = md.digest(sig.toByteArray())
-        "SHA-256: " + digest.joinToString("") { "%02x".format(it) }.take(16) + "…"
+        "SHA-256: " + digest.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }.take(16) + "…"
     } ?: "未签名"
 }.getOrDefault("读取失败")
 

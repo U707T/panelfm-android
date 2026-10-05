@@ -29,7 +29,7 @@ object SigV4 {
     private val amzDateFmt = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC)
     private val dateFmt = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC)
 
-    fun hex(data: ByteArray): String = data.joinToString("") { "%02x".format(it) }
+    fun hex(data: ByteArray): String = data.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
 
     fun sha256Hex(data: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(data))
 

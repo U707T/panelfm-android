@@ -241,11 +241,15 @@ class AppContainer(val app: Application) {
                 java.io.File(path)
             } else {
                 val vfs = locator.find(host) ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("会话不可用")
-                // 缓存名用「完整 URI」的 hash（旧实现用文件名 hash → 不同目录的同名压缩包会互相覆盖，
-                // 大小恰好相同就会读到错误的压缩包内容）
-                val name = host.toString().hashCode().toString(16) + "-" + host.name
+                val meta = vfs.stat(host)
+                // 缓存名 = 完整 URI hash + 源文件修改时间 + 文件名。
+                // 旧实现只用「URI hash + 文件名」，且校验只看长度 —— 远端同名同大小的压缩包被替换后，
+                // 仍然会命中旧缓存，表现为「压缩包内容明明改了，打开还是旧的」。
+                val stamp = meta.lastModified.takeIf { it > 0 }?.toString() ?: "0"
+                val prefix = host.toString().hashCode().toString(16)
+                val name = "$prefix-$stamp-${host.name}"
                 val tmp = java.io.File(appDirs.tmpDir, name)
-                if (!tmp.exists() || tmp.length() != vfs.stat(host).size) {
+                if (!tmp.exists() || tmp.length() != meta.size) {
                     val reader = vfs.openRead(host)
                     try {
                         tmp.outputStream().use { out ->
@@ -259,6 +263,10 @@ class AppContainer(val app: Application) {
                     } finally {
                         runCatching { reader.close() }
                     }
+                    // 清理同一压缩包的旧版本缓存，避免 cache 目录无限增长
+                    java.io.File(appDirs.tmpDir).listFiles()
+                        ?.filter { it.name.startsWith("$prefix-") && it.name != name }
+                        ?.forEach { runCatching { it.delete() } }
                 }
                 tmp
             }
@@ -273,9 +281,9 @@ class AppContainer(val app: Application) {
         archives.remove(host)?.let { runCatching { it.close() } }
     }
 
-    fun saveSecret(configId: Long, secret: String?) {
-        scope.launch(Dispatchers.IO) { secretStore.put(connectionDao.secretRef(configId), secret) }
-    }
+    /** 保存口令；返回 false = 写入失败（UI 必须提示，不能假装保存成功） */
+    suspend fun saveSecret(configId: Long, secret: String?): Boolean =
+        withContext(Dispatchers.IO) { secretStore.put(connectionDao.secretRef(configId), secret) }
 
     fun loadSecret(configId: Long): String? = secretStore.get(connectionDao.secretRef(configId))
 

@@ -24,13 +24,15 @@ class ConnectionDao(private val db: PanelDb) {
     }
 
     fun insert(config: ConnectionConfig): Long {
-        val values = config.toValues()
+        val values = config.toValues(includeCreatedAt = true)
         values.remove("id")
         return db.writableDatabase.insert("connection", null, values)
     }
 
     fun update(config: ConnectionConfig) {
-        db.writableDatabase.update("connection", config.toValues(), "id = ?", arrayOf(config.id.toString()))
+        // 注意：update 不能带上 created_at —— 否则每次编辑连接都会把「创建时间」改成当前时间，
+        // 侧边栏按创建时间排序 / 展示会随之漂移（旧实现 toValues() 里无条件写 created_at）。
+        db.writableDatabase.update("connection", config.toValues(includeCreatedAt = false), "id = ?", arrayOf(config.id.toString()))
     }
 
     fun delete(id: Long) {
@@ -45,7 +47,7 @@ class ConnectionDao(private val db: PanelDb) {
 
     fun secretRef(id: Long) = "conn-$id"
 
-    private fun ConnectionConfig.toValues() = ContentValues().apply {
+    private fun ConnectionConfig.toValues(includeCreatedAt: Boolean) = ContentValues().apply {
         put("id", id)
         put("type", type.name)
         put("name", name)
@@ -58,7 +60,8 @@ class ConnectionDao(private val db: PanelDb) {
         put("options_json", json.encodeToString(mapSer, options))
         put("sort_order", sortOrder)
         put("last_used_at", lastUsedAt)
-        put("created_at", System.currentTimeMillis())
+        // created_at 只在 insert 时写；update 保留库里原值（见 update() 注释）
+        if (includeCreatedAt) put("created_at", System.currentTimeMillis())
     }
 
     private fun Cursor.toConfig(): ConnectionConfig {

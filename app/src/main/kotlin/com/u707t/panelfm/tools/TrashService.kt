@@ -2,6 +2,7 @@ package com.u707t.panelfm.tools
 
 import com.u707t.panelfm.core.common.AppDirs
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVfs
 import kotlinx.coroutines.Dispatchers
@@ -9,6 +10,9 @@ import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * 本地回收站：删除的本地文件/目录先进 `files/trash/`，可还原或彻底删除。
@@ -53,7 +57,7 @@ class TrashService(
         return out.sortedByDescending { it.deletedAt }
     }
 
-    private fun save(entries: List<Entry>) {
+    private fun save(entries: List<Entry>): Boolean {
         val arr = JSONArray()
         entries.forEach { e ->
             arr.put(
@@ -68,7 +72,25 @@ class TrashService(
                 }
             )
         }
-        runCatching { indexFile.writeText(arr.toString()) }
+        // 原子写：先写 index.json.tmp 再改名。
+        // 旧实现直接 writeText：进程在写一半时被杀 → index.json 变成半截 JSON，
+        // 下次启动 list() 解析失败会返回空表 —— 用户会看到「回收站空了」（文件其实还在盘上）。
+        val tmp = File(dir, "index.json.tmp")
+        return runCatching {
+            tmp.writeText(arr.toString())
+            try {
+                Files.move(
+                    tmp.toPath(), indexFile.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), indexFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+            true
+        }.onFailure {
+            runCatching { tmp.delete() }
+        }.getOrDefault(false)
     }
 
     /** 把本地文件移入回收站；返回成功数量（非本地 URI 会被忽略） */
@@ -84,11 +106,11 @@ class TrashService(
             val moved = runCatching { src.renameTo(dest) }.getOrDefault(false) ||
                 runCatching {
                     src.copyRecursively(dest, overwrite = true)
-                    src.deleteRecursively()
+                    if (!src.deleteRecursively()) error("删除原文件失败")
                     true
                 }.getOrDefault(false)
             if (moved) {
-                entries += Entry(
+                val entry = Entry(
                     id = trashName,
                     name = src.name,
                     originalPath = localVfs.absolutePath(uri),
@@ -97,10 +119,17 @@ class TrashService(
                     deletedAt = System.currentTimeMillis(),
                     isDirectory = dest.isDirectory,
                 )
-                ok++
+                // 索引写失败必须把文件放回原处：否则文件既不在原目录、也不在索引里，
+                // 用户看到的是「删掉了但回收站里没有」= 事实上的静默丢数据。
+                if (save(entries + entry)) {
+                    entries += entry
+                    ok++
+                } else {
+                    runCatching { dest.renameTo(src) }
+                    Logx.e("TrashService", "index save failed, rolled back ${src.name}")
+                }
             }
         }
-        save(entries)
         ok
     }
 
@@ -118,8 +147,17 @@ class TrashService(
                 src.deleteRecursively()
                 true
             }.getOrDefault(false)
-        if (ok) save(list().filterNot { it.id == entry.id })
-        ok
+        if (!ok) return@withContext false
+        val remaining = list().filterNot { it.id == entry.id }
+        if (save(remaining)) return@withContext true
+        // 索引落盘失败：把已还原的文件放回回收站，避免出现「文件已离开但索引仍指向旧位置」。
+        val rolledBack = dest.renameTo(src) || runCatching {
+            dest.copyRecursively(src, overwrite = true)
+            if (!dest.deleteRecursively()) error("回滚删除失败")
+            true
+        }.getOrDefault(false)
+        if (!rolledBack) Logx.e("TrashService", "restore index failed and rollback failed: ${entry.name}")
+        false
     }
 
     /** 为还原生成一个不冲突的兄弟文件名（name (1).ext） */
@@ -139,13 +177,15 @@ class TrashService(
     }
 
     suspend fun purge(entry: Entry) = withContext(Dispatchers.IO) {
-        runCatching { File(dir, entry.trashName).deleteRecursively() }
-        save(list().filterNot { it.id == entry.id })
+        val deleted = runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
+        if (deleted) save(list().filterNot { it.id == entry.id })
     }
 
     suspend fun purgeAll() = withContext(Dispatchers.IO) {
-        list().forEach { runCatching { File(dir, it.trashName).deleteRecursively() } }
-        save(emptyList())
+        val remaining = list().filterNot { entry ->
+            runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
+        }
+        save(remaining)
     }
 
     fun describe(entry: Entry): String = "${entry.name} · ${Fmt.size(entry.size)}"
