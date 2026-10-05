@@ -19,6 +19,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.transfer.TaskState
@@ -31,17 +32,14 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
     val tasks by container.engine.snapshots.collectAsState(initial = emptyList())
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        MtScreenTopBar(
+            title = "传输任务",
+            subtitle = if (tasks.isEmpty()) "暂无任务" else "${tasks.size} 个任务",
+            onBack = onBack,
         ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("传输任务", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            TextButton(onClick = { container.engine.pauseAll() }) { Text("全部暂停") }
-            TextButton(onClick = { container.engine.resumeAll() }) { Text("全部继续") }
-            TextButton(onClick = { container.engine.clearFinished() }) { Text("清空已完成") }
+            TextButton(onClick = { container.engine.pauseAll() }) { Text("暂停") }
+            TextButton(onClick = { container.engine.resumeAll() }) { Text("继续") }
+            TextButton(onClick = { container.engine.clearFinished() }) { Text("清空") }
         }
 
         if (tasks.isEmpty()) {

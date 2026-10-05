@@ -40,6 +40,7 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
@@ -328,7 +329,7 @@ fun MtBottomIconButton(
     val base = Modifier
         .fillMaxHeight()
         .width(MtSpec.BottomButtonWidth)
-        .clip(androidx.compose.foundation.shape.RoundedCornerShape(8.dp))
+        .clip(androidx.compose.foundation.shape.RoundedCornerShape(MtSpec.CornerSmall))
         .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
     val modifier = if (onLongClick != null) {
         base
@@ -496,5 +497,100 @@ fun MtTextField(
                 focused = i is androidx.compose.foundation.interaction.FocusInteraction.Focus
             }
         }
+    }
+}
+
+/**
+ * 顶栏 / 工具栏通用**图标按钮**：圆形点击区 + 矢量图标。
+ *
+ * 与 [MtScreenTopBar] 的返回键同一规格（48dp 点击区 + 20dp 图标）。
+ * 各页的右上「⋮」等图标按钮统一走这里 —— 之前同一个 App 里
+ * 有文字「⋮」（字宽/基线随字体漂移）、44dp / 40dp 两种点击区混用。
+ */
+@Composable
+fun MtIconButton(
+    icon: MtIcon,
+    contentDescription: String,
+    modifier: Modifier = Modifier,
+    buttonSize: Dp = 48.dp,
+    iconSize: Dp = 20.dp,
+    tint: Color = MaterialTheme.colorScheme.onSurface,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier
+            .size(buttonSize)
+            .clip(CircleShape)
+            .clickable(enabled = enabled, onClick = onClick)
+            .semantics {
+                this.contentDescription = contentDescription
+                role = Role.Button
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        MtVectorIcon(icon = icon, size = iconSize, tint = tint)
+    }
+}
+
+/**
+ * 二级页面（非首页）的**统一顶栏**。
+ *
+ * 为什么要有它：各二级页面此前各写各的顶栏，导致同一个 App 里：
+ *  - 返回键：一半是文字「← 返回」、一半是矢量图标；
+ *  - 标题：14sp / 16sp / 20sp 三种字号混用；
+ *  - 内边距：`h8 v6` 与 `h4 v2` 两套，切页面时标题会上下跳；
+ *  - 分隔线：只有部分页面有。
+ *
+ * 现在统一为：矢量返回箭头（[MtIconButton]，48dp 点击区）→ 标题（20sp）+ 可选副标题
+ * → 右侧操作区 → 1px 分隔线。
+ */
+@Composable
+fun MtScreenTopBar(
+    title: String,
+    onBack: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** 副标题（计数 / 路径 / 页数等次要信息），单行省略 */
+    subtitle: String? = null,
+    /** 右侧操作区：按钮、计数文字等 */
+    actions: (@Composable androidx.compose.foundation.layout.RowScope.() -> Unit)? = null,
+) {
+    Column(modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+        androidx.compose.foundation.layout.Row(
+            Modifier
+                .fillMaxWidth()
+                .height(MtSpec.ScreenBarHeight)
+                .padding(start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MtIconButton(
+                icon = MtIcon.BACK,
+                contentDescription = "返回",
+                onClick = onBack,
+            )
+            Column(
+                Modifier
+                    .weight(1f)
+                    .padding(start = 4.dp),
+            ) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.titleLarge.copy(fontSize = MtSpec.ScreenTitleSize),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                subtitle?.takeIf { it.isNotBlank() }?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            actions?.invoke(this)
+        }
+        DividerPx()
     }
 }

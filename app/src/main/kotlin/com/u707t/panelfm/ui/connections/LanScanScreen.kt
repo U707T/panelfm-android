@@ -22,6 +22,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.LanScanner
 import com.u707t.panelfm.ui.browser.ThinProgressBar
@@ -42,15 +43,7 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
     var found by remember { mutableStateOf<List<LanScanner.Host>>(emptyList()) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("局域网扫描", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        }
+        MtScreenTopBar(title = "局域网扫描", onBack = onBack)
 
         Text(
             "本机网段：" + if (prefixes.isEmpty()) "未检测到（需要局域网访问权限）" else prefixes.joinToString(", ") + ".0/24",

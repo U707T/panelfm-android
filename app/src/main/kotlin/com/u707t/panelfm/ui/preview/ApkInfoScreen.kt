@@ -38,6 +38,7 @@ import androidx.core.graphics.drawable.toBitmap
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.ErrorState
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
@@ -96,31 +97,11 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text(
-                item.name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 4.dp),
-            )
-            Text(
-                "APK 信息",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(end = 8.dp),
-            )
-        }
+        MtScreenTopBar(
+            title = item.name,
+            subtitle = "APK 信息",
+            onBack = onBack,
+        )
 
         when {
             error != null -> ErrorState("APK 信息读取失败：$error")

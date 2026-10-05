@@ -27,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.ui.browser.BrowseMode
@@ -44,18 +45,16 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var editUserAgent by remember { mutableStateOf(false) }
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .safeAreaPadding()
-            .verticalScroll(rememberScrollState())
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("设置", style = MaterialTheme.typography.titleMedium)
-        }
+    Column(Modifier.fillMaxSize().safeAreaPadding()) {
+        // 顶栏固定（不随内容滚动），与其它二级页面观感一致
+        MtScreenTopBar(title = "设置", onBack = onBack)
+        Column(
+            Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
 
         // 主题：三选一（旧实现只有「跟随系统」开关，取消勾选会固定成 DARK —— 浅色主题不可达）
         SectionLabel("主题")
@@ -299,6 +298,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             )
         }
         Column(Modifier.padding(bottom = 30.dp)) {}
+        }
     }
 
     if (editUserAgent) {

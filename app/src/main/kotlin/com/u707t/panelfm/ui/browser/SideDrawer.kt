@@ -147,7 +147,7 @@ fun MtSideDrawer(
             Box(
                 Modifier
                     .size(46.dp)
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(RoundedCornerShape(MtSpec.CornerMedium))
                     .background(Color.White),
                 contentAlignment = Alignment.Center,
             ) {
@@ -177,7 +177,7 @@ fun MtSideDrawer(
             Box {
                 Box(
                     Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(RoundedCornerShape(MtSpec.CornerSmall))
                         .clickableNoRipple { drawerMenu = true; protocolSub = false }
                         .padding(horizontal = 10.dp, vertical = 6.dp)
                         .semantics {

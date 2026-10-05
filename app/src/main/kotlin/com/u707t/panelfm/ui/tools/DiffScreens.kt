@@ -33,6 +33,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.DiffIgnore
@@ -140,14 +141,7 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("文本对比", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
+        MtScreenTopBar(title = "文本对比", onBack = onBack) {
             // MT 0x7f11055f / 0x7f1104c5：上一个 / 下一个差异
             TextButton(onClick = { jumpHunk(-1) }) {
                 MtVectorIcon(icon = MtIcon.UP, size = 18.dp)

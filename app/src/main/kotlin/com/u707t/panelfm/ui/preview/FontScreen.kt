@@ -30,6 +30,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.LoadingState
@@ -81,23 +82,11 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text(
-                uri.name,
-                style = MaterialTheme.typography.bodyMedium,
-                maxLines = 1,
-                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
-            Text(sizeText, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        MtScreenTopBar(
+            title = uri.name,
+            subtitle = sizeText.ifBlank { null },
+            onBack = onBack,
+        )
 
         val tf = typeface
         if (tf == null) {

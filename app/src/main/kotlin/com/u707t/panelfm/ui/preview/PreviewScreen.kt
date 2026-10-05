@@ -54,6 +54,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.core.ui.MtScreenTopBar
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.HexInterpreter
@@ -158,26 +161,16 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         // 顶栏：← 返回 · 文件名（单行省略，不会被按钮挤成竖排）· ⋮
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        MtScreenTopBar(
+            title = meta?.name ?: uri.name,
+            onBack = onBack,
         ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text(
-                meta?.name ?: uri.name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 4.dp),
-            )
             Box {
-                TextButton(onClick = { modeMenu = true }) { Text("⋮") }
+                MtIconButton(
+                    icon = MtIcon.MORE,
+                    contentDescription = "更多菜单",
+                    onClick = { modeMenu = true },
+                )
                 DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
                     DropdownMenuItem(
                         text = { Text("文本", color = if (!editing && resolved == PreviewMode.TEXT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },

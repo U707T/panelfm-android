@@ -561,7 +561,7 @@ private fun MtFileRow(
                 contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                 modifier = Modifier
                     .size(MtSpec.RowIcon)
-                    .clip(RoundedCornerShape(8.dp)),
+                    .clip(RoundedCornerShape(MtSpec.CornerSmall)),
             )
         } else {
             FileIcon(

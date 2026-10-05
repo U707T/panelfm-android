@@ -45,6 +45,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import androidx.compose.ui.graphics.Color
@@ -207,7 +208,7 @@ fun HomeScreen(
                     }
                 }
                 Box {
-                    IconTextButton("⋮", contentDescription = "更多菜单") { showTopMenu = true }
+                    MtIconButton(icon = MtIcon.MORE, contentDescription = "更多菜单") { showTopMenu = true }
                     DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
                         DropdownMenuItem(
                             text = { Text(if (settings.themeMode == ThemeMode.SYSTEM) "主题跟随系统 ✓" else "主题跟随系统") },

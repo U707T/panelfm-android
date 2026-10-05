@@ -32,6 +32,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
@@ -53,15 +54,11 @@ fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
     val items = remember(version) { container.trash.list() }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        MtScreenTopBar(
+            title = "回收站",
+            subtitle = "${items.size} 项",
+            onBack = onBack,
         ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("回收站", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Text("${items.size} 项", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             TextButton(onClick = {
                 scope.launch {
                     container.trash.purgeAll()
@@ -130,16 +127,11 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("已安装应用", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Text("${apps.size} 个", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        MtScreenTopBar(
+            title = "已安装应用",
+            subtitle = "${apps.size} 个",
+            onBack = onBack,
+        )
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -216,15 +208,7 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
     var log by remember { mutableStateOf("") }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("远程管理", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-        }
+        MtScreenTopBar(title = "远程管理", onBack = onBack)
         Text(
             "在电脑浏览器里打开下面的地址，即可浏览/下载当前窗格目录（只读，仅在局域网内可访问）。",
             style = MaterialTheme.typography.labelSmall,

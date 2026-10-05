@@ -254,13 +254,8 @@ fun IconTextButton(
  */
 @Composable
 fun HSeparator(color: Color = MtDividerColor) {
-    val onePx = with(androidx.compose.ui.platform.LocalDensity.current) { 1.toDp() }
-    Box(
-        Modifier
-            .fillMaxWidth()
-            .height(onePx)
-            .background(color),
-    )
+    // 与 DividerPx 同源：MT 的分割线就是 1px（此前这里是把同一实现抄了第二份）
+    DividerPx(color)
 }
 
 @Composable

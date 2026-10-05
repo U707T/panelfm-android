@@ -51,6 +51,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtIconButton
+import com.u707t.panelfm.core.ui.MtScreenTopBar
+import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.CodeFormatter
@@ -297,25 +300,17 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val replaceHistory = editorSettings.inputHistory[PrefsStore.RecordKeys.EDITOR_REPLACE].orEmpty()
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
+        MtScreenTopBar(
+            title = (meta?.name ?: uri.name) + if (dirty) " *" else "",
+            onBack = { attemptLeave() },
         ) {
-            TextButton(onClick = { attemptLeave() }) { Text("← 返回") }
-            Text(
-                (meta?.name ?: uri.name) + if (dirty) " *" else "",
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f),
-            )
             // MT 0x7f0e000e 的 ⋮ 主菜单
             Box {
-                TextButton(onClick = { showMenu = true }) { Text("⋮") }
+                MtIconButton(
+                    icon = MtIcon.MORE,
+                    contentDescription = "更多菜单",
+                    onClick = { showMenu = true },
+                )
                 EditorMenu(
                     expanded = showMenu,
                     lang = lang,
@@ -809,7 +804,7 @@ private fun PageButton(icon: MtIcon, enabled: Boolean, onClick: () -> Unit) {
     Box(
         Modifier
             .size(34.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(RoundedCornerShape(MtSpec.CornerSmall))
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {

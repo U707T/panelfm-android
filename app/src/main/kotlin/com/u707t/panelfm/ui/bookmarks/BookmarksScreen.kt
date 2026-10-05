@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.data.Bookmark
 import com.u707t.panelfm.core.ui.EmptyState
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtListRow
@@ -67,20 +68,11 @@ fun BookmarksScreen(container: AppContainer, onBack: () -> Unit, onOpen: () -> U
     var rowHeightPx by remember { mutableStateOf(0f) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 6.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text("书签", style = MaterialTheme.typography.titleMedium, modifier = Modifier.weight(1f))
-            Text(
-                "${bookmarks.size} 条",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        MtScreenTopBar(
+            title = "书签",
+            subtitle = "${bookmarks.size} 条",
+            onBack = onBack,
+        )
         if (bookmarks.isNotEmpty()) {
             // MT 0x7f110140：长按后拖动排序（提示文案与 MT 一致）
             Text(

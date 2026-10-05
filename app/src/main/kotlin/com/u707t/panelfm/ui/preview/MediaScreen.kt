@@ -27,12 +27,8 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -78,6 +74,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.MimeTypes
@@ -589,15 +586,12 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     .onGloballyPositioned { topBarHeightPx = it.size.height },
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Filled.ArrowBack,
+                MtIconButton(
+                    icon = MtIcon.BACK,
                     contentDescription = "返回",
+                    iconSize = 24.dp,
                     tint = Color.White,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .clickable { onBack() }
-                        .padding(8.dp)
-                        .size(24.dp),
+                    onClick = { onBack() },
                 )
                 Text(
                     displayTitle,
@@ -611,15 +605,12 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                         .padding(start = 12.dp, end = 4.dp),
                 )
                 Box {
-                    Icon(
-                        Icons.Filled.MoreVert,
+                    MtIconButton(
+                        icon = MtIcon.MORE,
                         contentDescription = "更多",
+                        iconSize = 24.dp,
                         tint = Color.White,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .clickable { menuOpen = true }
-                            .padding(8.dp)
-                            .size(24.dp),
+                        onClick = { menuOpen = true },
                     )
                     DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
                         listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { s ->

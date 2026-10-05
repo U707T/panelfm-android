@@ -38,6 +38,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtTextField
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.safeAreaPadding
@@ -352,23 +353,10 @@ fun ConnectionEditScreen(
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         // ---------------- 顶部
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // MT 截图：左上「← 返回」+ 标题「添加 WebDav」，标题 20sp 常规字重
-            TextButton(onClick = onBack) {
-                MtVectorIcon(icon = MtIcon.BACK, size = 20.dp)
-                Text("返回", modifier = Modifier.padding(start = 4.dp))
-            }
-            Text(
-                (if (existing == null) "添加 " else "编辑 ") + type.label,
-                style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
-                modifier = Modifier.weight(1f),
-            )
-        }
+        MtScreenTopBar(
+            title = (if (existing == null) "添加 " else "编辑 ") + type.label,
+            onBack = onBack,
+        )
 
         // ---------------- 表单
         Column(

@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.ErrorState
+import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
@@ -68,34 +69,11 @@ fun PdfScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit) {
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        // 顶栏：← 返回 · 文件名 · 页数/大小
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-                .padding(horizontal = 4.dp, vertical = 2.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            TextButton(onClick = onBack) { Text("← 返回") }
-            Text(
-                item.name,
-                style = MaterialTheme.typography.bodyMedium,
-                fontWeight = FontWeight.Medium,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = 4.dp),
-            )
-            if (pageCount > 0) {
-                Text(
-                    "$pageCount 页 · ${Fmt.size(item.size)}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(end = 8.dp),
-                )
-            }
-        }
+        MtScreenTopBar(
+            title = item.name,
+            subtitle = if (pageCount > 0) "$pageCount 页 · ${Fmt.size(item.size)}" else null,
+            onBack = onBack,
+        )
 
         when {
             error != null -> ErrorState("PDF 预览失败：$error\n（可在 ⋮ 菜单点「Hex」查看原始数据）")
