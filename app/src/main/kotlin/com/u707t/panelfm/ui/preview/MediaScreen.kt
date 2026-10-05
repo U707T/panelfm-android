@@ -165,7 +165,17 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     /** 拖动进度条之前是否在播放（松手后据此决定续播，照 IRIS） */
     var wasPlayingBeforeSeek by remember { mutableStateOf(false) }
 
-    val isAudioOnly = MimeTypes.kindOf(uri.name.substringAfterLast('.', "")) == MimeTypes.Kind.AUDIO
+    /**
+     * 当前正在播放的条目（切歌后要跟着变）。
+     *
+     * 旧实现直接用**入参** `uri` / `title` 算标题与类型 —— 播放列表在页内切换（点「下一集」）
+     * 时入参不会变，于是标题一直停在第一首的文件名、音频/视频判断也跟着错。
+     */
+    val currentItem = playlist.getOrNull(playlistIndex)
+    val displayTitle = currentItem?.name ?: title
+    val isAudioOnly = MimeTypes.kindOf(
+        (currentItem?.name ?: uri.name).substringAfterLast('.', ""),
+    ) == MimeTypes.Kind.AUDIO
 
     /**
      * 该 VFS URI 对应的**本地绝对路径**（仅当文件真的在本机磁盘上时返回）。
@@ -546,7 +556,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     tint = Color.White.copy(alpha = 0.85f),
                 )
                 Text(
-                    title,
+                    displayTitle,
                     color = Color.White.copy(alpha = 0.9f),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
@@ -590,7 +600,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                         .size(24.dp),
                 )
                 Text(
-                    title,
+                    displayTitle,
                     color = Color.White,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Medium,
@@ -741,7 +751,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         // 仍能在不唤出整套控件的情况下看到「文件名 + 细进度条 + 时间」。
         if (!controlsVisible && !locked && durationMs > 0 && hud != null) {
             Text(
-                title,
+                displayTitle,
                 color = Color.White,
                 style = MaterialTheme.typography.labelLarge,
                 maxLines = 1,
@@ -1166,32 +1176,58 @@ private fun PlayerSlider(
         modifier
             .height(28.dp)
             .onGloballyPositioned { widthPx = it.size.width.toFloat() }
-            // 点按轨道 = 直接跳转（照 IRIS 的 Slider 行为）
+            // 点按轨道 = 直接跳转（照 IRIS 的 Slider 行为）。
+            // 必须走「开始 → seek → 结束」三步：只调 onSeek 会把 seekPreview 留在那里
+            // 没人清理，时间显示就冻在点击值上。
             .pointerInput(durationMs) {
                 detectTapGestures { offset ->
                     if (durationMs > 0 && widthPx > 0f) {
+                        onSeekStart()
                         onSeek(((offset.x / widthPx).coerceIn(0f, 1f) * durationMs).toLong())
+                        onSeekEnd()
                     }
                 }
             }
             // 拖动 = 暂停 → 实时 seek → 松手续播
+            //
+            // ⚠️ 这里**不能**用 detectDragGestures：上面的 detectTapGestures 会
+            //    `down.consume()`，而 detectDragGestures 的 awaitFirstDown 默认要求
+            //    「未被消费」→ 拖动永远起不来（用户观感就是「进度条不跟手」）。
+            //    改为：显式允许已消费的 down + 用**手指绝对位置**换算比例
+            //    （绝对位置比累加 delta 更准，拇指始终在手指正下方）。
             .pointerInput(durationMs) {
-                detectDragGestures(
-                    onDragStart = {
-                        dragFraction = posF
-                        onSeekStart()
-                    },
-                    onDrag = { change, dragAmount ->
-                        change.consume()
-                        if (widthPx > 0f && durationMs > 0) {
-                            val next = ((dragFraction ?: posF) + dragAmount.x / widthPx).coerceIn(0f, 1f)
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    if (durationMs <= 0 || widthPx <= 0f) return@awaitEachGesture
+                    var started = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!started) {
+                            if (abs(change.position.x - down.position.x) > viewConfiguration.touchSlop) {
+                                // 越过 touch slop 才进入拖动态（否则会把点按吃掉）
+                                started = true
+                                dragFraction = (down.position.x / widthPx).coerceIn(0f, 1f)
+                                onSeekStart()
+                            } else if (!change.pressed) {
+                                break   // 没有位移 = 点按，交给上面的 tap 检测器
+                            }
+                        }
+                        if (started) {
+                            change.consume()
+                            val next = (change.position.x / widthPx).coerceIn(0f, 1f)
                             dragFraction = next
                             onSeek((next * durationMs).toLong())
                         }
-                    },
-                    onDragEnd = { dragFraction = null; onSeekEnd() },
-                    onDragCancel = { dragFraction = null; onSeekEnd() },
-                )
+                        if (!change.pressed) {
+                            if (started) {
+                                dragFraction = null
+                                onSeekEnd()
+                            }
+                            break
+                        }
+                    }
+                }
             },
         contentAlignment = Alignment.CenterStart,
     ) {
