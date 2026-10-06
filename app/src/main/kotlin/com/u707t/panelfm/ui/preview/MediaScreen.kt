@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.gestures.detectDragGestures
-import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -105,7 +104,7 @@ import kotlin.math.sin
  *  - 底：`当前时间 ——— 进度条 ——— 总时长` ＋ 矢量图标控制行：
  *    `⤨  |◀  ↺10  ⏯（居中）  15↻  ▶|  ☰`（7 键均分，播放键正好居中；最右 = 播放列表）
  *  - 播放列表：右侧滑出面板，当前项高亮 + 打开时自动滚到当前项，点按切换
- *  - 左缘：锁定小圆钮；右缘：静音小圆钮；右缘竖条 = 音量，左缘竖条 = 亮度（滑动时出现）
+ *  - 左缘：锁定小圆钮；右缘：静音小圆钮；竖滑浮现中央胶囊：右 = 音量 / 左 = 应用内亮度（照 IRIS）
  *  - 手势：单击显隐（播放中 4s 自动隐藏）；双击左右 ±10s、中间播放暂停；长按 2.0x；横滑进度；竖滑音量 / 亮度
  *  - 同目录音视频自动组成播放列表（⏮ ⏭）
  */
@@ -518,6 +517,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                         val target = (startVolume + delta * maxVolume).toInt().coerceIn(0, maxVolume)
                         audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
                         volumeRatio = target.toFloat() / maxVolume
+                        brightnessRatio = null // 两端浮层共用中央位置：清掉对面残留，避免叠两层
                         muted = target == 0
                         change.consume()
                     }
@@ -526,6 +526,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                         val target = (startBrightness + delta).coerceIn(0.05f, 1f)
                         appBrightness = target
                         brightnessRatio = target
+                        volumeRatio = null // 同上：只留当前手势这一个浮层
                         change.consume()
                     }
                 }
@@ -705,8 +706,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             }
         }
 
-        // ---- 右缘音量竖条 / 左缘亮度竖条（滑动时出现）
-        // ---- 音量（右）/ 亮度（左）：中央悬浮面板（照 IRIS：图标 + 横条 + 百分比）
+        // ---- 音量（右滑）/ 亮度（左滑）：中央悬浮胶囊（照 IRIS：图标 + 100×4dp 横条）
         volumeRatio?.let { r ->
             LevelPanel(
                 ratio = r,
@@ -719,8 +719,6 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 ratio = r,
                 kind = LevelKind.BRIGHTNESS,
                 modifier = Modifier.align(Alignment.Center),
-                // 亮度改的是**应用内**遮罩，文案写明避免误解为系统亮度
-                label = "亮度 ${(r * 100).roundToInt()}%",
             )
         }
 
@@ -1394,52 +1392,58 @@ private fun PlayerSlider(
 }
 
 /**
- * 音量 / 亮度浮层（照 IRIS：**中央悬浮面板** = 图标 + 横能量条 + 百分比）。
- * 比旧的「贴边细竖条」清楚得多，也更容易看出当前值。
+ * 音量 / 亮度浮层 —— 与 IRIS **逐项同规格**（`gesture_overlay.dart` 的中央悬浮胶囊）：
+ * `24dp 图标 + 12dp 间隔 + 100×4dp 圆角横条`，内边距 12/12/18/12、圆角 8dp、底色 black54。
+ *
+ * 数值只靠**图标形态**表达（IRIS 的手势浮层同样不写百分比文字）：
+ *  - 音量：0 = 静音 / <50% = 小声 / ≥50% = 大声（volume_mute / down / up）；
+ *  - 亮度：0 = 暗 / <100% = 中 / 满 = 亮（brightness_low / medium / high）。
  */
 @Composable
 private fun LevelPanel(
     ratio: Float,
     kind: LevelKind,
     modifier: Modifier = Modifier,
-    label: String? = null,
 ) {
     val r = ratio.coerceIn(0f, 1f)
     Row(
         modifier
             .clip(RoundedCornerShape(8.dp))
-            .background(Color.Black.copy(alpha = 0.55f))
-            .padding(start = 12.dp, end = 16.dp, top = 12.dp, bottom = 12.dp),
+            .background(Color.Black.copy(alpha = 0.54f))
+            .padding(start = 12.dp, end = 18.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Canvas(Modifier.size(24.dp)) {
-            when (kind) {
-                LevelKind.VOLUME -> drawVolume(r)
-                LevelKind.BRIGHTNESS -> drawBrightness(r)
-            }
-        }
+        MtVectorIcon(
+            icon = when (kind) {
+                LevelKind.VOLUME -> when {
+                    r <= 0f -> LevelIcons.VOLUME_MUTE
+                    r < 0.5f -> LevelIcons.VOLUME_DOWN
+                    else -> LevelIcons.VOLUME_UP
+                }
+                LevelKind.BRIGHTNESS -> when {
+                    r <= 0f -> LevelIcons.BRIGHTNESS_LOW
+                    r < 1f -> LevelIcons.BRIGHTNESS_MEDIUM
+                    else -> LevelIcons.BRIGHTNESS_HIGH
+                }
+            },
+            size = 24.dp,
+            tint = Color.White,
+        )
         Spacer(Modifier.width(12.dp))
-        Column {
+        // 轨道 #9E9E9E = Flutter Colors.grey（IRIS 原值），进度纯白
+        Box(
+            Modifier
+                .width(100.dp)
+                .height(4.dp)
+                .clip(RoundedCornerShape(2.dp))
+                .background(Color(0xFF9E9E9E)),
+        ) {
             Box(
                 Modifier
-                    .width(120.dp)
-                    .height(6.dp)
-                    .clip(RoundedCornerShape(3.dp))
-                    .background(Color.White.copy(alpha = 0.28f)),
-            ) {
-                Box(
-                    Modifier
-                        .fillMaxHeight()
-                        .fillMaxWidth(r)
-                        .clip(RoundedCornerShape(3.dp))
-                        .background(Color.White),
-                )
-            }
-            Text(
-                label ?: "${(r * 100).roundToInt()}%",
-                color = Color.White.copy(alpha = 0.85f),
-                style = MaterialTheme.typography.labelSmall,
-                modifier = Modifier.padding(top = 4.dp),
+                    .fillMaxHeight()
+                    .fillMaxWidth(r)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(Color.White),
             )
         }
     }
@@ -1447,69 +1451,51 @@ private fun LevelPanel(
 
 private enum class LevelKind { VOLUME, BRIGHTNESS }
 
-/** 喇叭剪影（音量 = 0 时画一道斜杠） */
-private fun DrawScope.drawVolume(ratio: Float) {
-    val w = size.width
-    val h = size.height
-    val path = Path().apply {
-        moveTo(w * 0.06f, h * 0.36f)
-        lineTo(w * 0.26f, h * 0.36f)
-        lineTo(w * 0.50f, h * 0.16f)
-        lineTo(w * 0.50f, h * 0.84f)
-        lineTo(w * 0.26f, h * 0.64f)
-        lineTo(w * 0.06f, h * 0.64f)
-        close()
-    }
-    drawPath(path, color = Color.White)
-    if (ratio > 0.001f) {
-        // 两道声波（音量越大越完整）
-        drawArc(
-            color = Color.White,
-            startAngle = -50f, sweepAngle = 100f, useCenter = false,
-            topLeft = Offset(w * 0.42f, h * 0.30f),
-            size = Size(w * 0.34f, h * 0.40f),
-            style = Stroke(width = w * 0.06f, cap = StrokeCap.Round),
-        )
-        if (ratio > 0.5f) {
-            drawArc(
-                color = Color.White,
-                startAngle = -50f, sweepAngle = 100f, useCenter = false,
-                topLeft = Offset(w * 0.50f, h * 0.16f),
-                size = Size(w * 0.46f, h * 0.68f),
-                style = Stroke(width = w * 0.06f, cap = StrokeCap.Round),
-            )
-        }
-    } else {
-        drawLine(
-            Color.White,
-            Offset(w * 0.58f, h * 0.30f),
-            Offset(w * 0.86f, h * 0.70f),
-            strokeWidth = w * 0.07f,
-            cap = StrokeCap.Round,
-        )
-    }
-}
+/**
+ * 浮层图标 = **Material Icons (Round)** —— 与 IRIS 用的 `Icons.*_rounded` 同一套字形
+ * （IRIS 内置的 MaterialIcons 字体里就是这些轮廓）。路径数据取自 Material Icons
+ * 官方 24dp SVG（`viewBox 0 0 24 24`）。
+ */
+private object LevelIcons {
+    /** volume_mute_rounded：只有喇叭（音量 = 0） */
+    val VOLUME_MUTE = MtIcon(
+        paths = listOf("M7 10v4c0 .55.45 1 1 1h3l3.29 3.29c.63.63 1.71.18 1.71-.71V6.41c0-.89-1.08-1.34-1.71-.71L11 9H8c-.55 0-1 .45-1 1z"),
+        viewport = 24f,
+    )
 
-/** 太阳剪影：中心圆 + 八根光芒（亮度越低光芒越短） */
-private fun DrawScope.drawBrightness(ratio: Float) {
-    val w = size.width
-    val h = size.height
-    val c = Offset(w / 2f, h / 2f)
-    drawCircle(Color.White, radius = w * 0.20f, center = c)
-    val inner = w * (0.30f + 0.04f * ratio)
-    val outer = w * (0.34f + 0.14f * ratio)
-    for (i in 0 until 8) {
-        val a = Math.toRadians((i * 45).toDouble())
-        val dx = cos(a).toFloat()
-        val dy = sin(a).toFloat()
-        drawLine(
-            Color.White,
-            Offset(c.x + dx * inner, c.y + dy * inner),
-            Offset(c.x + dx * outer, c.y + dy * outer),
-            strokeWidth = w * 0.07f,
-            cap = StrokeCap.Round,
-        )
-    }
+    /** volume_down_rounded：喇叭 + 一道声波（小声） */
+    val VOLUME_DOWN = MtIcon(
+        paths = listOf("M18.5 12c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM5 10v4c0 .55.45 1 1 1h3l3.29 3.29c.63.63 1.71.18 1.71-.71V6.41c0-.89-1.08-1.34-1.71-.71L9 9H6c-.55 0-1 .45-1 1z"),
+        viewport = 24f,
+    )
+
+    /** volume_up_rounded：喇叭 + 两道声波（大声） */
+    val VOLUME_UP = MtIcon(
+        paths = listOf("M3 10v4c0 .55.45 1 1 1h3l3.29 3.29c.63.63 1.71.18 1.71-.71V6.41c0-.89-1.08-1.34-1.71-.71L7 9H4c-.55 0-1 .45-1 1zm13.5 2c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 4.45v.2c0 .38.25.71.6.85C17.18 6.53 19 9.06 19 12s-1.82 5.47-4.4 6.5c-.36.14-.6.47-.6.85v.2c0 .63.63 1.07 1.21.85C18.6 19.11 21 15.84 21 12s-2.4-7.11-5.79-8.4c-.58-.23-1.21.22-1.21.85z"),
+        viewport = 24f,
+    )
+
+    /**
+     * brightness_low_rounded：空心太阳（亮度 = 0）。
+     * 本项目亮度下限是 0.05（不滑到全黑），这一档实际不会出现 ——
+     * 保留它只为与 IRIS 的三档映射逐字一致。
+     */
+    val BRIGHTNESS_LOW = MtIcon(
+        paths = listOf("M20 15.31l1.9-1.9c.78-.78.78-2.05 0-2.83L20 8.69V6c0-1.1-.9-2-2-2h-2.69l-1.9-1.9c-.78-.78-2.05-.78-2.83 0L8.69 4H6c-1.1 0-2 .9-2 2v2.69l-1.9 1.9c-.78.78-.78 2.05 0 2.83l1.9 1.9V18c0 1.1.9 2 2 2h2.69l1.9 1.9c.78.78 2.05.78 2.83 0l1.9-1.9H18c1.1 0 2-.9 2-2v-2.69zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6z"),
+        viewport = 24f,
+    )
+
+    /** brightness_medium_rounded：半芯太阳（亮度 < 100%） */
+    val BRIGHTNESS_MEDIUM = MtIcon(
+        paths = listOf("M20 15.31l1.9-1.9c.78-.78.78-2.05 0-2.83L20 8.69V6c0-1.1-.9-2-2-2h-2.69l-1.9-1.9c-.78-.78-2.05-.78-2.83 0L8.69 4H6c-1.1 0-2 .9-2 2v2.69l-1.9 1.9c-.78.78-.78 2.05 0 2.83l1.9 1.9V18c0 1.1.9 2 2 2h2.69l1.9 1.9c.78.78 2.05.78 2.83 0l1.9-1.9H18c1.1 0 2-.9 2-2v-2.69zm-8 1.59V7.1c0-.61.55-1.11 1.15-.99C15.91 6.65 18 9.08 18 12s-2.09 5.35-4.85 5.89c-.6.12-1.15-.38-1.15-.99z"),
+        viewport = 24f,
+    )
+
+    /** brightness_high_rounded：满芯太阳（亮度 = 100%） */
+    val BRIGHTNESS_HIGH = MtIcon(
+        paths = listOf("M20 8.69V6c0-1.1-.9-2-2-2h-2.69l-1.9-1.9c-.78-.78-2.05-.78-2.83 0L8.69 4H6c-1.1 0-2 .9-2 2v2.69l-1.9 1.9c-.78.78-.78 2.05 0 2.83l1.9 1.9V18c0 1.1.9 2 2 2h2.69l1.9 1.9c.78.78 2.05.78 2.83 0l1.9-1.9H18c1.1 0 2-.9 2-2v-2.69l1.9-1.9c.78-.78.78-2.05 0-2.83L20 8.69zM12 18c-3.31 0-6-2.69-6-6s2.69-6 6-6 6 2.69 6 6-2.69 6-6 6zm0-10c-2.21 0-4 1.79-4 4s1.79 4 4 4 4-1.79 4-4-1.79-4-4-4z"),
+        viewport = 24f,
+    )
 }
 
 /**
