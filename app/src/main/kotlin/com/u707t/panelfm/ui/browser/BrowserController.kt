@@ -25,6 +25,7 @@ import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
@@ -100,48 +101,115 @@ class BrowserController(private val container: AppContainer) {
         }
         // 记忆路径异步恢复（不在主线程 runBlocking —— 冷启动不卡首帧）
         container.scope.launch {
-            // MT「启动路径 - 左/右窗口」：勾了「首页」就不恢复上次路径，改由 homePath 决定
-            val s0 = container.settings.value
-            if (s0.startAtHome) {
-                val home = s0.homePath?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
-                if (home != null && container.locator.find(home) != null) {
-                    update { st ->
-                        st.copy(
-                            left = st.left.copy(tabs = listOf(PaneTab(home, label = home.authority)), sort = st.left.sort),
-                            right = st.right.copy(tabs = listOf(PaneTab(home, label = home.authority)), sort = st.right.sort),
-                        )
+            try {
+                // ⚠️ 必须等 DataStore 的**第一次真发射**再读设置：`settings` StateFlow 的初值是
+                // 默认值（构造时构造），直接读会拿到 startAtHome=false —— 用户勾了「启动时进入
+                // 首页」也会被忽略。（顺带修掉旧实现的这一处。）
+                val s0 = container.prefs.settings.first()
+                // MT「启动路径 - 左/右窗口」：勾了「首页」就不恢复上次路径，改由 homePath 决定
+                if (s0.startAtHome) {
+                    val home = s0.homePath?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+                    if (home != null && ensureReachable(home)) {
+                        update { st ->
+                            st.copy(
+                                left = st.left.copy(tabs = listOf(PaneTab(home, label = home.authority)), sort = st.left.sort),
+                                right = st.right.copy(tabs = listOf(PaneTab(home, label = home.authority)), sort = st.right.sort),
+                            )
+                        }
+                        load(PaneSide.LEFT)
+                        load(PaneSide.RIGHT)
                     }
-                    load(PaneSide.LEFT)
-                    load(PaneSide.RIGHT)
+                    return@launch
                 }
-                return@launch
+                if (!s0.rememberLastPath) return@launch
+                val (lastLeft, lastRight) = container.prefs.lastPathsSuspend()
+                val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+                val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
+                if (leftUri == null && rightUri == null) return@launch
+                // 网络路径冷启动时还没连接 → 自动重连（旧实现只查 locator.find，
+                // 网络窗格必然查不到 → 恢复被静默跳过，看起来就像「没记住位置」）
+                val leftOk = leftUri != null && ensureReachable(leftUri)
+                val rightOk = rightUri != null && ensureReachable(rightUri)
+                if (!leftOk && !rightOk) return@launch
+                update { st ->
+                    st.copy(
+                        left = if (leftOk && st.left.uri.isRoot)
+                            st.left.copy(tabs = listOf(PaneTab(leftUri!!, label = leftUri.authority)), sort = st.left.sort)
+                        else st.left,
+                        right = if (rightOk && st.right.uri.isRoot)
+                            st.right.copy(tabs = listOf(PaneTab(rightUri!!, label = rightUri.authority)), sort = st.right.sort)
+                        else st.right,
+                    )
+                }
+                if (leftOk) load(PaneSide.LEFT)
+                if (rightOk) load(PaneSide.RIGHT)
+            } finally {
+                // ⚠️ 恢复流程结束前**禁止自动保存**：启动最初的两次 `load()`（默认路径）若先落盘，
+                // 会把「上次路径」冲掉，恢复就永远读到默认值 —— 这正是「看起来没记住」的另一半原因。
+                startupRestoreDone = true
             }
-            if (!s0.rememberLastPath) return@launch
-            val (lastLeft, lastRight) = container.prefs.lastPathsSuspend()
-            val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
-            val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
-            if (leftUri == null && rightUri == null) return@launch
-            update { st ->
-                st.copy(
-                    left = if (leftUri != null && st.left.uri.isRoot && container.locator.find(leftUri) != null)
-                        st.left.copy(tabs = listOf(PaneTab(leftUri, label = leftUri.authority)), sort = st.left.sort)
-                    else st.left,
-                    right = if (rightUri != null && st.right.uri.isRoot && container.locator.find(rightUri) != null)
-                        st.right.copy(tabs = listOf(PaneTab(rightUri, label = rightUri.authority)), sort = st.right.sort)
-                    else st.right,
-                )
+        }
+    }
+
+    /**
+     * 路径可达性：本地直接查；网络路径若未挂载则**按连接配置自动重连**
+     * （与「打开书签」同一口径 —— 否则冷启动恢复网络窗格永远失败）；
+     * 压缩包内路径则先备好宿主、再重新挂载压缩包。
+     */
+    private suspend fun ensureReachable(uri: VfsUri): Boolean {
+        if (container.locator.find(uri) != null) return true
+        return when (uri.scheme) {
+            "local" -> false
+            "archive" -> {
+                val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(uri.path) ?: return false
+                val host = VfsUri.decodeHost(encoded)?.let { runCatching { VfsUri.parse(it) }.getOrNull() } ?: return false
+                if (!ensureReachable(host)) return false
+                runCatching { container.openArchive(host) }.isSuccess
             }
-            if (leftUri != null) load(PaneSide.LEFT)
-            if (rightUri != null) load(PaneSide.RIGHT)
+            else -> {
+                val config = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+                    ?: container.connectionByAuthority(uri.scheme, uri.authority)
+                    ?: return false
+                runCatching { container.openConnection(config) }.isSuccess
+            }
         }
     }
 
     /** 退出前保存双列路径（MT：记忆上次路径） */
     fun persistPaths() {
+        if (!startupRestoreDone) return
         if (!container.settings.value.rememberLastPath) return
         val st = _state.value
         container.scope.launch {
             container.prefs.saveLastPaths(st.left.uri.toString(), st.right.uri.toString())
+        }
+    }
+
+    /** 启动恢复完成前禁止自动保存（否则默认路径会把「上次路径」覆盖掉，恢复永远读到默认值） */
+    @Volatile
+    private var startupRestoreDone = false
+
+    /** 防抖保存的挂起标记（container.scope 跑在 IO 线程池上，用原子量避免重复排程） */
+    private val persistScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /**
+     * 导航后的**防抖保存**（v1.3.7）。
+     *
+     * 旧实现只在 `AppRoot` 的 `onDispose` 里保存 —— 而默认退出方式是 `moveTaskToBack`
+     * （Activity 不销毁），加上「划掉任务 / 杀进程」都不会触发 onDispose，
+     * 结果就是**从来没存上**：用户反馈「没有固定上次退出时的两个窗格位置」。
+     *
+     * 现在每次 [load]（= 每次导航 / 切标签）后都排一次保存：300ms 内连续操作只写一次，
+     * 无论用哪种方式退出，磁盘里都是最新位置。另有 `MainActivity.onStop` 兜底。
+     */
+    fun schedulePersistPaths() {
+        if (!startupRestoreDone) return
+        if (!container.settings.value.rememberLastPath) return
+        if (!persistScheduled.compareAndSet(false, true)) return
+        container.scope.launch {
+            kotlinx.coroutines.delay(300)
+            persistScheduled.set(false)
+            persistPaths()
         }
     }
 
@@ -230,6 +298,8 @@ class BrowserController(private val container: AppContainer) {
 
     fun load(side: PaneSide) {
         loadJobs[side]?.cancel()
+        // 每次导航（open / 返回 / 上级 / 切标签 / 刷新）都排一次「上次路径」保存
+        schedulePersistPaths()
         val generation = loadGeneration.getValue(side).incrementAndGet()
         val pane = pane(side)
         val uri = pane.uri

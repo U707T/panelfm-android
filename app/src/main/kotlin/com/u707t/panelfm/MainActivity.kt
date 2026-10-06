@@ -13,8 +13,18 @@ import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.ui.PanelTheme
 import com.u707t.panelfm.core.ui.fontScaleFactor
 import com.u707t.panelfm.ui.AppRoot
-
 class MainActivity : ComponentActivity() {
+
+    private val container: AppContainer
+        get() = (application as PanelApp).container
+
+    override fun onStop() {
+        super.onStop()
+        // 退到后台（home / 最近任务）时兜底保存双列路径。
+        // 默认退出方式是 moveTaskToBack（Activity 不销毁、composition 不 dispose），
+        // 没有这个钩子就只能靠「导航后的防抖保存」——加上它双保险。
+        runCatching { container.browser.persistPaths() }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // 全面屏：内容延伸到状态栏/导航栏，由 Compose 侧统一处理安全区
