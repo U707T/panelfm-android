@@ -4,7 +4,6 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
-import kotlin.math.abs
 
 /** 全应用统一的显示格式化（大小 / 时间 / 速度 / 剩余时间）。 */
 object Fmt {
@@ -145,8 +144,6 @@ object Fmt {
 
     fun count(n: Int): String = if (n > 9999) "${n / 1000}k" else n.toString()
 
-    /** 用于日志/调试的比较：比较两个大小差异是否 > 1%（校验辅助） */
-    fun sizeDiffers(a: Long, b: Long): Boolean = if (a <= 0 || b <= 0) a != b else abs(a - b) > 0
 }
 
 /**

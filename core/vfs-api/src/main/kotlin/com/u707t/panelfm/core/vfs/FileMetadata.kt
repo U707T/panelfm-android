@@ -14,8 +14,6 @@ data class FileMetadata(
     val owner: String? = null,
     val group: String? = null,
     val etag: String? = null,
-    val childCount: Int? = null,
-    val extra: Map<String, String> = emptyMap(),
 ) {
     val isHidden: Boolean get() = name.startsWith(".")
 

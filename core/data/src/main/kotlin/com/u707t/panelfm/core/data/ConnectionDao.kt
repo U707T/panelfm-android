@@ -87,6 +87,4 @@ class ConnectionDao(private val db: PanelDb) {
         )
     }
 
-    private fun Cursor.getStringOrNull(name: String): String? =
-        getColumnIndex(name).takeIf { it >= 0 }?.let { if (isNull(it)) null else getString(it) }
 }

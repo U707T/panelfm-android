@@ -1747,12 +1747,6 @@ class BrowserController(private val container: AppContainer) {
     /** 拖动分隔条 */
     fun setSplitRatio(ratio: Float) = update { it.copy(splitRatio = ratio.coerceIn(0.25f, 0.75f)) }
 
-    /** 复制当前路径（MT：长按路径栏） */
-    fun copyPath(side: PaneSide) {
-        val uri = pane(side).uri
-        showStatus("路径：${uri.toString()}")
-    }
-
     // ------------------------------------------------------------------ 目录对比（M9）
 
     fun compareDirectories() {
@@ -2091,61 +2085,14 @@ class BrowserController(private val container: AppContainer) {
 
     fun clearFinishedTasks() = container.engine.clearFinished()
 
-    fun allTasks(): List<TransferTask> = container.engine.tasks.value
-
     companion object {
         const val HISTORY_LIMIT = 100
-    }
-}
-
-/** 预览用的辅助：判断文件是否适合内置预览 */
-fun FileMetadata.previewKind(): String = com.u707t.panelfm.core.common.MimeTypes.kindOf(extension).name
-
-/** 便于 UI 展示的目录统计 */
-fun PaneState.summary(): String = buildString {
-    append("文件夹: ").append(dirCount).append("  文件: ").append(fileCount)
-    space?.let { append("   ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total)) }
-}
-
-/**
- * MT「文件列表显示」三档（0x7f110200/201/202）：
- *  - 0 不显示权限
- *  - 1 非存储目录下的文件显示「权限+大小」（默认）
- *  - 2 全部目录下的文件显示「时间+大小」
- * 这里作用于**底部统计行**：把原本固定显示的「文件夹/文件/已用」按档位调整。
- */
-fun PaneState.summaryFor(mode: Int): String = when (mode) {
-    0 -> "文件夹: $dirCount  文件: $fileCount"
-    2 -> buildString {
-        append("文件夹: ").append(dirCount).append("  文件: ").append(fileCount)
-        space?.let { append("   已用 ").append(Fmt.size(it.total - it.free)).append(" / 可用 ").append(Fmt.size(it.free)) }
-    }
-    else -> buildString {
-        append("文件夹: ").append(dirCount).append("  文件: ").append(fileCount)
-        space?.let { append("   ").append(Fmt.size(it.total - it.free)).append("/").append(Fmt.size(it.total)) }
     }
 }
 
 /** 递归 chmod 的安全上限（防超大目录把界面拖死） */
 private const val MAX_CHMOD_ITEMS = 20_000
 private const val MAX_CHMOD_DEPTH = 32
-
-/** 由 VFS 类型给出的人类可读名 */
-fun VirtualFileSystem.kindLabel(): String = when (scheme) {
-    "local" -> "本地"
-    "dav" -> "WebDAV"
-    "ftp" -> "FTP"
-    "ftps" -> "FTPS"
-    "sftp" -> "SFTP"
-    "smb" -> "SMB"
-    "s3" -> "对象存储"
-    else -> scheme.uppercase()
-}
-
-/** 供计划器复用的工具 */
-object BrowserOps {
-    fun plannerOf(container: AppContainer): FileOperationPlanner = container.planner
-}
 
 // --------------------------------------------------------------------------- MT 排序规则编解码
 

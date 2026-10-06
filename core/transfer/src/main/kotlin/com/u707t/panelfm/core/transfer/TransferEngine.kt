@@ -119,11 +119,6 @@ class TransferEngine(
         return task
     }
 
-    fun activeTasks(): List<TransferTask> =
-        _tasks.value.filter { it.state.value !is TaskState.Done && it.state.value !is TaskState.Cancelled && it.state.value !is TaskState.Failed }
-
-    fun hasRunning(): Boolean = activeTasks().isNotEmpty()
-
     fun pauseAll() { _tasks.value.forEach { it.pause() } }
 
     fun resumeAll() { _tasks.value.forEach { it.resume() } }

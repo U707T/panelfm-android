@@ -139,7 +139,6 @@ class PrefsStore(private val context: Context) {
         const val RENAME_PATTERN = "rename_multi_pattern"
         const val RENAME_SEARCH = "rename_multi_search"
         const val RENAME_REPLACE = "rename_multi_replace"
-        const val FILE_SEARCH = "file_search_record"
         const val EDITOR_FIND = "editor_find"
         const val EDITOR_REPLACE = "editor_replace"
     }
@@ -261,10 +260,6 @@ class PrefsStore(private val context: Context) {
             ?: emptyList()
         val merged = (listOf(v) + old.filterNot { it == v }).take(limit)
         prefs[Keys.inputHistory] = (all + "$key|" + merged.joinToString("\u0001")).toSet()
-    }
-
-    suspend fun clearInputHistory(key: String) = context.panelDataStore.edit { prefs ->
-        prefs[Keys.inputHistory] = (prefs[Keys.inputHistory] ?: emptySet()).filterNot { it.startsWith("$key|") }.toSet()
     }
 
     suspend fun addSearchQuery(query: String) = context.panelDataStore.edit { prefs ->
