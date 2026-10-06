@@ -39,13 +39,18 @@ class FakeVfs(
     var failDelete: Boolean = false
 
     /**
-     * 每次 `read()` 前的模拟耗时（毫秒，默认 0）。
+     * 测试钩子：非 null 时，每次 `read()` 真正取数据前先 `await()` 它 —— 测试可以先用
+     * [readsStarted] 等到「传输已在进行中」，再调用 `cancel()`，最后 `complete()` 放行，
+     * 把取消点**确定性地**钉在传输过程中。
      *
-     * 为什么需要：单测里「取消一个**正在运行**的任务」必须先确保任务真的还在传 ——
-     * 内存复制极快，CI 上 300 KB 可能在测试线程调用 `cancel()` 之前就复制完（任务先变
-     * Done），等待「已取消」的断言会超时。给读加一点延迟能把取消点钉在传输过程中。
+     * 为什么需要：取消类测试如果只是「入队后立刻 cancel」，worker 可能赶在 cancel 之前
+     * 就把任务跑完（内存复制是微秒级；快路径 `serverSideCopy` 甚至不经过 `read()`），
+     * 任务先变 Done 就永远等不到「已取消」——v1.5.0 首次 CI 上撞到的竞态。
      */
-    var readDelayMs: Long = 0
+    var readGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+
+    /** 已被 [readGate] 拦住的读次数（测试用它确认「第一次读已经开始」）。 */
+    val readsStarted = java.util.concurrent.atomic.AtomicInteger(0)
 
     /**
      * 模拟「delete 调用成功返回、但目标其实还在」的远端实现。
@@ -147,10 +152,13 @@ class FakeVfs(
         if (offset > 0) {
             kotlinx.coroutines.runBlocking { delegate.seek(offset) }
         }
-        val delayMs = readDelayMs
+        val gate = readGate
         return object : VfsReader by delegate {
             override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
-                if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+                gate?.let {
+                    readsStarted.incrementAndGet()
+                    it.await()
+                }
                 return delegate.read(buffer, offset, length)
             }
 

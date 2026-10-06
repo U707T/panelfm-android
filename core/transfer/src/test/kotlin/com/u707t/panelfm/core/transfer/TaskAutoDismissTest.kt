@@ -77,17 +77,24 @@ class TaskAutoDismissTest {
     @Test
     fun `取消的任务同样在保留期后自动收走`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val vfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000).dir("/dst")
-        // 读延迟把「取消点」钉在传输进行中：内存复制太快时，取消可能在任务完成之后才执行
-        //（任务先变 Done，就永远等不到「已取消」——v1.5.0 首次 CI 上撞到的竞态）。
-        vfs.readDelayMs = 30
-        val locator = FakeLocator(mapOf("one" to vfs))
+        // 两个 VFS → 强制走「读流 → 写流」慢路径，并且用 readGate 把取消点确定性地钉在
+        // 传输进行中：等到第一次读真的开始（此时任务不可能自己完成），再取消、再放行。
+        // 快路径（同 VFS 的 serverSideCopy）不经过 read()，整条路径没有读停滞点，
+        // 直接「入队后立刻取消」可能赶不上 —— v1.5.0 首次 CI 上撞到的竞态。
+        val srcVfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000)
+        val dstVfs = FakeVfs().dir("/dst")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        srcVfs.readGate = gate
+        val locator = FakeLocator(mapOf("srcv" to srcVfs, "dstv" to dstVfs))
         val engine = engine(scope, locator, retentionMs = 500)
 
         val task = engine.enqueue(
-            TransferRequest(listOf(uri("one", "/src/big.bin")), uri("one", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
+            TransferRequest(listOf(uri("srcv", "/src/big.bin")), uri("dstv", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
         )
+        withTimeout(15_000) { while (srcVfs.readsStarted.get() == 0) delay(5) }
         task.cancel()
+        gate.complete(Unit)
+
         withTimeout(10_000) { while (task.state.value !is TaskState.Cancelled) delay(10) }
 
         withTimeout(10_000) { while (engine.tasks.value.contains(task)) delay(10) }
