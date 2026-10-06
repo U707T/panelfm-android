@@ -1,5 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <!-- 自适应图标背景（与设计稿的 squircle 底色一致：#272727） -->
-    <color name="ic_launcher_background">#272727</color>
-</resources>
