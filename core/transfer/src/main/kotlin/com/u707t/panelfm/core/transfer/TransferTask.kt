@@ -49,19 +49,31 @@ class TransferTask internal constructor(
     // ------------------------------------------------------------------ 控制
 
     fun pause() {
-        gate.pause()
-        if (_state.value is TaskState.Running) _state.value = TaskState.Paused
+        // 已取消 / 正在取消的任务不再接受暂停（否则会把 paused 闸门又关回去）。
+        if (gate.isCancelled) return
+        val s = _state.value
+        if (s is TaskState.Running || s == TaskState.Queued) {
+            gate.pause()
+            _state.value = TaskState.Paused
+        }
     }
 
     fun resume() {
+        if (gate.isCancelled) return
         gate.resume()
         if (_state.value is TaskState.Paused) {
-            _state.value = lastRunning ?: TaskState.Running(0, 0, "继续…", 0, 0, 0, -1)
+            // 「排队中就被暂停」的任务还没有 lastRunning —— 恢复回「排队中」，
+            // 等 worker 轮到时正常走「正在统计…」，而不是伪造一条假进度。
+            _state.value = lastRunning ?: TaskState.Queued
         }
     }
 
     fun cancel() {
         gate.cancel()
+        // 立即反馈「正在取消操作…」（MT 同款文案）：真正的停止发生在传输循环的下一个
+        // checkpoint，路径长时（服务端快路径 / 大目录收尾）可能还要一小会儿。
+        val s = _state.value
+        if (!s.isFinished && s !is TaskState.Cancelling) _state.value = TaskState.Cancelling
         conflictWaiter?.cancel()
     }
 
@@ -73,7 +85,11 @@ class TransferTask internal constructor(
     // ------------------------------------------------------------------ 执行
 
     private fun running(state: TaskState.Running) {
+        // 取消后不再覆盖「正在取消…」；暂停中只更新快照（lastRunning），状态维持「已暂停」——
+        // 否则暂停瞬间最后一批字节回调会把状态又刷回「进行中」。
+        if (gate.isCancelled) return
         lastRunning = state
+        if (_state.value is TaskState.Paused) return
         _state.value = state
     }
 
@@ -86,8 +102,11 @@ class TransferTask internal constructor(
         val progressThrottle = Throttle(200)
 
         try {
+            // 入队后立刻被取消 / 暂停的，在这里就生效：取消直接退出（不再统计），
+            // 暂停挂起等待恢复（状态已由 pause() 置为「已暂停」）。
+            gate.checkpoint()
             running(TaskState.Running(0, 0, "正在统计…", 0, 0, 0, -1))
-            val plan = planner.plan(request) { count, bytes ->
+            val plan = planner.plan(request, checkpoint = gate::checkpoint) { count, bytes ->
                 running(TaskState.Running(0, count, "正在统计…", 0, bytes, 0, -1))
             }
             val totalPlannedBytes = plan.totalBytes
@@ -148,7 +167,7 @@ class TransferTask internal constructor(
                 if (fallbackRoots.isNotEmpty()) {
                     val fallbackSources = fallbackRoots.map { it.source }
                     val fallbackRequest = request.copy(sources = fallbackSources)
-                    val rawFallbackPlan = planner.plan(fallbackRequest)
+                    val rawFallbackPlan = planner.plan(fallbackRequest, checkpoint = gate::checkpoint)
                     val rewrittenItems = rawFallbackPlan.items.map { item ->
                         val root = fallbackRoots
                             .filter { isSameOrDescendant(item.source, it.source) }
@@ -237,6 +256,9 @@ class TransferTask internal constructor(
                         if (target == null) {
                             skipped++
                         } else {
+                            // 「当前文件」进度的基准：字节回调只给增量，记下本文件开始前的全局计数，
+                            // 相减即得当前文件已完成字节（含续传起点）。
+                            val itemBaseBytes = doneBytes
                             val copied = transferFile(item, target, index, totalBytes) { delta ->
                                 doneBytes += delta
                                 val now = System.currentTimeMillis()
@@ -250,6 +272,8 @@ class TransferTask internal constructor(
                                         TaskState.Running(
                                             index + 1, executionPlan.items.size, target.name,
                                             doneBytes, totalBytes, speed, eta,
+                                            itemDoneBytes = (doneBytes - itemBaseBytes).coerceAtLeast(0),
+                                            itemTotalBytes = item.size.coerceAtLeast(0),
                                         )
                                     )
                                 }
@@ -306,18 +330,32 @@ class TransferTask internal constructor(
     /** UI 用的任务快照（进度 / 冲突 / 完成状态变化时由引擎重新生成） */
     fun toSnapshot(): TransferTaskSnapshot {
         val s = _state.value
+
+        /**
+         * 任务行副标题（UI 的第二行；拿不到的字段自动省略）：
+         *  - 运行中：`12/156 项 · 1.2 G/2.0 G · 2.1 M/s · 剩 3m`；
+         *  - 完成：`成功 x · 跳过 y · 失败 z · 用时 …`；
+         *  - 其余状态：一句话说明。
+         */
         val subtitle = when (s) {
-            is TaskState.Running -> listOf(
-                s.currentName,
+            is TaskState.Running -> listOfNotNull(
+                "${s.index}/${s.total} 项",
                 com.u707t.panelfm.core.common.Fmt.transferred(s.doneBytes, s.totalBytes),
-                com.u707t.panelfm.core.common.Fmt.speed(s.speedBps),
-                if (s.etaSeconds > 0) "剩 ${com.u707t.panelfm.core.common.Fmt.eta(s.etaSeconds)}" else "",
-            ).filter { it.isNotBlank() }.joinToString(" · ")
-            is TaskState.Done -> "完成 ${s.ok} 项" + if (s.failed > 0) "，失败 ${s.failed}" else ""
+                com.u707t.panelfm.core.common.Fmt.speed(s.speedBps).takeIf { it.isNotBlank() },
+                if (s.etaSeconds > 0) "剩 ${com.u707t.panelfm.core.common.Fmt.eta(s.etaSeconds)}" else null,
+            ).joinToString(" · ")
+            is TaskState.Done -> buildString {
+                append("成功 ${s.ok}")
+                if (s.skipped > 0) append(" · 跳过 ${s.skipped}")
+                if (s.failed > 0) append(" · 失败 ${s.failed}")
+                append(" · 用时 ${com.u707t.panelfm.core.common.Fmt.duration(s.elapsedMs)}")
+                s.note?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+            }
             is TaskState.Failed -> s.message
             is TaskState.Cancelled -> "已取消"
             is TaskState.Paused -> "已暂停"
-            is TaskState.WaitingConflict -> "等待冲突选择"
+            is TaskState.WaitingConflict -> "等待冲突处理"
+            is TaskState.Cancelling -> "正在取消操作…"
             TaskState.Queued -> "排队中"
         }
         return TransferTaskSnapshot(id = id, title = title, subtitle = subtitle, state = s, op = request.op)
@@ -414,6 +452,7 @@ class TransferTask internal constructor(
         plan.items
             .filter { it.isDirectory && request.sources.contains(it.source) }
             .forEach { root ->
+                gate.checkpoint()
                 val desired = root.dest
                 val existing = existingOrNull(destVfs, desired)
                 if (existing == null) {

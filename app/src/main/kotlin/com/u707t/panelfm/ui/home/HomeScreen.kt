@@ -55,7 +55,7 @@ import com.u707t.panelfm.LocalNetwork
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.transfer.TaskState
+import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtFolderGlyph
 import com.u707t.panelfm.core.ui.MtListRow
@@ -359,10 +359,7 @@ fun HomeScreen(
             // ---------------- 工具
             SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
             if (expandTools) {
-                val active = tasks.count {
-                    val s = it.state
-                    s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
-                }
+                val active = tasks.count { it.state.isActive }
                 ToolRow("回收站", MtIcon.DELETE) { onOpenTrash() }
                 ToolRow("远程管理", MtIcon.DNS) { onOpenRemote() }
                 ToolRow("已安装应用", MtIcon.EXTENSION) { onOpenApps() }

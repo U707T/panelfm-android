@@ -12,7 +12,18 @@ import com.u707t.panelfm.core.vfs.VfsUri
  */
 class FileOperationPlanner(private val locator: VfsLocator) {
 
-    suspend fun plan(request: TransferRequest, onScan: (Int, Long) -> Unit = { _, _ -> }): OperationPlan {
+    /**
+     * 生成操作计划。
+     *
+     * [checkpoint] 是传输闸门的可取消点（`TransferGate.checkpoint`）：大目录「正在统计…」
+     * 期间也允许取消 / 暂停 —— 旧实现只有传输循环里有 checkpoint，统计 10 万文件的目录时
+     * 用户点取消毫无反应。默认为空（测试可直接调用）。
+     */
+    suspend fun plan(
+        request: TransferRequest,
+        checkpoint: suspend () -> Unit = {},
+        onScan: (Int, Long) -> Unit = { _, _ -> },
+    ): OperationPlan {
         val items = mutableListOf<PlanItem>()
         var bytes = 0L
         var files = 0
@@ -29,6 +40,7 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         }
 
         for (src in request.sources) {
+            checkpoint()
             val vfs = locator.find(src) ?: throw VfsException.Unsupported("源位置不可用：${src.authority}")
             val meta = vfs.stat(src)
             if (meta.isSymlink) {
@@ -38,6 +50,7 @@ class FileOperationPlanner(private val locator: VfsLocator) {
             if (meta.isDirectory) {
                 collectDir(vfs = vfs, src = src, dest = destRoot, depth = 0,
                     items = items,
+                    checkpoint = checkpoint,
                     onFile = { size ->
                         files++
                         bytes += size
@@ -63,20 +76,23 @@ class FileOperationPlanner(private val locator: VfsLocator) {
         dest: VfsUri,
         depth: Int,
         items: MutableList<PlanItem>,
+        checkpoint: suspend () -> Unit,
         onFile: (Long) -> Unit,
         onDir: () -> Unit,
     ) {
         if (depth > MAX_DEPTH) throw VfsException.ProtocolError("目录层级过深（> $MAX_DEPTH），疑似软链接环")
+        checkpoint()
         onDir()
         items += PlanItem(src, dest, isDirectory = true, size = -1, depth = depth)
         val children = vfs.list(src)
         for (child in children) {
+            checkpoint()
             if (child.isSymlink) {
                 throw VfsException.Unsupported("暂不支持传输符号链接：${child.name}")
             }
             val childDest = dest.child(child.name)
             if (child.isDirectory) {
-                collectDir(vfs, child.uri, childDest, depth + 1, items, onFile, onDir)
+                collectDir(vfs, child.uri, childDest, depth + 1, items, checkpoint, onFile, onDir)
             } else if (!child.isDirectory) {
                 items += PlanItem(child.uri, childDest, isDirectory = false, size = child.size.coerceAtLeast(0), depth = depth + 1, lastModified = child.lastModified)
                 onFile(child.size.coerceAtLeast(0))

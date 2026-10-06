@@ -5,13 +5,16 @@ import com.u707t.panelfm.core.common.PanelDispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
 /**
@@ -20,6 +23,8 @@ import kotlinx.coroutines.launch
  *  - 任务内部单文件串行；服务端可直连时零中转
  *  - [tasks] 只反映「列表增删」；任务自身的进度 / 冲突 / 完成状态在 [taskEvents] / [snapshots] 里，
  *    UI 必须观察后者，否则进度与冲突对话框永远不会刷新。
+ *  - 任务结束后自动收场：完成 / 已取消保留 [finishedRetentionMs] 供用户确认结果后自动移除
+ *    （「任务条/列表不消失」的修法）；**失败不自动移除** —— 错误必须留痕，由用户手动处理。
  */
 class TransferEngine(
     private val planner: FileOperationPlanner,
@@ -28,6 +33,8 @@ class TransferEngine(
     private val dispatchers: PanelDispatchers,
     private val scope: CoroutineScope,
     maxConcurrent: Int = 2,
+    /** 完成 / 已取消的任务在列表里的保留时长（毫秒）；测试可调小。 */
+    private val finishedRetentionMs: Long = DEFAULT_FINISHED_RETENTION_MS,
 ) {
 
     private val _tasks = MutableStateFlow<List<TransferTask>>(emptyList())
@@ -113,8 +120,9 @@ class TransferEngine(
             locator = locator,
             resumeStore = resumeStore,
         )
-        _tasks.value = _tasks.value + task
+        _tasks.update { it + task }
         queue.trySend(task)
+        scope.launch { watchAutoDismiss(task) }
         Logx.i("TransferEngine", "enqueue ${task.title} (${task.id.take(8)})")
         return task
     }
@@ -123,15 +131,41 @@ class TransferEngine(
 
     fun resumeAll() { _tasks.value.forEach { it.resume() } }
 
+    /** 清空所有已结束的任务（含失败）——用户手动确认过才走这里。 */
     fun clearFinished() {
-        _tasks.value = _tasks.value.filter {
-            val s = it.state.value
-            s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
+        _tasks.update { list -> list.filter { !it.state.value.isFinished } }
+    }
+
+    /**
+     * 从列表移除任务；未结束的先取消（取消的传输会保留 .part 与断点记录，下次可续传）。
+     *
+     * 列表一律用 [update] 做 CAS 更新：worker、自动收场协程与 UI 线程都可能并发改列表，
+     * 旧的 `_tasks.value = _tasks.value ± task` 是读-改-写，会丢更新。
+     */
+    fun remove(task: TransferTask) {
+        task.cancel()
+        _tasks.update { it - task }
+    }
+
+    /**
+     * 任务结束后的自动收场：
+     *  - 完成 / 已取消：保留 [finishedRetentionMs] 让用户看到结果，然后自动移除 ——
+     *    这是「传输任务 ui 不消失」问题的根治点；
+     *  - 失败：**不自动移除**（错误必须留痕），由用户「移除 / 清空」处理。
+     * 只移除「仍是同一个终态」的任务：保留期内被手动移除 / 清空过的不会重复处理。
+     */
+    private suspend fun watchAutoDismiss(task: TransferTask) {
+        val finished = task.state.first { it.isFinished }
+        if (!finished.dismissesAutomatically) return
+        delay(finishedRetentionMs)
+        if (task.state.value == finished) {
+            _tasks.update { it - task }
+            Logx.i("TransferEngine", "auto-dismiss ${task.id.take(8)} (${finished.javaClass.simpleName})")
         }
     }
 
-    fun remove(task: TransferTask) {
-        task.cancel()
-        _tasks.value = _tasks.value - task
+    companion object {
+        /** 完成 / 已取消的默认保留时长：8 秒——够看完一行结果摘要，又不至于常驻。 */
+        const val DEFAULT_FINISHED_RETENTION_MS = 8_000L
     }
 }

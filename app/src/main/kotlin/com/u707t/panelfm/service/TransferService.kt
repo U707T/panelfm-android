@@ -14,6 +14,7 @@ import com.u707t.panelfm.PanelApp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.transfer.TaskState
+import com.u707t.panelfm.core.transfer.isActive
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -42,10 +43,7 @@ class TransferService : Service() {
         collectJob = scope.launch {
             // 用 taskEvents：任务状态（进度 / 暂停 / 冲突 / 完成）变化时都要刷新通知与前台状态
             container.engine.taskEvents.collectLatest { tasks ->
-                val active = tasks.filter {
-                    val s = it.state.value
-                    s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
-                }
+                val active = tasks.filter { it.state.value.isActive }
                 if (active.isEmpty()) {
                     stopForegroundCompat()
                     stopSelf()
@@ -58,6 +56,7 @@ class TransferService : Service() {
                         "${state.currentName} · ${Fmt.transferred(state.doneBytes, state.totalBytes)} · ${Fmt.speed(state.speedBps)}"
                     is TaskState.Paused -> "已暂停"
                     is TaskState.WaitingConflict -> "等待冲突处理"
+                    is TaskState.Cancelling -> "正在取消操作…"
                     else -> first.title
                 }
                 val progress = when (state) {

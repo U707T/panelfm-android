@@ -95,6 +95,7 @@ import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
+import com.u707t.panelfm.core.transfer.overallProgress
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
@@ -106,6 +107,7 @@ import com.u707t.panelfm.ui.preview.OpenWithOption
 import com.u707t.panelfm.ui.preview.PreviewMode
 import com.u707t.panelfm.core.vfs.VfsUri
 import java.io.File
+import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
 /**
@@ -591,7 +593,7 @@ fun DualPaneScreen(
                 }
             }
 
-            // ---------------- 任务条
+            // ---------------- 任务条（只显示进行中 / 失败；完成、已取消立即消失，不再常驻）
             if (ui.tasks.isNotEmpty()) {
                 Column(
                     Modifier
@@ -601,11 +603,16 @@ fun DualPaneScreen(
                     verticalArrangement = Arrangement.spacedBy(4.dp),
                 ) {
                     ui.tasks.take(2).forEach { snapshot -> TaskRow(snapshot, controller, onOpenTasks) }
-                    if (ui.tasks.size > 2) {
+                    val rest = ui.tasks.size - 2
+                    if (rest > 0) {
                         Text(
-                            "还有 ${ui.tasks.size - 2} 个任务…",
+                            "还有 $rest 个任务…（点此查看全部）",
                             style = MaterialTheme.typography.labelSmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickableNoRipple { onOpenTasks() }
+                                .padding(vertical = 2.dp),
                         )
                     }
                 }
@@ -1921,22 +1928,43 @@ internal fun openWithSystem(
         .onFailure { onMessage("没有可用的应用") }
 }
 
+/**
+ * 任务条行 —— 只显示进行中 / 失败的任务（完成即从任务条消失，引擎稍后把列表项一起收走）。
+ * 结构照 MT 的进度块简化：`操作 · 当前文件/状态` + 百分比 + 操作按钮，下面统计行与总进度。
+ */
 @Composable
-private fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserController, onOpenTasks: () -> Unit) {    val state = snapshot.state
-    val progress = when (state) {
-        is TaskState.Running -> if (state.totalBytes > 0) state.doneBytes.toFloat() / state.totalBytes else 0f
-        is TaskState.Done -> 1f
-        else -> 0f
-    }
-    Column(Modifier.fillMaxWidth()) {
+private fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserController, onOpenTasks: () -> Unit) {
+    val state = snapshot.state
+    val opLabel = if (snapshot.op == TransferOp.COPY) "复制" else "移动"
+    val progress = snapshot.overallProgress()
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "${if (snapshot.op == TransferOp.COPY) "复制" else "移动"} · ${snapshot.subtitle}",
+                buildString {
+                    append(opLabel)
+                    when (state) {
+                        is TaskState.Running -> append(" · ${state.currentName.ifBlank { "…" }}")
+                        is TaskState.Cancelling -> append(" · 正在取消…")
+                        is TaskState.Paused -> append(" · 已暂停")
+                        is TaskState.WaitingConflict -> append(" · 等待冲突处理")
+                        is TaskState.Failed -> append(" · 失败")
+                        TaskState.Queued -> append(" · 排队中")
+                        else -> {}
+                    }
+                },
                 style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
+            if (state is TaskState.Running) {
+                Text(
+                    "${(progress * 100).roundToInt()}%",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
             when (state) {
                 is TaskState.Running, TaskState.Queued ->
                     TextButton(onClick = { controller.pauseTask(snapshot.id) }) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
@@ -1944,10 +1972,33 @@ private fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserControlle
                     TextButton(onClick = { controller.resumeTask(snapshot.id) }) { Text("继续", style = MaterialTheme.typography.labelSmall) }
                 else -> {}
             }
-            TextButton(onClick = { controller.cancelTask(snapshot.id) }) { Text("取消", style = MaterialTheme.typography.labelSmall) }
+            when (state) {
+                is TaskState.Failed, is TaskState.Done, TaskState.Cancelled ->
+                    TextButton(onClick = { controller.removeTask(snapshot.id) }) { Text("移除", style = MaterialTheme.typography.labelSmall) }
+                TaskState.Cancelling -> {} // 已在收尾，不再提供操作
+                else ->
+                    TextButton(onClick = { controller.cancelTask(snapshot.id) }) { Text("取消", style = MaterialTheme.typography.labelSmall) }
+            }
             TextButton(onClick = onOpenTasks) { Text("详情", style = MaterialTheme.typography.labelSmall) }
         }
-        ThinProgressBar(progress)
+        if (state is TaskState.Running) ThinProgressBar(progress)
+        when (state) {
+            is TaskState.Running -> Text(
+                snapshot.subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            is TaskState.Failed -> Text(
+                state.message,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            else -> {}
+        }
     }
 }
 

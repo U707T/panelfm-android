@@ -42,7 +42,7 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
-import com.u707t.panelfm.core.transfer.TaskState
+import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtFolderGlyph
@@ -375,10 +375,7 @@ fun MtSideDrawer(
             //        终端模拟器 / … / 更多工具；标题右侧 ︿ 可折叠，默认展开）
             SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
             if (expandTools) {
-                val active = tasks.count {
-                    val s = it.state
-                    s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
-                }
+                val active = tasks.count { it.state.isActive }
                 DrawerTool("回收站", MtIcon.DELETE, onOpenTrash)
                 DrawerTool("已安装应用", MtIcon.EXTENSION, onOpenApps)
                 DrawerTool("文本编辑器", MtIcon.CODE, onOpenEditor)

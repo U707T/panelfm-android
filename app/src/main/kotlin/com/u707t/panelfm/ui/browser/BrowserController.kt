@@ -16,6 +16,9 @@ import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferRequest
 import com.u707t.panelfm.core.transfer.TransferTask
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
+import com.u707t.panelfm.core.transfer.forBrowserBar
+import com.u707t.panelfm.core.transfer.isActive
+import com.u707t.panelfm.core.transfer.isFinished
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.VfsException
@@ -2045,21 +2048,27 @@ class BrowserController(private val container: AppContainer) {
             // 关键：必须观察 taskEvents（任务状态变化也会发射），否则进度 / 冲突 / 完成都到不了 UI。
             // 旧实现用 engine.tasks（StateFlow<List>）——列表不增删时永远不发射，
             // 导致冲突弹窗永不出现（ASK 任务卡死）、进度不更新、任务完成后不刷新。
+            var previousActive = emptySet<String>()
+            var knownIds = emptySet<String>()
             container.engine.taskEvents.collect { tasks ->
-                val active = tasks.filter {
-                    val s = it.state.value
-                    s !is TaskState.Done && s !is TaskState.Cancelled && s !is TaskState.Failed
-                }
-                val snapshots = tasks.take(8).map { it.toSnapshot() }
+                val activeIds = tasks.filter { it.state.value.isActive }.map { it.id }.toSet()
                 val waitingConflict = tasks.firstOrNull { it.state.value is TaskState.WaitingConflict }
                 val conflict = (waitingConflict?.state?.value as? TaskState.WaitingConflict)?.info
+                // 任务条只收「进行中 + 失败」：完成 / 已取消立即从任务条消失（引擎会在保留期后
+                // 连列表一起收走）。旧实现把完成的任务也塞进来、还只取最早 8 条再显示前 2 条 ——
+                // 任务条常驻不消失、真正在跑的任务反而被挤到「还有 N 个任务…」后面。
+                val snapshots = tasks.map { it.toSnapshot() }.forBrowserBar()
                 update { it.copy(tasks = snapshots, conflict = conflict) }
-                // 任务完成后刷新两个窗格（外部改动可能改变列表）
-                if (tasks.any { it.state.value is TaskState.Done }) {
-                    if (active.isEmpty()) {
-                        load(PaneSide.LEFT)
-                        load(PaneSide.RIGHT)
-                    }
+
+                // 一批任务全部结束（或第一次就被看到已结束，如极快的完成在两次发射之间）→
+                // 刷新两个窗格：外部改动（复制进来的文件等）可能改变两侧列表。
+                val finishedNow = previousActive.isNotEmpty() && activeIds.isEmpty()
+                val sawNewFinished = tasks.any { it.id !in knownIds && it.state.value.isFinished }
+                previousActive = activeIds
+                knownIds = tasks.map { it.id }.toSet()
+                if (finishedNow || sawNewFinished) {
+                    load(PaneSide.LEFT)
+                    load(PaneSide.RIGHT)
                 }
             }
         }
@@ -2081,6 +2090,11 @@ class BrowserController(private val container: AppContainer) {
 
     fun cancelTask(id: String) {
         container.engine.findTask(id)?.cancel()
+    }
+
+    /** 从列表移除任务（未结束的先取消）：任务页 / 任务条的「移除」。 */
+    fun removeTask(id: String) {
+        container.engine.findTask(id)?.let { container.engine.remove(it) }
     }
 
     fun clearFinishedTasks() = container.engine.clearFinished()

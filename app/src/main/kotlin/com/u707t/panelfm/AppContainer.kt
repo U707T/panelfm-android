@@ -16,6 +16,7 @@ import com.u707t.panelfm.core.data.SecretStore
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.transfer.FileOperationPlanner
 import com.u707t.panelfm.core.transfer.TransferEngine
+import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsRegistry
 import com.u707t.panelfm.core.vfs.local.LocalVfs
@@ -163,12 +164,7 @@ class AppContainer(val app: Application) {
         scope.launch {
             var foregound = false
             engine.taskEvents.collect { tasks ->
-                val active = tasks.any {
-                    val st = it.state.value
-                    st !is com.u707t.panelfm.core.transfer.TaskState.Done &&
-                        st !is com.u707t.panelfm.core.transfer.TaskState.Cancelled &&
-                        st !is com.u707t.panelfm.core.transfer.TaskState.Failed
-                }
+                val active = tasks.any { it.state.value.isActive }
                 if (active && !foregound) {
                     foregound = true
                     TransferService.start(app)

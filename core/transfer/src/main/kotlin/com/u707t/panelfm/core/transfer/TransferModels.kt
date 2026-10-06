@@ -50,12 +50,18 @@ sealed interface TaskState {
         val totalBytes: Long,
         val speedBps: Long,
         val etaSeconds: Long,
-        val resumed: Boolean = false,
+        /** 当前文件已传字节（0 = 无信息，UI 隐藏「当前文件」进度条） */
+        val itemDoneBytes: Long = 0,
+        /** 当前文件总字节（0 = 无信息） */
+        val itemTotalBytes: Long = 0,
     ) : TaskState
 
     data object Paused : TaskState
 
     data class WaitingConflict(val info: ConflictInfo) : TaskState
+
+    /** 已请求取消、正在等传输循环退出（MT：「正在取消操作…」）；循环收尾后转 [Cancelled]。 */
+    data object Cancelling : TaskState
 
     data class Done(
         val ok: Int,
@@ -70,6 +76,67 @@ sealed interface TaskState {
 
     data object Cancelled : TaskState
 }
+
+/**
+ * 任务状态分类 —— 任务条 / 任务页 / 前台服务 / 计数统一用这一组判定，避免各处各写一套 when
+ * （旧实现里同一个「是否完成」的判断在 4 个文件里抄了 4 遍，新增状态必漏）。
+ *
+ * - [isActive]：还在进行、需要显示进度或等待用户操作（含排队 / 暂停 / 等待冲突 / 正在取消）；
+ * - [isFinished]：已走到终点（不管成功与否）；
+ * - [dismissesAutomatically]：无需用户处理，引擎在保留期后自动收走；**失败不算**（错误必须留痕）。
+ */
+val TaskState.isActive: Boolean
+    get() = this is TaskState.Queued || this is TaskState.Running ||
+        this is TaskState.Paused || this is TaskState.WaitingConflict || this is TaskState.Cancelling
+
+val TaskState.isFinished: Boolean
+    get() = this is TaskState.Done || this is TaskState.Cancelled || this is TaskState.Failed
+
+val TaskState.dismissesAutomatically: Boolean
+    get() = this is TaskState.Done || this is TaskState.Cancelled
+
+/** 总体进度 0..1（未知总大小时为 0；「已完成」视为 1） */
+fun TransferTaskSnapshot.overallProgress(): Float = when (val s = state) {
+    is TaskState.Running -> if (s.totalBytes > 0) (s.doneBytes.toFloat() / s.totalBytes).coerceIn(0f, 1f) else 0f
+    is TaskState.Done -> 1f
+    else -> 0f
+}
+
+/** 当前文件进度 0..1；返回 -1 表示无信息（UI 应隐藏这一层进度条） */
+fun TransferTaskSnapshot.itemProgress(): Float = when (val s = state) {
+    is TaskState.Running ->
+        if (s.itemTotalBytes > 0) (s.itemDoneBytes.toFloat() / s.itemTotalBytes).coerceIn(0f, 1f) else -1f
+    else -> -1f
+}
+
+/**
+ * 任务展示排序：需要用户关注的在前，轻结束的在后 ——
+ * 等待冲突 → 正在取消 → 进行中 → 已暂停 → 排队中 → 失败 → 已完成 → 已取消。
+ * 同级别保持入队先后（稳定排序），保证列表不因状态变化乱跳。
+ */
+fun List<TransferTaskSnapshot>.sortedForDisplay(): List<TransferTaskSnapshot> =
+    withIndex()
+        .sortedWith(compareBy({ it.value.state.displayRank() }, { it.index }))
+        .map { it.value }
+
+private fun TaskState.displayRank(): Int = when (this) {
+    is TaskState.WaitingConflict -> 0
+    is TaskState.Cancelling -> 1
+    is TaskState.Running -> 2
+    is TaskState.Paused -> 3
+    is TaskState.Queued -> 4
+    is TaskState.Failed -> 5
+    is TaskState.Done -> 6
+    is TaskState.Cancelled -> 7
+}
+
+/**
+ * 浏览器任务条要展示的任务：**全部进行中 + 失败**（失败必须留痕）。
+ * 已完成 / 已取消不在任务条停留 —— 这是「任务条不消失」的直接修法；
+ * 任务页仍会短暂展示它们的完成结果（引擎保留期过后自动收走）。
+ */
+fun List<TransferTaskSnapshot>.forBrowserBar(): List<TransferTaskSnapshot> =
+    sortedForDisplay().filter { it.state.isActive || it.state is TaskState.Failed }
 
 data class FailedItem(val source: VfsUri, val reason: String)
 
