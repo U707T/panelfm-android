@@ -53,7 +53,9 @@ jobs:
             yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
             "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" > /dev/null 2>&1 || true
           fi
-      # 签名：key.properties / keystore 来自仓库 secrets；缺失时自动回退 debug 签名，构建不中断
+      # 签名：key.properties / keystore 来自仓库 secrets。
+      # ⚠️ 缺 keystore 时 **release 构建会硬失败**（见 app/build.gradle.kts 的 taskGraph.whenReady：
+      # 只出 release 时才校验，testDebugUnitTest 不受影响）—— 这是故意的：禁止发布 debug 签名的 release APK。
       - name: Decode keystore
         continue-on-error: true
         run: echo "${{ secrets.KEYSTORE }}" | base64 --decode > keystore.jks

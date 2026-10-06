@@ -7,6 +7,79 @@
 > 不再作为任何结论的依据（其中大量资源 ID 推断无法从本仓库复核）。这些段落保留为历史记录，
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`。
 
+## v1.4.0 — 正确性批次：写文件原子化 / 备份真的备份 / WebDAV 删目录 / S3 特殊字符签名
+
+> 一句话：这一版**没有新功能**，修的是五个「平时不炸、炸了丢数据或直接不能用」的正确性问题 ——
+> 文件写入的原子替换、编辑器 `.bak` 备份从第二次起失效、WebDAV 删目录必失败、
+> S3 对象名含 `+`/空格/中文时签名不匹配、搜索点「停止」误报失败。
+> 顺带清掉一批死代码，并给两个「变异测试漏网」的传输安全语义补上回归测试。
+>
+> ⚠️ **本轮明确不做的事（已知取舍，不是遗漏）**：「远程管理」的内置 HTTP 服务仍**没有鉴权**。
+> 它是给个人局域网内自己用的（随机端口、只读、`..` 穿越已拦、HTML/响应头已转义），
+> 按你的要求本轮不引入 token / 自动停服务。**别把它开到不可信的网络里。**
+
+### 修了什么（每条都有回归测试或可复现步骤）
+
+| # | 问题 | 后果 | 修法 |
+|---|---|---|---|
+| 1 | `LocalVfs` 提交写入时**先删原文件再改名** | 两步之间进程被杀 / 断电 → **用户的原文件消失**，只剩隐藏的 `.part` | 先走 `ATOMIC_MOVE`（同卷 rename(2) 原子替换），不支持时才退化；退化路径里删除失败要报错 |
+| 2 | 编辑器「自动 .bak 备份」用 `rename` + **固定目标名** | 第一次保存后原文件名短暂消失；**第二次保存起必然撞名**，失败被 `runCatching` 吞掉 → 用户以为一直有备份，其实没有 | 改成**复制**到不冲突的名字（`x.bak`、`x.bak.1`…，复用 `uniqueChild`），备份成功/失败都写进状态栏 |
+| 3 | WebDAV 删目录发 `DELETE` + `Depth: infinity` | RFC 4918 没有为 DELETE 定义 Depth，nginx-dav / lighttpd 等**直接 400** → 删文件夹必失败 | 客户端自己递归（先删子项再删目录），每个请求只带 path |
+| 4 | S3 签名侧 `URLDecoder.decode(encodedPath)` + 发送侧 `addPathSegment` | `+` 被解成**空格**签名，而路径里又是**字面 `+`**；含 `+`/空格/中文/`%` 的对象名 → `SignatureDoesNotMatch` | 两侧统一为「逐段 RFC3986 编码（只保留 `A-Za-z0-9-._~`）」，与 AWS SDK 行为一致；抽出 `SigV4.canonicalUri` + `S3Client.signingPathOf` 供测试 |
+| 5 | 搜索点「停止搜索」被 `runCatching` 当成失败 | 弹「搜索失败：Job was cancelled」并**顶掉**「已停止搜索（已找到 N 条）」 | 改 `try/catch`，`CancellationException` 单独吞掉（取消不是错误） |
+
+### 顺带修的体验 / 数据安全问题
+
+- **回收站**：「清空」「彻底删除」补二次确认（此前单击即执行，比普通删除还少一道确认）；
+  还原成功也有提示（重名会自动变成「名称 (1)」）；
+- **导出 APK 不再静默覆盖**：目标名固定 `$label.apk` 时，本地 `commit()` 是「先删同名再改名」，
+  会无声替换已有文件 → 改用统一的 `名称 (1).apk`；失败/取消会 `abort()` 清掉半成品；
+- **断点续传不再每 256 KB 写一次 SQLite**：1 GB 文件 ≈ 4096 次 INSERT 全在传输关键路径上
+  → 改为 ≥1 s 落一次，并在失败/取消时补记最终偏移（少重传最后一秒）；
+- **设置文案**：「默认信任自签证书（WebDAV / FTP / FTPS / S3）」—— 早已不止 WebDAV（v1.1.0 起）；
+- **`.part` 临时名收敛到一处**：`core:vfs-api` 的 `partNameOf()`。这个名字以前在**四处**各写一遍
+  字面量（本地 / SFTP / SMB 写侧 + 传输引擎按它 `stat` 断点），任何一处改动都会让续传悄悄失效。
+
+### 死代码清理（都是 grep 全仓确认零调用点后删的）
+
+```
+BrowserController: copyPath / allTasks / summary / summaryFor / kindLabel / BrowserOps
+TransferEngine:    activeTasks / hasRunning
+Fmt:               sizeDiffers
+LocalVfs:          permissionString / PART_SUFFIX（改为 vfs-api 的 partNameOf）/ Set<PosixFilePermission>.toMode
+ConnectionDao:     getStringOrNull
+LocalNetwork:      legacyStorageGranted（注释自述「保留它只是为了过 lint」）
+PrefsStore:        clearInputHistory / RecordKeys.FILE_SEARCH
+FileMetadata:      childCount / extra（extra 只有 SmbVfs 写入、全仓零读取）
+core:vfs-api:      PosixModes（整个 object 零调用；与 LocalVfs 的 toMode 是近重复实现）
+```
+
+### 测试（本次新增 = 打在「变异测试漏网点」上）
+
+审计用变异测试确认了 3 处漏网，本轮补上并**反向验证过能抓住变异**：
+
+| 新增用例 | 覆盖的漏网点 | 变异验证 |
+|---|---|---|
+| `删除静默成功但目标仍在时不能写入目标` | `deleteForOverwrite()` 的「删完再 stat」只测了抛异常分支 | 删掉那次 stat → **该用例 FAIL** ✓ |
+| `跨挂载点同路径时不套用别的会话的子目录映射` | `isSameOrDescendant()` 的 sameMount 守卫无人守 | 删掉守卫 → **该用例 FAIL** ✓ |
+| `S3SigningPathTest`（5 例） | `S3Client` 路径构造零覆盖（原来只有 `SigV4Test` 向量） | 退回旧写法 → **5 例全 FAIL** ✓ |
+
+### 验证
+
+- 全量单测 **315 例 / 46 suite 全绿**（308 → 315，新增 2 + 5；含新增的 `:core:vfs-s3` 覆盖）；
+- `lintDebug` 全 14 模块：**Error 0 / Fatal 0**，Warning 55 + Hint 35（与上一版逐项一致，无新增）；
+- `assembleDebug` / `assembleRelease` 通过（3 ABI）；
+- 产物核对：新 APK 内已含新文案、旧文案已消失（确认不是缓存产物）。
+
+### 实机建议过一遍（这几条测不出来）
+
+1. **编辑器**：设置里打开「保存时自动 .bak 备份」→ 同一文件**连按两次保存** → 目录里应有
+   `x.bak` 与 `x.bak.1`，且状态栏写「原文件已备份为 …」；
+2. **WebDAV 删目录**：进一个有多层子目录的 WebDAV 目录，删掉它 → 应能成功（此前必失败）；
+3. **S3**：建一个带 `+`、空格、中文的对象名，用 PanelFM 打开/下载 → 不再 `SignatureDoesNotMatch`；
+4. **搜索**：搜索中途点「停止搜索」→ 只出现「已停止搜索」，**不应**出现「搜索失败」；
+5. **回收站**：点「清空」应弹确认框；导出已存在同名的 APK → 应生成 `名称 (1).apk` 而不是覆盖。
+
 ## v1.3.11 — 前景层去掉「自己画的底」：形状交给桌面/主题（治白边）
 
 > 一句话：v1.3.9 为了防白边把前景层铺成了**满幅不透明的 #272727 方块**。但桌面用的是
