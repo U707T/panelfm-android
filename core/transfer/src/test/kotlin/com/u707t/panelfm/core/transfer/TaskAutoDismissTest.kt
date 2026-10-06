@@ -39,14 +39,14 @@ class TaskAutoDismissTest {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val vfs = FakeVfs().dir("/src").file("/src/a.txt", 10).dir("/dst")
         val locator = FakeLocator(mapOf("one" to vfs))
-        val engine = engine(scope, locator, retentionMs = 400)
+        val engine = engine(scope, locator, retentionMs = 2_000)
 
         val task = engine.enqueue(
             TransferRequest(listOf(uri("one", "/src/a.txt")), uri("one", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
         )
         withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
 
-        delay(150)
+        delay(200)
         assertTrue("保留期内必须还能看到任务结果", engine.tasks.value.contains(task))
 
         withTimeout(10_000) { while (engine.tasks.value.contains(task)) delay(10) }
@@ -77,9 +77,12 @@ class TaskAutoDismissTest {
     @Test
     fun `取消的任务同样在保留期后自动收走`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val vfs = FakeVfs().dir("/src").file("/src/big.bin", 300_000).dir("/dst")
+        val vfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000).dir("/dst")
+        // 读延迟把「取消点」钉在传输进行中：内存复制太快时，取消可能在任务完成之后才执行
+        //（任务先变 Done，就永远等不到「已取消」——v1.5.0 首次 CI 上撞到的竞态）。
+        vfs.readDelayMs = 30
         val locator = FakeLocator(mapOf("one" to vfs))
-        val engine = engine(scope, locator, retentionMs = 300)
+        val engine = engine(scope, locator, retentionMs = 500)
 
         val task = engine.enqueue(
             TransferRequest(listOf(uri("one", "/src/big.bin")), uri("one", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)

@@ -39,6 +39,15 @@ class FakeVfs(
     var failDelete: Boolean = false
 
     /**
+     * 每次 `read()` 前的模拟耗时（毫秒，默认 0）。
+     *
+     * 为什么需要：单测里「取消一个**正在运行**的任务」必须先确保任务真的还在传 ——
+     * 内存复制极快，CI 上 300 KB 可能在测试线程调用 `cancel()` 之前就复制完（任务先变
+     * Done），等待「已取消」的断言会超时。给读加一点延迟能把取消点钉在传输过程中。
+     */
+    var readDelayMs: Long = 0
+
+    /**
      * 模拟「delete 调用成功返回、但目标其实还在」的远端实现。
      *
      * 为什么需要它：`TransferTask.deleteForOverwrite()` 有「删除后再次 stat 确认消失」的
@@ -138,7 +147,13 @@ class FakeVfs(
         if (offset > 0) {
             kotlinx.coroutines.runBlocking { delegate.seek(offset) }
         }
+        val delayMs = readDelayMs
         return object : VfsReader by delegate {
+            override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+                return delegate.read(buffer, offset, length)
+            }
+
             override fun close() {
                 closedReaders++
                 delegate.close()
