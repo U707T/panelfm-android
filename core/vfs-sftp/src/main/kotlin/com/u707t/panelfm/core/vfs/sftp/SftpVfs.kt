@@ -7,7 +7,6 @@ import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.HostKeyStore
 import com.u707t.panelfm.core.vfs.ListOptions
-import com.u707t.panelfm.core.vfs.PosixModes
 import com.u707t.panelfm.core.vfs.ProgressCallback
 import com.u707t.panelfm.core.vfs.Resumability
 import com.u707t.panelfm.core.vfs.SpaceInfo
@@ -19,6 +18,7 @@ import com.u707t.panelfm.core.vfs.VfsReader
 import com.u707t.panelfm.core.vfs.VfsState
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsWriter
+import com.u707t.panelfm.core.vfs.partNameOf
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -346,7 +346,7 @@ class SftpVfs(
     private inner class SftpWriter(private val target: VfsUri, private val startOffset: Long) : VfsWriter {
 
         private val partUri: VfsUri =
-            target.parent?.child("." + target.name + ".panelfm.part") ?: target
+            target.parent?.child(partNameOf(target.name)) ?: target
 
         private var channel: SftpClient? = null
         private var handle: SftpClient.CloseableHandle? = null

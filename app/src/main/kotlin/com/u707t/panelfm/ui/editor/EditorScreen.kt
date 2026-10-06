@@ -859,10 +859,9 @@ private suspend fun saveText(
             charset == "UTF-16BE" -> text.toByteArray(Charsets.UTF_16BE)
             else -> text.toByteArray(Charsets.UTF_8)
         }
-        // MT「保存文件时自动将原文件重命名为 .bak 备份文件」
-        if (container.settings.value.backupOnSave && vfs.capabilities.rename) {
-            runCatching { vfs.rename(uri, uri.parent?.child(uri.name + ".bak") ?: uri) }
-        }
+        // MT「保存文件时自动将原文件重命名为 .bak 备份文件」：备份先做，且必须能看见成败
+        val backupEnabled = container.settings.value.backupOnSave
+        val backupName = if (backupEnabled) backupBeforeSave(container, vfs, uri) else null
         withContext(Dispatchers.IO) {
             val writer = vfs.openWrite(uri, size = bytes.size.toLong(), offset = 0L)
             writer.write(bytes, 0, bytes.size)
@@ -872,10 +871,60 @@ private suspend fun saveText(
                 runCatching { vfs.setPermissions(uri, originalMode) }
             }
         }
-        onStatus("已保存（$charset，${bytes.size} 字节）")
+        val backupNote = when {
+            !backupEnabled -> ""
+            backupName != null -> "，原文件已备份为 $backupName"
+            else -> "；⚠️ 备份失败（本次未生成备份）"
+        }
+        onStatus("已保存（$charset，${bytes.size} 字节$backupNote）")
         onDone(true)
     } catch (e: Exception) {
         onStatus("保存失败：${e.message}")
         onDone(false)
     }
+}
+
+/**
+ * 「保存前自动 .bak 备份」的实际实现。
+ *
+ * 旧实现有两个真 bug（v1.2.1 起就有）：
+ *  ① 用 `rename`：改名成功、写新内容失败时，原文件名已经没了，目录里只剩 `x.bak`；
+ *  ② 目标名**固定** `x.bak`：第二次保存必然撞名（`LocalVfs.rename` 抛 Conflict），
+ *     而调用点用 `runCatching` 吞掉 → 从第二次起**静默不备份**，用户却以为一直在备份。
+ *
+ * 现在：复制到不冲突的 `.bak` / `.bak.1` / …（复用 [AppContainer.uniqueChild]），
+ * 返回备份名；失败返回 null，由调用方在状态里明确提示。
+ */
+private suspend fun backupBeforeSave(
+    container: AppContainer,
+    vfs: VirtualFileSystem,
+    uri: VfsUri,
+): String? {
+    val parent = uri.parent ?: return null
+    return runCatching {
+        val dest = container.uniqueChild(parent, uri.name + ".bak")
+        // 服务端复制优先（本地 / S3 是秒级）；不支持时退化为「读流 → 写流」
+        if (vfs.capabilities.serverSideCopy && vfs.serverSideCopy(uri, dest)) {
+            return@runCatching dest.name
+        }
+        val reader = vfs.openRead(uri)
+        try {
+            val writer = vfs.openWrite(dest, size = reader.size, offset = 0L)
+            try {
+                val buf = ByteArray(256 * 1024)
+                while (true) {
+                    val n = reader.read(buf, 0, buf.size)
+                    if (n < 0) break
+                    writer.write(buf, 0, n)
+                }
+                writer.commit()
+            } catch (e: Exception) {
+                runCatching { writer.abort() }
+                throw e
+            }
+        } finally {
+            runCatching { reader.close() }
+        }
+        dest.name
+    }.getOrNull()
 }

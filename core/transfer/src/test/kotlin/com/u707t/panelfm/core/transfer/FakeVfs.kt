@@ -37,6 +37,15 @@ class FakeVfs(
     val nodes = linkedMapOf<String, Node>("/" to Node(true))
     var failOpenWrite: Boolean = false
     var failDelete: Boolean = false
+
+    /**
+     * 模拟「delete 调用成功返回、但目标其实还在」的远端实现。
+     *
+     * 为什么需要它：`TransferTask.deleteForOverwrite()` 有「删除后再次 stat 确认消失」的
+     * 保险（`delete() 成功返回 ≠ 目标已消失`），但旧测试只覆盖了「delete 抛异常」分支 ——
+     * 变异测试（删掉那次 stat）全绿。这个开关用来把另一条分支也测上。
+     */
+    var silentlyIgnoreDelete: Boolean = false
     var failServerSideCopy: Boolean = false
     var failRename: Boolean = false
     var openedReaders: Int = 0
@@ -98,6 +107,7 @@ class FakeVfs(
 
     override suspend fun delete(uris: List<VfsUri>, onProgress: ProgressCallback?) {
         if (failDelete) throw VfsException.Permission("测试：删除目标失败")
+        if (silentlyIgnoreDelete) return
         uris.forEach { u ->
             nodes.keys
                 .filter { it == u.path || it.startsWith(u.path.trimEnd('/') + "/") }

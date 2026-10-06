@@ -1156,7 +1156,11 @@ fun DualPaneScreen(
                         searchJob?.cancel()
                         searchJob = scope.launch {
                             container.prefs.addSearchQuery(q)
-                            val outcome = runCatching {
+                            // 注意：**不能用 runCatching 包 `searchTree`** —— 点「停止搜索」时
+                            // `searchJob.cancel()` 会让它抛 CancellationException，而 runCatching
+                            // 会把「取消」当成失败：弹一条「搜索失败：Job was cancelled」，
+                            // 并把刚才的「已停止搜索（已找到 N 条）」顶掉。
+                            val outcome = try {
                                 controller.searchTree(
                                     side = focusSide,
                                     nameQuery = if (field == SearchField.CONTENT) "" else q,
@@ -1175,9 +1179,12 @@ fun DualPaneScreen(
                                     isCancelled = { !searching },
                                     onPartial = { partial -> searchResults = partial },
                                 )
-                            }.onFailure {
-                                controller.showStatus((it as? VfsException)?.userMessage ?: "搜索失败：${it.message}")
-                            }.getOrNull()
+                            } catch (e: kotlinx.coroutines.CancellationException) {
+                                null        // 取消不是错误；「已停止搜索」已由 onStop 提示过
+                            } catch (e: Exception) {
+                                controller.showStatus((e as? VfsException)?.userMessage ?: "搜索失败：${e.message}")
+                                null
+                            }
                             searching = false
                             if (outcome != null) {
                                 searchResults = outcome.items

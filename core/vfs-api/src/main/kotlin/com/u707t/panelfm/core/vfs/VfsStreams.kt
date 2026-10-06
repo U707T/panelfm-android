@@ -11,6 +11,17 @@ object NoProgress : ProgressCallback {
     override fun onProgress(done: Long, total: Long) = Unit
 }
 
+/**
+ * 「未提交写入」的落地名：`.<名字>.panelfm.part`。
+ *
+ * **引擎与各协议实现必须用同一个名字**：`TransferTask` 的断点续传要按这个名字去 `stat`
+ * 临时文件的大小（`partSize >= entry.offset` 才敢从断点续写）。这个名字以前在 4 处各写一遍
+ * 字符串字面量（本地 / SFTP / SMB 写侧 + 传输引擎），任何一处改动都会让续传悄悄失效。
+ */
+const val PART_SUFFIX = ".panelfm.part"
+
+fun partNameOf(name: String): String = ".$name$PART_SUFFIX"
+
 data class SpaceInfo(val total: Long, val free: Long)
 
 data class ListOptions(

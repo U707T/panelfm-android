@@ -31,6 +31,7 @@ import com.u707t.panelfm.core.vfs.VfsReader
 import com.u707t.panelfm.core.vfs.VfsState
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsWriter
+import com.u707t.panelfm.core.vfs.partNameOf
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -189,7 +190,6 @@ class SmbVfs(
     private fun toMeta(parent: VfsUri, info: FileIdBothDirectoryInformation): FileMetadata {
         val attrs = info.fileAttributes                       // long 位掩码
         val isDir = (attrs and FileAttributes.FILE_ATTRIBUTE_DIRECTORY.value) != 0L
-        val isHidden = (attrs and FileAttributes.FILE_ATTRIBUTE_HIDDEN.value) != 0L
         val uri = parent.child(info.fileName)
         return FileMetadata(
             uri = uri,
@@ -198,7 +198,6 @@ class SmbVfs(
             size = if (isDir) -1L else info.endOfFile,
             lastModified = runCatching { info.lastWriteTime.toEpochMillis() }.getOrDefault(-1L),
             mimeType = if (isDir) null else MimeTypes.of(info.fileName.substringAfterLast('.', "")),
-            extra = if (isHidden) mapOf("hidden" to "true") else emptyMap(),
         )
     }
 
@@ -475,7 +474,7 @@ class SmbVfs(
             val (share, rel) = split(target)
             val name = rel.substringAfterLast('\\', rel)
             val dir = rel.removeSuffix(name)
-            share to (dir + ".$name.panelfm.part")
+            share to (dir + partNameOf(name))
         }
 
         override val writtenBytes: Long get() = written

@@ -334,6 +334,71 @@ class TransferRegressionTest {
     }
 
     @Test
+    fun `删除静默成功但目标仍在时不能写入目标`() = runBlocking {
+        // 变异测试漏网点（审计 M2）：「delete() 返回成功 ≠ 目标已消失」这条保险没有被测到 ——
+        // 只有「delete 抛异常」的分支有测试。这里补上另一半。
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs()
+            .dir("/src")
+            .file("/src/a.txt", 3)
+            .dir("/dst")
+            .file("/dst/a.txt", 2)
+        vfs.silentlyIgnoreDelete = true
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Failed) delay(10) }
+
+        assertTrue("源文件必须仍在", vfs.nodes.containsKey("/src/a.txt"))
+        assertEquals("目标不能在「删除静默失败」后被覆盖写入", 2L, vfs.nodes["/dst/a.txt"]?.size)
+        scope.cancel()
+    }
+
+    @Test
+    fun `跨挂载点同路径时不套用别的会话的子目录映射`() = runBlocking {
+        // 变异测试漏网点（审计 M3）：isSameOrDescendant() 里的 sameMount 守卫被删掉时全绿。
+        // 场景：两个不同会话里有**同路径**的源（b:/src/folder/a.txt 与 c:/src/folder），
+        // 其中一个（c 的目录）因 KEEP_BOTH 被重映射到「folder (1)」。
+        // 若丢了挂载点判断，b 的文件会被误判成 c 目录的后代，从而被写进 folder (1) 里
+        // —— 位置错了，而且和用户的预期（文件落在目标目录根下）不一致。
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val destVfs = FakeVfs()
+            .dir("/dst")
+            .dir("/dst/folder")
+            .file("/dst/folder/old.txt", 2)
+        val fileVfs = FakeVfs().dir("/src").dir("/src/folder").file("/src/folder/a.txt", 3)
+        val dirVfs = FakeVfs().dir("/src").dir("/src/folder").file("/src/folder/c.txt", 1)
+        val locator = FakeLocator(mapOf("dest" to destVfs, "b" to fileVfs, "c" to dirVfs))
+        val engine = engine(scope, locator)
+
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("b", "/src/folder/a.txt"), uri("c", "/src/folder")),
+                destDir = uri("dest", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.KEEP_BOTH,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        assertTrue("b 的文件必须落在目标目录根下", destVfs.nodes.containsKey("/dst/a.txt"))
+        assertTrue("c 的目录按 KEEP_BOTH 另建", destVfs.nodes.containsKey("/dst/folder (1)/c.txt"))
+        assertTrue(
+            "不能把 b 的文件塞进 c 的映射目录（跨挂载点误判）",
+            !destVfs.nodes.containsKey("/dst/folder (1)/a.txt"),
+        )
+        assertTrue("原有目标目录必须保留", destVfs.nodes.containsKey("/dst/folder/old.txt"))
+        scope.cancel()
+    }
+
+    @Test
     fun `并发下调后运行中的任务数不超过新设定`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         // 两个慢 VFS 会话（不同会话 → 慢路径，transferFile 有 gate.checkpoint 可挂起）

@@ -179,15 +179,36 @@ class WebDavVfs(
         }
     }
 
+    /**
+     * 删除。
+     *
+     * **不给 DELETE 带 `Depth: infinity`**：RFC 4918 没有为 DELETE 定义 Depth 语义，
+     * nginx-dav / lighttpd 等实现收到就直接 400 —— 表现为「删文件夹必失败」。
+     * 目录改为「先递归删子项，再删目录自身」，每个请求都只带 path、语义由客户端保证。
+     */
     override suspend fun delete(uris: List<VfsUri>, onProgress: ProgressCallback?) = withContext(env.dispatchers.vfs) {
         var done = 0L
         for (u in uris) {
-            val url = DavHttp.url(cfg, u.path)
-            execute(Request.Builder().url(url).delete().header("Depth", "infinity").build()).use { r ->
-                if (!r.isSuccessful && r.code != 404) throw httpError(r, u)
-            }
+            deleteRecursive(u)
             done++
             onProgress?.onProgress(done, uris.size.toLong())
+        }
+    }
+
+    /**
+     * 递归删除：目录先删子项。`stat` / `list` 失败时按「不是目录」处理 ——
+     * 直接让 DELETE 去报真正的错（404 / 403），不要在这里把原因吃掉。
+     */
+    private suspend fun deleteRecursive(uri: VfsUri) {
+        val isDir = runCatching { stat(uri).isDirectory }.getOrDefault(false)
+        if (isDir) {
+            runCatching { list(uri) }.getOrDefault(emptyList()).forEach { child ->
+                deleteRecursive(child.uri)
+            }
+        }
+        val url = DavHttp.url(cfg, uri.path)
+        execute(Request.Builder().url(url).delete().build()).use { r ->
+            if (!r.isSuccessful && r.code != 404) throw httpError(r, uri)
         }
     }
 

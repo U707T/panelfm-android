@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -38,6 +39,7 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.MtListRow
+import com.u707t.panelfm.tools.TrashService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -52,6 +54,10 @@ fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var version by remember { mutableStateOf(0) }
     val items = remember(version) { container.trash.list() }
+    // 破坏性操作二次确认：旧实现「清空 / 彻底删除」单击即执行，
+    // 比普通删除（有确认框）还少一道确认，而这两处恰恰不可逆。
+    var confirmPurgeAll by remember { mutableStateOf(false) }
+    var purgeTarget by remember { mutableStateOf<TrashService.Entry?>(null) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
@@ -59,12 +65,10 @@ fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
             subtitle = "${items.size} 项",
             onBack = onBack,
         ) {
-            TextButton(onClick = {
-                scope.launch {
-                    container.trash.purgeAll()
-                    version++
-                }
-            }) { Text("清空") }
+            TextButton(
+                enabled = items.isNotEmpty(),
+                onClick = { confirmPurgeAll = true },
+            ) { Text("清空") }
         }
 
         if (items.isEmpty()) {
@@ -82,23 +86,60 @@ fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
                                 val ok = container.trash.restore(entry)
                                 container.browser.refreshAll()
                                 version++
-                                if (!ok) container.browser.showStatus("还原失败：原位置不可写")
+                                container.browser.showStatus(
+                                    if (ok) "已还原「${entry.name}」（原位置重名时自动改为「名称 (1)」）"
+                                    else "还原失败：原位置不可写"
+                                )
                             }
                         },
                         trailing = {
                             Row {
-                                TextButton(onClick = {
-                                    scope.launch {
-                                        container.trash.purge(entry)
-                                        version++
-                                    }
-                                }) { Text("彻底删除", style = MaterialTheme.typography.labelSmall) }
+                                TextButton(onClick = { purgeTarget = entry }) {
+                                    Text("彻底删除", style = MaterialTheme.typography.labelSmall)
+                                }
                             }
                         },
                     )
                 }
             }
         }
+    }
+
+    if (confirmPurgeAll) {
+        AlertDialog(
+            onDismissRequest = { confirmPurgeAll = false },
+            title = { Text("清空回收站？") },
+            text = { Text("将永久删除回收站里的 ${items.size} 项，无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmPurgeAll = false
+                    scope.launch {
+                        container.trash.purgeAll()
+                        version++
+                        container.browser.showStatus("已清空回收站")
+                    }
+                }) { Text("清空", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { confirmPurgeAll = false }) { Text("取消") } },
+        )
+    }
+    purgeTarget?.let { entry ->
+        AlertDialog(
+            onDismissRequest = { purgeTarget = null },
+            title = { Text("彻底删除？") },
+            text = { Text("「${entry.name}」将被永久删除，无法恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    purgeTarget = null
+                    scope.launch {
+                        container.trash.purge(entry)
+                        version++
+                        container.browser.showStatus("已彻底删除「${entry.name}」")
+                    }
+                }) { Text("删除", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { purgeTarget = null }) { Text("取消") } },
+        )
     }
 }
 
@@ -179,20 +220,27 @@ private suspend fun exportApk(
         val src = info.sourceDir ?: return@runCatching "无 APK 路径"
         val pane = container.browser.state.value.focusedPane
         val label = context.packageManager.getApplicationLabel(info).toString().replace('/', '_')
-        val dest = pane.uri.child("$label.apk")
+        // 目标名不能固定成 `$label.apk`：`VfsWriter.commit()`（本地实现）是「先删同名再改名」，
+        // 直接写会**静默覆盖**已存在的同名 APK。改用统一的重名策略 `名称 (1).apk`。
+        val dest = container.uniqueChild(pane.uri, "$label.apk")
         val vfs = container.locator.find(pane.uri) ?: return@runCatching "当前窗格不可写"
         val writer = vfs.openWrite(dest, size = File(src).length(), offset = 0L)
-        File(src).inputStream().use { input ->
-            val buf = ByteArray(256 * 1024)
-            while (true) {
-                val n = input.read(buf)
-                if (n < 0) break
-                writer.write(buf, 0, n)
+        try {
+            File(src).inputStream().use { input ->
+                val buf = ByteArray(256 * 1024)
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    writer.write(buf, 0, n)
+                }
             }
+            writer.commit()
+        } catch (e: Exception) {
+            runCatching { writer.abort() }
+            throw e
         }
-        writer.commit()
         container.browser.refresh(pane.let { container.browser.state.value.focused })
-        "已导出到 ${pane.uri.displayPath}/$label.apk"
+        "已导出 ${dest.name} 到 ${pane.uri.displayPath}"
     }.getOrElse { "导出失败：${it.message}" }
 }
 

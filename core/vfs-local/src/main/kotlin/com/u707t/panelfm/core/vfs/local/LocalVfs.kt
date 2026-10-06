@@ -3,13 +3,13 @@ package com.u707t.panelfm.core.vfs.local
 import android.os.StatFs
 import android.system.Os
 import android.system.OsConstants
-import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
+import com.u707t.panelfm.core.vfs.partNameOf
 import com.u707t.panelfm.core.vfs.Resumability
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsCapabilities
@@ -29,7 +29,6 @@ import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.StandardCopyOption
-import java.nio.file.attribute.PosixFilePermission
 
 /**
  * 本地文件系统（含 /storage/emulated/0、外置卡、/ 与压缩包挂载点）。
@@ -240,7 +239,7 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     override suspend fun openWrite(uri: VfsUri, size: Long?, offset: Long): VfsWriter {
         val target = toFile(uri)
         target.parentFile?.mkdirs()
-        val part = File(target.parentFile, ".${target.name}.panelfm.part")
+        val part = File(target.parentFile, partNameOf(target.name))
         return LocalWriter(target, part, offset)
     }
 
@@ -368,16 +367,37 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
             runCatching { raf.fd.sync() }
         }
 
+        /**
+         * 提交：`.name.panelfm.part` → 正式名。
+         *
+         * **必须原子替换**。旧实现是「先 `target.delete()` 再 `renameTo()`」——两步之间
+         * 进程被杀 / 断电，用户的原文件就没了（只剩一个隐藏的 `.part`），
+         * 而注释里却写着「commit 时原子改名」。现在先走 `ATOMIC_MOVE`（同卷 rename(2)，
+         * POSIX 语义下直接替换目标），只有文件系统不支持时才退化为「删目标 + 改名」，
+         * 且删除失败要报错，不能带着半成品继续。
+         */
         override suspend fun commit() {
             if (closed) return
             runCatching { raf.close() }
             closed = true
-            if (target.exists()) target.delete()
-            if (!part.renameTo(target)) {
-                runCatching { Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
-                    .getOrElse { throw VfsException.Io("保存失败：${target.name}") }
+            val atomic = runCatching {
+                Files.move(
+                    part.toPath(), target.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+                true
+            }.getOrDefault(false)
+            if (!atomic) {
+                if (target.exists() && !target.delete()) {
+                    throw VfsException.Io("保存失败：${target.name}（无法替换已有文件）")
+                }
+                if (!part.renameTo(target)) {
+                    runCatching { Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
+                        .getOrElse { throw VfsException.Io("保存失败：${target.name}") }
+                }
             }
-            Logx.d("LocalVfs", "commit ${target.absolutePath} ($written bytes)")
+            Logx.d("LocalVfs", "commit ${target.absolutePath} ($written bytes, atomic=$atomic)")
         }
 
         override suspend fun abort() {
@@ -390,29 +410,4 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
             if (!closed) runCatching { raf.close() }
         }
     }
-
-    companion object {
-        fun permissionString(permissions: Int?): String = permissions?.let { Fmt.mode(it) } ?: ""
-
-        const val PART_SUFFIX = ".panelfm.part"
-    }
-}
-
-/** PosixFilePermission 集合 → mode（备用路径，仅 Java NIO 场景） */
-fun Set<PosixFilePermission>.toMode(): Int {
-    var mode = 0
-    forEach {
-        mode = mode or when (it) {
-            PosixFilePermission.OWNER_READ -> 0b100_000_000
-            PosixFilePermission.OWNER_WRITE -> 0b010_000_000
-            PosixFilePermission.OWNER_EXECUTE -> 0b001_000_000
-            PosixFilePermission.GROUP_READ -> 0b000_100_000
-            PosixFilePermission.GROUP_WRITE -> 0b000_010_000
-            PosixFilePermission.GROUP_EXECUTE -> 0b000_001_000
-            PosixFilePermission.OTHERS_READ -> 0b000_000_100
-            PosixFilePermission.OTHERS_WRITE -> 0b000_000_010
-            PosixFilePermission.OTHERS_EXECUTE -> 0b000_000_001
-        }
-    }
-    return mode
 }

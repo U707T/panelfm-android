@@ -71,10 +71,16 @@ class S3Client(private val cfg: S3Config) {
         }
     }
 
-    private fun url(bucket: String?, key: String?, query: Map<String, String?> = emptyMap()): HttpUrl {
+    /** 请求 URL 构造。`internal` 是为了让 `S3SigningPathTest` 能断言「发送路径 == 签名路径」。 */
+    internal fun url(bucket: String?, key: String?, query: Map<String, String?> = emptyMap()): HttpUrl {
         val builder = baseUrl(bucket).newBuilder()
         if (cfg.pathStyle && bucket != null) builder.addPathSegment(bucket)
-        key?.takeIf { it.isNotEmpty() }?.split('/')?.forEach { builder.addPathSegment(it) }
+        // key 必须**逐段预编码**后交给 addEncodedPathSegment：
+        //  - `addPathSegment` 会把 `+` 当普通字符**原样留在路径里**（OkHttp 认为它安全），
+        //    而 SigV4 的 canonical URI 要求 `+` → `%2B`。两边不一致 → SignatureDoesNotMatch。
+        //  - 用我们的 `uriEncode` 先编码（只保留 unreserved：A-Za-z0-9-._~），
+        //    路径就与签名用的 canonical URI **逐字节一致**（AWS SDK 也是这么发的）。
+        key?.takeIf { it.isNotEmpty() }?.split('/')?.forEach { builder.addEncodedPathSegment(SigV4.uriEncode(it)) }
         query.forEach { (k, v) -> if (v == null) builder.addQueryParameter(k, "") else builder.addQueryParameter(k, v) }
         return builder.build()
     }
@@ -97,13 +103,11 @@ class S3Client(private val cfg: S3Config) {
         payloadHash: String = SigV4.EMPTY_SHA256,
     ): Response = withContext(Dispatchers.IO) {
         val target = url(bucket, key, query)
-        // 签名用「未编码」路径：SigV4 内部会自己编码，避免二次编码
-        val decodedPath = "/" + target.encodedPath.trimStart('/').split('/')
-            .joinToString("/") { java.net.URLDecoder.decode(it, "UTF-8") }
+        // 签名用「未编码」路径：SigV4 内部会自己逐段编码，避免二次编码。
         val signed = SigV4.sign(
             method = method,
             host = hostHeader(bucket),
-            path = decodedPath,
+            path = signingPathOf(target.encodedPath),
             query = query,
             headers = extraHeaders,
             payloadHash = payloadHash,
@@ -376,6 +380,18 @@ class S3Client(private val cfg: S3Config) {
 
     companion object {
         fun mediaTypeOf(contentType: String): MediaType? = runCatching { contentType.toMediaType() }.getOrNull()
+
+        /**
+         * 由「真实发送的编码路径」反推签名用的**未编码**路径（[SigV4] 会重新逐段编码）。
+         *
+         * 每段必须先把手写的 `+` 换成 `%2B` 再解码：`URLDecoder` 是表单（`x-www-form-urlencoded`）
+         * 语义，默认把 `'+'` 当成空格 —— 含 `+` 的对象 key（`a+b.txt`）会被解成 `a b.txt`，
+         * 于是 canonical URI 与真实请求不同，服务器回 `SignatureDoesNotMatch`。
+         * 同样的写法在 WebDAV 侧已有先例（`DavXml.normalizeHref`）。
+         */
+        internal fun signingPathOf(encodedPath: String): String =
+            "/" + encodedPath.trimStart('/').split('/')
+                .joinToString("/") { java.net.URLDecoder.decode(it.replace("+", "%2B"), "UTF-8") }
 
         /** 自定义下载域名优先：播放/下载走它（不签名） */
         fun downloadUrl(cfg: S3Config, bucket: String, key: String): String {

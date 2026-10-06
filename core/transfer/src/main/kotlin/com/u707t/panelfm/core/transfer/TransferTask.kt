@@ -13,6 +13,7 @@ import com.u707t.panelfm.core.vfs.VfsWriter
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.partNameOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -650,7 +651,7 @@ class TransferTask internal constructor(
                 (validator == null || entry.validator == null || entry.validator == validator)
             ) {
                 // .part 不存在/长度不足时不能盲目按偏移写，否则会拼出损坏文件。
-                val partUri = target.parent?.child("." + target.name + ".panelfm.part")
+                val partUri = target.parent?.child(partNameOf(target.name))
                 val partSize = partUri?.let { runCatching { dstVfs.stat(it).size }.getOrNull() } ?: -1L
                 if (partSize >= entry.offset) {
                     startOffset = entry.offset
@@ -674,11 +675,14 @@ class TransferTask internal constructor(
         var writer: VfsWriter? = null
         var readerClosed = false
         val resumable = dstVfs.capabilities.resumable != Resumability.NONE
+        var written = startOffset
+        // 断点落盘节流：旧实现**每 256 KB** 写一次 SQLite（1 GB 文件 ≈ 4096 次 INSERT，
+        // 全部发生在传输关键路径上）。改为 ≥1 s 落一次，并在失败/取消时补记最终偏移。
+        val resumeThrottle = Throttle(1000)
         try {
             // openWrite 失败时 writer 仍为 null，但 finally 仍会关闭已经打开的 reader。
             writer = dstVfs.openWrite(target, size = if (item.size > 0) item.size else null, offset = startOffset)
             val out = writer
-            var written = startOffset
             var emptyReads = 0
             val buffer = ByteArray(BUFFER_SIZE)
             if (startOffset > 0) onDelta(startOffset)
@@ -696,14 +700,8 @@ class TransferTask internal constructor(
                 out.write(buffer, 0, n)
                 written += n
                 onDelta(n.toLong())
-                if (resumable) {
-                    resumeStore.save(
-                        ResumeEntry(
-                            taskId = id, itemIndex = index, source = item.source, dest = target,
-                            tempUri = null, offset = written, total = item.size,
-                            validator = validator, updatedAt = System.currentTimeMillis(),
-                        )
-                    )
+                if (resumable && resumeThrottle.shouldReport()) {
+                    saveResumePoint(item, target, index, written, validator)
                 }
             }
             out.flush()
@@ -726,6 +724,11 @@ class TransferTask internal constructor(
                     if (resumable) {
                         // 可续传目标（本地 / SFTP / SMB）：保留 .part 与断点记录。
                         runCatching { activeWriter.close() }
+                        // 节流后可能少记最后不到 1 秒的偏移 → 这里补一次最终进度，
+                        // 下次续传从正确位置接上（写失败也不应影响原始异常）。
+                        if (written > startOffset) {
+                            saveResumePoint(item, target, index, written, validator)
+                        }
                     } else {
                         // 不可续传目标（FTP / WebDAV / S3 / 压缩包）：清理半成品。
                         runCatching { activeWriter.abort() }
@@ -737,6 +740,30 @@ class TransferTask internal constructor(
             if (!readerClosed) runCatching { reader.close() }
             runCatching { writer?.close() }
         }
+    }
+
+    /**
+     * 落盘一条断点记录。
+     *
+     * 写入失败**不能**中断传输（最坏情况只是下次从头重传），因此在这里吞掉异常并只记日志；
+     * 调用方负责节流（见 [transferFile] 里的 `resumeThrottle`）。
+     */
+    private suspend fun saveResumePoint(
+        item: PlanItem,
+        target: VfsUri,
+        index: Int,
+        offset: Long,
+        validator: String?,
+    ) {
+        runCatching {
+            resumeStore.save(
+                ResumeEntry(
+                    taskId = id, itemIndex = index, source = item.source, dest = target,
+                    tempUri = null, offset = offset, total = item.size,
+                    validator = validator, updatedAt = System.currentTimeMillis(),
+                )
+            )
+        }.onFailure { Logx.w("TransferTask", "resume save failed: ${it.message}", it) }
     }
 
     companion object {

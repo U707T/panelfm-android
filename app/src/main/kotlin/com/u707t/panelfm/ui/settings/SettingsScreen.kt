@@ -249,7 +249,7 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         }
 
         SectionLabel("传输")
-        SettingSwitch("默认信任自签证书（新的 WebDAV 连接）", settings.trustSelfSigned) {
+        SettingSwitch("默认信任自签证书（新建的 WebDAV / FTP / FTPS / S3 连接）", settings.trustSelfSigned) {
             scope.launch { container.prefs.setTrustSelfSigned(it) }
         }
         Text("任务并发：${settings.maxConcurrentTasks}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))

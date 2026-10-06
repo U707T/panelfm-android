@@ -62,6 +62,15 @@ object SigV4 {
     }
 
     /**
+     * canonical URI：逐段 RFC3986 编码（`'/'` 作为分隔符保留）。
+     *
+     * 单独抽出来是为了能测：`S3Client` 必须把「真实发送的编码路径」还原成未编码形式再交给它，
+     * 两者必须能相互还原（见 `S3SigningPathTest`）。
+     */
+    fun canonicalUri(path: String): String =
+        if (path.isEmpty()) "/" else "/" + path.trimStart('/').split('/').joinToString("/") { uriEncode(it) }
+
+    /**
      * @param method GET/PUT/POST/DELETE/HEAD
      * @param path 已经解码的路径（内部会做 canonical 编码）
      * @param query 参数对（值可为空）
@@ -81,7 +90,7 @@ object SigV4 {
         val amzDate = amzDateFmt.format(now)
         val date = dateFmt.format(now)
 
-        val canonicalUri = if (path.isEmpty()) "/" else "/" + path.trimStart('/').split('/').joinToString("/") { uriEncode(it) }
+        val canonicalUri = canonicalUri(path)
         val canonicalQuery = query.entries
             .sortedWith(compareBy({ uriEncode(it.key) }, { uriEncode(it.value ?: "") }))
             .joinToString("&") { "${uriEncode(it.key)}=${uriEncode(it.value ?: "")}" }
