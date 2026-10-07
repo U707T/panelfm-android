@@ -140,6 +140,10 @@ dependencies {
     implementation(libs.media3.exoplayer)
     implementation(libs.media3.ui)
 
+    // 文本编辑器引擎（LGPL-2.1，替代自研 BasicTextField 编辑器）
+    implementation(libs.sora.editor)
+    implementation(libs.sora.language.textmate)
+
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
     implementation(libs.compose.ui.graphics)

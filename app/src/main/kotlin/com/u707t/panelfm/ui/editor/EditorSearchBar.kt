@@ -30,7 +30,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.u707t.panelfm.core.common.TextSearchOptions
+
+/** 查找条上的三个选项（对应 sora searcher 的「正则 / 大小写 / 全词」）。 */
+internal data class EditorSearchOptionsState(
+    val regex: Boolean,
+    val matchCase: Boolean,
+    val wholeWord: Boolean,
+)
 
 /** MT 风格底部查找条：输入区在上，操作区固定为「上个 / 下个 / 替换 / 全部 / ⋮」。 */
 @Composable
@@ -42,13 +48,12 @@ internal fun EditorSearchBar(
     findHistory: List<String>,
     replaceHistory: List<String>,
     readOnly: Boolean,
-    busy: Boolean,
-    options: TextSearchOptions,
+    options: EditorSearchOptionsState,
     optionsMenuExpanded: Boolean,
     onOptionsMenuExpandedChange: (Boolean) -> Unit,
-    onRegexChange: (Boolean) -> Unit,
-    onMatchCaseChange: (Boolean) -> Unit,
-    onWholeWordChange: (Boolean) -> Unit,
+    onToggleRegex: (Boolean) -> Unit,
+    onToggleMatchCase: (Boolean) -> Unit,
+    onToggleWholeWord: (Boolean) -> Unit,
     onPrevious: () -> Unit,
     onNext: () -> Unit,
     onReplace: () -> Unit,
@@ -114,25 +119,17 @@ internal fun EditorSearchBar(
             Modifier.fillMaxWidth(),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            SearchActionButton("上个", enabled = !busy && findText.isNotEmpty(), onClick = onPrevious)
-            SearchActionButton("下个", enabled = !busy && findText.isNotEmpty(), onClick = onNext)
-            SearchActionButton("替换", enabled = !busy && !readOnly && findText.isNotEmpty(), onClick = onReplace)
-            SearchActionButton("全部", enabled = !busy && !readOnly && findText.isNotEmpty(), onClick = onReplaceAll)
+            SearchActionButton("上个", enabled = findText.isNotEmpty(), onClick = onPrevious)
+            SearchActionButton("下个", enabled = findText.isNotEmpty(), onClick = onNext)
+            SearchActionButton("替换", enabled = !readOnly && findText.isNotEmpty(), onClick = onReplace)
+            SearchActionButton("全部", enabled = !readOnly && findText.isNotEmpty(), onClick = onReplaceAll)
             SearchOptionsMenu(
                 expanded = optionsMenuExpanded,
                 options = options,
                 onExpandedChange = onOptionsMenuExpandedChange,
-                onRegexChange = onRegexChange,
-                onMatchCaseChange = onMatchCaseChange,
-                onWholeWordChange = onWholeWordChange,
-            )
-        }
-        if (busy) {
-            Box(
-                Modifier
-                    .fillMaxWidth()
-                    .height(2.dp)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)),
+                onToggleRegex = onToggleRegex,
+                onToggleMatchCase = onToggleMatchCase,
+                onToggleWholeWord = onToggleWholeWord,
             )
         }
     }
@@ -154,11 +151,11 @@ private fun RowScope.SearchActionButton(label: String, enabled: Boolean, onClick
 @Composable
 private fun SearchOptionsMenu(
     expanded: Boolean,
-    options: TextSearchOptions,
+    options: EditorSearchOptionsState,
     onExpandedChange: (Boolean) -> Unit,
-    onRegexChange: (Boolean) -> Unit,
-    onMatchCaseChange: (Boolean) -> Unit,
-    onWholeWordChange: (Boolean) -> Unit,
+    onToggleRegex: (Boolean) -> Unit,
+    onToggleMatchCase: (Boolean) -> Unit,
+    onToggleWholeWord: (Boolean) -> Unit,
 ) {
     Box {
         TextButton(onClick = { onExpandedChange(true) }) {
@@ -166,15 +163,15 @@ private fun SearchOptionsMenu(
         }
         DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
             SearchOptionItem("正则表达式", options.regex) {
-                onRegexChange(!options.regex)
+                onToggleRegex(!options.regex)
                 onExpandedChange(false)
             }
             SearchOptionItem("区分大小写", options.matchCase) {
-                onMatchCaseChange(!options.matchCase)
+                onToggleMatchCase(!options.matchCase)
                 onExpandedChange(false)
             }
             SearchOptionItem("全词匹配", options.wholeWord) {
-                onWholeWordChange(!options.wholeWord)
+                onToggleWholeWord(!options.wholeWord)
                 onExpandedChange(false)
             }
         }
@@ -253,4 +250,3 @@ internal fun EditorField(
         }
     }
 }
-

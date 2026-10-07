@@ -1,18 +1,17 @@
 package com.u707t.panelfm.ui.editor
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.layout.size
-import androidx.compose.ui.draw.clip
+
+import android.graphics.Typeface
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -23,184 +22,124 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.SpanStyle
-import androidx.compose.ui.text.TextRange
-import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.buildAnnotatedString
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontStyle
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.OffsetMapping
-import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.TransformedText
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.core.common.CodeFormatter
+import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.LineOps
+import com.u707t.panelfm.core.common.TextEncodings
+import com.u707t.panelfm.core.data.PrefsStore
+import com.u707t.panelfm.core.ui.ErrorState
+import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
-import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.common.CodeFormatter
-import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.common.LineOps
-import com.u707t.panelfm.core.common.TextEncodings
-import com.u707t.panelfm.core.common.TextSearch
-import com.u707t.panelfm.core.common.TextSearchOptions
-import com.u707t.panelfm.core.common.TextSearchQuery
-import com.u707t.panelfm.core.data.PrefsStore
-import com.u707t.panelfm.core.ui.ErrorState
-import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
+import io.github.rosemoe.sora.event.ContentChangeEvent
+import io.github.rosemoe.sora.event.PublishSearchResultEvent
+import io.github.rosemoe.sora.util.regex.RegexBackrefGrammar
+import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.EditorSearcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.nio.charset.Charset
+import java.util.regex.PatternSyntaxException
 
 /**
- * 文本编辑器：可编辑 + 保存（保留权限）。
- *  - 编码识别（BOM / UTF-8 / GBK）并回写同编码
- *  - 字号缩放、查找（循环定位）/ 替换、行数统计、未保存提示
- *  - **语法高亮**（按后缀识别 JSON / XML / Kotlin / Java / JS / Python / Shell / YAML / Markdown 等，
- *    后台词法分析，超大文本自动关闭）
- *  - \> 2 MB 自动进入**只读分段浏览**（每段 512 KB，可前后翻段），大日志也能看
+ * 文本编辑器。
  *
- * **v1.0 补齐 MT 编辑器菜单 `0x7f0e001b` / `0x7f0e000e` 的一批命令**：
- *  - 行操作：复制行 / 剪切行 / 删除行 / 清空行 / 重复行 / 转大写 / 转小写 / 增删缩进 / 切换注释
- *  - 「压缩代码」（保守实现：去行尾空白 + 去首尾空行，`0x7f110424`）
- *  - 「格式化代码」（JSON / XML，`0x7f110411`）
- *  - 「转到指定行」（`0x7f1106f5`~`6f8` 的定位系列）
- *  - 「查找」条对齐 MT `0x7f0c0048` 的底部布局（查找 / 替换两行 + 上个 / 下个 / 替换 / 全部 / ⋮），
- *    查找/替换在后台线程执行，并补 MT 的「找不到文本」差异化提示（`0x7f1106e7`~`6ec`）
+ * **v1.6.0 起换用 sora-editor 引擎**（LGPL-2.1，见 `third_party/`）：
+ *  - 渲染 / 输入 / 大文本滚动由 sora 的虚拟化编辑器负责（自研 BasicTextField 版
+ *    在几十万字符时整篇排版，是「点一下卡一下」的根因）；
+ *  - 语法高亮 = TextMate 语法（增量着色，不再整篇重算），语法/主题见 [EditorLanguages]；
+ *  - 查找/替换 = `EditorSearcher`（后台线程搜索、全部命中高亮、正则/大小写/全词）；
+ *  - 本文件只保留页面壳：编码识别 / 保存（含 .bak 备份）/ 行操作 / 大文件分段浏览 / 顶部菜单。
+ *
+ * 大文件（> 2 MB）仍是**只读分段浏览**（每段 512 KB），只是同样交给 sora 渲染。
  */
 @Composable
 fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
     val dark = LocalPanelDarkTheme.current
+    // 编辑器配色（在组合里取好再传进 AndroidView.update —— update 不是 @Composable，读不了 MaterialTheme）
+    val editorBackground = MaterialTheme.colorScheme.background.toArgb()
+    val editorGutterText = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
+    val editorCurrentLine = MaterialTheme.colorScheme.surfaceVariant.toArgb()
+
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
-    var value by remember { mutableStateOf(TextFieldValue("")) }
-    var original by remember { mutableStateOf("") }
     var charset by remember { mutableStateOf("UTF-8") }
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
-    var fontSize by remember { mutableStateOf(14) }
     var status by remember { mutableStateOf<String?>(null) }
     var readOnly by remember { mutableStateOf(false) }
+    var fontSize by remember { mutableIntStateOf(14) }
+    var dirty by remember { mutableStateOf(false) }
+    var originalMode by remember { mutableStateOf<Int?>(null) }
+    var scopeName by remember { mutableStateOf<String?>(null) }
+    var charCount by remember { mutableIntStateOf(0) }
+    var lineTotal by remember { mutableIntStateOf(1) }
+    var languagesReady by remember { mutableStateOf(false) }
+    var confirmDiscard by remember { mutableStateOf(false) }
+    var showMenu by remember { mutableStateOf(false) }
+    var gotoLineDialog by remember { mutableStateOf(false) }
+    var gotoLineText by remember { mutableStateOf("") }
+
+    // 查找 / 替换
     var showFind by remember { mutableStateOf(false) }
     var findText by remember { mutableStateOf("") }
     var replaceText by remember { mutableStateOf("") }
     var useRegex by remember { mutableStateOf(false) }
     var matchCase by remember { mutableStateOf(true) }
     var wholeWord by remember { mutableStateOf(false) }
-    var originalMode by remember { mutableStateOf<Int?>(null) }
-    var lang by remember { mutableStateOf(SyntaxLanguage.PLAIN) }
-    var confirmDiscard by remember { mutableStateOf(false) }
-    var showMenu by remember { mutableStateOf(false) }
-    var gotoLineDialog by remember { mutableStateOf(false) }
-    var gotoLineText by remember { mutableStateOf("") }
     var findOptionsMenu by remember { mutableStateOf(false) }
-    var searchBusy by remember { mutableStateOf(false) }
-    var searchRequestId by remember { mutableLongStateOf(0L) }
+    var lastQuery by remember { mutableStateOf<SearchSpec?>(null) }
+    var pendingAfterSearch by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var searchResultsReady by remember { mutableStateOf(false) }
+    var suppressSearchStatus by remember { mutableStateOf(false) }
 
-    // ---- 大文件只读分段浏览
+    // 大文件只读分段浏览
     var paged by remember { mutableStateOf(false) }
-    var page by remember { mutableStateOf(0) }
-    var pageCount by remember { mutableStateOf(0) }
+    var page by remember { mutableIntStateOf(0) }
+    var pageCount by remember { mutableIntStateOf(0) }
     var pageRange by remember { mutableStateOf(0L to 0L) }
     var pageLoading by remember { mutableStateOf(false) }
 
-    val text = value.text
-    val dirty = text != original && !paged
-    val searchOptions = TextSearchOptions(
-        regex = useRegex,
-        matchCase = matchCase,
-        wholeWord = wholeWord,
-    )
+    // 编辑器实例 + 「待灌入文本」。用普通容器（非 Compose state）避免在组合期写状态。
+    val editorHolder = remember { arrayOfNulls<CodeEditor>(1) }
+    var applyText by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    var textVersion by remember { mutableIntStateOf(0) }
+    val appliedVersion = remember { intArrayOf(-1) }
+    val appliedLanguage = remember { arrayOf<Any?>(NoLanguage) }
+    val appliedDark = remember { arrayOfNulls<Boolean>(1) }
 
-    LaunchedEffect(uri) {
-        searchRequestId++
-        searchBusy = false
-        try {
-            val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
-            val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
-            meta = info
-            originalMode = info.permissions
-            lang = SyntaxLanguage.ofFileName(info.name.ifEmpty { uri.name })
-            if (info.size > MAX_EDIT_SIZE) {
-                // 大文件：只读 + 分段浏览
-                readOnly = true
-                paged = true
-                pageCount = ((info.size + PAGE_SIZE - 1) / PAGE_SIZE).toInt().coerceAtLeast(1)
-                val slice = loadPage(vfs, uri, 0, info.size, charset = null)
-                charset = slice.charset
-                value = TextFieldValue(slice.text)
-                original = slice.text
-                page = 0
-                pageRange = slice.start to slice.end
-            } else {
-                val bytes = readAtMost(vfs, uri, MAX_EDIT_SIZE)
-                val decoded = TextEncodings.decode(bytes)
-                charset = decoded.charset
-                value = TextFieldValue(decoded.text)
-                original = decoded.text
-            }
-        } catch (e: Exception) {
-            error = e.message ?: "读取失败"
-        } finally {
-            loading = false
-        }
-    }
+    val highlightActive = charCount <= HL_MAX_CHARS
 
-    // ---- 语法高亮：后台词法分析（文本 / 语言变化时重算；超大文本关闭）
-    val hlActive = lang != SyntaxLanguage.PLAIN && text.length <= HL_MAX_CHARS
-    val spans by produceState(emptyList<TokenSpan>(), text, lang, hlActive) {
-        this.value = if (hlActive) withContext(Dispatchers.Default) {
-            runCatching { SyntaxLexer.highlight(text, lang) }.getOrDefault(emptyList())
-        } else emptyList()
-    }
-    val primaryColor = MaterialTheme.colorScheme.primary
-    val highlight = remember(spans, dark, primaryColor) {
-        SyntaxHighlightTransformation(spans, syntaxColors(dark, primaryColor))
-    }
-
-    /** 翻到指定段（0 起） */
-    fun goPage(target: Int) {
-        if (pageLoading) return
-        val info = meta ?: return
-        val t = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        searchRequestId++
-        searchBusy = false
-        scope.launch {
-            pageLoading = true
-            try {
-                val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
-                val slice = loadPage(vfs, uri, t, info.size, charset)
-                value = TextFieldValue(slice.text)
-                original = slice.text
-                page = t
-                pageRange = slice.start to slice.end
-            } catch (e: Exception) {
-                status = "读取分段失败：${e.message}"
-            } finally {
-                pageLoading = false
-            }
-        }
+    /** 让编辑器整体换一份文本（初次装载 / 翻段）。 */
+    fun pushText(text: String) {
+        textVersion += 1
+        applyText = textVersion to text
+        charCount = text.length
+        lineTotal = text.count { it == '\n' } + 1
     }
 
     /** 离开编辑器：未保存时弹「保存 / 放弃 / 取消」，避免手势返回静默丢修改 */
@@ -212,179 +151,237 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         confirmDiscard = true
     }
 
-    androidx.activity.compose.BackHandler(enabled = true) { attemptLeave() }
+    BackHandler(enabled = true) { attemptLeave() }
 
-    // ---------------- 查找（MT 的「找不到文本」差异化提示 0x7f1106e7~6ec）
-    fun notFoundMessage(options: TextSearchOptions): String = when {
-        options.regex && options.matchCase && options.wholeWord ->
-            "找不到文本（已开启正则表达式、全词匹配和区分大小写）"
-        options.regex && options.matchCase -> "找不到文本（已开启正则表达式和区分大小写）"
-        options.regex && options.wholeWord -> "找不到文本（已开启正则表达式和全词匹配）"
-        options.regex -> "找不到文本（已开启正则表达式）"
-        options.wholeWord && options.matchCase -> "找不到文本（已开启全词匹配和区分大小写）"
-        options.wholeWord -> "找不到文本（已开启全词匹配）"
-        options.matchCase -> "找不到文本（已开启区分大小写）"
+    // ---- 首次进入：后台加载语法/主题注册表（失败则退化为纯文本，不影响编辑）
+    LaunchedEffect(Unit) {
+        runCatching {
+            withContext(Dispatchers.IO) { EditorLanguages.ensureInitialized(context) }
+        }
+        languagesReady = true
+    }
+
+    // ---- 读取文件（编码识别 / 大文件分段）
+    LaunchedEffect(uri) {
+        try {
+            val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
+            val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
+            meta = info
+            originalMode = info.permissions
+            scopeName = EditorLanguages.scopeOf(info.name.ifEmpty { uri.name })
+            if (info.size > MAX_EDIT_SIZE) {
+                readOnly = true
+                paged = true
+                pageCount = ((info.size + PAGE_SIZE - 1) / PAGE_SIZE).toInt().coerceAtLeast(1)
+                val slice = loadPage(vfs, uri, 0, info.size, charset = null)
+                charset = slice.charset
+                page = 0
+                pageRange = slice.start to slice.end
+                pushText(slice.text)
+            } else {
+                val bytes = readAtMost(vfs, uri, MAX_EDIT_SIZE)
+                val decoded = TextEncodings.decode(bytes)
+                charset = decoded.charset
+                pushText(decoded.text)
+            }
+            dirty = false
+        } catch (e: Exception) {
+            error = e.message ?: "读取失败"
+        } finally {
+            loading = false
+        }
+    }
+
+    /** 翻到指定段（0 起） */
+    fun goPage(target: Int) {
+        if (pageLoading) return
+        val info = meta ?: return
+        val t = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        scope.launch {
+            pageLoading = true
+            try {
+                val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
+                val slice = loadPage(vfs, uri, t, info.size, charset)
+                page = t
+                pageRange = slice.start to slice.end
+                pushText(slice.text)
+            } catch (e: Exception) {
+                status = "读取分段失败：${e.message}"
+            } finally {
+                pageLoading = false
+            }
+        }
+    }
+
+    // ---------------- 查找 / 替换（sora EditorSearcher：后台搜索 + 全部命中高亮）
+
+    fun notFoundMessage(): String = when {
+        useRegex && matchCase && wholeWord -> "找不到文本（已开启正则表达式、全词匹配和区分大小写）"
+        useRegex && matchCase -> "找不到文本（已开启正则表达式和区分大小写）"
+        useRegex && wholeWord -> "找不到文本（已开启正则表达式和全词匹配）"
+        useRegex -> "找不到文本（已开启正则表达式）"
+        wholeWord && matchCase -> "找不到文本（已开启全词匹配和区分大小写）"
+        wholeWord -> "找不到文本（已开启全词匹配）"
+        matchCase -> "找不到文本（已开启区分大小写）"
         else -> "找不到文本"
     }
 
-    /** 输入条件/正文发生变化时，让正在后台执行的查找结果失效。 */
-    fun invalidateSearch(clearStatus: Boolean = true) {
-        searchRequestId++
-        searchBusy = false
-        if (clearStatus) status = null
+    fun currentSpec(pattern: String): SearchSpec = SearchSpec(pattern, useRegex, wholeWord, matchCase)
+
+    fun startSearch(ed: CodeEditor, spec: SearchSpec): Boolean {
+        val options = when {
+            spec.useRegex -> EditorSearcher.SearchOptions(
+                EditorSearcher.SearchOptions.TYPE_REGULAR_EXPRESSION,
+                !spec.matchCase,
+                RegexBackrefGrammar.DEFAULT,
+            )
+            spec.wholeWord -> EditorSearcher.SearchOptions(
+                EditorSearcher.SearchOptions.TYPE_WHOLE_WORD,
+                !spec.matchCase,
+            )
+            else -> EditorSearcher.SearchOptions(
+                EditorSearcher.SearchOptions.TYPE_NORMAL,
+                !spec.matchCase,
+            )
+        }
+        return try {
+            ed.searcher.search(spec.pattern, options)
+            lastQuery = spec
+            searchResultsReady = false
+            true
+        } catch (e: PatternSyntaxException) {
+            // MT 0x7f110602
+            status = "正则表达式有误"
+            false
+        } catch (e: Exception) {
+            status = "查找失败：${e.message}"
+            false
+        }
     }
 
-    /** 找下一个匹配（后台执行、循环）；[backward] = 上个。 */
-    fun findNext(backward: Boolean = false) {
-        val needle = findText
-        if (needle.isEmpty()) {
+    fun refreshSearchStatus(ed: CodeEditor) {
+        val searcher = ed.searcher
+        if (!searcher.hasQuery()) return
+        if (!searchResultsReady) {
+            // 结果还没算完：matchedPositionCount 会返回 0，不能当成「找不到」
+            status = "查找中…"
+            return
+        }
+        val count = runCatching { searcher.matchedPositionCount }.getOrDefault(0)
+        val index = runCatching { searcher.currentMatchedPositionIndex }.getOrDefault(-1)
+        status = when {
+            count == 0 -> notFoundMessage()
+            index >= 0 -> "第 ${index + 1} / $count 处"
+            else -> "共 $count 处"
+        }
+    }
+
+    fun jump(ed: CodeEditor, backward: Boolean) {
+        if (findText.isEmpty()) {
             status = "请输入查找内容"
             return
         }
-        if (searchBusy) return
-        val source = text
-        val options = searchOptions
-        val selection = value.selection
-        val from = if (backward || selection.collapsed) selection.start else selection.end
-        val requestId = searchRequestId + 1
-        searchRequestId = requestId
-        searchBusy = true
-        status = "查找中…"
-        scope.launch {
-            val result = withContext(Dispatchers.Default) {
-                TextSearch.findNext(source, TextSearchQuery(needle, options), from, backward)
-            }
-            if (requestId == searchRequestId) searchBusy = false
-            // 查询、正文或选项在后台计算期间发生变化时，丢弃旧结果，避免跳回旧位置。
-            if (
-                requestId != searchRequestId ||
-                value.text != source ||
-                findText != needle ||
-                searchOptions != options
-            ) return@launch
-            when {
-                result.error != null -> status = result.error
-                result.match == null -> status = notFoundMessage(options)
-                else -> {
-                    val match = result.match ?: return@launch
-                    value = value.copy(selection = TextRange(match.start, match.end))
-                    val line = withContext(Dispatchers.Default) { lineNumberAt(source, match.start) }
-                    status = "已找到 · 第 $line 行"
-                    container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_FIND, needle)
-                }
-            }
+        val spec = currentSpec(findText)
+        val fresh = spec != lastQuery
+        if (fresh && !startSearch(ed, spec)) return
+        val jumpNow: () -> Unit = {
+            runCatching { if (backward) ed.searcher.gotoPrevious() else ed.searcher.gotoNext() }
+            refreshSearchStatus(ed)
         }
+        if (fresh) pendingAfterSearch = jumpNow else jumpNow()
+        scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_FIND, spec.pattern) }
     }
 
-    /** 替换当前已选中的命中；没有命中时沿用 MT 的操作习惯先定位下一个。 */
-    fun replaceCurrent() {
+    fun replaceCurrent(ed: CodeEditor) {
         if (readOnly) return
-        val needle = findText
-        if (needle.isEmpty()) {
+        if (findText.isEmpty()) {
             status = "请输入查找内容"
             return
         }
-        val selection = value.selection
-        if (selection.collapsed || searchBusy) {
-            if (!searchBusy) findNext()
-            return
+        val spec = currentSpec(findText)
+        val fresh = spec != lastQuery
+        if (fresh && !startSearch(ed, spec)) return
+        val replaceNow: () -> Unit = {
+            // 选区正好是命中 → 替换；否则 sora 会先跳到下一个（与 MT 的操作习惯一致）
+            runCatching { ed.searcher.replaceCurrentMatch(replaceText) }
+            refreshSearchStatus(ed)
         }
-        val source = text
-        val replacement = replaceText
-        val options = searchOptions
-        val requestId = searchRequestId + 1
-        searchRequestId = requestId
-        searchBusy = true
-        status = "替换中…"
-        scope.launch {
-            val result = withContext(Dispatchers.Default) {
-                TextSearch.replaceOne(
-                    source,
-                    TextSearchQuery(needle, options),
-                    selection.start,
-                    selection.end,
-                    replacement,
-                )
-            }
-            if (requestId == searchRequestId) searchBusy = false
-            if (
-                requestId != searchRequestId ||
-                value.text != source ||
-                findText != needle ||
-                replaceText != replacement ||
-                searchOptions != options
-            ) return@launch
-            when {
-                result.error != null -> status = result.error
-                result.count == 0 -> findNext()
-                else -> {
-                    value = TextFieldValue(
-                        result.text,
-                        TextRange(selection.start + result.replacementLength),
-                    )
-                    status = "已替换 1 处"
-                    container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replacement)
-                }
-            }
-        }
+        if (fresh) pendingAfterSearch = replaceNow else replaceNow()
+        scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replaceText) }
     }
 
-    /** 全部替换只做一次后台扫描，并保留当前光标的大致位置。 */
-    fun replaceAll() {
+    fun replaceAll(ed: CodeEditor) {
         if (readOnly) return
-        val needle = findText
-        if (needle.isEmpty()) {
+        if (findText.isEmpty()) {
             status = "请输入查找内容"
             return
         }
-        if (searchBusy) return
-        val source = text
-        val replacement = replaceText
-        val options = searchOptions
-        val cursor = value.selection.start
-        val requestId = searchRequestId + 1
-        searchRequestId = requestId
-        searchBusy = true
-        status = "替换中…"
-        scope.launch {
-            val result = withContext(Dispatchers.Default) {
-                TextSearch.replaceAll(source, TextSearchQuery(needle, options), replacement)
-            }
-            if (requestId == searchRequestId) searchBusy = false
-            if (
-                requestId != searchRequestId ||
-                value.text != source ||
-                findText != needle ||
-                replaceText != replacement ||
-                searchOptions != options
-            ) return@launch
-            when {
-                result.error != null -> status = result.error
-                result.count == 0 -> status = notFoundMessage(options)
-                else -> {
-                    value = TextFieldValue(
-                        result.text,
-                        TextRange(cursor.coerceAtMost(result.text.length)),
-                    )
-                    status = "已替换 ${result.count} 处"
-                    container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replacement)
+        val spec = currentSpec(findText)
+        val fresh = spec != lastQuery
+        if (fresh && !startSearch(ed, spec)) return
+        val replaceNow: () -> Unit = {
+            val total = runCatching { ed.searcher.matchedPositionCount }.getOrDefault(0)
+            val started = runCatching {
+                ed.searcher.replaceAll(replaceText) {
+                    suppressSearchStatus = true
+                    status = "已替换 $total 处"
                 }
-            }
+            }.isSuccess
+            if (!started) refreshSearchStatus(ed)
         }
+        if (fresh) pendingAfterSearch = replaceNow else replaceNow()
+        scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replaceText) }
+    }
+
+    fun closeFind(ed: CodeEditor?) {
+        showFind = false
+        findOptionsMenu = false
+        lastQuery = null
+        pendingAfterSearch = null
+        searchResultsReady = false
+        ed?.searcher?.stopSearch()
     }
 
     // ---------------- 行操作（MT 菜单 0x7f0e001b）
-    val cursorLine = LineOps.lineIndexOf(text, value.selection.start)
-    val commentPrefix = commentPrefixOf(lang)
 
-    fun applyLineOp(op: (String, Int) -> String, label: String) {
-        val out = op(text, cursorLine)
-        if (out == text) {
+    /**
+     * 把 [op] 作用在编辑器全文上并写回。
+     *
+     * 细节：LineOps 以 `\n` 为行分隔，而文档可能是 CRLF —— 计算时先归一成 LF，
+     * 写回前再还原，避免「做一次行操作，整个文件的换行符被改掉」。
+     */
+    fun applyWholeTextOp(ed: CodeEditor, label: String, op: (String, Int) -> String) {
+        if (readOnly) return
+        val before = ed.text.toString()
+        val cursorLine = ed.cursor.leftLine
+        val crlf = before.contains("\r\n")
+        val source = if (crlf) before.replace("\r\n", "\n") else before
+        val result = op(source, cursorLine)
+        if (result == source) {
             status = "「$label」没有可操作的内容"
             return
         }
-        value = TextFieldValue(out, TextRange(LineOps.lineStartOffset(out, cursorLine).coerceAtMost(out.length)))
+        val out = if (crlf) result.replace("\n", "\r\n") else result
+        val lastLine = ed.lineCount - 1
+        ed.text.replace(0, 0, lastLine, ed.text.getColumnCount(lastLine), out)
+        ed.setSelection(cursorLine.coerceIn(0, (ed.lineCount - 1).coerceAtLeast(0)), 0, true)
         status = label
+    }
+
+    val commentPrefix = commentPrefixOf(scopeName)
+
+    // ---------------- 菜单动作
+
+    fun save(ed: CodeEditor?) {
+        val target = ed ?: return
+        scope.launch {
+            saveText(container, uri, target.text.toString(), charset, originalMode, { msg -> status = msg }) { ok ->
+                if (ok) {
+                    dirty = false
+                    container.browser.refreshAll()
+                }
+            }
+        }
     }
 
     val editorSettings = container.settings.collectAsState().value
@@ -396,7 +393,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             title = (meta?.name ?: uri.name) + if (dirty) " *" else "",
             onBack = { attemptLeave() },
         ) {
-            // MT 0x7f0e000e 的 ⋮ 主菜单
             Box {
                 MtIconButton(
                     icon = MtIcon.MORE,
@@ -405,77 +401,71 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 )
                 EditorMenu(
                     expanded = showMenu,
-                    lang = lang,
+                    canToggleComment = commentPrefix != null,
                     readOnly = readOnly,
                     onDismiss = { showMenu = false },
-                    onSave = {
-                        showMenu = false
-                        scope.launch {
-                            saveText(container, uri, text, charset, originalMode, { msg -> status = msg }) { ok ->
-                                if (ok) {
-                                    original = text
-                                    container.browser.refreshAll()
-                                }
-                            }
-                        }
-                    },
+                    onUndo = { showMenu = false; editorHolder[0]?.undo() },
+                    onRedo = { showMenu = false; editorHolder[0]?.redo() },
+                    onSave = { showMenu = false; save(editorHolder[0]) },
                     onLineOp = { label, op ->
                         showMenu = false
-                        applyLineOp(op, label)
+                        editorHolder[0]?.let { applyWholeTextOp(it, label, op) }
                     },
                     onToggleComment = {
                         showMenu = false
-                        if (commentPrefix == null) {
-                            // MT 0x7f110701「当前语言不支持该操作」
+                        val ed = editorHolder[0]
+                        val prefix = commentPrefix
+                        if (prefix == null) {
                             status = "当前语言不支持切换注释"
-                        } else {
-                            val out = LineOps.toggleComment(text, commentPrefix)
-                            value = TextFieldValue(out, TextRange(LineOps.lineStartOffset(out, cursorLine).coerceAtMost(out.length)))
-                            status = "切换注释"
+                        } else if (ed != null) {
+                            applyWholeTextOp(ed, "切换注释") { t, _ -> LineOps.toggleComment(t, prefix) }
                         }
                     },
                     onCompress = {
                         showMenu = false
-                        value = TextFieldValue(LineOps.trimTrailingWhitespace(text))
-                        status = "压缩代码（去行尾空白 / 首尾空行）"
+                        editorHolder[0]?.let {
+                            applyWholeTextOp(it, "压缩代码（去行尾空白 / 首尾空行）") { t, _ -> LineOps.trimTrailingWhitespace(t) }
+                        }
                     },
                     onFormat = {
                         showMenu = false
-                        val formatted = CodeFormatter.format(text, if (lang == SyntaxLanguage.XML) "xml" else "json")
-                        if (formatted == null) {
-                            status = "暂不支持该语言的格式化（当前支持 JSON / XML）"
-                        } else {
-                            value = TextFieldValue(formatted)
-                            status = "已格式化代码"
+                        val ed = editorHolder[0]
+                        if (ed != null) {
+                            val format = if (scopeName == "text.xml") "xml" else "json"
+                            val formatted = CodeFormatter.format(ed.text.toString(), format)
+                            if (formatted == null) {
+                                status = "暂不支持该语言的格式化（当前支持 JSON / XML）"
+                            } else {
+                                applyWholeTextOp(ed, "已格式化代码") { _, _ -> formatted }
+                            }
                         }
                     },
-                    onGotoLine = { showMenu = false; gotoLineText = (cursorLine + 1).toString(); gotoLineDialog = true },
+                    onGotoLine = {
+                        showMenu = false
+                        gotoLineText = ((editorHolder[0]?.cursor?.leftLine ?: 0) + 1).toString()
+                        gotoLineDialog = true
+                    },
                     onToggleFind = {
                         showMenu = false
-                        showFind = !showFind
-                        findOptionsMenu = false
+                        if (showFind) closeFind(editorHolder[0]) else showFind = true
                     },
                 )
             }
             TextButton(onClick = { fontSize = (fontSize - 1).coerceAtLeast(10) }) { Text("A-") }
             TextButton(onClick = { fontSize = (fontSize + 1).coerceAtMost(28) }) { Text("A+") }
             TextButton(onClick = {
-                showFind = !showFind
-                findOptionsMenu = false
+                if (showFind) closeFind(editorHolder[0]) else showFind = true
             }) { Text("查找") }
             TextButton(
                 enabled = !readOnly && dirty,
-                onClick = {
-                    scope.launch {
-                        saveText(container, uri, text, charset, originalMode, { msg -> status = msg }) { ok ->
-                            if (ok) {
-                                original = text
-                                container.browser.refreshAll()
-                            }
-                        }
-                    }
-                },
-            ) { Text("保存", color = if (!readOnly && dirty) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
+                onClick = { save(editorHolder[0]) },
+            ) {
+                Text(
+                    "保存",
+                    color = if (!readOnly && dirty) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         // ---- 大文件分段浏览控制条
@@ -501,8 +491,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             }
         }
 
-        // 查找条本体固定在编辑器底部，避免遮住正文。
-
         status?.let {
             Text(
                 it,
@@ -515,86 +503,116 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         when {
             loading -> LoadingState(modifier = Modifier.weight(1f).fillMaxWidth())
             error != null -> ErrorState("打开失败：$error", modifier = Modifier.weight(1f).fillMaxWidth())
-            else -> Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .verticalScroll(rememberScrollState())
-                    .padding(10.dp),
-            ) {
-                if (readOnly) {
+            else -> {
+                Column(Modifier.weight(1f).fillMaxWidth()) {
+                    if (readOnly) {
+                        Text(
+                            if (paged) "只读：文件大于 ${Fmt.size(MAX_EDIT_SIZE)}，已进入分段浏览（每段 ${Fmt.size(PAGE_SIZE)}）"
+                            else "只读：文件大于 ${Fmt.size(MAX_EDIT_SIZE)}（可另存或复制到本地后编辑）",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
+                        )
+                    }
+                    AndroidView(
+                        factory = { ctx ->
+                            CodeEditor(ctx).apply {
+                                setTypefaceText(Typeface.MONOSPACE)
+                                setLineNumberEnabled(true)
+                                setWordwrap(false)
+                                setTabWidth(4)
+                                setTextSize(fontSize.toFloat())
+                                setBackgroundColor(android.graphics.Color.TRANSPARENT)
+                                isEditable = false
+                                // 编辑即「已修改」；整体换文本（装载/翻段）不算
+                                subscribeEvent(ContentChangeEvent::class.java) { event, _ ->
+                                    if (event.action != ContentChangeEvent.ACTION_SET_NEW_TEXT) {
+                                        dirty = true
+                                        charCount = text.length
+                                        lineTotal = this.lineCount
+                                    }
+                                }
+                                // 搜索结果就绪（主线程派发；再延后一帧，保证 lastResults 已生效）
+                                subscribeEvent(PublishSearchResultEvent::class.java) { _, _ ->
+                                    postInLifecycle {
+                                        searchResultsReady = true
+                                        val pending = pendingAfterSearch
+                                        if (pending != null) {
+                                            pendingAfterSearch = null
+                                            pending()
+                                        } else if (suppressSearchStatus) {
+                                            suppressSearchStatus = false
+                                        } else {
+                                            refreshSearchStatus(this)
+                                        }
+                                    }
+                                }
+                                editorHolder[0] = this
+                            }
+                        },
+                        update = { ed ->
+                            if (languagesReady) {
+                                val effective = if (highlightActive) scopeName else null
+                                if (appliedLanguage[0] == NoLanguage || appliedLanguage[0] != effective) {
+                                    appliedLanguage[0] = effective
+                                    EditorLanguages.applyLanguage(ed, effective)
+                                }
+                                if (appliedDark[0] != dark) {
+                                    appliedDark[0] = dark
+                                    ed.colorScheme = EditorLanguages.createColorScheme(
+                                        dark = dark,
+                                        background = editorBackground,
+                                        gutterText = editorGutterText,
+                                        currentLine = editorCurrentLine,
+                                    )
+                                }
+                            }
+                            ed.setTextSize(fontSize.toFloat())
+                            ed.isEditable = !readOnly
+                            applyText?.let { (version, text) ->
+                                if (appliedVersion[0] != version) {
+                                    appliedVersion[0] = version
+                                    ed.setText(text)
+                                    ed.setSelection(0, 0, true)
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxSize(),
+                    )
                     Text(
-                        if (paged) "只读：文件大于 ${Fmt.size(MAX_EDIT_SIZE)}，已进入分段浏览（每段 ${Fmt.size(PAGE_SIZE)}）"
-                        else "只读：文件大于 ${Fmt.size(MAX_EDIT_SIZE)}（可另存或复制到本地后编辑）",
+                        buildString {
+                            append("$lineTotal 行 · $charCount 字符 · $charset")
+                            EditorLanguages.labelOf(scopeName)?.let { append(" · $it") }
+                            if (paged) append(" · 分段 ${page + 1}/$pageCount")
+                            meta?.size?.let { append(" · ${Fmt.size(it)}") }
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.error,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 4.dp),
                     )
                 }
-                BasicTextField(
-                    value = value,
-                    onValueChange = {
-                        if (!readOnly) {
-                            value = it
-                            invalidateSearch()
-                        }
-                    },
-                    textStyle = TextStyle(
-                        fontSize = fontSize.sp,
-                        lineHeight = (fontSize * 1.35f).sp,
-                        fontFamily = FontFamily.Monospace,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    ),
-                    visualTransformation = highlight,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-                Text(
-                    buildString {
-                        append("${text.count { it == '\n' } + 1} 行 · ${text.length} 字符 · $charset")
-                        if (lang != SyntaxLanguage.PLAIN) append(" · ${lang.label}")
-                        if (paged) append(" · 分段 ${page + 1}/$pageCount")
-                        meta?.size?.let { append(" · ${Fmt.size(it)}") }
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp),
-                )
             }
         }
+
         if (showFind) {
             EditorSearchBar(
                 findText = findText,
-                onFindTextChange = {
-                    findText = it
-                    invalidateSearch()
-                },
+                onFindTextChange = { findText = it },
                 replaceText = replaceText,
-                onReplaceTextChange = {
-                    replaceText = it
-                    invalidateSearch()
-                },
+                onReplaceTextChange = { replaceText = it },
                 findHistory = findHistory,
                 replaceHistory = replaceHistory,
                 readOnly = readOnly,
-                busy = searchBusy,
-                options = searchOptions,
+                options = EditorSearchOptionsState(useRegex, matchCase, wholeWord),
                 optionsMenuExpanded = findOptionsMenu,
                 onOptionsMenuExpandedChange = { findOptionsMenu = it },
-                onRegexChange = {
-                    useRegex = it
-                    invalidateSearch()
-                },
-                onMatchCaseChange = {
-                    matchCase = it
-                    invalidateSearch()
-                },
-                onWholeWordChange = {
-                    wholeWord = it
-                    invalidateSearch()
-                },
-                onPrevious = { findNext(backward = true) },
-                onNext = { findNext() },
-                onReplace = { replaceCurrent() },
-                onReplaceAll = { replaceAll() },
+                onToggleRegex = { useRegex = it; lastQuery = null },
+                onToggleMatchCase = { matchCase = it; lastQuery = null },
+                onToggleWholeWord = { wholeWord = it; lastQuery = null },
+                onPrevious = { editorHolder[0]?.let { jump(it, backward = true) } },
+                onNext = { editorHolder[0]?.let { jump(it, backward = false) } },
+                onReplace = { editorHolder[0]?.let { replaceCurrent(it) } },
+                onReplaceAll = { editorHolder[0]?.let { replaceAll(it) } },
             )
         }
     }
@@ -607,7 +625,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 Column {
                     EditorField(gotoLineText, { gotoLineText = it }, "行号", Modifier.fillMaxWidth())
                     Text(
-                        "共 ${text.count { it == '\n' } + 1} 行",
+                        "共 $lineTotal 行",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 6.dp),
@@ -617,11 +635,13 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             confirmButton = {
                 TextButton(onClick = {
                     val target = gotoLineText.trim().toIntOrNull()
-                    if (target == null || target < 1) {
+                    val ed = editorHolder[0]
+                    if (target == null || target < 1 || ed == null) {
                         status = "请输入有效的行号"
+                    } else if (target > ed.lineCount) {
+                        status = "行号超出范围（共 ${ed.lineCount} 行）"
                     } else {
-                        val off = LineOps.lineStartOffset(text, target - 1).coerceIn(0, text.length)
-                        value = value.copy(selection = TextRange(off))
+                        ed.setSelection(target - 1, 0, true)
                         status = "已定位到第 $target 行"
                     }
                     gotoLineDialog = false
@@ -640,7 +660,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 TextButton(onClick = {
                     confirmDiscard = false
                     scope.launch {
-                        saveText(container, uri, text, charset, originalMode, { msg -> status = msg }) { ok ->
+                        val ed = editorHolder[0] ?: return@launch
+                        saveText(container, uri, ed.text.toString(), charset, originalMode, { msg -> status = msg }) { ok ->
                             if (ok) onBack()
                         }
                     }
@@ -659,13 +680,26 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     }
 }
 
-/** 编辑器 ⋮ 菜单（复刻 MT 0x7f0e001b 行操作 + 0x7f0e000e 主菜单的可用子集） */
+/** 「尚未设置过语言」的哨兵（用来区分「没设置」与「设置成纯文本」）。 */
+private val NoLanguage = Any()
+
+/** 查找/替换的查询快照（用于判断「条件是否变化」）。 */
+private data class SearchSpec(
+    val pattern: String,
+    val useRegex: Boolean,
+    val wholeWord: Boolean,
+    val matchCase: Boolean,
+)
+
+/** 编辑器 ⋮ 菜单（复刻 MT 0x7f0e001b：撤销/重做 + 行操作 + 代码整理） */
 @Composable
 private fun EditorMenu(
     expanded: Boolean,
-    lang: SyntaxLanguage,
+    canToggleComment: Boolean,
     readOnly: Boolean,
     onDismiss: () -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onSave: () -> Unit,
     onLineOp: (String, (String, Int) -> String) -> Unit,
     onToggleComment: () -> Unit,
@@ -676,6 +710,8 @@ private fun EditorMenu(
 ) {
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss) {
         DropdownMenuItem(text = { Text("💾  保存") }, onClick = onSave, enabled = !readOnly)
+        DropdownMenuItem(text = { Text("↶  撤销") }, onClick = onUndo, enabled = !readOnly)
+        DropdownMenuItem(text = { Text("↷  重做") }, onClick = onRedo, enabled = !readOnly)
         DropdownMenuItem(text = { Text("🔍  查找 / 替换") }, onClick = onToggleFind)
         DropdownMenuItem(text = { Text("↧  转到指定行…") }, onClick = onGotoLine)
         Text(
@@ -699,7 +735,10 @@ private fun EditorMenu(
         )
         DropdownMenuItem(text = { Text("→|  增加缩进") }, onClick = { onLineOp("增加缩进") { t, _ -> LineOps.indent(t) } })
         DropdownMenuItem(text = { Text("|←  减小缩进") }, onClick = { onLineOp("减小缩进") { t, _ -> LineOps.unindent(t) } })
-        DropdownMenuItem(text = { Text("//  切换注释") }, onClick = onToggleComment)
+        DropdownMenuItem(
+            text = { Text("//  切换注释" + if (canToggleComment) "" else "（当前语言不支持）") },
+            onClick = onToggleComment,
+        )
         Text(
             "代码整理",
             style = MaterialTheme.typography.labelSmall,
@@ -707,33 +746,15 @@ private fun EditorMenu(
             modifier = Modifier.padding(start = 12.dp, top = 6.dp),
         )
         DropdownMenuItem(text = { Text("🗜  压缩代码（去空白）") }, onClick = onCompress)
-        DropdownMenuItem(
-            text = {
-                Text(
-                    "✨  格式化代码" + if (lang == SyntaxLanguage.JSON || lang == SyntaxLanguage.XML) "" else "（当前语言不支持）",
-                )
-            },
-            onClick = onFormat,
-        )
+        DropdownMenuItem(text = { Text("✨  格式化代码") }, onClick = onFormat)
     }
 }
 
-/** 按语言给行注释前缀（MT 的「切换注释」按语法规则；不支持的语言返回 null） */
-internal fun commentPrefixOf(lang: SyntaxLanguage): String? = when (lang) {
-    SyntaxLanguage.KOTLIN, SyntaxLanguage.JAVA, SyntaxLanguage.JAVASCRIPT, SyntaxLanguage.TYPESCRIPT,
-    SyntaxLanguage.CSS,
-    -> "//"
-    SyntaxLanguage.PYTHON, SyntaxLanguage.SHELL, SyntaxLanguage.YAML, SyntaxLanguage.PROPERTIES,
-    SyntaxLanguage.INI,
-    -> "#"
+/** 按 scope 给行注释前缀（不支持的语言返回 null） */
+internal fun commentPrefixOf(scope: String?): String? = when (scope) {
+    "source.kotlin", "source.java", "source.js", "source.ts", "source.css" -> "//"
+    "source.python", "source.shell", "source.yaml" -> "#"
     else -> null
-}
-
-private fun lineNumberAt(text: String, offset: Int): Int {
-    var line = 1
-    val end = offset.coerceIn(0, text.length)
-    for (i in 0 until end) if (text[i] == '\n') line++
-    return line
 }
 
 // ------------------------------------------------------------------ 分段浏览
@@ -744,7 +765,7 @@ private const val MAX_EDIT_SIZE = 2L * 1024 * 1024
 private const val PAGE_SIZE = 512L * 1024
 private const val PAGE_SLACK = 64L * 1024
 
-/** 语法高亮字符上限（超过则关闭，保证输入流畅） */
+/** 语法高亮字符上限（超过则退化为纯文本，保证输入流畅） */
 private const val HL_MAX_CHARS = 640_000
 
 private data class PageSlice(val text: String, val charset: String, val start: Long, val end: Long)
@@ -803,45 +824,6 @@ private fun decodeWith(charset: String, bytes: ByteArray): String = when {
     charset == "UTF-16LE" -> String(bytes, Charsets.UTF_16LE)
     charset == "UTF-16BE" -> String(bytes, Charsets.UTF_16BE)
     else -> String(bytes, Charsets.ISO_8859_1)
-}
-
-// ------------------------------------------------------------------ 语法着色
-
-/** 高亮配色（明/暗两套；只影响观感，不影响文本与编辑） */
-private fun syntaxColors(dark: Boolean, primary: Color): Map<TokenType, SpanStyle> {
-    fun color(light: Long, darkColor: Long) = Color(if (dark) darkColor else light)
-    return mapOf(
-        TokenType.KEYWORD to SpanStyle(color = color(0xFF7C3AED, 0xFFC792EA)),
-        TokenType.STRING to SpanStyle(color = color(0xFF1E8E3E, 0xFF9CCC65)),
-        TokenType.COMMENT to SpanStyle(color = color(0xFF80868B, 0xFF9AA0A6), fontStyle = FontStyle.Italic),
-        TokenType.NUMBER to SpanStyle(color = color(0xFF1565C0, 0xFF82B1FF)),
-        TokenType.KEY to SpanStyle(color = color(0xFF00695C, 0xFF4DB6AC)),
-        TokenType.TAG to SpanStyle(color = color(0xFFD81B60, 0xFFF48FB1)),
-        TokenType.ATTR to SpanStyle(color = color(0xFFE65100, 0xFFFFB74D)),
-        TokenType.ANNOTATION to SpanStyle(color = color(0xFF8E24AA, 0xFFB39DDB)),
-        TokenType.HEADING to SpanStyle(color = primary, fontWeight = FontWeight.Bold),
-        TokenType.CODE to SpanStyle(color = color(0xFF00695C, 0xFF80CBC4)),
-    )
-}
-
-private class SyntaxHighlightTransformation(
-    private val spans: List<TokenSpan>,
-    private val colors: Map<TokenType, SpanStyle>,
-) : VisualTransformation {
-    override fun filter(text: AnnotatedString): TransformedText {
-        if (spans.isEmpty()) return TransformedText(text, OffsetMapping.Identity)
-        val plain = text.text
-        val annotated = buildAnnotatedString {
-            append(plain)
-            spans.forEach { span ->
-                val style = colors[span.type] ?: return@forEach
-                if (span.start in 0 until span.end && span.end <= plain.length) {
-                    addStyle(style, span.start, span.end)
-                }
-            }
-        }
-        return TransformedText(annotated, OffsetMapping.Identity)
-    }
 }
 
 // ------------------------------------------------------------------ 小工具组件
@@ -934,12 +916,7 @@ private suspend fun saveText(
 /**
  * 「保存前自动 .bak 备份」的实际实现。
  *
- * 旧实现有两个真 bug（v1.2.1 起就有）：
- *  ① 用 `rename`：改名成功、写新内容失败时，原文件名已经没了，目录里只剩 `x.bak`；
- *  ② 目标名**固定** `x.bak`：第二次保存必然撞名（`LocalVfs.rename` 抛 Conflict），
- *     而调用点用 `runCatching` 吞掉 → 从第二次起**静默不备份**，用户却以为一直在备份。
- *
- * 现在：复制到不冲突的 `.bak` / `.bak.1` / …（复用 [AppContainer.uniqueChild]），
+ * 复制到不冲突的 `.bak` / `.bak.1` / …（复用 [AppContainer.uniqueChild]），
  * 返回备份名；失败返回 null，由调用方在状态里明确提示。
  */
 private suspend fun backupBeforeSave(
