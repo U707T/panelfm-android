@@ -8,6 +8,36 @@
 > 不再作为任何结论的依据（其中大量资源 ID 推断无法从本仓库复核）。这些段落保留为历史记录，
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`。
 
+## v1.10.1 — 代码复审（code-review-and-quality 五轴）：远程路径解码 + 死代码清理 + 播放器/WebView 加固
+
+> 一句话：对全仓做了一轮**五轴代码复审**（正确性 / 可读性 / 架构 / 安全 / 性能）——
+> 修 4 处（1 个真实解码 bug、1 处死代码、2 处小加固），给安全关键的 HTTP 路径解析补 **7 例回归测试**，
+> 并用**变异测试**验证了 v1.10.0 的显式目标用例真能抓回归；其余高风险面（zip-slip / 原子提交 /
+> 断点续传 / 口令保险箱）逐条核对无问题。完整报告见 `docs/CODE-REVIEW-2026-10-07.md`。
+
+### 修复清单
+
+| # | 级别 | 问题 | 修法 |
+|---|---|---|---|
+| F17 | P2 | 远程管理：URL 路径里的 `+` 被 `URLDecoder` 按表单语义解成**空格** → `a+b.txt` 请求到 `a b.txt`（同名文件并存时**读错文件**） | 新增 `decodeRemotePath()`（先把 `+` 转义为 `%2B` 再解码）；提为 `internal` 可单测 |
+| F18 | 清理 | `BrowserController.forgetScroll` 全仓 0 引用（滚动记忆语义改「保持位置」后的死代码） | 删除（`ScrollMemory.forget` 保留：带单测的通用 API） |
+| F19 | P3 | 播放器改 `Player.Listener` 后，READY / ENDED / seek 完成等**非播放中**瞬间进度条位置不刷新 | `onPlaybackStateChanged` 补一次位置刷新 |
+| F20 | P3 | ① WebView 未显式关闭 file:// 同源放宽；② 远程管理**安全关键**路径规整（`..` 拒绝）此前**零测试** | ① 显式 `allowFileAccessFromFileURLs = false` / `allowUniversalAccessFromFileURLs = false`；② 新增 `RemoteHttpPathTest` 7 例（穿越 / 编码穿越 / `+` 语义 / 规整） |
+
+### 复审结论（详见报告）
+
+- **核对无问题 9 组**：zip-slip 防线（含既有危险条目测试）、`LocalVfs.commit` 原子替换、
+  断点续传 `.part`/取消语义、Keystore 口令保险箱、无 `GlobalScope`/`Thread.sleep`/日志敏感信息、
+  远程 HTTP 其余面（越界/转义/头注入/并发/超时）、Office WebView 离线约束、预览失败态家族、传输并发限流；
+- **变异测试**：破坏 `explicitTargets` 的「空列表不回退」后，`ExplicitTargetsTest` 如预期 FAILED → 用例有效；
+- **结构债（记录未改）**：`BrowserController.kt` 2297 行 / `DualPaneScreen.kt` 2277 行 / `MediaScreen.kt` 1883 行，
+  后续按「纯搬移拆分 + 独立提交」处理（见报告 §4）。
+
+### 验证
+
+- 全量单测 **337 例全绿**（+7：`RemoteHttpPathTest`）；`lintDebug` **0 Error**；`compileDebugKotlin` / `assembleDebug` 本地通过；
+- CI：push 后自动全量测试 + 三 ABI + 16KB 校验 + 建 Release（备注含本节）。
+
 ## v1.10.0 — 审计收口：两个 P1 误操作 + 长操作「进度 / 取消」+ 一批体验修复
 
 > 一句话：把最近两轮审计的可修项一次收口 —— ①「长按这一项，却对整个目录动手」的两个 P1 漏网入口
