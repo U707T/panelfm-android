@@ -7,6 +7,30 @@
 > 不再作为任何结论的依据（其中大量资源 ID 推断无法从本仓库复核）。这些段落保留为历史记录，
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`。
 
+## v1.9.2 — 解压修复（挂载缺失 + 全量兜底）+ docx 预览不再空白 + 状态提示队列
+
+> 一句话：修两个实机反馈 —— ①「解压**报错/闪退**」：`extractArchiveTo` 没先挂载压缩包就入队，
+> 且异常没有兜底；②「**docx 预览空白**」：渲染库"成功但产出空壳"时页面一片空白、没有任何线索。
+> 另把审计 U9 收口：状态提示改**队列**（不再互相顶掉），错误类消息停更久。
+
+### 修复清单
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| F5 | 长按压缩包 →「解压到当前目录 / 单独文件夹」→ 报错（用户观感"闪退"） | `extractArchiveTo` 直接构造 `archive://` 根 URI 入队，**没有先挂载压缩包**；`SessionLocator` 对 `archive://` 只认"已挂载"（`archiveOf`）→ 报「源位置不可用」；整段跑在 `container.scope.launch`（该 scope 无异常处理器）→ 悬空异常可能直接崩 | 入队前 `openArchive(item.uri)` 挂载（并按**实际挂载的类型**构造根 URI）；整段包 `try/catch`（`CancellationException` 除外）→ 任何失败都变成状态栏一句可读的话 |
+| F6 | `.docx` 预览**空白**（无报错、无内容） | 沙箱无法复现（没有 WebView/设备）。按「让失败可见 + 绝不让用户看空白」加固：<br>· 全局 `error` / `unhandledrejection` 也进状态栏（以前只在 `catch` 里兜）；<br>· 渲染后**检测空壳**（没有 `section`、也没有文字与图片）→ **纯文本兜底**（用 JSZip 解 `word/document.xml` 抽段落显示）；<br>· `inset:0` 简写换显式偏移（老 WebView 不认 `inset` → 容器没有尺寸，正是"渲染了却看不见"的典型）；<br>· 去掉没有依据的 `experimental: true`（它会启用基于布局测量的制表位刷新）；<br>· 每一步 `[OfficePreview]` 日志（Kotlin 侧已转发 logcat，下次有问题可直接定位） | 见 `assets/office/viewer.js` / `viewer.css` |
+| U9 | 状态提示 3 秒且互相顶掉（审计开放项） | 单条 `status` + `delay(3000)`，新消息直接替换旧消息 | 改**队列**（最多 8 条、一条条显示）；错误类消息停 6s（普通 2.6s）——纯函数 `statusDurationMs()` + 单测；验收口径见 `docs/AUDIT-UX-2026-10-05.md`（U9 ✅ 已修） |
+
+顺带：审计 U8（死菜单项）核对为**早已修复**（三个死入口已移除、「关于」改对话框），本次同步更新状态表。
+
+### 验证
+
+- 全量单测 **312 例全绿**（新增 `StatusDurationTest` 3 例）；
+- `viewer.js` 过一遍语法自检 + **Node 冒烟**：JSZip 解 docx → 抽段落文本（`word/document.xml`）路径实测通过；
+- `:app:compileDebugKotlin` / `assembleDebug` / `lintDebug`(Error 0) 通过；
+- **仍待实机**：F6 的真实原因（若还是空白，logcat 里 `PanelFM` 的 `[OfficePreview]` 行会写明是哪一步）；
+  解压路径按 `docs/AUDIT-2026-10-07-EXPERIENCE.md` §5 复核。
+
 ## v1.9.1 — 体验审计修复：长按菜单不再误伤整个目录 + 压缩包解压接线
 
 > 一句话：审计「用户实际会碰到的交互/功能路径」时抓到**两个 P0**（都会造成误操作、其中一个会误删）：
