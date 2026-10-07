@@ -5,7 +5,7 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1–5 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
+> 修复：**第 1–5、7 批已修复收口**（见各批末尾「修复记录」）；第 6 批修复进行中；其余批次待审计后继续。
 
 ---
 
@@ -908,4 +908,101 @@
 
 ---
 
-（后续批次在本文档追加 §7、§8 …）
+## §7 模块审查：app/ui/connections（2026-10-08 · 第 7 批）
+
+> 结论一句话：S3 连接**编辑一次就坏一层**——回填按 SFTP 格式解析、保存按 `AK:SK` 再拼一次、连接端只取第一段：三处各自「看起来对」，合起来每保存一次给 secret 多叠一层 `AK:`，认证必挂（纯代码级证据链，故障在所有 S3 用户日常编辑路径上）。另有 3 个「显示但零消费」的静默字段（SFTP 编码、SMB/S3 根路径）、WebDAV IPv6 编辑保存损坏 host、Android 17 未授权时扫描静默全空等 5 项 🟡。
+> 范围：`app/src/main/kotlin/com/u707t/panelfm/ui/connections/`（3 文件 / 922 行：ConnectionEditScreen 710 / LanScanScreen 129 / WebDavUrl 83）+ 测试 1 文件 / 74 行（仅 WebDavUrlTest）。等级：**🟡 维持**。
+> 方法：3 文件全量通读 + 全仓交叉取证（SecretStore / ConnectionDao / VfsRegistry / saveSecret 全链 / SmbVfs / S3Config / FtpConfig / DavHttp / HomeScreen / AppRoot / LocalNetwork）+ 逐字段「UI 显示 ↔ 落库 ↔ 协议消费」三方对照。未跑真机；🔴1 与 🟡4 为字符串级完整推演（修复栏含对应测试要求）。
+> **基线核对**：HEAD `b9dd0f3`（第 5 批修复收口 + §6 已提交）；开工时工作树干净，审读期间第 6 批修复会话全面在途（属 §6 修复清单的多协议文件 + 新测试），与本批 3 文件零交叉。
+
+### 🔴 阻断性问题
+
+**1. S3 编辑连接后 secret 被层层加前缀——每次保存多叠一层 `AK:`，认证必然失败**
+- 位置：`ConnectionEditScreen.kt:83-85`（回填）、`:94`（password 状态）、`:238-239`（保存拼接），`S3Config.kt:38-40`（连接端拆分）。
+- 问题：三处约定各自成立、组合成数据损坏链——① 回填统一走 `SftpSecrets.parse(loadSecret)`（`:84`）：S3 的 secret 是 `"AK:SK"` 拼接串，不以 `{` 开头被当成裸密码，整串塞进 `password` 字段（`:94`）；② 保存走 `buildSecret()`：`"$user:$password"` → `"AK:AK:SK"`；③ 连接走 `S3Config.from`：`split(':', limit=2)[1]` 取到 `"AK:SK"` 当 secretKey → 签名错误（403）。**编辑页打开即已污染**：只点「测试」也会失败（测试用 `buildSecret()` 直传，`ConnectionEditScreen.kt:343`）；保存后（`:282-291`）旧会话因 `oldSecret != secret` 被断开，下次连接用污染值。每编辑保存一次再叠一层。
+- 为什么：这是 S3 日常主路径——改备注 / 换 bucket / 调 region 都会路过保存；症状是「AK/SK 明明没动，连接突然认证失败」，用户在密码框（掩码）里看不出被加了前缀，也绝不会怀疑是编辑器。`SftpSecrets` 的解析/序列化与 S3 secret 编解码**全链零测试**（`core/vfs-sftp` 无 SftpSecrets 测试；本模块测试只覆盖 URL），所以三处约定没有一处被往返测试锁住。
+- 修复（二选一）：
+  - A) 最小修——回填按协议拆：S3 时 `password = secret.split(':', limit = 2).getOrElse(1) { secret }`（与 `S3Config.from` 的「无冒号=整串是 SK」兼容分支对齐）；重建的 `"$user:$password"` 与旧串相等时不会触发误断连。
+  - B) 正解（推荐）——存储格式改纯 SK：`buildSecret()` 的 S3 分支改 `password.ifEmpty { null }`；`S3Config.from` 无需改（`:40` 已兼容裸 SK）；回填一次拆旧 `"AK:SK"` 前缀。加一张**往返测试表**（5 协议 × 有/无 secret × 旧格式输入），锁死「回填→保存」恒等。
+- 前提：先做 🟡6 的纯函数抽取，测试才有挂点。
+
+### 🟡 建议修复
+
+**2. SFTP「编码」选择器是静默无效开关——作者自己立下的规则在此漏网**
+- 位置：`ConnectionEditScreen.kt:602-618`（UI）、`:212-215`（写入 options）；`core/vfs-sftp/` 全目录对 `OPT_ENCODING` 零引用（消费方不存在）。
+- 问题：编码选择器（UTF-8 / GBK / GB18030 / Big5）在 FTP / FTPS / SFTP 三种类型下显示并落库，但 SFTP 侧无人读取——SFTP 文件名编码由 SSH 协议固定 UTF-8，本就无法由该选项改变。而 `:581-584` 的注释刚写下「只对**真正读取该选项**的协议显示开关……静默无效的开关比没有开关更糟：用户会以为自己已经放开了校验」——编码区块正是同一次修复的漏网。
+- 为什么：用户选 GBK 后以为治好了乱码（没治好，且无任何反馈），实际会把排查方向带偏；规则已经写进代码却没执行完，说明「UI 显示 ↔ 消费方」靠人工同步不可靠——这正是本批做三方对照的原因。
+- 修复：显示条件（`:603`）与写侧条件（`:212`）都从 `FTP || FTPS || SFTP` 收回 `FTP || FTPS`（各一行）；在附近注明「SFTP 固定 UTF-8，无编码选项」。不建议为 SFTP 接线（协议层行为）。
+
+**3. FTPS「隐式 TLS（990 端口）」不联动端口——开了开关仍连 21；配置层 990 兜底被 `port > 0` 屏蔽**
+- 位置：`ConnectionEditScreen.kt:597`（开关只改状态）、`:178-180`（端口重置只在新连接时），连接端 `FtpVfs.kt:86` / `:110`（`FTPSClient(true)` + `connect(cfg.host, cfg.port)`），配置层兜底 `FtpConfig.kt:25-31`。
+- 问题：开关 label 承诺「990 端口」，但打开后没有任何代码把端口 21 → 990——`FTPSClient(true)` 在 21 端口上做隐式 TLS 握手，标准服务器必然失败，用户须自行悟到「去改端口」，而 label 恰恰让他别想。配置层兜底（`:31`：`else if (implicitTls) 990`）被前置 `config.port > 0` 屏蔽：UI 端口恒 ≥1（有 1..65535 校验），兜底只对脏数据生效——**对真实用户路径一步没走**（该兜底为审读期间修复会话新补，`FtpConfig.kt:30` 注释即此意图）。
+- 为什么：一开即错，报错是「连接被拒 / 握手失败」，不会指向端口；对目标用户（隐式 TLS / 990 服务器）100% 踩中；「标准端口 990」的注释还会让后续维护者误以为已处理。
+- 修复：UI 开关联动端口（开且 `port=="21"` → `"990"`；关且 `port=="990"` → `"21"`）；`FtpConfig` 兜底保留（防脏数据），注释注明「不覆盖 UI 默认 21 的场景，联动在 UI 层」。
+
+**4. WebDavUrl 互转不闭合：IPv6 丢失方括号（编辑保存即损坏 host）、host 区不剥 `?`/`#`**
+- 位置：`WebDavUrl.kt:79-81`（build）、`:39-40` 与 `:56-64`（parse 的 hostPort 段）、`:68`（query/fragment 只在 rawPath 上剥）。
+- 问题：① `parse` 支持 `[fe80::1]:5244` 并剥离括号存 host，`build` 却不回填括号——编辑任何 IPv6 连接时 URL 框已显示成 `http://fe80::1:5244/dav`（错的），用户点保存 → `applyUrlIfWebDav` 再解析 → 多冒号落入 `:61-63` 防御分支 → **host 落库为 `"fe80::1:5244"`、port 重置 80**——零修改的「打开→保存」就损坏配置。② 无路径 URL（`http://host?x=1`）的 `?`/`#` 不剥（只处理了 rawPath），query 被并进 host 落库。
+- 为什么：静默数据损坏（用户没动 host 却被改坏，之后连接必挂且难归因）；`WebDavUrlTest` 的 `buildRoundTrip` 只测 IPv4、IPv6 只测 parse——单侧测试掩盖了不闭合。IPv6 NAS（fe80/ULA）用户占比小，但「打开-保存即坏」的确定性损坏配 🟡。
+- 修复：`build` 对含冒号的裸 IPv6 加回方括号（`if (host.contains(':') && !host.startsWith("[")) "[$host]"`）；parse 在 `:40` 后先对 `hostPort` 剥 `?`/`#`（`[::1]?x` 场景会自然落入 null 拒绝）。补测试：IPv6 `build→parse` 往返恒等 + `http://host?x=1` 用例。
+
+**5. Android 17 未授权时 LAN 扫描静默全空——权限判据用错了条件，文案触发点与授权无关**
+- 位置：`LanScanScreen.kt:38`（prefixes）、`:49`（「未检测到（需要局域网访问权限）」文案）、`:77-92`（扫描块）；对照 `LocalNetwork.kt:13-19`、`HomeScreen.kt:270-276`、`AppRoot.kt:202-216`。
+- 问题：进入扫描页无任何 `LocalNetwork.isGranted` 检查——API 37+ 未授权时探测全部失败，用户拿到「已发现 0 台」且无任何指引；而权限文案的触发条件是 `prefixes.isEmpty()`（网卡枚举结果，与授权状态无直接关系）——需要它的场景不出现，不需要它的场景（无网络接口）才出现。对照：启动对话框（`AppRoot.kt:202-216`，文案自己都写着「未授权时连接会直接超时且没有提示」）与首页卡片（`HomeScreen.kt:270-276`）都有引导，唯独最依赖该权限的扫描页没有。
+- 为什么：用户在启动对话框点「稍后」→ 进扫描页 → 0 台——功能看起来「坏了」，无恢复路径；此为 §6 🔵18（`LOCAL_NETWORK_DENIED` 连接层无人抛出）在 UI 侧的另一端，两处各自半截。
+- 修复：进页或点「开始扫描」前检查 `LocalNetwork.isGranted`，未授权时直接显示授权按钮（复用首页 PermissionCard 模式）；扫描结束 0 台且未授权 → 明确提示「未授权，结果不可信」。
+
+**6. 表单的状态 / UI / 组装 / 校验四向分散、零测试——🔴1 的温床**
+- 位置：`ConnectionEditScreen.kt:81-148`（约 40 个状态声明）、`:151-176`（私钥导入）、`:203-247`（options / secret 组装）、`:260-347`（保存 / 测试流程）、`:379-680`（UI）。
+- 问题：一个字段的生命周期要跨四段代码手工同步（默认值、UI 控件、组装、回填），5 协议 × N 字段没有单一事实源；secret 编解码写死在 `buildSecret()` 闭包里（不可测），回填散在 `:84 / :94 / :131 / :136`。🔴1 正是「回填端按 SFTP 格式、保存端按 S3 格式、连接端按 `split` 取值」三个远端各自演进、没有任何往返测试兜底的产物；本批核对出的 3 个「显示 ↔ 消费」不一致（🟡2、🔵8）同为此类漏网。710 行本身不必拆 UI，但这个逻辑基线必须先收拢。
+- 为什么：加一个字段 / 协议要同步改 4 处，任何一处漏掉都是静默故障；修 🔴1 只能靠人肉比对三处代码，下次同样会漏。
+- 修复（渐进三步）：① 抽 `ConnForm`（data class）+ 独立文件 `ConnFormCodec.kt`：`buildOptions(form)` / `buildSecret(form)` / `parseSecret(type, raw)` / `validate(form)` 全部纯函数；② 首套测试：S3 secret 往返（含旧格式兼容）、SftpSecrets JSON 往返、选项矩阵（每协议应写/不应写哪些键）、validate 边界（端口 / URL / SMB share）；③（可选，最后做）UI 按协议拆区块 composable。
+
+### 🔵 可选优化
+
+**7.** `secure` 开关的 443 静默失效：只在 `true` 时写入（`ConnectionEditScreen.kt:204`）+ Config fallback `port==443`（`DavHttp.kt:31`、`S3Config.kt:41`）——443 端口上「关闭 HTTPS」/「显式 `http://`」都改不回；修复：编辑加载时按同款 fallback 初始化 `secure`，相关协议保存时无条件写 `"secure"=值`（旧数据加载即得真实值，回写不回退）。**8.** SMB / S3 的「根路径」字段语义错位（`ConnectionEditScreen.kt:468-475`、`Connection.kt:55-66`、`SmbVfs.kt:562-572`）：SMB 上 openPath 首段=共享名（`splitSmbPath` 的 `parts.first()`，`:569`）——「共享名=public + 根路径=/docs」（最自然的表达）会去找共享 docs（`shareOf` 报「打开共享失败：docs」，`:143`）；S3 上它是与「初始路径」重复的 key 前缀。修复：SMB 的 label / placeholder 指向「/共享名/子目录」模型或隐藏该框（配合 §6 🟡8）；S3 隐藏（用「初始路径」表达）。**9.** `insert()` 返回 -1 未检查（`ConnectionEditScreen.kt:294-295`、`ConnectionDao.kt:26-30`）：DB 写失败仍 `saveSecret(-1, …)` 并正常返回；修复：`id <= 0` 时置错误状态并 return。**10.** busy 期间「取消」可中断保存（`ConnectionEditScreen.kt:676`）：`rememberCoroutineScope` 随组合销毁取消协程，`saveSecret`（`:282`）与 `update`（`:288`）之间退出会留下「新 secret + 旧配置」半态；修复：取消按钮 `enabled = !busy`（或 busy 时先确认）。**11.** LanScan 回调从并发协程直接读改写 Compose 状态（`LanScanScreen.kt:83-85`、`LanScanner.kt:64-67`）：`found = found + host` / `done = …` 是非原子 RMW，多主机同时命中时理论丢条目 / 进度回退；修复：UI 侧用 Mutex 包两个回调（`onFound` 已是 suspend）或经 Channel 收集。**12.** 扫描结果不带协议线索（`AppRoot.kt:293`、`ConnectionEditScreen.kt:87`）：扫到 445 / 21 端口点「建连接」仍默认打开 SFTP 表单；修复：onPick 按端口映射 `initialType`（22→SFTP、21→FTP、445→SMB、80/443→WEBDAV）。**13.** 编辑既有连接切协议时端口不跟随（`ConnectionEditScreen.kt:178-180` 仅 `existing == null` 时重置）：FTP→SMB 后 port 仍 21；修复：type 变化时若 port 仍是旧协议 defaultPort 则同步新默认值。
+
+### 🟢 做得好的地方
+
+- **secret 失败语义的 UI 消费**：`SecretStore.put` 的布尔返回被两处正确消费——更新失败提示（`:282-285`）与新连接失败回滚 `delete`（`:295-299`）；「新连接失败不留半成品」的注释与实现一致，第 5 批成果在 UI 层没有漏掉。
+- **doTest 的细节**：6 秒后切换「卡住提示」、FTP 专属「主 / 被动模式」引导（`:313-325`）——把「卡住」从玄学变成可操作提示。
+- **端口输入校验双闸**：filter 数字 + take(5) + 保存（`:270-277`）与测试（`:335-340`）各一次 `1..65535` 范围校验——对照注释里旧实现「写进 DB 才在连接时暴露」是实打实的修好。
+- **开关类选项「显示范围 = 消费范围」主体成立**：trustSelfSigned（严格 4 协议，FTP/FTPS/WEBDAV/S3 消费方逐一对上）、passive、UA、hiddenInDrawer / loadThumbs（`SideDrawer.kt:311`、`Thumbnails.kt:153`）全部对得上——唯一漏网是 SFTP 编码（🟡2）。
+- **WebDavUrlTest**：7 用例覆盖 `+`→`%2B`（不把 `+` 解成空格）、rejects 矩阵（0 / 70000 / 非数字端口）、默认端口、尾斜杠归一——纯函数 + 测试的组合让「URL 单行输入」这个复刻功能站住了。
+- **Android 17 权限链**：`LocalNetwork` 抽象 + 启动对话框（`AppRoot.kt:202-216`，文案连「未授权会超时且没有提示」都写清）+ 首页卡片 + Manifest 声明——缺的只是扫描页接入（🟡5）。
+
+### 安全（轻量两项抽查）
+
+- 无硬编码凭据：模块内口令全部走 `SecretStore`（Keystore AES-GCM 加密落库），示例文案不含真实凭据。
+- 外部输入：SAF 导入的私钥文件名直接落 `keysDir`（`ConnectionEditScreen.kt:155-157`），无显式清洗；`File(keysDir, picked)` 为相对构造 + `substringAfterLast('/')`，未见实际越界（`..` 会在打开目录时报错而非写出）。一句话提及、按约定不展开。
+
+### 下一批建议
+
+- 下一模块：**app 壳层**（🟡）——`AppContainer.kt` / `AppRoot.kt` / `RemoteHttpServer.kt`（242 行对外 HTTP 面）/ service 等 10 文件 ≈1,500 行。重点：`RemoteHttpServer` 的对外暴露面、AppContainer 装配剩余线头（`env` / `uriForConnection` / `mounted` 本批已见三处）、启动与恢复流程。说「继续」即开审。
+
+> 备注：本批行号为 `b9dd0f3` 基线（会话期间第 6 批修复在途，与本批 3 文件零交叉；引用行号已按在途版校准）。修复随 `a33f6d4` 落地（🔴1–🔵13，见下表；🟡6 为渐进第 1 步）。
+
+### 修复记录（第 7 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🔴1 | ✅ | 口令编解码收拢到 `ConnectionSecrets`（纯函数）：S3 落库**纯 SK**、回填对旧 `AK:SK` 取 SK 部分；读取端 `S3Config.from` 兼容两种历史形态不变。消灭「编辑保存一次多叠一层 `AK:`」；11 用例锁定往返与兼容。 |
+| 🟡2 | ✅ | SFTP「编码」显示 / 写侧范围收回 FTP / FTPS（协议层固定 UTF-8、无消费方——与「只对真正读取的协议显示开关」原则对齐）。 |
+| 🟡3 | ✅ | 「隐式 TLS（990）」开关联动端口（开 21→990 / 关 990→21；手改值不动）。配置层 990 兜底（第 6 批修复会话所补）对 UI 默认 21 不可达，本批从 UI 侧打通实际路径。 |
+| 🟡4 | ✅ | `WebDavUrl`：`build` 还原 IPv6 方括号、`parse` 剥 host 区 `?`/`#`。3 用例（IPv6 往返 / query / fragment）。 |
+| 🟡5 | ✅ | 扫描页权限：未授权显示「去授权」引导条（`LocalNetwork.isGranted`）；「本机网段」空值文案与权限脱钩。 |
+| 🟡6 | ◐ | 第 1 步完成：口令链纯函数化 + 测试（🔴1 的挂点）；`FormState` / options 组装收拢留后续（渐进第 2、3 步）。 |
+| 🔵7 | ✅ | `secure` 编辑加载按 `port==443` fallback 初始化（与 DavConfig / S3Config 对齐）+ WebDAV / S3 保存无条件写布尔值：443 端口上「关闭 HTTPS / 显式 http://」现在真实生效。 |
+| 🔵8 | ✅ | SMB「根路径」→「起始路径（含共享名，如 /public/docs）」、placeholder 同步；S3 隐藏该字段（无消费方，起始前缀用「初始路径」）。 |
+| 🔵9 | ✅ | `insert()` 返回 -1 检查：失败给明确文案，不再对 -1 写孤儿 secret 还当保存成功返回。 |
+| 🔵10 | ✅ | busy 中禁用「取消」+ 拦截系统返回（`BackHandler`，EditorScreen 同款模式）。 |
+| 🔵11 | ✅ | 扫描结果回调经 `Mutex` 串行化（并发「读-改-写」防丢条目）；进度回调维持非 suspend API（影响仅瞬态显示）。 |
+| 🔵12 | ✅ | 扫描端口 → 预选协议（22/21/445/80/443，`connectionTypeForScanPort`）；2 用例。 |
+| 🔵13 | ✅ | 端口跟随协议默认值（仅当未手改过）；编辑既有连接切协议（FTP→SMB 后端口仍 21）一并修掉。 |
+
+> 验证：`app` 单测**全量 25 类 / 154 用例全绿**（本批新增 16：ConnectionSecrets 11 / LanScanPortHint 2 / WebDavUrl +3）；依赖链（core + app）编译全绿。全量经 `--rerun` 强制重跑（期间与第 6 批修复会话的并发构建发生过产物竞态，重试后通过）。
+> 修复提交：`a33f6d4`（`app/src` 8 文件，+313/−27）。
+
+---
+
+（后续批次在本文档追加 §8、§9 …）
