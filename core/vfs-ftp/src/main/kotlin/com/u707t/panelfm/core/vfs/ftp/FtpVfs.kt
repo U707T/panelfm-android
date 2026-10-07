@@ -6,6 +6,7 @@ import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
+import com.u707t.panelfm.core.vfs.partNameOf
 import com.u707t.panelfm.core.vfs.ProgressCallback
 import com.u707t.panelfm.core.vfs.Resumability
 import com.u707t.panelfm.core.vfs.VfsCapabilities
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.apache.commons.net.ftp.FTP
 import org.apache.commons.net.ftp.FTPClient
 import org.apache.commons.net.ftp.FTPFile
@@ -38,10 +40,11 @@ import java.net.UnknownHostException
 /**
  * FTP / FTPS 协议实现（commons-net）。
  *
- *  - 控制连接串行（[controlMutex]），数据连接独立
+ *  - 控制连接串行（[controlMutex]）：建连与全部命令共用同一把锁；锁等待超时给「忙」文案
  *  - MLSD 优先，失败回退 LIST（commons-net 自带解析器，覆盖 UNIX/IIS/NetWare）
  *  - 下载断点续传：REST + RETR（rangeRead = true）
- *  - 上传不做偏移续写（服务器行为不一致，避免写坏文件）
+ *  - 上传不做偏移续写（服务器行为不一致，避免写坏文件）；写侧先落 `.name.panelfm.part`，
+ *    commit 时改名落位——覆盖上传失败不再触碰原文件
  *  - FTPS：显式 AUTH TLS / 隐式 990 + PBSZ 0 / PROT P
  */
 class FtpVfs(
@@ -147,12 +150,30 @@ class FtpVfs(
         connected()
     }
 
+    /**
+     * 获取控制锁；长时间拿不到（有传输 / 播放独占，或异常路径未释放）时报「忙」而不是无限挂起。
+     * 锁的语义：整条 FTP 控制连接同一时刻只允许一个使用方（发命令 + 读回复）。
+     */
+    private suspend fun acquireControlLock() {
+        withTimeoutOrNull(CONTROL_WAIT_MS) { controlMutex.lock() }
+            ?: throw VfsException.ProtocolError("FTP 控制连接忙（可能正在传输或播放），请稍后重试")
+    }
+
+    /**
+     * 命令入口：**在锁内**执行 block。旧实现只串行了建连、命令在锁外并发执行——
+     * 同一条控制连接上两个命令交错会让回复错配（commons-net 的 FTPClient 非线程安全）。
+     */
     private suspend fun <T> withControl(block: suspend (FTPClient) -> T): T {
+        acquireControlLock()
         try {
-            return block(connected())
-        } catch (e: IOException) {
-            disconnect()
-            throw wrap(e)
+            try {
+                return block(ensureClientLocked())
+            } catch (e: IOException) {
+                disconnect()
+                throw wrap(e)
+            }
+        } finally {
+            controlMutex.unlock()
         }
     }
 
@@ -345,6 +366,9 @@ class FtpVfs(
 
     companion object {
         private const val SEQUENTIAL_SNIFF = 64 * 1024
+
+        /** 控制锁最长等待：超时报「忙」（旧实现无限挂起） */
+        private const val CONTROL_WAIT_MS = 30_000L
     }
 
     /** 下载：REST offset + RETR，整个生命周期持有控制锁（FTP 语义决定）。 */
@@ -376,24 +400,31 @@ class FtpVfs(
         }
 
         override suspend fun readFullyAt(position: Long, length: Int): ByteArray = withContext(env.dispatchers.vfs) {
-            // 顺序流：重新建立一次 REST + RETR
-            if (position == 0L && length <= FtpVfs.SEQUENTIAL_SNIFF) {
-                val local = ByteArray(length)
-                var read = 0
-                ensureOpen()
-                while (read < length) {
-                    val n = stream!!.read(local, read, length - read)
-                    if (n < 0) break
-                    read += n
-                }
-                return@withContext if (read == length) local else local.copyOf(read)
+            // 顺序流协议：只支持「从文件头开始、流尚未被消费」的预读（探测场景）。
+            // 其它组合一律拒绝——继续读会把位置带偏（与顺序 read 混用会读到错误位置）；
+            // 旧实现对此零校验，且读完不推进 pos。
+            if (position != 0L || startOffset != 0L || bytesRead != 0L || length > FtpVfs.SEQUENTIAL_SNIFF) {
+                throw VfsException.Unsupported("FTP 顺序流仅支持从 0 起的首次预读")
             }
-            throw VfsException.Unsupported("FTP 不支持随机读取")
+            val local = ByteArray(length)
+            var read = 0
+            ensureOpen()
+            while (read < length) {
+                val n = stream!!.read(local, read, length - read)
+                if (n < 0) break
+                read += n
+            }
+            // 数据确实被流消费：同步推进位置，保持 position 诚实
+            if (read > 0) {
+                pos += read
+                bytesRead += read
+            }
+            if (read == length) local else local.copyOf(read)
         }
 
         private suspend fun ensureOpen() {
             if (stream != null) return
-            controlMutex.lock()
+            acquireControlLock()
             locked = true
             val c = try {
                 ensureClientLocked()   // 已持锁：必须用 Locked 版本（connected() 会再上锁 → 自死锁）
@@ -434,19 +465,25 @@ class FtpVfs(
         }
     }
 
-    /** 上传：STORE 流式写，commit 时 completePendingCommand。 */
+    /**
+     * 上传：先写同目录 `.name.panelfm.part`，commit 时服务端改名落位（与 SFTP / SMB 同款）——
+     * 上传失败 / 取消不再触碰目标文件（旧实现直写目标，中断即毁原文件）。
+     */
     private inner class FtpWriter(private val uri: VfsUri) : VfsWriter {
+
+        private val partUri: VfsUri = uri.parent?.child(partNameOf(uri.name)) ?: uri
 
         private var locked = false
         private var stream: OutputStream? = null
         private var written = 0L
+        private var finished = false
 
         override val writtenBytes: Long get() = written
         override val resumable: Resumability get() = Resumability.NONE
 
         private suspend fun ensureOpen() {
             if (stream != null) return
-            controlMutex.lock()
+            acquireControlLock()
             locked = true
             val c = try {
                 ensureClientLocked()   // 已持锁：必须用 Locked 版本（connected() 会再上锁 → 自死锁）
@@ -457,7 +494,7 @@ class FtpVfs(
             withContext(env.dispatchers.vfs) {
                 try {
                     uri.parent?.let { mkdirBlocking(c, it.path) }
-                    val s = c.storeFileStream(uri.path)
+                    val s = c.storeFileStream(partUri.path)
                         ?: throw VfsException.ProtocolError("无法开始上传：${c.replyCode} ${c.replyString}")
                     stream = s
                 } catch (e: Exception) {
@@ -485,24 +522,39 @@ class FtpVfs(
         }
 
         override suspend fun commit() {
+            if (finished) return
+            finished = true
+            // 0 字节文件（touch）可能从未 write：补一次 ensureOpen，保证 part 真实存在后再改名
+            if (stream == null) ensureOpen()
             runCatching { stream?.close() }
             stream = null
             val c = client
-            if (c != null && !c.completePendingCommand()) {
+            if (c == null || !c.completePendingCommand()) {
+                // 数据连接未正常结束：part 作废，目标文件自始至终未被触碰
+                runCatching { c?.deleteFile(partUri.path) }
                 release()
-                throw VfsException.ProtocolError("上传未完成（${c.replyCode} ${c.replyString}）")
+                throw VfsException.ProtocolError("上传未完成（${c?.replyCode} ${c?.replyString}）")
+            }
+            // part → 正式名。个别服务器对已存在的目标拒绝 RNTO：报错并保持原文件不动
+            //（不做「先删旧再重试」——那会给「新旧都没了」留窗口）。半成品由 abort 清理。
+            val renamed = c.rename(partUri.path, uri.path)
+            if (!renamed) {
+                release()
+                throw VfsException.ProtocolError("保存失败：服务器拒绝改名（${c.replyCode} ${c.replyString}）")
             }
             release()
             Logx.d("FtpVfs", "uploaded ${uri.path} ($written bytes)")
         }
 
         override suspend fun abort() {
+            // 只清 part；目标文件不再被本实现触碰（旧实现 deleteFile(uri.path)，会把原文件连同半成品一起删）
+            finished = true
             runCatching { stream?.close() }
             stream = null
             client?.let { c ->
                 runCatching { c.abort() }
                 runCatching { c.completePendingCommand() }
-                runCatching { c.deleteFile(uri.path) }
+                runCatching { c.deleteFile(partUri.path) }
             }
             release()
         }
@@ -510,6 +562,7 @@ class FtpVfs(
         /**
          * 非正常结束（失败 / 取消）时兜底：关流、终止挂起命令、**释放控制锁**。
          * 旧实现是空实现——传输失败时控制连接锁永远不释放，整个 FTP 会话死锁。
+         * 半成品 part 由 [abort] 清理（引擎的各失败路径统一走 abort）。
          */
         override fun close() {
             if (stream == null && !locked) return

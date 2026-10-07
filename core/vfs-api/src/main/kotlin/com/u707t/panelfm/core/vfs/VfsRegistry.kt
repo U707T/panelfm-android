@@ -30,6 +30,14 @@ class VfsRegistry(
     fun supports(scheme: String): Boolean = factories.containsKey(scheme)
 
     suspend fun acquire(config: ConnectionConfig, secret: String? = null): VfsLease {
+        // Android 17（API 37）局域网授权：未授权时网络协议直接给出可执行文案
+        //（此前该字段传入后零消费，只会在系统层表现为「连接超时」）
+        if (!env.localNetworkAllowed()) {
+            throw VfsException.Network(
+                VfsException.Network.Kind.LOCAL_NETWORK_DENIED,
+                "系统未允许访问局域网（Android 17 需要单独授权）",
+            )
+        }
         // secret 不在 ConnectionConfig.sessionKey 中；必须参与会话隔离，
         // 否则用户修改密码后会复用旧的已认证连接。
         val key = sessionKey(config, secret)

@@ -5,6 +5,7 @@ import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.vfs.sortFileItems
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
+import com.u707t.panelfm.core.vfs.partNameOf
 import com.u707t.panelfm.core.vfs.ProgressCallback
 import com.u707t.panelfm.core.vfs.Resumability
 import com.u707t.panelfm.core.vfs.VfsCapabilities
@@ -297,7 +298,7 @@ class WebDavVfs(
         internal fun partPathOf(filePath: String): String {
             val idx = filePath.lastIndexOf('/')
             val dir = if (idx >= 0) filePath.substring(0, idx + 1) else "/"
-            return dir + "." + filePath.substring(idx + 1) + ".panelfm.part"
+            return dir + partNameOf(filePath.substring(idx + 1))
         }
 
         private val XML: MediaType = "application/xml; charset=utf-8".toMediaType()
@@ -355,8 +356,13 @@ class WebDavVfs(
                     .get()
                     .build()
                 http.newCall(req).execute().use { r ->
-                    if (!r.isSuccessful && r.code != 206) throw VfsException.ProtocolError("Range 读取失败：HTTP ${r.code}")
-                    val bytes = r.body.bytes()
+                    // 只接受 206；200 仅当从 0 起读（服务器忽略 Range 时按请求窗口截取，
+                    // 绝不把「从头开始的全量数据」当成偏移窗口交给上层）
+                    if (r.code != 206 && !(r.code == 200 && position == 0L)) {
+                        throw VfsException.ProtocolError("Range 读取失败：HTTP ${r.code}")
+                    }
+                    val full = r.body.bytes()
+                    val bytes = if (r.code == 200 && full.size > length) full.copyOf(length) else full
                     if (size == null) size = parseTotal(r, position, bytes.size.toLong())
                     bytes
                 }
@@ -381,6 +387,12 @@ class WebDavVfs(
                     404 -> VfsException.NotFound(uri)
                     else -> VfsException.ProtocolError("GET 失败：HTTP ${r.code}")
                 }
+            }
+            // 请求了 Range 却拿到 200：流会从文件头开始，与 pos 定位不符——
+            // 照读会把错位数据交给上层（编辑器 / 播放器），宁可直接报错
+            if (r.code == 200 && pos > 0L) {
+                r.close()
+                throw VfsException.ProtocolError("服务器未响应 Range 请求（HTTP 200），无法从偏移 $pos 读取")
             }
             response = r
             stream = r.body.byteStream()

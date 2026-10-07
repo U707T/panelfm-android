@@ -89,7 +89,9 @@ class SmbVfs(
     override suspend fun connect() {
         _state.value = VfsState.Connecting
         try {
-            withContext(env.dispatchers.vfs) { connectBlocking() }
+            // 与其余入口共用 mutex：并发首开（双窗格 / 重连兜底）只建一次连接——
+            // 旧实现无锁会双连并覆盖 client/connection/session（泄漏一个连接）
+            mutex.withLock { withContext(env.dispatchers.vfs) { connectBlocking() } }
             _state.value = VfsState.Ready
         } catch (e: Exception) {
             val msg = (e as? VfsException)?.userMessage ?: (e.message ?: "连接失败")
@@ -144,32 +146,19 @@ class SmbVfs(
         return share
     }
 
-    /** `/share/a/b` → (share, "a\\b") */
-    private fun split(uri: VfsUri): Pair<String, String> {
-        val trimmed = uri.path.trim('/')
-        if (trimmed.isEmpty()) {
-            val share = cfg.defaultShare ?: throw VfsException.ProtocolError("请在连接设置里指定共享名（如 public / media）")
-            return share to ""
-        }
-        val parts = trimmed.split('/')
-        val share = parts.first()
-        val rest = parts.drop(1).joinToString("\\")
-        return share to rest
-    }
-
-    private fun isRoot(uri: VfsUri): Boolean = uri.path.trim('/').isEmpty()
+    /** `/share/a/b` → (share, "a\\b")；根路径且无默认共享时抛出引导文案（见 [NO_SHARE_MESSAGE]）。 */
+    private fun split(uri: VfsUri): Pair<String, String> =
+        splitSmbPath(uri.path, cfg.defaultShare) ?: throw VfsException.ProtocolError(NO_SHARE_MESSAGE)
 
     // ------------------------------------------------------------------ 列表
 
     override suspend fun list(uri: VfsUri, options: ListOptions): List<FileMetadata> = mutex.withLock {
         connectIfNeeded()
-        val (shareName, rel) = split(uri)
+        // 根路径 + 未配置共享名：给出可执行引导。旧实现 `split()` 先抛，「或用 /共享名 进入」
+        // 的文案是死代码，用户只会拿到一句「协议错误」
+        val (shareName, rel) = splitSmbPath(uri.path, cfg.defaultShare)
+            ?: throw VfsException.Unsupported(NO_SHARE_MESSAGE)
         withContext(env.dispatchers.vfs) {
-            // 只有「真正的连接根（没有任何共享名）」才需要提醒填写共享名；
-            // /共享名 这种路径本身已带共享名，不该被拦
-            if (isRoot(uri) && cfg.defaultShare == null) {
-                throw VfsException.Unsupported("请在连接设置里填写「共享名」（如 public / media / 共享），或在地址里用 /共享名 进入")
-            }
             val share = shareOf(shareName)
             val entries = try {
                 share.list(rel)
@@ -205,11 +194,11 @@ class SmbVfs(
 
     override suspend fun stat(uri: VfsUri): FileMetadata = mutex.withLock {
         connectIfNeeded()
-        val (shareName, rel) = split(uri)
+        // 根 + 未配置共享名：返回目录快照（导航可停靠）；进入它时由 list() 给「填写共享名」引导
+        val split = splitSmbPath(uri.path, cfg.defaultShare)
+            ?: return@withLock FileMetadata.dir(uri, "/")
+        val (shareName, rel) = split
         withContext(env.dispatchers.vfs) {
-            if (isRoot(uri) && cfg.defaultShare == null) {
-                return@withContext FileMetadata.dir(uri, shareName.ifEmpty { "/" })
-            }
             val share = shareOf(shareName)
             if (rel.isEmpty()) return@withContext FileMetadata.dir(uri, shareName)
             val info = try {
@@ -329,12 +318,15 @@ class SmbVfs(
         if (shareFrom != shareTo) return@withLock false
         withContext(env.dispatchers.vfs) {
             val share = shareOf(shareFrom)
-            val file = try {
-                openHandle(share, relFrom, write = true)
+            // 目录必须按目录打开（FILE_NON_DIRECTORY_FILE 会让目录改名必失败）；
+            // 源不存在时用 FILE_OPEN 直接报错——绝不能 FILE_OPEN_IF（会凭空造一个空文件再改名）
+            val isDir = runCatching { share.folderExists(relFrom) }.getOrDefault(false)
+            val handle = try {
+                openHandle(share, relFrom, write = true, forDirectory = isDir, createIfMissing = false)
             } catch (e: Exception) {
                 throw mapError(e, "重命名失败")
             }
-            file.use {
+            handle.use {
                 runCatching { it.rename(relTo, true) }
                     .getOrElse { e -> throw mapError(e, "重命名失败") }
             }
@@ -375,11 +367,19 @@ class SmbVfs(
         if (connection?.isConnected != true) connectBlocking()
     }
 
-    private fun openHandle(share: DiskShare, rel: String, write: Boolean, offsetZero: Boolean = true): File {
+    private fun openHandle(
+        share: DiskShare,
+        rel: String,
+        write: Boolean,
+        /** 目录句柄（改名目录等）：FILE_NON_DIRECTORY_FILE 会让目录打不开 */
+        forDirectory: Boolean = false,
+        /** false = 目标必须已存在（FILE_OPEN）——重命名等场景不允许「不存在就造一个」 */
+        createIfMissing: Boolean = false,
+    ): File {
         val access = if (write) EnumSet.of(AccessMask.GENERIC_WRITE, AccessMask.GENERIC_READ) else EnumSet.of(AccessMask.GENERIC_READ)
-        val disposition = if (write) SMB2CreateDisposition.FILE_OPEN_IF else SMB2CreateDisposition.FILE_OPEN
         // 续写时不能截断：FILE_OPEN_IF 保留已有内容，由调用方按偏移写
-        val options = EnumSet.of(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE)
+        val disposition = if (write && createIfMissing) SMB2CreateDisposition.FILE_OPEN_IF else SMB2CreateDisposition.FILE_OPEN
+        val options = if (forDirectory) EnumSet.of(SMB2CreateOptions.FILE_DIRECTORY_FILE) else EnumSet.of(SMB2CreateOptions.FILE_NON_DIRECTORY_FILE)
         return share.openFile(rel, access, null, SMB2ShareAccess.ALL, disposition, options)
     }
 
@@ -502,7 +502,8 @@ class SmbVfs(
                 val (shareName, partPath) = partRel
                 val (_, targetPath) = split(target)
                 val share = shareOf(shareName)
-                val tmp = openHandle(share, partPath, write = true)
+                // 0 字节（touch）时 part 从未创建：以 createIfMissing 打开一个空 part 再改名
+                val tmp = openHandle(share, partPath, write = true, createIfMissing = true)
                 tmp.use { it.rename(targetPath, true) }
             }
         }
@@ -532,7 +533,7 @@ class SmbVfs(
                     // 从头开始写（startOffset == 0）时先删掉可能残留的旧 .part，
                     // 否则 FILE_OPEN_IF 不会截断 → 最终文件尾部带旧数据
                     if (startOffset == 0L) runCatching { share.rm(partPath) }
-                    file = openHandle(share, partPath, write = true)
+                    file = openHandle(share, partPath, write = true, createIfMissing = true)
                 }
             }
         }
@@ -544,4 +545,28 @@ class SmbVfs(
         override fun create(config: ConnectionConfig, secret: String?, env: VfsEnv): VirtualFileSystem =
             SmbVfs(SmbConfig.from(config, secret, env.timeoutMs), env)
     }
+}
+
+/** 根路径 + 未配置默认共享时的引导文案（list / stat / 其余操作共用一条）。 */
+private const val NO_SHARE_MESSAGE =
+    "请在连接设置里填写「共享名」（如 public / media / 共享），或在地址里用 /共享名 进入"
+
+/**
+ * SMB 路径切分：`/share/a/b` → (share, "a\\b")。
+ *
+ * 抽成纯函数以便单测；也修正了旧实现里「根 + 无共享名」分支在 split() 抛错之后、
+ * 永远不可达的问题（第 6 批 🟡8）。
+ *
+ * @return 根路径且 [defaultShare] 为空时返回 null（调用方给引导文案）
+ */
+internal fun splitSmbPath(path: String, defaultShare: String?): Pair<String, String>? {
+    val trimmed = path.trim('/')
+    if (trimmed.isEmpty()) {
+        val share = defaultShare ?: return null
+        return share to ""
+    }
+    val parts = trimmed.split('/').filter { it.isNotEmpty() }
+    val share = parts.first()
+    val rest = parts.drop(1).joinToString("\\")
+    return share to rest
 }

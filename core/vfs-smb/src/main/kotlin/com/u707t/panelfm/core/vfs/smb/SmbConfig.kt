@@ -8,7 +8,7 @@ data class SmbConfig(
     val domain: String,
     val user: String,
     val password: String?,
-    /** 可选的默认共享（空 = 列出所有共享） */
+    /** 共享名（如 public / media）。为空时根目录给出「请填写共享名」引导；smbj 0.13 无共享枚举 API，不自动列出共享 */
     val defaultShare: String?,
     val timeoutMs: Long,
 ) {

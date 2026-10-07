@@ -193,56 +193,7 @@ class S3Client(private val cfg: S3Config) {
         val resp = execute("GET", bucket, null, query)
         return resp.use { r ->
             check(r, prefix)
-            val entries = ArrayList<Entry>()
-            var nextToken: String? = null
-            var truncated = false
-            val parser = newParser(r.body.byteStream())
-            var event = parser.eventType
-            var tag = ""
-            var key = ""
-            var size = 0L
-            var modified = -1L
-            var etag: String? = null
-            var inContents = false
-            while (event != XmlPullParser.END_DOCUMENT) {
-                when (event) {
-                    XmlPullParser.START_TAG -> {
-                        tag = parser.name.lowercase()
-                        if (tag == "contents") {
-                            inContents = true; key = ""; size = 0L; modified = -1L; etag = null
-                        }
-                    }
-                    XmlPullParser.TEXT -> {
-                        val text = parser.text
-                        if (inContents) {
-                            when (tag) {
-                                "key" -> key += text
-                                "size" -> size = text.trim().toLongOrNull() ?: 0L
-                                "lastmodified" -> modified = runCatching { Instant.parse(text.trim()).toEpochMilli() }.getOrDefault(-1L)
-                                "etag" -> etag = text.trim().trim('"')
-                            }
-                        } else {
-                            when (tag) {
-                                "prefix" -> if (text.isNotBlank() && (key.isEmpty())) key += text
-                                "nextcontinuationtoken" -> nextToken = text.trim()
-                                "istruncated" -> truncated = text.trim().equals("true", ignoreCase = true)
-                            }
-                        }
-                    }
-                    XmlPullParser.END_TAG -> when (parser.name.lowercase()) {
-                        "contents" -> {
-                            inContents = false
-                            if (key.isNotEmpty()) entries.add(Entry(key, size, modified, etag, isPrefix = false))
-                        }
-                        "commonprefixes" -> {
-                            if (key.isNotEmpty()) entries.add(Entry(key, -1, -1, null, isPrefix = true))
-                            key = ""
-                        }
-                    }
-                }
-                event = parser.next()
-            }
-            ListResult(entries, nextToken, truncated)
+            parseListResult(newParser(r.body.byteStream()))
         }
     }
 
@@ -314,6 +265,37 @@ class S3Client(private val cfg: S3Config) {
         }
     }
 
+    /**
+     * 批量删除（POST `?delete`，S3 原生每批最多 1000 个 key）。
+     * 大目录删除从「每对象 1 个请求」压到「每 1000 个 1 个请求」。
+     */
+    suspend fun deleteObjects(bucket: String, keys: List<String>) {
+        if (keys.isEmpty()) return
+        require(keys.size <= 1000) { "DeleteObjects 单批最多 1000 个 key" }
+        val xml = buildString {
+            append("<Delete><Quiet>true</Quiet>")
+            keys.forEach { k -> append("<Object><Key>").append(xmlEscape(k)).append("</Key></Object>") }
+            append("</Delete>")
+        }
+        val bytes = xml.toByteArray(Charsets.UTF_8)
+        // AWS 要求 DeleteObjects 带 Content-MD5（同时也是请求签名的一部分）
+        val md5 = java.util.Base64.getEncoder()
+            .encodeToString(java.security.MessageDigest.getInstance("MD5").digest(bytes))
+        val r = execute(
+            "POST", bucket, null,
+            query = mapOf("delete" to null),
+            extraHeaders = mapOf("Content-MD5" to md5),
+            body = bytes.toRequestBody("application/xml".toMediaType()),
+            payloadHash = SigV4.sha256Hex(bytes),
+        )
+        r.use { resp ->
+            check(resp, null)
+            // Quiet 模式下正常响应为空 <DeleteResult/>；出现 <Error> 即部分删除失败
+            val text = runCatching { resp.body.string() }.getOrDefault("")
+            if (text.contains("<Error>")) throw VfsException.ProtocolError("批量删除部分失败：${text.take(300)}")
+        }
+    }
+
     // ---- Multipart
 
     suspend fun createMultipart(bucket: String, key: String, contentType: String): String {
@@ -373,12 +355,30 @@ class S3Client(private val cfg: S3Config) {
         runCatching { http.connectionPool.evictAll() }
     }
 
-    private fun newParser(input: java.io.InputStream) = Xml.newPullParser().apply {
+    private fun newParser(input: java.io.InputStream) = parserFactory().apply {
         setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
         setInput(input, null)
     }
 
+    /** DeleteObjects 请求体的 XML 转义（key 可能含 & < > " '）。 */
+    private fun xmlEscape(value: String): String = buildString(value.length) {
+        for (c in value) when (c) {
+            '&' -> append("&amp;")
+            '<' -> append("&lt;")
+            '>' -> append("&gt;")
+            '"' -> append("&quot;")
+            '\'' -> append("&apos;")
+            else -> append(c)
+        }
+    }
+
     companion object {
+        /**
+         * XmlPullParser 工厂：生产环境用 Android 内置实现（`Xml.newPullParser()`）；
+         * 单测环境它是桩、返回 null（解析层历史上因此没有测试），解析测试替换为同源的 kxml2。
+         */
+        internal var parserFactory: () -> XmlPullParser = { Xml.newPullParser() }
+
         fun mediaTypeOf(contentType: String): MediaType? = runCatching { contentType.toMediaType() }.getOrNull()
 
         /**
@@ -400,4 +400,87 @@ class S3Client(private val cfg: S3Config) {
             return base.trimEnd('/') + "/" + bucket + "/" + key.split('/').joinToString("/") { SigV4.uriEncode(it) }
         }
     }
+}
+
+/**
+ * ListObjectsV2 响应解析（第 6 批 🔴1 重写；`internal` 供单测用 kxml2 直接驱动）。
+ *
+ * 旧实现把「回显的请求 prefix」和「上一条 Contents 的 Key」残留在同一个变量里，
+ * 导致列子目录时第一个 `<CommonPrefixes>` 被顶替（丢子目录 / 凭空多出同名假目录），
+ * 且对缩进响应的空白文本零防护（会污染 key / size 并覆盖 IsTruncated）。
+ *
+ * 现为「父元素感知」状态机：值只在对应元素的 END_TAG 时从完整文本提交，
+ * 回显 prefix 不进入任何条目，元素间的空白文本天然被忽略。
+ */
+internal fun parseListResult(parser: XmlPullParser): S3Client.ListResult {
+    val entries = ArrayList<S3Client.Entry>()
+    var nextToken: String? = null
+    var truncated = false
+
+    val stack = ArrayList<String>(8)
+    var captured = StringBuilder()
+    var capturing = false
+
+    var key = ""
+    var size = 0L
+    var modified = -1L
+    var etag: String? = null
+    var commonPrefix: String? = null
+
+    var event = parser.eventType
+    while (event != XmlPullParser.END_DOCUMENT) {
+        when (event) {
+            XmlPullParser.START_TAG -> {
+                val name = parser.name.lowercase()
+                val parent = stack.lastOrNull()
+                stack.add(name)
+                captured = StringBuilder()
+                capturing = when (parent) {
+                    "contents" -> name == "key" || name == "size" || name == "lastmodified" || name == "etag"
+                    "commonprefixes" -> name == "prefix"
+                    "listbucketresult" -> name == "istruncated" || name == "nextcontinuationtoken"
+                    else -> false
+                }
+                if (name == "contents" && parent == "listbucketresult") {
+                    key = ""; size = 0L; modified = -1L; etag = null
+                } else if (name == "commonprefixes" && parent == "listbucketresult") {
+                    commonPrefix = null
+                }
+            }
+
+            XmlPullParser.TEXT -> if (capturing) captured.append(parser.text)
+
+            XmlPullParser.END_TAG -> {
+                val name = parser.name.lowercase()
+                if (stack.isNotEmpty() && stack.last() == name) stack.removeAt(stack.size - 1)
+                val parent = stack.lastOrNull()
+                if (capturing) {
+                    val text = captured.toString()
+                    when {
+                        name == "key" && parent == "contents" -> key = text
+                        name == "size" && parent == "contents" -> size = text.trim().toLongOrNull() ?: 0L
+                        name == "lastmodified" && parent == "contents" ->
+                            modified = runCatching { Instant.parse(text.trim()).toEpochMilli() }.getOrDefault(-1L)
+                        name == "etag" && parent == "contents" -> etag = text.trim().trim('"')
+                        name == "prefix" && parent == "commonprefixes" -> commonPrefix = text
+                        name == "nextcontinuationtoken" && parent == "listbucketresult" -> nextToken = text.trim()
+                        name == "istruncated" && parent == "listbucketresult" ->
+                            truncated = text.trim().equals("true", ignoreCase = true)
+                    }
+                    capturing = false
+                }
+                when {
+                    name == "contents" && parent == "listbucketresult" ->
+                        if (key.isNotEmpty()) entries.add(S3Client.Entry(key, size, modified, etag, isPrefix = false))
+                    name == "commonprefixes" && parent == "listbucketresult" -> {
+                        commonPrefix?.takeIf { it.isNotEmpty() }
+                            ?.let { entries.add(S3Client.Entry(it, -1, -1, null, isPrefix = true)) }
+                        commonPrefix = null
+                    }
+                }
+            }
+        }
+        event = parser.next()
+    }
+    return S3Client.ListResult(entries, nextToken, truncated)
 }

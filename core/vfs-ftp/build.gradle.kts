@@ -21,4 +21,6 @@ dependencies {
     implementation(project(":core:vfs-api"))
     implementation(libs.commons.net)
     implementation(libs.kotlinx.coroutines.android)
+
+    testImplementation(libs.junit)
 }

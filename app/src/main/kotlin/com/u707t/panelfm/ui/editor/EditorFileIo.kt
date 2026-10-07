@@ -175,8 +175,17 @@ internal suspend fun saveText(
         val backupName = if (backupEnabled) backupBeforeSave(container, vfs, uri) else null
         withContext(Dispatchers.IO) {
             val writer = vfs.openWrite(uri, size = bytes.size.toLong(), offset = 0L)
-            writer.write(bytes, 0, bytes.size)
-            writer.commit()
+            try {
+                writer.write(bytes, 0, bytes.size)
+                writer.commit()
+            } catch (e: Exception) {
+                // 失败必须收尾：FTP 不清理会连控制锁一起泄漏（会话死锁）；WebDAV / S3 会遗留
+                // .part / 未完成分片；SFTP / SMB 会泄漏句柄。abort 只清临时物、不动目标文件。
+                runCatching { writer.abort() }
+                throw e
+            } finally {
+                runCatching { writer.close() }
+            }
             // 保留原有权限（本地/SFTP/FTP 支持 chmod 时）
             if (originalMode != null && vfs.capabilities.permissions) {
                 runCatching { vfs.setPermissions(uri, originalMode) }

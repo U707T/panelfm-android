@@ -44,8 +44,6 @@ internal class SftpSession(
     private val connectMutex = Mutex()
     val metaMutex = Mutex()
 
-    private var lastKeyWarning: String? = null
-
     suspend fun connect() {
         connectMutex.withLock {
             if (session?.isOpen == true && metaClient != null) return
@@ -78,7 +76,8 @@ internal class SftpSession(
             } catch (e: Exception) {
                 runCatching { js.close() }
                 runCatching { jc.stop() }
-                throw mapError(e, "跳板机认证失败")
+                // 认证阶段按定义归类为 Auth（sshd 2.x 无独立的认证异常类，区分只能靠调用阶段）
+                throw if (e is VfsException) e else VfsException.Auth("跳板机认证失败：${e.message}")
             }
             jumpSession = js
 
@@ -149,7 +148,8 @@ internal class SftpSession(
         } catch (e: Exception) {
             runCatching { s.close() }
             runCatching { client.stop() }
-            throw mapError(e, "认证失败")
+            // 认证阶段按定义归类为 Auth（sshd 2.x 无独立的认证异常类，区分只能靠调用阶段）
+            throw if (e is VfsException) e else VfsException.Auth("认证失败：${e.message}")
         }
 
         session = s
@@ -172,7 +172,10 @@ internal class SftpSession(
 
     private fun mapError(e: Exception, prefix: String): VfsException = when (e) {
         is VfsException -> e
-        is SshException -> VfsException.Auth("$prefix：${e.message}")
+        // sshd 2.x 没有独立的认证异常类：认证阶段在调用点直接归类为 Auth（见 connectBlocking）；
+        // 其余 SshException（连接中断 / 通道故障等）按网络错误处理，
+        // 旧实现一律映射成「认证失败」会把用户引向错误方向。
+        is SshException -> VfsException.Network(VfsException.Network.Kind.UNREACHABLE, "$prefix：${e.message}", e)
         is java.net.UnknownHostException -> VfsException.Network(VfsException.Network.Kind.DNS, "$prefix：域名解析失败")
         is java.net.ConnectException -> VfsException.Network(VfsException.Network.Kind.REFUSED, "$prefix：连接被拒绝")
         is java.net.SocketTimeoutException -> VfsException.Network(VfsException.Network.Kind.TIMEOUT, "$prefix：连接超时")

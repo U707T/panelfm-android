@@ -22,17 +22,22 @@ data class FtpConfig(
             secret: String?,
             /** 连接未显式设置时的兜底默认值（来自全局设置） */
             trustSelfSignedDefault: Boolean = false,
-        ): FtpConfig = FtpConfig(
-            host = config.host,
-            port = if (config.port > 0) config.port else if (config.type.name == "FTPS") 21 else 21,
-            user = config.user.ifEmpty { "anonymous" },
-            password = secret,
-            basePath = config.basePath.ifBlank { "/" },
-            tls = config.type.name == "FTPS" || config.option("tls")?.toBoolean() == true,
-            implicitTls = config.type.name == "FTPS" && config.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() == true,
-            passive = config.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() != false,
-            trustSelfSigned = config.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: trustSelfSignedDefault,
-            encoding = config.option(ConnectionConfig.OPT_ENCODING)?.takeIf { it.isNotBlank() } ?: "UTF-8",
-        )
+        ): FtpConfig {
+            val isFtps = config.type.name == "FTPS"
+            val implicitTls = isFtps && config.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() == true
+            return FtpConfig(
+                host = config.host,
+                // 隐式 TLS 的标准端口是 990（旧实现两个分支都写 21，隐式模式默认端口实际不可用）
+                port = if (config.port > 0) config.port else if (implicitTls) 990 else 21,
+                user = config.user.ifEmpty { "anonymous" },
+                password = secret,
+                basePath = config.basePath.ifBlank { "/" },
+                tls = isFtps || config.option("tls")?.toBoolean() == true,
+                implicitTls = implicitTls,
+                passive = config.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() != false,
+                trustSelfSigned = config.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: trustSelfSignedDefault,
+                encoding = config.option(ConnectionConfig.OPT_ENCODING)?.takeIf { it.isNotBlank() } ?: "UTF-8",
+            )
+        }
     }
 }

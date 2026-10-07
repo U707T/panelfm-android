@@ -6,6 +6,13 @@ enum class Resumability { NONE, RANGE, MULTIPART, CHUNKED }
 /**
  * 能力位：各协议差异很大，UI 与传输引擎据此决定「服务端快路径」还是「降级为流式泵」。
  * 协议实现必须如实声明，不要乐观声明。
+ *
+ * **消费现状（第 6 批核实）**：当前被实际读取的只有 4 个位——[rename]、[serverSideCopy]
+ * （FileOperationPlanner）、[resumable]（TransferTask）、[permissions]（浏览器 / 编辑器）。
+ * 其余位（rangeRead / rangeWrite / space / symlinks / recursiveDelete / touch / setModified /
+ * streamingList / writable）暂无消费方，属**预留能力位**：仍须如实填报，但不要指望它们
+ * 驱动任何行为；各协议填报差异（如 recursiveDelete 的 true / false）当前也无人验证。
+ * 对应方法本身（touch / space / setModified 等）由调用方直接调用，不支持时按 Unsupported 处理。
  */
 data class VfsCapabilities(
     /** 服务端重命名 / 同协议移动 */

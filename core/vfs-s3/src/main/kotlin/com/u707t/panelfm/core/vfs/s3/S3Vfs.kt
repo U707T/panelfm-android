@@ -20,8 +20,6 @@ import com.u707t.panelfm.core.vfs.VfsWriter
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import okhttp3.Response
 import java.io.ByteArrayOutputStream
@@ -66,7 +64,8 @@ class S3Vfs(
     override val state: StateFlow<VfsState> = _state
 
     private val client = S3Client(cfg)
-    private val mutex = Mutex()
+    // 注：曾有一把覆盖全部操作的 Mutex（第 6 批移除）。S3 无会话状态、每个请求独立签名，
+    // 该锁没有保护对象，还会把独立操作串行化（大目录删除期间另一个窗格的列表一起卡住）。
 
     override suspend fun connect() {
         _state.value = VfsState.Connecting
@@ -100,13 +99,11 @@ class S3Vfs(
 
     private fun keyOf(uri: VfsUri): String = uri.path.trim('/')
 
-    private fun isRoot(uri: VfsUri): Boolean = keyOf(uri).isEmpty()
-
     // ------------------------------------------------------------------ 列表
 
-    override suspend fun list(uri: VfsUri, options: ListOptions): List<FileMetadata> = mutex.withLock {
-        val bucket = bucketOf(uri)
+    override suspend fun list(uri: VfsUri, options: ListOptions): List<FileMetadata> =
         withContext(env.dispatchers.vfs) {
+            val bucket = bucketOf(uri)
             if (bucket == null) {
                 // 根：列出所有 bucket（保留连接参数 ?c=，否则点进 Bucket 后找不到会话）
                 val buckets = client.listBuckets()
@@ -116,40 +113,46 @@ class S3Vfs(
                 return@withContext sortFileItems(items, options.sort)
             }
             val prefix = keyOf(uri).let { if (it.isEmpty()) "" else "$it/" }
-            val result = client.listObjects(bucket = bucket, prefix = prefix, delimiter = "/")
             val filter = options.filter
             val items = ArrayList<FileMetadata>()
-            result.entries.forEach { entry ->
-                if (entry.isPrefix) {
-                    val name = entry.key.removePrefix(prefix).trimEnd('/')
-                    if (name.isNotEmpty()) items.add(FileMetadata.dir(uri.child(name), name))
-                } else {
-                    if (entry.key == prefix) return@forEach  // 目录占位对象
-                    val name = entry.key.removePrefix(prefix)
-                    if (name.isEmpty() || name.contains('/')) return@forEach
-                    if (!options.showHidden && name.startsWith(".")) return@forEach
-                    if (!filter.isNullOrBlank() && !name.contains(filter, ignoreCase = true)) return@forEach
-                    items.add(
-                        FileMetadata(
-                            uri = uri.child(name),
-                            name = name,
-                            isDirectory = false,
-                            size = entry.size,
-                            lastModified = entry.lastModified,
-                            mimeType = MimeTypes.of(name.substringAfterLast('.', "")),
-                            etag = entry.etag,
+            // >1000 条时按 continuation-token 翻页拉全（旧实现只看第一页，大目录会静默少一半）
+            var token: String? = null
+            var more = true
+            while (more) {
+                val page = client.listObjects(bucket = bucket, prefix = prefix, delimiter = "/", continuationToken = token)
+                page.entries.forEach { entry ->
+                    if (entry.isPrefix) {
+                        val name = entry.key.removePrefix(prefix).trimEnd('/')
+                        if (name.isNotEmpty()) items.add(FileMetadata.dir(uri.child(name), name))
+                    } else {
+                        if (entry.key == prefix) return@forEach  // 目录占位对象
+                        val name = entry.key.removePrefix(prefix)
+                        if (name.isEmpty() || name.contains('/')) return@forEach
+                        if (!options.showHidden && name.startsWith(".")) return@forEach
+                        if (!filter.isNullOrBlank() && !name.contains(filter, ignoreCase = true)) return@forEach
+                        items.add(
+                            FileMetadata(
+                                uri = uri.child(name),
+                                name = name,
+                                isDirectory = false,
+                                size = entry.size,
+                                lastModified = entry.lastModified,
+                                mimeType = MimeTypes.of(name.substringAfterLast('.', "")),
+                                etag = entry.etag,
+                            )
                         )
-                    )
+                    }
                 }
+                token = page.nextToken?.takeIf { it.isNotEmpty() }
+                more = page.truncated && token != null
             }
             sortFileItems(items, options.sort)
         }
-    }
 
-    override suspend fun stat(uri: VfsUri): FileMetadata = mutex.withLock {
-        val bucket = bucketOf(uri) ?: return@withLock FileMetadata.dir(uri, uri.authority.ifEmpty { "/" })
+    override suspend fun stat(uri: VfsUri): FileMetadata {
+        val bucket = bucketOf(uri) ?: return FileMetadata.dir(uri, uri.authority.ifEmpty { "/" })
         val key = keyOf(uri)
-        withContext(env.dispatchers.vfs) {
+        return withContext(env.dispatchers.vfs) {
             if (key.isEmpty()) return@withContext FileMetadata.dir(uri, bucket)
             // 目录：以 "key/" 作为占位对象，或存在子对象
             val asDir = client.head(bucket, "$key/")
@@ -175,10 +178,10 @@ class S3Vfs(
 
     // ------------------------------------------------------------------ 写操作
 
-    override suspend fun mkdir(uri: VfsUri, parents: Boolean) = mutex.withLock {
+    override suspend fun mkdir(uri: VfsUri, parents: Boolean) {
         val bucket = bucketOf(uri) ?: throw VfsException.Unsupported("请先选择 Bucket")
         val key = keyOf(uri)
-        if (key.isEmpty()) return@withLock
+        if (key.isEmpty()) return
         withContext(env.dispatchers.vfs) {
             client.putBytes(bucket, "$key/", ByteArray(0), "application/x-directory")
         }
@@ -190,7 +193,7 @@ class S3Vfs(
         withContext(env.dispatchers.vfs) { client.putBytes(bucket, key, ByteArray(0), contentTypeOf(uri.name)) }
     }
 
-    override suspend fun delete(uris: List<VfsUri>, onProgress: ProgressCallback?) = mutex.withLock {
+    override suspend fun delete(uris: List<VfsUri>, onProgress: ProgressCallback?) {
         var done = 0L
         for (u in uris) {
             val bucket = bucketOf(u) ?: continue
@@ -208,7 +211,8 @@ class S3Vfs(
             var token: String? = null
             do {
                 val page = client.listObjects(bucket, "$key/", delimiter = null, continuationToken = token)
-                page.entries.forEach { entry -> client.deleteObject(bucket, entry.key) }
+                // 批量删除（DeleteObjects，每批 ≤1000）：10 万文件的目录从 10 万请求压到 100 个
+                page.entries.map { it.key }.chunked(1000).forEach { client.deleteObjects(bucket, it) }
                 token = page.nextToken
             } while (page.truncated && token != null)
             client.deleteObject(bucket, "$key/")
@@ -217,21 +221,21 @@ class S3Vfs(
         }
     }
 
-    override suspend fun rename(from: VfsUri, to: VfsUri): Boolean = mutex.withLock {
-        val bucket = bucketOf(from) ?: return@withLock false
+    override suspend fun rename(from: VfsUri, to: VfsUri): Boolean {
+        val bucket = bucketOf(from) ?: return false
         val fromKey = keyOf(from)
         val toKey = keyOf(to)
         withContext(env.dispatchers.vfs) {
             copyRecursive(bucket, fromKey, toKey)
             deleteRecursive(bucket, fromKey)
         }
-        true
+        return true
     }
 
-    override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean = mutex.withLock {
-        val bucket = bucketOf(from) ?: return@withLock false
+    override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean {
+        val bucket = bucketOf(from) ?: return false
         withContext(env.dispatchers.vfs) { copyRecursive(bucket, keyOf(from), keyOf(to)) }
-        true
+        return true
     }
 
     private suspend fun copyRecursive(bucket: String, fromKey: String, toKey: String) {
