@@ -5,8 +5,8 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1 批（app/ui/browser）已全量修复**（见 §1 末尾「修复记录」；本地 `compileDebugKotlin` +
-> `testDebugUnitTest` + `assembleDebug` 全绿）；其余批次待审计后继续。
+> 修复：**第 1、3、4 批已修复收口**（见 §1 / §3 / §4 末尾「修复记录」；第 2 批修复已随
+> `3479639` 落地，记录待补）；其余批次待审计后继续。
 
 ---
 
@@ -680,8 +680,26 @@
 - 下一模块：**core/vfs-archive**（🟡）——`ZipEditor` 整包重写 / 加密 zip 读写 / 压缩解压与
   `ArchiveVfs` 的取消语义（与 transfer 的 `.part` / commit 语义衔接处重点看）。
 
-> 备注：本批行号为 `e841697` 基线；与在途的第 2 批修复（preview / PrefsStore，未提交）零交叉，
-> 本批文件未被其触达。
+> 备注：审查行号为 `e841697` 基线；修复落地于第 3 批收口之后（`5e922fc`），与并行批次
+>（preview / editor）文件零交叉。
+
+### 修复记录（第 4 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🟡1 | ✅ | 冲突对话框按「源 × 目标」四象限分派文案；文件→文件夹明确「替换将删除该文件夹及其全部内容，然后写入文件」、选项标「（将删除文件夹）」且**默认改「跳过」**（目录→目录 = 合并，保持默认「替换」）。文案 / 默认项收进 `ConflictInfo.explanationText()/defaultPolicy()`（可单测）；新增 `ConflictDialogModelTest` 2 例 + file→dir 覆盖语义回归 1 例 |
+| 🟡2 | ✅ | 慢路径覆盖**不再预删可续传目标**（本地 / SFTP / SMB 的 commit 均已原子替换：ATOMIC_MOVE+REPLACE / `CopyMode.Overwrite` / `rename(replace)`）；预删只保留「快路径腾位 / 目标类型冲突 / 不可续传目标」三类并写入 `deleteForOverwrite` 注释。「失败 / 取消后旧文件仍在」回归 2 例 + **变异验证**（临时还原旧行为 → 恰好这 2 例失败） |
+| 🟡3 | ✅（轻量） | 占用语义显式化：任务行文案「已暂停（占用传输位）」+ `pause()` / 引擎 worker 双重注释；`TaskStateMachineTest` 新增 1 例把「暂停占位 → 后续等待 → 恢复接上」钉死（彻底修法落地时改此断言）。彻底版（暂停即释放槽位、resume 重新入队接续传）保持留档 |
+| 🔵4 | ✅ | `PanelDb` v3→v4 迁移补 `idx_resume_source_dest(source, dest)`（`IF NOT EXISTS` 幂等，新旧库都覆盖） |
+| 🔵5 | ✅ | vfs-local 首套回归 `LocalVfsSafetyTest` 6 例（符号链接删除保护 / 悬空链接 / commit 原子替换 / 续传截断尾巴 / rename 同卷+冲突 / 跨卷退化 `copyAndDelete`）；`rename` 退化段抽成 `internal` 供直接命中；模块补 `testOptions` + junit |
+| 🔵6 | ✅ | `readFullyAt` 改 `FileChannel.read(buffer, position)` 位置读（不动共享文件指针）；`VfsStreams.readFullyAt` 补契约注释 |
+| 🔵7 | ✅ | 删除死字段 `wholeDirectory` 与 `describe()` 不可达分支（含唯一赋值点） |
+
+> 组织说明：`FakeVfs` 写入改为「落 `.part`、commit 才替换正式名」的忠实模型（旧替身直接写目标名，
+> 会掩盖覆盖语义类差异）；验证口径：`compileDebugKotlin`（transfer / vfs-local / data / app）+
+> `testDebugUnitTest`（transfer **41 例** / vfs-local **6 例** / app / data）全绿；🟡2 另做变异验证。
+> 修复提交：`16f14ce`。`vfs-local` 的 `Os/StatFs` 注入脸面未做 —— 上述 6 例走的路径不依赖 android
+> 静态调用；若要进一步覆盖 `stat` / 权限字段解析，再补 `LocalOs` 脸面。
 
 ---
 
