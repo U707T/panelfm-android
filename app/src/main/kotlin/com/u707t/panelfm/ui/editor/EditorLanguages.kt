@@ -126,3 +126,21 @@ internal object EditorLanguages {
         }
     }
 }
+
+/**
+ * 长行文本（Markdown / 纯文本 / 未识别）默认自动换行；代码默认关。
+ */
+internal fun defaultWordwrap(scope: String?): Boolean = scope == null || scope == "text.html.markdown"
+
+/**
+ * 按 scope（与扩展名）给行注释前缀；不支持的语言返回 null（菜单会置灰）。
+ *
+ * CSS 只有块注释，`//` 是 scss / less 的语法——所以 css 系用扩展名区分：
+ * 纯 css 返回 null，scss / less 返回 `//`（2026-10-08 重审 §3 · 🔵7）。
+ */
+internal fun commentPrefixOf(scope: String?, ext: String = ""): String? = when (scope) {
+    "source.kotlin", "source.java", "source.js", "source.ts" -> "//"
+    "source.css" -> if (ext == "scss" || ext == "less") "//" else null
+    "source.python", "source.shell", "source.yaml" -> "#"
+    else -> null
+}

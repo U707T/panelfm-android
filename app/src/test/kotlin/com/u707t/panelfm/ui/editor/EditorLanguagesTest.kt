@@ -49,6 +49,14 @@ class EditorLanguagesTest {
     }
 
     @Test
+    fun `css 行注释按扩展名区分`() {
+        assertNull(commentPrefixOf("source.css"))
+        assertNull(commentPrefixOf("source.css", "css"))
+        assertEquals("//", commentPrefixOf("source.css", "scss"))
+        assertEquals("//", commentPrefixOf("source.css", "less"))
+    }
+
+    @Test
     fun `长行文本默认自动换行，代码默认关`() {
         assertEquals(true, defaultWordwrap(null))
         assertEquals(true, defaultWordwrap("text.html.markdown"))

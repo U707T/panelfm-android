@@ -49,4 +49,60 @@ object TextEncodings {
     } catch (e: CharacterCodingException) {
         false
     }
+
+    // ------------------------------------------------------------------ 特定编码的读写
+    // 下面两个函数与 decode() 共用同一套编码名；「编码名 → 编解码器」的映射只此一处维护，
+    // 编辑器的分段读取 / 保存写回都走这里（避免读 / 写 / 识别三张表各自漂移）。
+
+    /**
+     * 按识别出的 [charset] 解码一段字节（分段浏览用）。
+     * UTF-8 系与 UTF-16 系会剥离可能存在的 BOM（首页分段带 BOM 时用）。
+     */
+    fun decodeWith(charset: String, bytes: ByteArray): String = when {
+        charset.startsWith("UTF-8") -> {
+            val start = if (bytes.size >= 3 && bytes[0] == 0xEF.toByte() && bytes[1] == 0xBB.toByte() && bytes[2] == 0xBF.toByte()) 3 else 0
+            String(bytes, start, bytes.size - start, Charsets.UTF_8)
+        }
+        charset == "GBK" -> String(bytes, Charset.forName("GBK"))
+        charset == "UTF-16LE" -> {
+            val start = if (bytes.size >= 2 && bytes[0] == 0xFF.toByte() && bytes[1] == 0xFE.toByte()) 2 else 0
+            String(bytes, start, bytes.size - start, Charsets.UTF_16LE)
+        }
+        charset == "UTF-16BE" -> {
+            val start = if (bytes.size >= 2 && bytes[0] == 0xFE.toByte() && bytes[1] == 0xFF.toByte()) 2 else 0
+            String(bytes, start, bytes.size - start, Charsets.UTF_16BE)
+        }
+        charset == "ISO-8859-1" -> String(bytes, Charsets.ISO_8859_1)
+        else -> String(bytes, Charsets.UTF_8)
+    }
+
+    /** [encode] 的产物。[charset] 是**实际写入**的编码名（无法表示时已回退 UTF-8）。 */
+    data class Encoded(val bytes: ByteArray, val charset: String)
+
+    /**
+     * 按 [charset] 编码写回（保存用）：
+     * - `"UTF-8 (BOM)"` / `"UTF-16LE/BE"` **重建 BOM**——UTF-16 这类文件完全靠 BOM 被识别，
+     *   丢 BOM 保存后连本应用自己都读不回来（会走 UTF-8 / GBK 启发式 → 乱码）；
+     * - GBK / ISO-8859-1 做往返校验：无法表示的字符（编码器会写成 `?`）改为回退 UTF-8 输出，
+     *   由 [Encoded.charset] 告知调用方实际编码，状态栏据此提示「已转存」。
+     */
+    fun encode(text: String, charset: String): Encoded = when (charset) {
+        "UTF-8 (BOM)" -> Encoded(BOM_UTF8 + text.toByteArray(Charsets.UTF_8), charset)
+        "UTF-8" -> Encoded(text.toByteArray(Charsets.UTF_8), charset)
+        "UTF-16LE" -> Encoded(BOM_UTF16LE + text.toByteArray(Charsets.UTF_16LE), charset)
+        "UTF-16BE" -> Encoded(BOM_UTF16BE + text.toByteArray(Charsets.UTF_16BE), charset)
+        "GBK" -> encodeChecked(text, Charset.forName("GBK"), charset)
+        "ISO-8859-1" -> encodeChecked(text, Charsets.ISO_8859_1, charset)
+        else -> Encoded(text.toByteArray(Charsets.UTF_8), "UTF-8")
+    }
+
+    private val BOM_UTF8 = byteArrayOf(0xEF.toByte(), 0xBB.toByte(), 0xBF.toByte())
+    private val BOM_UTF16LE = byteArrayOf(0xFF.toByte(), 0xFE.toByte())
+    private val BOM_UTF16BE = byteArrayOf(0xFE.toByte(), 0xFF.toByte())
+
+    private fun encodeChecked(text: String, cs: Charset, name: String): Encoded {
+        val bytes = text.toByteArray(cs)
+        return if (String(bytes, cs) == text) Encoded(bytes, name)
+        else Encoded(text.toByteArray(Charsets.UTF_8), "UTF-8")
+    }
 }

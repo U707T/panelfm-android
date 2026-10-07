@@ -202,10 +202,7 @@ class PrefsStore(private val context: Context) {
             dialogIconMode = (p[Keys.dialogIconMode] ?: 0).coerceIn(0, 2),
             tapRangeSelect = p[Keys.tapRangeSelect] ?: false,
             editorLangOverrides = (p[Keys.editorLangOverrides] ?: emptySet())
-                .mapNotNull { line ->
-                    val idx = line.indexOf('|')
-                    if (idx <= 0) null else line.substring(0, idx) to line.substring(idx + 1)
-                }
+                .mapNotNull { line -> parseLangOverride(line) }
                 .toMap(),
             inputHistory = (p[Keys.inputHistory] ?: emptySet())
                 .mapNotNull { line ->
@@ -358,4 +355,16 @@ class PrefsStore(private val context: Context) {
     suspend fun setHomePath(uri: String?) = context.panelDataStore.edit { prefs ->
         if (uri == null) prefs.remove(Keys.homePath) else prefs[Keys.homePath] = uri
     }
+}
+
+/**
+ * 解析编辑器「语法」覆盖的一条记录（`ext|scope`）。
+ *
+ * 空扩展名（Makefile 之类无后缀文件）是合法键——旧实现 `idx <= 0` 会把它整条丢弃，
+ * 导致这类文件的手动语法选择「存不回来」（2026-10-08 重审 §3 · 🔵10）。
+ */
+internal fun parseLangOverride(line: String): Pair<String, String>? {
+    val idx = line.indexOf('|')
+    if (idx < 0) return null
+    return line.substring(0, idx) to line.substring(idx + 1)
 }
