@@ -62,9 +62,11 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
     var checksums by remember(item.uri) { mutableStateOf<Pair<String?, String?>?>(null) }
 
     LaunchedEffect(item.uri) {
+        var materialized: File? = null
         runCatching {
             withContext(Dispatchers.IO) {
                 val file = materializeApk(container, item)
+                materialized = file
                 val pm = context.packageManager
                 val flags = PackageManager.GET_PERMISSIONS or
                     (if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else 0)
@@ -90,10 +92,17 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
                 )
             }
         }.onSuccess { info = it }.onFailure { error = it.message ?: "读取 APK 失败" }
-        // 校验值（与「工具 → 校验值」同一实现）
+        // 校验值：直接对**已落地的文件**算一次（一次读取同时求出 MD5 / SHA-256）。
+        // 旧的 checksumNow(item.uri) 会从源头再读两遍 —— 远程 APK 等于下载 3 次
+        // （2026-10-08 重审 §2）；算法与输出格式与「工具 → 校验值」保持一致。
+        val local = materialized
         runCatching {
-            checksums = container.browser.checksumNow(item.uri, "MD5") to
-                container.browser.checksumNow(item.uri, "SHA-256")
+            checksums = if (local != null) {
+                fileDigests(local)
+            } else {
+                container.browser.checksumNow(item.uri, "MD5") to
+                    container.browser.checksumNow(item.uri, "SHA-256")
+            }
         }.onFailure { checksums = null }
     }
 
@@ -247,6 +256,28 @@ private fun signerSummary(pkg: PackageInfo): String = runCatching {
         "SHA-256: " + digest.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }.take(16) + "…"
     } ?: "未签名"
 }.getOrDefault("读取失败")
+
+/**
+ * 对本地文件一次性读完，同时计算 MD5 与 SHA-256（小写十六进制）。
+ *
+ * 与「工具 → 校验值」（BrowserController.checksumNow）的算法与输出格式一致；
+ * 区别只是数据源是**已落地的本地文件**，避免远程包被重复下载（2026-10-08 重审 §2）。
+ */
+private suspend fun fileDigests(file: File): Pair<String, String> = withContext(Dispatchers.IO) {
+    val md5 = java.security.MessageDigest.getInstance("MD5")
+    val sha = java.security.MessageDigest.getInstance("SHA-256")
+    file.inputStream().use { ins ->
+        val buf = ByteArray(256 * 1024)
+        while (true) {
+            val n = ins.read(buf)
+            if (n < 0) break
+            md5.update(buf, 0, n)
+            sha.update(buf, 0, n)
+        }
+    }
+    fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+    hex(md5.digest()) to hex(sha.digest())
+}
 
 /** 远程 APK 先缓存到本地（PackageManager 只接受文件路径） */
 private suspend fun materializeApk(container: AppContainer, item: FileMetadata): File {

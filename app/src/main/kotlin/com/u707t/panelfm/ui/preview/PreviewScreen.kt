@@ -64,6 +64,7 @@ import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import java.io.File
@@ -91,8 +92,11 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
     }
     androidx.compose.runtime.DisposableEffect(uri) {
         onDispose {
+            // 带「期望值」清理：只清仍是我们离开时那一条记录 ——
+            // 快速「返回 → 打开新文件」时，异步的 clear 可能晚于新 save 执行，
+            // 无条件清理会把新记录误删（2026-10-08 重审 §2）。
             runCatching {
-                container.scope.launch { container.prefs.clearLastOpenedPreview() }
+                container.scope.launch { container.prefs.clearLastOpenedPreview(uri.toString()) }
             }
         }
     }
@@ -103,6 +107,8 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             // 「会话不可用」而用户什么都没法做
             val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
             meta = vfs.stat(uri)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = (e as? com.u707t.panelfm.core.vfs.VfsException)?.userMessage ?: (e.message ?: "读取失败")
         }
@@ -220,9 +226,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                             onClick = {
                             modeMenu = false
                             val file = runCatching { File(container.localVfs.absolutePath(uri)) }.getOrNull()
-                            if (uri.scheme != "local") {
-                                error = "网络文件不支持外部应用打开，请先复制到本地"
-                            } else if (file == null || !file.exists()) {
+                            if (file == null || !file.exists()) {
                                 error = "文件不存在（可能已被移动或删除）"
                             } else {
                                 val shareUri = runCatching {
@@ -252,7 +256,6 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             item.isDirectory -> Text("这是一个文件夹：${uri.displayPath}", Modifier.padding(16.dp))
             else -> when (resolved) {
                 PreviewMode.IMAGE -> ImagePreview(container, item)
-                PreviewMode.PDF -> PdfScreen(container, item, onBack = onBack)
                 PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
                 PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
                 PreviewMode.OFFICE -> Text("文档预览（只读）", Modifier.padding(16.dp))
@@ -280,14 +283,22 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata) {
 
     LaunchedEffect(item.uri) {
         val parent = item.uri.parent
-        val list = if (parent == null) emptyList() else runCatching {
-            val vfs = container.resolveSession(parent) ?: return@runCatching emptyList()
-            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-                vfs.list(parent).filter {
-                    !it.isDirectory && MimeTypes.kindOf(it.extension) == MimeTypes.Kind.IMAGE
+        val list = if (parent == null) emptyList() else try {
+            val vfs = container.resolveSession(parent)
+            if (vfs == null) {
+                emptyList()
+            } else {
+                kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    vfs.list(parent).filter {
+                        !it.isDirectory && MimeTypes.kindOf(it.extension) == MimeTypes.Kind.IMAGE
+                    }
                 }
             }
-        }.getOrDefault(emptyList())
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            emptyList()
+        }
         val effective = if (list.any { it.uri == item.uri }) list else listOf(item)
         siblings = effective
         initialPage = effective.indexOfFirst { it.uri == item.uri }.coerceAtLeast(0)
@@ -389,6 +400,8 @@ private fun ImagePage(
     LaunchedEffect(item.uri) {
         try {
             bitmap = decodeSampled(container, item.uri)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.message ?: "解码失败"
         }
@@ -566,7 +579,7 @@ private fun openVfsStream(container: AppContainer, uri: VfsUri): java.io.InputSt
     }
 }
 
-private fun sampleToFit(width: Int, height: Int, target: Int): Int {
+internal fun sampleToFit(width: Int, height: Int, target: Int): Int {
     var sample = 1
     val longest = maxOf(width, height)
     while (longest / (sample * 2) >= target) sample *= 2
@@ -590,8 +603,11 @@ private fun TextPreview(container: AppContainer, item: FileMetadata) {
             val decoded = decodeText(bytes)
             encoding = decoded.first
             text = decoded.second
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
-            error = e.message
+            // message 为 null 时必须有兜底文案，否则界面会永远停在「加载中」（2026-10-08 重审 §2）
+            error = e.message ?: "文本预览失败"
         }
     }
 

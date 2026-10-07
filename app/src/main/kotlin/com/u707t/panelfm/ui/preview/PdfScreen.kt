@@ -42,6 +42,7 @@ import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
 import java.io.File
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -93,11 +94,18 @@ private fun PdfPager(file: File, onPageCount: (Int) -> Unit) {
     val lock = remember(file) { Mutex() }
     val listState = rememberLazyListState()
 
-    // 页面离开组合 / 换文件时释放原生资源
+    // 页面离开组合 / 换文件时释放原生资源。
+    // ⚠️ close 必须与渲染走**同一把锁**：渲染协程被取消时仍会把当前一页渲染完
+    //    （IO 块内没有挂起点），与 onDispose 的 close 并发违反 PdfRenderer 的
+    //    「非线程安全」前提 —— 先取锁把在飞渲染等完再关（2026-10-08 重审 §2）。
     DisposableEffect(file) {
         onDispose {
-            runCatching { renderer?.close() }
-            runCatching { descriptor?.close() }
+            runBlocking {
+                lock.withLock {
+                    runCatching { renderer?.close() }
+                    runCatching { descriptor?.close() }
+                }
+            }
         }
     }
 

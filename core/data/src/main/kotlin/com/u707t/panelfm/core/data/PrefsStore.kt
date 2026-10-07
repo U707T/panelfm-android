@@ -323,9 +323,23 @@ class PrefsStore(private val context: Context) {
         prefs[Keys.lastOpenedPreview] = "$mode|$uri|${System.currentTimeMillis()}"
     }
 
-    /** 用户主动离开预览（返回）→ 不再是「打开着的文件」，下次启动不自动跳回 */
-    suspend fun clearLastOpenedPreview() = context.panelDataStore.edit { prefs ->
-        prefs.remove(Keys.lastOpenedPreview)
+    /**
+     * 用户主动离开预览（返回）→ 不再是「打开着的文件」，下次启动不自动跳回。
+     *
+     * [expectedUri] 非空时只清「仍匹配该 uri」的那条记录：离开（onDispose 异步清理）与
+     * 下一次打开（save）之间没有顺序保证，无条件清理可能把刚保存的新记录误删
+     * （2026-10-08 重审 §2）。
+     */
+    suspend fun clearLastOpenedPreview(expectedUri: String? = null) = context.panelDataStore.edit { prefs ->
+        if (expectedUri == null) {
+            prefs.remove(Keys.lastOpenedPreview)
+            return@edit
+        }
+        val raw = prefs[Keys.lastOpenedPreview] ?: return@edit
+        val first = raw.indexOf('|')
+        val last = raw.lastIndexOf('|')
+        val uri = if (first > 0 && last > first) raw.substring(first + 1, last) else null
+        if (uri == expectedUri) prefs.remove(Keys.lastOpenedPreview)
     }
 
     suspend fun lastOpenedPreview(): LastOpened? =
