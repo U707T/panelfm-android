@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.vfs.FileMetadata
+import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -58,11 +59,15 @@ object FolderDiffEngine {
     ): DiffResult =
         withContext(Dispatchers.IO) {
             report?.note("读取左侧目录…")
+            // 会话不可用必须报错：按「空目录」静默对比会得出整片「仅左侧/仅右侧」的错误结论，
+            // 两个操作按钮还会据此真的发任务（见审查记录 §1-🟡6）。
             val leftVfs = container.locator.find(left)
+                ?: throw VfsException.Unsupported("左侧目录不可用（会话未连接）")
             val rightVfs = container.locator.find(right)
-            val leftItems = leftVfs?.list(left).orEmpty().associateBy { it.name }
+                ?: throw VfsException.Unsupported("右侧目录不可用（会话未连接）")
+            val leftItems = leftVfs.list(left).associateBy { it.name }
             report?.note("读取右侧目录…")
-            val rightItems = rightVfs?.list(right).orEmpty().associateBy { it.name }
+            val rightItems = rightVfs.list(right).associateBy { it.name }
             val names = (leftItems.keys + rightItems.keys).sorted()
             val entries = names.mapIndexed { index, name ->
                 report?.report((index + 1).toLong(), names.size.toLong(), "比较 ${index + 1}/${names.size}")

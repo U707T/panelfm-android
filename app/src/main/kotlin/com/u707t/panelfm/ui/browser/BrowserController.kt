@@ -39,6 +39,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 双列浏览控制器（应用级单例，转屏/切屏都不丢状态）。
  *  - 两个窗格完全独立：路径、历史栈、标签页、排序、隐藏文件、选择集
  *  - 跨窗格操作：目标恒为另一窗格当前目录（实时取值，不弹目标选择框）
+ *  - 线程纪律：状态一律经 [update]（CAS）写入；共享可变字段必须并发安全
+ *    （协程跑在 IO 池上，不是单线程；新增字段前先想清楚谁会并发碰它）。
  */
 class BrowserController(private val container: AppContainer) {
 
@@ -55,10 +57,13 @@ class BrowserController(private val container: AppContainer) {
 
     fun dismissDiffRequest() { _diffRequest.value = null }
 
-    private val loadJobs = mutableMapOf<PaneSide, Job>()
+    /** 每窗格的加载作业（UI 线程发起、IO 协程收尾 → 必须并发安全） */
+    private val loadJobs = java.util.concurrent.ConcurrentHashMap<PaneSide, Job>()
 
     /** 长操作（审计 U4）：同一时间至多一个；进度状态条 + 取消。 */
     private val busyIdGen = AtomicLong(0)
+    /** UI 与作业收尾两侧都会读写 → volatile 保证可见性。 */
+    @Volatile
     private var busyJob: Job? = null
     private val loadGeneration = mutableMapOf(
         PaneSide.LEFT to AtomicLong(0),
@@ -71,6 +76,7 @@ class BrowserController(private val container: AppContainer) {
      * 为什么放在控制器（而不是 Composable 里 `remember`）：窗格会因单/双列切换、
      * 抽屉开关等原因重组甚至重建，位置必须活到控制器这一层才稳。
      */
+    @Volatile
     private var scrollMemory = mapOf(
         PaneSide.LEFT to com.u707t.panelfm.core.common.ScrollMemory(),
         PaneSide.RIGHT to com.u707t.panelfm.core.common.ScrollMemory(),
@@ -89,6 +95,15 @@ class BrowserController(private val container: AppContainer) {
                 com.u707t.panelfm.core.common.Fmt.showSeconds = s.showSeconds
                 // MT「保留文件时间」：引擎侧统一补进每个 TransferRequest（含解压 / 差异复制等旁路）
                 container.engine.preserveModifiedTime = s.preserveModifiedTime
+                // 「仅应用于此文件夹」规则变化 → 重载两窗格：DataStore 写入是异步的，
+                // applySort 里那次 load 可能读不到新规则，等设置真正生效后补一次。
+                if (lastFolderSorts == null) {
+                    lastFolderSorts = s.folderSorts
+                } else if (lastFolderSorts != s.folderSorts) {
+                    lastFolderSorts = s.folderSorts
+                    load(PaneSide.LEFT)
+                    load(PaneSide.RIGHT)
+                }
                 if (!startupApplied) {
                     startupApplied = true
                     val defaultSort = SortSpec(s.sortBy, s.sortAscending, s.dirsFirst)
@@ -198,6 +213,9 @@ class BrowserController(private val container: AppContainer) {
     @Volatile
     private var startupRestoreDone = false
 
+    /** settings 上一次发射的「文件夹排序规则」快照（检测到变化时补一次重载，DataStore 写入是异步的） */
+    private var lastFolderSorts: Map<String, String>? = null
+
     /** 防抖保存的挂起标记（container.scope 跑在 IO 线程池上，用原子量避免重复排程） */
     private val persistScheduled = java.util.concurrent.atomic.AtomicBoolean(false)
 
@@ -229,8 +247,15 @@ class BrowserController(private val container: AppContainer) {
 
     // ------------------------------------------------------------------ 状态读写
 
+    /**
+     * 状态写入。
+     *
+     * ⚠️ 必须走 [MutableStateFlow.update] 的 CAS 循环：`container.scope` 跑在多线程 IO 池上，
+     * UI 回调（主线程）与异步协程（IO）都会并发走到这里；手写 `value = transform(value)`
+     * 是「非原子读-改-写」，并发时会丢更新（选中/状态条目会偶发地"消失"）。
+     */
     private fun update(transform: (BrowserUiState) -> BrowserUiState) {
-        _state.value = transform(_state.value)
+        _state.update(transform)
     }
 
     fun pane(side: PaneSide): PaneState = _state.value.pane(side)
@@ -293,14 +318,12 @@ class BrowserController(private val container: AppContainer) {
     val statusQueue: kotlinx.coroutines.flow.StateFlow<List<String>> get() = _statusQueue
 
     fun consumeStatus() {
-        update { it.copy(status = null) }
         _statusQueue.update { it.drop(1) }
     }
 
     fun dismissPreviewRequest() { _previewRequest.value = null }
 
     fun showStatus(message: String) {
-        update { it.copy(status = message) }
         _statusQueue.update { (it + message).takeLast(8) }
     }
 
@@ -390,9 +413,9 @@ class BrowserController(private val container: AppContainer) {
         val pane = pane(side)
         val uri = pane.uri
         // MT「仅应用于此文件夹」：该路径有记忆排序 → 覆盖当前窗格排序
-        val ruleSort = container.settings.value.folderSorts[VfsUris.stripped(uri).toString()]?.let { decodeSortSpec(it) }
-        val effSort = ruleSort ?: pane.sort
-        if (effSort != pane.sort) updatePane(side) { it.copy(sort = effSort) }
+        // 生效排序 = 该目录的专属规则（若有）> 本窗格排序。
+        // ⚠️ 不能把规则回写到 pane.sort：否则离开该目录后，规则会「泄漏」到所有无规则目录。
+        val effSort = sortSpecFor(side)
         // MT 加载遮罩（0x7f0c0033 的 09020D/09020E）：连接 → 枚举 → 过滤 → 完成 分阶段上报百分比
         updateLoad(side, generation, uri) { it.copy(loading = true, loadProgress = 0.05f, error = null) }
         loadJobs[side] = container.scope.launch {
@@ -485,12 +508,16 @@ class BrowserController(private val container: AppContainer) {
         // `isSameOrDescendant` 会让 KEEP_BOTH / SKIP 的子树映射判错。
         // 旧实现只在「从主页/抽屉打开连接」时手工拼 c=，书签、最近路径、同步、返回上级都漏了；
         // 这里统一补上，让所有入口一致（已经是同一个连接的 URI 则原样保留）。
-        val effectiveConnId = connectionId ?: tab.connectionId
-        val stamped = if (effectiveConnId != null && uri.scheme != "local" && uri.scheme != "archive") {
-            VfsUris.withConnection(uri, effectiveConnId)
-        } else {
-            uri
+        //
+        // 跨协议跳转（如在 SFTP 窗格里输入 s3://…）不能沿用当前 tab 的连接号：
+        // 那会把连接号盖到别的协议 URI 上，SessionLocator 会先按连接号命中错误的会话。
+        // 跨协议时按目标 URI 自己反查连接（connectionForUri 含 S3 bucket 兜底）。
+        val effectiveConnId = when {
+            uri.scheme == "local" || uri.scheme == "archive" -> null
+            uri.scheme == tab.uri.scheme -> connectionId ?: tab.connectionId
+            else -> container.connectionForUri(uri)?.id
         }
+        val stamped = if (effectiveConnId != null) VfsUris.withConnection(uri, effectiveConnId) else uri
         if (tab.uri == stamped) {
             load(side)
             return
@@ -590,9 +617,7 @@ class BrowserController(private val container: AppContainer) {
         }
     }
 
-    fun openModes(): List<Pair<String, String>> = runCatching { container.previewPrefDao.all() }.getOrDefault(emptyList())
-
-    /** 同上，但明确跑在 IO 上（供 Compose 用，避免组合期查库卡帧）。 */
+    /** 默认打开方式清单（明确跑在 IO 上：供 Compose 用，避免组合期查库卡帧）。 */
     suspend fun openModesSuspend(): List<Pair<String, String>> = withContext(container.dispatchers.io) {
         runCatching { container.previewPrefDao.all() }.getOrDefault(emptyList())
     }
@@ -655,33 +680,48 @@ class BrowserController(private val container: AppContainer) {
         val sources = plan.sources
         val name = plan.name
         val dest = dstPane.uri.child(name)
-        update { it.copy(highlight = true, status = "压缩 ${sources.size} 项 → ${dest.displayPath}") }
+        showStatus("压缩 ${sources.size} 项 → ${dest.displayPath}")
+        update { it.copy(highlight = true) }
         container.scope.launch {
             kotlinx.coroutines.delay(1200)
             update { it.copy(highlight = false) }
         }
         launchBusy("压缩 ${sources.size} 项 → $name") { report ->
-            // 目标是否是「本次新建」：取消时据此决定是否清理半成品，绝不碰用户原有文件
-            val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
-            try {
-                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
-                    .compress(
-                        sources, dest, format,
-                        onProgress = { done, total ->
-                            report.report(done, total, "已处理 " + Fmt.transferred(done, total))
-                        },
-                        level = level,
-                        password = password,
-                        encryptNames = encryptNames,
-                    )
-            } catch (e: CancellationException) {
-                // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理，绝不碰用户原有文件
-                if (!existedBefore) runCatching { container.locator.find(dest)?.delete(listOf(dest)) }
-                throw e
-            }
-            showStatus("已压缩为 $name")
+            compressInto(report, sources, dest, name, format, level, password, encryptNames)
             load(side.other)
         }
+    }
+
+    /** 压缩的公共实现（两个入口共用）：进度映射 + 取消清理（只清本次新建的半成品，绝不碰用户原文件）。 */
+    private suspend fun compressInto(
+        report: BusyReporter,
+        sources: List<VfsUri>,
+        dest: VfsUri,
+        name: String,
+        format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format,
+        level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level,
+        password: String?,
+        encryptNames: Boolean,
+    ) {
+        // 目标是否是「本次新建」：取消时据此决定是否清理半成品
+        val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
+        try {
+            com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
+                .compress(
+                    sources, dest, format,
+                    onProgress = { done, total ->
+                        report.report(done, total, "已处理 " + Fmt.transferred(done, total))
+                    },
+                    level = level,
+                    password = password,
+                    encryptNames = encryptNames,
+                )
+        } catch (e: CancellationException) {
+            // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理
+            if (!existedBefore) runCatching { container.locator.find(dest)?.delete(listOf(dest)) }
+            throw e
+        }
+        showStatus("已压缩为 $name")
     }
 
     fun back(side: PaneSide) {
@@ -742,7 +782,7 @@ class BrowserController(private val container: AppContainer) {
         val pane = pane(side)
         if (pane.tabs.size <= 1) return
         val tabs = pane.tabs.toMutableList().also { it.removeAt(index) }
-        val newActive = (pane.activeTab.coerceAtMost(tabs.lastIndex)).let { if (index <= pane.activeTab) (it - 1).coerceAtLeast(0) else it }
+        val newActive = closeTabNewActive(pane.activeTab, index, tabs.size)
         updatePane(side) { it.copy(tabs = tabs, activeTab = newActive).withSelectionCleared() }
         load(side)
     }
@@ -949,16 +989,16 @@ class BrowserController(private val container: AppContainer) {
         }
     }
 
-    /** 打开应用启动时进入的目录 */
-    fun openHomeIfConfigured() {
-        val home = container.settings.value.homePath ?: return
-        val uri = runCatching { VfsUri.parse(home) }.getOrNull() ?: return
-        if (container.locator.find(uri) != null) open(PaneSide.LEFT, uri)
-    }
-
     fun setSort(side: PaneSide, sort: SortSpec) {
         updatePane(side) { it.copy(sort = sort) }
         load(side)
+    }
+
+    /** 当前目录实际生效的排序：目录专属规则优先，否则用本窗格排序（不回写 pane.sort，见 [applySort]）。 */
+    fun sortSpecFor(side: PaneSide): SortSpec {
+        val pane = pane(side)
+        val rule = container.settings.value.folderSorts[VfsUris.stripped(pane.uri).toString()]
+        return rule?.let { decodeSortSpec(it) } ?: pane.sort
     }
 
     /**
@@ -968,7 +1008,9 @@ class BrowserController(private val container: AppContainer) {
      */
     fun applySort(side: PaneSide, spec: SortSpec, folderOnly: Boolean) {
         val key = VfsUris.stripped(pane(side).uri).toString()
-        updatePane(side) { it.copy(sort = spec) }
+        // 「仅应用于此文件夹」只写规则、不回写 pane.sort（避免泄漏到其它目录）；
+        // 其余情况写全局默认排序并清掉该目录的专属规则。
+        if (!folderOnly) updatePane(side) { it.copy(sort = spec) }
         load(side)
         container.scope.launch {
             if (folderOnly) {
@@ -1081,9 +1123,10 @@ class BrowserController(private val container: AppContainer) {
                     // 三步交换；中途失败则尽力回滚，避免「a 变成临时名、b 丢失」的坏状态
                     vfs.rename(a.uri, tmp)
                     try {
-                        vfs.rename(b.uri, targetA)
+                        // b 改到 a 的名字（targetB），a 的临时名再改到 b 的名字（targetA）——顺序写反会变成空操作
+                        vfs.rename(b.uri, targetB)
                         try {
-                            vfs.rename(tmp, targetB)
+                            vfs.rename(tmp, targetA)
                         } catch (e: Exception) {
                             runCatching { vfs.rename(targetA, b.uri) } // 回滚 b
                             runCatching { vfs.rename(tmp, a.uri) }     // 回滚 a
@@ -1136,13 +1179,16 @@ class BrowserController(private val container: AppContainer) {
                 showStatus(
                     when {
                         fastDelete -> "已极速删除 ${sources.size} 项"
-                        trashed > 0 -> "已移入回收站 $trashed 项（可还原）"
-                        else -> "已删除 ${remoteOnly.size} 项"
+                        remoteOnly.isEmpty() -> "已移入回收站 $trashed 项（可还原）"
+                        trashed == 0 -> "已删除 ${remoteOnly.size} 项"
+                        else -> "已删除 ${sources.size} 项（其中 $trashed 项移入回收站）"
                     }
                 )
                 clearSelection(side)
                 load(side)
             } catch (e: Exception) {
+                // 部分项可能已删除：失败后也要刷新，避免列表里留着已经不存在的项
+                load(side)
                 showStatus((e as? VfsException)?.userMessage ?: "删除失败：${e.message}")
             }
         }
@@ -1161,6 +1207,12 @@ class BrowserController(private val container: AppContainer) {
                 val exists = runCatching { withContext(container.dispatchers.vfs) { vfs.stat(target) } }.getOrNull()
                 if (exists != null && !exists.isDirectory) {
                     update { it.copy(renameConflict = RenameConflict(uri, target, uri.name)) }
+                    return@launch
+                }
+                if (exists != null) {
+                    // 目标是同名文件夹：rename 语义不允许覆盖，给出明确提示
+                    // （旧实现直接尝试 rename → 报「服务器拒绝重命名（可能需要服务端复制）」，误导排查方向）
+                    showStatus("目标已存在同名文件夹：$newName")
                     return@launch
                 }
                 val ok = withContext(container.dispatchers.vfs) { vfs.rename(uri, target) }
@@ -1253,7 +1305,7 @@ class BrowserController(private val container: AppContainer) {
             showStatus("当前目录没有可解压的项")
             return
         }
-        update { it.copy(status = "解压 ${sources.size} 项 → ${destDir.displayPath}") }
+        showStatus("解压 ${sources.size} 项 → ${destDir.displayPath}")
         container.engine.enqueue(
             TransferRequest(sources = sources, destDir = destDir, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
         )
@@ -1313,7 +1365,7 @@ class BrowserController(private val container: AppContainer) {
                 }
                 // 压缩包挂载的**根 URI**（整包内容都在它下面）
                 val root = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, vfs.kind)
-                update { it.copy(status = "解压 ${item.name} → ${target.displayPath}") }
+                showStatus("解压 ${item.name} → ${target.displayPath}")
                 container.engine.enqueue(
                     TransferRequest(
                         sources = listOf(root),
@@ -1553,7 +1605,7 @@ class BrowserController(private val container: AppContainer) {
      * 为什么要这个：底栏的 ← → ↑、返回键、⋮ 菜单里的跳转都**直接调控制器**，
      * 不经过 PaneView 的点击处理，控制器这边需要一条通路在切目录前把位置落盘。
      */
-    private val scrollSavers = mutableMapOf<PaneSide, () -> Unit>()
+    private val scrollSavers = java.util.concurrent.ConcurrentHashMap<PaneSide, () -> Unit>()
 
     /** PaneView 进入组合时注册（DisposableEffect 里注销） */
     fun registerScrollSaver(side: PaneSide, saver: () -> Unit) {
@@ -1577,11 +1629,13 @@ class BrowserController(private val container: AppContainer) {
      *
      * @param listIndex 含 `..` 行的列表下标（调用方用 [ScrollMemory.toListIndex] 换算）
      */
+    @Synchronized
     fun rememberScroll(side: PaneSide, uri: VfsUri, listIndex: Int, offset: Int) {
         scrollMemory[side]?.remember(scrollKey(uri), listIndex, offset)
     }
 
     /** 取某个目录上次的滚动位置；没有则 null（= 停在顶部） */
+    @Synchronized
     fun recallScroll(side: PaneSide, uri: VfsUri): com.u707t.panelfm.core.common.ScrollMemory.Entry? =
         scrollMemory[side]?.recall(scrollKey(uri))
 
@@ -1634,6 +1688,7 @@ class BrowserController(private val container: AppContainer) {
 
     // ------------------------------------------------------------------ 跨窗格操作
 
+    @Synchronized
     fun swapPanes() {
         val st = _state.value
         // 先落盘两侧位置，再把记忆跟着内容一起换边（否则交换后位置记忆留在原侧 = 丢失）
@@ -1926,7 +1981,8 @@ class BrowserController(private val container: AppContainer) {
         }
         val op = if (move) TransferOp.MOVE else TransferOp.COPY
         val opText = if (move) "移动" else "复制"
-        update { it.copy(highlight = true, status = "$opText ${reachable.size} 项 → ${dest.displayPath}") }
+        showStatus("$opText ${reachable.size} 项 → ${dest.displayPath}")
+        update { it.copy(highlight = true) }
         container.scope.launch {
             kotlinx.coroutines.delay(1600)
             update { it.copy(highlight = false) }
@@ -1939,6 +1995,7 @@ class BrowserController(private val container: AppContainer) {
     }
 
     /** 应用内剪贴板（源 URI 列表）。放控制器而不是系统剪贴板：能表达「多项 + 移动语义」 */
+    @Volatile
     private var clipboard: List<VfsUri> = emptyList()
 
     fun copyWithinPane(side: PaneSide, destDir: VfsUri, overrideSources: List<VfsUri>? = null) =
@@ -1960,7 +2017,7 @@ class BrowserController(private val container: AppContainer) {
             return
         }
         val opText = if (op == TransferOp.COPY) "复制" else "移动"
-        update { it.copy(status = "$opText ${sources.size} 项 → ${destDir.displayPath}") }
+        showStatus("$opText ${sources.size} 项 → ${destDir.displayPath}")
         container.engine.enqueue(
             TransferRequest(sources = sources, destDir = destDir, op = op, conflict = ConflictPolicy.ASK)
         )
@@ -1992,25 +2049,7 @@ class BrowserController(private val container: AppContainer) {
         val name = plan.name
         val dest = pane.uri.child(name)
         launchBusy("压缩 ${sources.size} 项 → $name") { report ->
-            // 目标是否是「本次新建」：取消时据此决定是否清理半成品，绝不碰用户原有文件
-            val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
-            try {
-                com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
-                    .compress(
-                        sources, dest, format,
-                        onProgress = { done, total ->
-                            report.report(done, total, "已处理 " + Fmt.transferred(done, total))
-                        },
-                        level = level,
-                        password = password,
-                        encryptNames = encryptNames,
-                    )
-            } catch (e: CancellationException) {
-                // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理，绝不碰用户原有文件
-                if (!existedBefore) runCatching { container.locator.find(dest)?.delete(listOf(dest)) }
-                throw e
-            }
-            showStatus("已压缩为 $name")
+            compressInto(report, sources, dest, name, format, level, password, encryptNames)
             clearSelection(side)
             load(side)
         }
@@ -2159,7 +2198,8 @@ class BrowserController(private val container: AppContainer) {
         }
 
         // ① 两侧路径高亮 + 中央文案（操作前可见性）
-        update { it.copy(highlight = true, status = "$opText ${sources.size} 项 → ${destDir.displayPath}") }
+        showStatus("$opText ${sources.size} 项 → ${destDir.displayPath}")
+        update { it.copy(highlight = true) }
         container.scope.launch {
             kotlinx.coroutines.delay(1600)
             update { it.copy(highlight = false) }

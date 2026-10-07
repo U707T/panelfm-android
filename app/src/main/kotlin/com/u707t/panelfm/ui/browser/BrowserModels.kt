@@ -151,7 +151,6 @@ data class BrowserUiState(
     val focused: PaneSide = PaneSide.LEFT,
     /** 跨窗格操作前：两侧路径栏同时高亮 */
     val highlight: Boolean = false,
-    val status: String? = null,
     val pendingMove: PendingMove? = null,
     val conflict: ConflictInfo? = null,
     val property: FileMetadata? = null,
@@ -219,6 +218,17 @@ enum class BrowseMode(val label: String) {
  */
 fun crossPaneLabel(base: String, from: PaneSide): String =
     if (from == PaneSide.LEFT) "$base ->" else "<- $base"
+
+/**
+ * 关闭标签页后的新激活下标（纯函数，可单测）：
+ *  - 关闭非当前且在其左侧 → 当前下标左移 1；
+ *  - 关闭当前标签 → 原位（右邻居顶上；关了末位则由夹紧回退到前一个）；
+ *  - 关闭右侧标签 → 下标不变。
+ */
+internal fun closeTabNewActive(activeTab: Int, closeIndex: Int, tabCountAfter: Int): Int {
+    val shifted = if (closeIndex < activeTab) activeTab - 1 else activeTab
+    return shifted.coerceIn(0, (tabCountAfter - 1).coerceAtLeast(0))
+}
 
 /**
  * 「长按动作菜单」的目标项（见 v1.9.1 的回归说明）。

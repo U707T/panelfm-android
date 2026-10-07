@@ -94,8 +94,9 @@ fun ConflictDialog(
     dialogIconMode: Int = 0,
     onDecision: (ConflictPolicy, Boolean) -> Unit,
 ) {
-    var applyAll by remember { mutableStateOf(false) }
-    var policy by remember { mutableStateOf(ConflictPolicy.OVERWRITE) }
+    // 按「冲突对」重置：两个冲突在一帧内先后到达（对话框没来得及离开组合）时，不应沿用上一个冲突的选择。
+    var applyAll by remember(info.sourceName, info.destName) { mutableStateOf(false) }
+    var policy by remember(info.sourceName, info.destName) { mutableStateOf(ConflictPolicy.OVERWRITE) }
     val verb = if (info.isMove) "移动" else "复制"
 
     AlertDialog(
@@ -645,7 +646,15 @@ fun MtCompressDialog(
                         com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.entries.forEach { f ->
                             DropdownMenuItem(
                                 text = { Text(if (f == format) "☑ ${f.label}" else "☐ ${f.label}") },
-                                onClick = { format = f; formatMenu = false; if (!f.supportsPassword) encryptNames = false },
+                                onClick = {
+                                    format = f
+                                    formatMenu = false
+                                    // 切到不支持加密的格式时，连密码一起清掉（否则确定后必报「不支持加密」，且用户看不到密码字段）
+                                    if (!f.supportsPassword) {
+                                        encryptNames = false
+                                        password = ""
+                                    }
+                                },
                             )
                         }
                     }

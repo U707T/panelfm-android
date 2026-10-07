@@ -1696,7 +1696,7 @@ fun DualPaneScreen(
     if (showSortDialog) {
         MtSortDialog(
             paneLabel = if (focusSide == PaneSide.LEFT) "左窗口" else "右窗口",
-            initial = focused.sort,
+            initial = controller.sortSpecFor(focusSide),
             folderRuleExists = controller.hasFolderSortRule(focused.uri),
             onManage = { showSortDialog = false; sortManage = true },
             onConfirm = { spec, folderOnly ->

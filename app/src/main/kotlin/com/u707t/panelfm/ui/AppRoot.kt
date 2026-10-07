@@ -136,11 +136,6 @@ fun AppRoot(container: AppContainer) {
         askNotification = false
     }
 
-    // 「设为首页」的目录（默认就是内部存储根）
-    LaunchedEffect(Unit) {
-        runCatching { container.browser.openHomeIfConfigured() }
-    }
-
     /**
      * 恢复「上次打开着的文件」。
      *
