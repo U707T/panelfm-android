@@ -27,6 +27,7 @@ import com.u707t.panelfm.core.vfs.VfsUris
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -279,11 +280,27 @@ class BrowserController(private val container: AppContainer) {
         return purpose to dir
     }
 
-    fun consumeStatus() = update { it.copy(status = null) }
+    /**
+     * 状态消息**队列**（审计 U9）：消息排队显示，不再互相顶掉；
+     * 错误类消息多停一倍时间（[statusDurationMs]），UI 每条消费完才轮到下一条。
+     */
+    private val _statusQueue = kotlinx.coroutines.flow.MutableStateFlow<List<String>>(emptyList())
+    val statusQueue: kotlinx.coroutines.flow.StateFlow<List<String>> get() = _statusQueue
+
+    fun consumeStatus() {
+        update { it.copy(status = null) }
+        _statusQueue.update { it.drop(1) }
+    }
 
     fun dismissPreviewRequest() { _previewRequest.value = null }
 
-    fun showStatus(message: String) = update { it.copy(status = message) }
+    fun showStatus(message: String) {
+        update { it.copy(status = message) }
+        _statusQueue.update { (it + message).takeLast(8) }
+    }
+
+    /** 一条状态提示显示多久（纯函数在 [statusDurationMs]，便于单测） */
+    fun statusDurationMs(message: String): Long = com.u707t.panelfm.ui.browser.statusDurationMs(message)
 
     // ------------------------------------------------------------------ 列表加载
 
@@ -1191,28 +1208,48 @@ class BrowserController(private val container: AppContainer) {
             return
         }
         container.scope.launch {
-            val target = if (ownFolder) {
-                val dir = container.uniqueChild(destDir, archiveName)
-                runCatching { container.locator.find(destDir)?.mkdir(dir) }
-                    .onFailure {
-                        showStatus("创建目录失败：${it.message}")
-                        return@launch
-                    }
-                dir
-            } else {
-                destDir
-            }
-            // 压缩包挂载的**根 URI**（整包内容都在它下面）
-            val root = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, kind)
-            update { it.copy(status = "解压 ${item.name} → ${target.displayPath}") }
-            container.engine.enqueue(
-                TransferRequest(
-                    sources = listOf(root),
-                    destDir = target,
-                    op = TransferOp.COPY,
-                    conflict = ConflictPolicy.ASK,
+            // 整段包在 try/catch 里：这条链路以前有「未挂载 + 未捕获异常 → 直接闪退」的问题，
+            // 现在任何失败都变成状态栏里一句能看懂的话。
+            try {
+                val target = if (ownFolder) {
+                    val dir = container.uniqueChild(destDir, archiveName)
+                    runCatching { container.locator.find(destDir)?.mkdir(dir) }
+                        .getOrElse {
+                            showStatus("创建目录失败：${it.message}")
+                            return@launch
+                        }
+                    dir
+                } else {
+                    destDir
+                }
+                // ⚠️ 必须先**挂载**压缩包：引擎按 URI 找会话（SessionLocator 对 archive:// 只查已挂载的
+                // `archiveOf`），旧实现直接构造 archive:// 根 URI 就入队 → 计划阶段报
+                // 「源位置不可用」/在某些路径上直接抛异常（用户报的「解压闪退/报错」）。
+                val vfs = runCatching { container.openArchive(item.uri) }.getOrElse {
+                    showStatus("打开压缩包失败：${it.message ?: "未知错误"}")
+                    return@launch
+                }
+                if (vfs.kind != kind) {
+                    // 挂载出来的类型与后缀推断不一致（少见：改名 / 伪装），以实际挂载结果为准继续
+                    Logx.w("Browser", "extract: kind mismatch ${item.name} ${vfs.kind} != $kind")
+                }
+                // 压缩包挂载的**根 URI**（整包内容都在它下面）
+                val root = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, vfs.kind)
+                update { it.copy(status = "解压 ${item.name} → ${target.displayPath}") }
+                container.engine.enqueue(
+                    TransferRequest(
+                        sources = listOf(root),
+                        destDir = target,
+                        op = TransferOp.COPY,
+                        conflict = ConflictPolicy.ASK,
+                    )
                 )
-            )
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Logx.e("Browser", "extract failed ${item.name}: ${e.message}", e)
+                showStatus("解压失败：${e.message ?: e::class.simpleName}")
+            }
         }
     }
 

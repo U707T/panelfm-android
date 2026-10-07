@@ -213,3 +213,10 @@ fun crossPaneLabel(base: String, from: PaneSide): String =
  */
 internal fun menuTargets(selection: List<FileMetadata>, pressed: FileMetadata): List<FileMetadata> =
     if (selection.any { it.uri == pressed.uri }) selection else listOf(pressed)
+
+/** 状态提示里像"出错"的措辞：这类消息显示更久（审计 U9）。 */
+private val STATUS_ERROR_HINTS = listOf("失败", "错误", "异常", "无法", "⚠️")
+
+/** 一条状态提示该显示多久（纯函数，便于单测）：错误类 6s、普通 2.6s。 */
+internal fun statusDurationMs(message: String): Long =
+    if (STATUS_ERROR_HINTS.any { message.contains(it) }) 6_000L else 2_600L

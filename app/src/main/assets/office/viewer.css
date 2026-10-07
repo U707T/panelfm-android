@@ -40,8 +40,13 @@ html, body {
 }
 
 #content {
+    /* 用显式偏移而不是 inset 简写：老 WebView（Chrome < 87）不认 inset，
+       会让容器没有尺寸/位置，表现为"渲染了但看不见"（v1.9.2 排查 docx 空白时统一加固） */
     position: absolute;
-    inset: 0;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
 }
@@ -101,4 +106,24 @@ html, body {
 
 .pptx-host img {
     max-width: 100%;
+}
+
+/* ---- 纯文本兜底（docx 渲染不可用时） ---- */
+.fallback-tip {
+    padding: 8px 12px;
+    font-size: 13px;
+    color: #b3261e;
+    background: #fdecea;
+    border-bottom: 1px solid #f5c6c0;
+}
+
+.fallback-text {
+    margin: 0;
+    padding: 12px;
+    font-size: 14px;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #fff;
+    color: #222;
 }

@@ -1575,8 +1575,9 @@ fun DualPaneScreen(
         )
     }
 
-    // ---------------- 状态提示
-    ui.status?.let { msg ->
+    // ---------------- 状态提示（队列：一条条显示，不互相顶掉；错误类停更久 —— 审计 U9）
+    val statusQueue by controller.statusQueue.collectAsState()
+    statusQueue.firstOrNull()?.let { msg ->
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
             Snackbar(
                 modifier = Modifier.padding(bottom = 66.dp),
@@ -1584,7 +1585,7 @@ fun DualPaneScreen(
             ) { Text(msg) }
         }
         LaunchedEffect(msg) {
-            kotlinx.coroutines.delay(3000)
+            kotlinx.coroutines.delay(controller.statusDurationMs(msg))
             controller.consumeStatus()
         }
     }

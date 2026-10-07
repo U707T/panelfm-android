@@ -136,6 +136,18 @@
 
 ---
 
+## 5. 后续修复（v1.9.2，用户实机反馈）
+
+用户实机反馈两条，均在本轮修复（都不是 §1 那四条，属于"本文未覆盖到"的两处）：
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| F5 | **解压报错/闪退**（长按压缩包 → 解压） | `extractArchiveTo` **没有先挂载压缩包**就构造 `archive://` 根 URI 入队；`SessionLocator` 对 `archive://` 只查"已挂载"（`archiveOf`）→ 计划阶段报「源位置不可用」；且整段跑在 `container.scope.launch` 里、异常无兜底（该 scope 无异常处理器 → 可能直接崩） | 入队前 `openArchive(item.uri)` 挂载；整段包 try/catch（取消除外）→ 任何失败都变成状态栏一句可读的话 |
+| F6 | **docx 预览空白** | 沙箱无法复现（无 WebView）→ 按"让失败可见 + 不让用户看空白"处理：全局 `error`/`unhandledrejection` 进状态栏；渲染后检测**空壳**（无 section / 无文字无图）→ **纯文本兜底**（解 `word/document.xml` 抽段落）；`inset` 简写换显式偏移（老 WebView 不认 `inset`，容器会没尺寸）；去掉没有依据的 `experimental: true` | 见 `assets/office/viewer.js`（每步 `[OfficePreview]` 日志会转发到 logcat） |
+
+> 教训（写进 §5 同款）：**"渲染成功但内容为空"没有任何异常**，只靠 catch 兜不住 ——
+> 必须显式检查输出，并给一个"最差也能看"的降级路径。
+
 ## 附录 A：复核命令（本文结论可一键重现）
 
 ```bash
@@ -159,8 +171,13 @@ grep -n "resolveSession\|locator.find" app/src/main/kotlin/com/u707t/panelfm/ui/
 # F4：多选分享
 grep -n "ACTION_SEND_MULTIPLE\|fun shareItems" app/src/main/kotlin/com/u707t/panelfm/ui/browser/DualPaneScreen.kt
 
+# F5/F6（v1.9.2）
+grep -n "openArchive(item.uri)" app/src/main/kotlin/com/u707t/panelfm/ui/browser/BrowserController.kt
+grep -n "renderDocxTextFallback\|unhandledrejection\|docxLooksEmpty" app/src/main/assets/office/viewer.js
+grep -n "statusQueue\|statusDurationMs" app/src/main/kotlin/com/u707t/panelfm/ui/browser/BrowserController.kt
+
 # 回归测试
-./gradlew testDebugUnitTest --tests '*MenuTargetsTest'
+./gradlew testDebugUnitTest --tests '*MenuTargetsTest' --tests '*StatusDurationTest'
 ```
 
 *审查人：AI（只读源码 + 单测；未跑真机。修复已随 v1.9.1 发布）*
