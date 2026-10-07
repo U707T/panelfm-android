@@ -71,4 +71,36 @@ class WebDavUrlTest {
         assertEquals("/dav", again.path)
         assertEquals(false, again.secure)
     }
+
+    @Test
+    fun ipv6BuildRoundTrip() {
+        // 第 7 批 🟡4：parse 会剥离 IPv6 方括号存裸地址，build 必须还原——否则编辑-保存把 host 改坏
+        val url = WebDavUrl.build("fe80::1", 5244, secure = false, basePath = "/dav")
+        assertEquals("http://[fe80::1]:5244/dav", url)
+        val again = WebDavUrl.parse(url)!!
+        assertEquals("fe80::1", again.host)
+        assertEquals(5244, again.port)
+        assertEquals("/dav", again.path)
+        assertEquals(false, again.secure)
+    }
+
+    @Test
+    fun stripsQueryAndFragmentWhenNoPath() {
+        // 第 7 批 🟡4：无路径 URL 的 ? / # 之前会并进 host
+        val q = WebDavUrl.parse("http://host?x=1")!!
+        assertEquals("host", q.host)
+        assertEquals(80, q.port)
+        assertEquals("/", q.path)
+
+        val f = WebDavUrl.parse("http://host#frag")!!
+        assertEquals("host", f.host)
+        assertEquals("/", f.path)
+    }
+
+    @Test
+    fun ipv6WithQueryIsAccepted() {
+        val parts = WebDavUrl.parse("http://[::1]?x=1")!!
+        assertEquals("::1", parts.host)
+        assertEquals(80, parts.port)
+    }
 }

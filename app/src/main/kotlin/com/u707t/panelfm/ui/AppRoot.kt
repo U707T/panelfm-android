@@ -32,6 +32,7 @@ import com.u707t.panelfm.ui.bookmarks.BookmarksScreen
 import com.u707t.panelfm.ui.browser.DualPaneScreen
 import com.u707t.panelfm.ui.connections.ConnectionEditScreen
 import com.u707t.panelfm.ui.connections.LanScanScreen
+import com.u707t.panelfm.ui.connections.connectionTypeForScanPort
 import com.u707t.panelfm.ui.home.HomeScreen
 import com.u707t.panelfm.ui.preview.PreviewScreen
 import com.u707t.panelfm.ui.settings.SettingsScreen
@@ -290,7 +291,11 @@ fun AppRoot(container: AppContainer) {
             Screen.LanScan -> LanScanScreen(
                 container = container,
                 onBack = pop,
-                onPick = { host, port -> stack = stack.dropLast(1) + Screen.ConnectionEdit(null, host, port) },
+                onPick = { host, port ->
+                    // 按扫描端口预选协议：扫 445/21 不再默认打开 SFTP 表单（用户进入后可改）
+                    stack = stack.dropLast(1) +
+                        Screen.ConnectionEdit(null, host, port, initialType = connectionTypeForScanPort(port))
+                },
             )
             is Screen.ConnectionEdit -> ConnectionEditScreen(
                 container = container,

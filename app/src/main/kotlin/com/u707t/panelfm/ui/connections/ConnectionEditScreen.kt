@@ -80,9 +80,11 @@ fun ConnectionEditScreen(
     val clipboard = LocalClipboardManager.current
     val existing = remember(connectionId) { connectionId?.let { id -> container.connectionDao.all().firstOrNull { it.id == id } } }
 
-    val storedSecrets = remember(connectionId) {
-        existing?.let { SftpSecrets.parse(container.loadSecret(it.id)) } ?: SftpSecrets()
+    // 原始 secret 串（未解码）：S3 是「纯 SK 或旧 AK:SK」，SFTP 是 JSON，其余是裸密码
+    val rawSecret = remember(connectionId) {
+        existing?.let { runCatching { container.loadSecret(it.id) }.getOrNull() }
     }
+    val storedSecrets = remember(connectionId) { SftpSecrets.parse(rawSecret) }
 
     var type by remember { mutableStateOf(existing?.type ?: initialType ?: ConnectionType.SFTP) }
     var name by remember { mutableStateOf(existing?.name ?: "") }
@@ -91,10 +93,13 @@ fun ConnectionEditScreen(
     var host by remember { mutableStateOf(existing?.host ?: prefillHost ?: "") }
     var port by remember { mutableStateOf((existing?.port ?: prefillPort ?: type.defaultPort).toString()) }
     var user by remember { mutableStateOf(existing?.user ?: "") }
-    var password by remember { mutableStateOf(storedSecrets.password ?: "") }
+    // 口令回填按协议解码（S3 的旧拼接串要取 SK 部分，否则保存时会被再拼一层；见 ConnectionSecrets）
+    var password by remember { mutableStateOf(ConnectionSecrets.passwordForEdit(existing?.type, rawSecret)) }
     var showPassword by remember { mutableStateOf(false) }
     var basePath by remember { mutableStateOf(existing?.basePath ?: "/") }
-    var secure by remember { mutableStateOf(existing?.option("secure")?.toBoolean() ?: false) }
+    // 与 DavConfig / S3Config 的同款 fallback 对齐（键缺失按端口推：443 = HTTPS）——
+    // 否则编辑老连接时显示 false、保存又写回，会把「无法关闭 HTTPS」的现状再固化一轮
+    var secure by remember { mutableStateOf(existing?.option("secure")?.toBoolean() ?: (port.toIntOrNull() == 443)) }
     var trustSelfSigned by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: false) }
     var implicitTls by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() ?: false) }
     var passive by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() ?: true) }
@@ -112,7 +117,7 @@ fun ConnectionEditScreen(
         mutableStateOf(
             when {
                 existingDav != null ->
-                    WebDavUrl.build(existingDav.host, existingDav.port, existingDav.option("secure") == "true", existingDav.basePath)
+                    WebDavUrl.build(existingDav.host, existingDav.port, secure, existingDav.basePath)
                 initialType == ConnectionType.WEBDAV && !prefillHost.isNullOrBlank() ->
                     WebDavUrl.build(prefillHost, prefillPort ?: 80, false, "/")
                 else -> ""
@@ -175,9 +180,18 @@ fun ConnectionEditScreen(
         }
     }
 
+    // 端口跟随协议默认值：仅当当前端口仍是「上一个协议的默认值」（用户没手改过）才更新——
+    // 编辑既有连接切协议（FTP→SMB 后端口仍 21）也一并修掉；prefill（局域网扫描）不覆盖。
+    var prevType by remember { mutableStateOf(type) }
     LaunchedEffect(type) {
-        if (existing == null && prefillPort == null) port = type.defaultPort.toString()
+        if (prefillPort == null && port == prevType.defaultPort.toString()) {
+            port = type.defaultPort.toString()
+        }
+        prevType = type
     }
+
+    // 保存 / 测试进行中拦截系统返回：中途退出会留下「secret 已更新、配置未更新」的半态
+    androidx.activity.compose.BackHandler(enabled = busy) { status = "正在与服务器交互，请稍候…" }
 
     /** 切到 WebDAV 标签时，用当前字段回填 URL（LAN 扫描预填场景） */
     fun syncUrlFromFields() {
@@ -201,7 +215,9 @@ fun ConnectionEditScreen(
     val ready = (if (type == ConnectionType.WEBDAV) WebDavUrl.parse(url) != null else host.isNotBlank()) && !busy
 
     fun buildOptions(): Map<String, String> = buildMap {
-        if (secure) put("secure", "true")
+        // `secure` 键只有 WebDAV / S3 消费，**无条件写布尔值**：旧实现只在 true 时写，
+        // 导致 443 端口上「关闭 HTTPS / 显式 http://」被 Config 的 `port == 443` fallback 覆盖
+        if (type == ConnectionType.WEBDAV || type == ConnectionType.S3) put("secure", secure.toString())
         if (trustSelfSigned) put(ConnectionConfig.OPT_TRUST_SELF_SIGNED, "true")
         if (implicitTls) put(ConnectionConfig.OPT_IMPLICIT_TLS, "true")
         if (!passive) put(ConnectionConfig.OPT_PASSIVE, "false")
@@ -209,7 +225,8 @@ fun ConnectionEditScreen(
         if (initialPath.isNotBlank()) put(ConnectionConfig.OPT_INITIAL_PATH, initialPath.trim())
         if (hiddenInDrawer) put(ConnectionConfig.OPT_HIDDEN_IN_DRAWER, "true")
         if (!loadThumbs) put(ConnectionConfig.OPT_LOAD_THUMBS, "false")
-        if ((type == ConnectionType.FTP || type == ConnectionType.FTPS || type == ConnectionType.SFTP) &&
+        // SFTP 固定 UTF-8（协议层），没有编码消费方——写侧只对 FTP / FTPS 生效，与 UI 显示范围一致
+        if ((type == ConnectionType.FTP || type == ConnectionType.FTPS) &&
             encoding.isNotBlank() && encoding != "UTF-8"
         ) {
             put(ConnectionConfig.OPT_ENCODING, encoding.trim())
@@ -235,15 +252,8 @@ fun ConnectionEditScreen(
         }
     }
 
-    fun buildSecret(): String? = when (type) {
-        ConnectionType.S3 -> if (password.isNotBlank() || user.isNotBlank()) "$user:$password" else null
-        ConnectionType.SFTP -> SftpSecrets(
-            password = password.ifEmpty { null },
-            keyPassphrase = keyPassphrase.ifEmpty { null },
-            jumpPassword = jumpPassword.ifEmpty { null },
-        ).toJson().takeIf { password.isNotEmpty() || keyPassphrase.isNotEmpty() || jumpPassword.isNotEmpty() }
-        else -> password.ifEmpty { null }
-    }
+    /** 口令编解码已收拢到 [ConnectionSecrets]（纯函数 + 单测；S3 落库纯 SK，修复编辑保存层层加前缀） */
+    fun buildSecret(): String? = ConnectionSecrets.build(type, password, keyPassphrase, jumpPassword)
 
     fun buildConfig(id: Long = existing?.id ?: 0L): ConnectionConfig = ConnectionConfig(
         id = id,
@@ -292,6 +302,12 @@ fun ConnectionEditScreen(
                     }
                 } else {
                     val id = container.connectionDao.insert(config)
+                    if (id <= 0) {
+                        // SQLite insert 失败返回 -1：不检查会给 -1 写一条孤儿 secret，还当保存成功返回
+                        status = "创建失败：无法写入数据库（存储空间不足？）"
+                        busy = false
+                        return@launch
+                    }
                     if (!container.saveSecret(id, secret)) {
                         // 新连接的 secret 写失败时不留下半成品配置。
                         container.connectionDao.delete(id)
@@ -465,7 +481,16 @@ fun ConnectionEditScreen(
                     label = "自定义 UA",
                     placeholder = "可空",
                 )
-            } else {
+            } else if (type == ConnectionType.SMB) {
+                // SMB 的地址路径以「/共享名」开头（SmbVfs.splitSmbPath，首段即共享）——
+                // 旧文案（/home/user）与模型不符：用户填子目录名会顶替「共享名」去找错共享
+                MtTextField(
+                    value = basePath,
+                    onValueChange = { basePath = it },
+                    label = "起始路径（含共享名，如 /public/docs）",
+                    placeholder = "/public",
+                )
+            } else if (type != ConnectionType.S3) {
                 MtTextField(
                     value = basePath,
                     onValueChange = { basePath = it },
@@ -473,6 +498,7 @@ fun ConnectionEditScreen(
                     placeholder = "/home/user",
                 )
             }
+            // S3 不显示「根路径」：没有消费方；bucket 内的起始前缀请用下方「初始路径」
             MtTextField(
                 value = initialPath,
                 onValueChange = { initialPath = it },
@@ -594,13 +620,20 @@ fun ConnectionEditScreen(
                 SwitchRow("使用 HTTPS/TLS", secure) { secure = it }
             }
             if (type == ConnectionType.FTPS) {
-                SwitchRow("隐式 TLS（990 端口）", implicitTls) { implicitTls = it }
+                // 端口联动：隐式 TLS 标准端口是 990——打开时从默认 21 切到 990、关闭时切回 21
+                //（用户手改过的其他端口不动；FtpConfig 的 990 兜底对 UI 默认 21 不可达，联动必须在这里做）
+                SwitchRow("隐式 TLS（990 端口）", implicitTls) { on ->
+                    implicitTls = on
+                    if (on && port == "21") port = "990"
+                    if (!on && port == "990") port = "21"
+                }
             }
             if (type == ConnectionType.FTP || type == ConnectionType.FTPS) {
                 SwitchRow("被动模式（PASV/EPSV，推荐）", passive) { passive = it }
             }
-            // MT：FTP/FTPS/SFTP 的「编码」（文件名编码；中文 FTP 服务器常用 GBK）
-            if (type == ConnectionType.FTP || type == ConnectionType.FTPS || type == ConnectionType.SFTP) {
+            // MT：FTP/FTPS 的「编码」（文件名编码；中文 FTP 服务器常用 GBK）。
+            // SFTP 不显示：SSH 协议固定 UTF-8、无消费方（静默无效的开关比没有开关更糟）
+            if (type == ConnectionType.FTP || type == ConnectionType.FTPS) {
                 Text("编码", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 4.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
                     listOf("UTF-8", "GBK", "GB18030", "Big5").forEach { enc ->
@@ -673,7 +706,7 @@ fun ConnectionEditScreen(
         ) {
             TextButton(enabled = ready, onClick = { doTest() }) { Text(if (busy) "测试中…" else "测试") }
             Spacer(Modifier.weight(1f))
-            TextButton(onClick = onBack) { Text("取消") }
+            TextButton(enabled = !busy, onClick = onBack) { Text("取消") }
             Button(enabled = ready, onClick = { doSave() }) { Text(if (busy) "保存中…" else "保存") }
         }
     }

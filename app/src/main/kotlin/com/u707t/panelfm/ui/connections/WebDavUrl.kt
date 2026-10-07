@@ -37,7 +37,9 @@ object WebDavUrl {
         if (rest.isBlank()) return null
 
         val slash = rest.indexOf('/')
-        val hostPort = if (slash >= 0) rest.substring(0, slash) else rest
+        // host 区也要剥 query / fragment：无路径 URL（如 http://host?x=1）的 ? 之前会并进 host
+        val hostPort = (if (slash >= 0) rest.substring(0, slash) else rest)
+            .substringBefore('?').substringBefore('#')
         var rawPath = if (slash >= 0) rest.substring(slash) else "/"
         if (hostPort.isBlank() || hostPort.contains(' ')) return null
 
@@ -78,6 +80,9 @@ object WebDavUrl {
     /** 由字段生成 URL（用于编辑已有连接时回填输入框） */
     fun build(host: String, port: Int, secure: Boolean, basePath: String): String {
         val scheme = if (secure) "https" else "http"
-        return "$scheme://$host:$port${basePath.ifBlank { "/" }}"
+        // IPv6 字面量必须带方括号再拼端口；parse 存的是剥括号的裸地址，这里必须还原——
+        // 否则「编辑-保存」会把 host 落成 "fe80::1:5244" 这类坏值（parse 不再认识）
+        val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
+        return "$scheme://$h:$port${basePath.ifBlank { "/" }}"
     }
 }
