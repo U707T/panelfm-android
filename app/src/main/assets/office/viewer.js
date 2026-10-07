@@ -55,7 +55,7 @@
     // ---- 表格（SheetJS：UMD 全局 XLSX；多工作表用顶部标签切换，只渲染当前表）----
     async function renderXlsx(buf) {
         if (!window.XLSX) throw new Error('SheetJS 未加载');
-        var wb = window.XLSX.read(buf, { type: 'array' });
+        var wb = window.XLSX.read(new Uint8Array(buf), { type: 'array' });
         var names = wb.SheetNames || [];
         if (!names.length) throw new Error('工作簿里没有工作表');
 
@@ -64,7 +64,7 @@
         toolbar.style.display = 'flex';
 
         function show(index) {
-            var table = window.XLSX.utils.sheet_to_html(wb.Sheets[names[index]]);
+            var table = window.XLSX.utils.sheet_to_html(wb.Sheets[names[index]], { header: '', footer: '' });
             content.innerHTML = table;
             Array.prototype.forEach.call(toolbar.querySelectorAll('button'), function (btn, i) {
                 btn.classList.toggle('active', i === index);
@@ -84,7 +84,7 @@
 
     // ---- 幻灯片（@aiden0z/pptx-renderer：ESM，动态 import；自带 JSZip + ECharts）----
     async function renderPptx(buf) {
-        var mod = await import('./vendor/pptx-renderer.es.js');
+        var mod = await import('/office/vendor/pptx-renderer.es.js');
         if (!mod || !mod.PptxViewer) throw new Error('pptx-renderer 未加载');
         content.className = 'pptx-host';
         await mod.PptxViewer.open(buf, content, {

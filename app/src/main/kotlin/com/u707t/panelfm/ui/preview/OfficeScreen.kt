@@ -2,6 +2,9 @@ package com.u707t.panelfm.ui.preview
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.webkit.ConsoleMessage
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
@@ -26,6 +29,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.OfficeFormats
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
@@ -41,7 +45,7 @@ import java.io.ByteArrayOutputStream
  * Office 文档只读预览（WebView + 前端渲染库，见 `docs/OFFICE-PREVIEW.md`）。
  *
  *  - 渲染：`assets/office/`（docx-preview / SheetJS / @aiden0z/pptx-renderer，均为宽松许可）；
- *  - 页面用 `loadDataWithBaseURL` 注入，baseUrl 固定 `https://office.panelfm/office/`：
+ *  - 预览页从 `https://office.panelfm/office/index.html?kind=xxx` 加载（同源 + 全拦截）：
  *    页面里的相对路径、动态 `import()` 与 `fetch('/doc/current')` 全部由
  *    [OfficeWebViewClient.shouldInterceptRequest] 从 assets / 内存提供，**不联网**；
  *  - 只读：不开 DOM storage、不要 JS 桥、拦截一切跳转；文件超过 [OFFICE_MAX_BYTES] 直接给提示；
@@ -56,6 +60,7 @@ fun OfficeScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
     val kind = OfficeFormats.viewerKindOf(item.extension)
     var bytes by remember(item.uri) { mutableStateOf<ByteArray?>(null) }
     var error by remember(item.uri) { mutableStateOf<String?>(null) }
+    var pageError by remember(item.uri) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(item.uri) {
         if (kind.isEmpty()) return@LaunchedEffect
@@ -74,8 +79,9 @@ fun OfficeScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
         when {
             kind.isEmpty() -> UnsupportedDocument(item)
             error != null -> ErrorState(error!!)
+            pageError != null -> ErrorState(pageError!!)
             bytes == null -> LoadingState("正在读取文档…")
-            else -> OfficeWebView(kind = kind, bytes = bytes!!)
+            else -> OfficeWebView(kind = kind, bytes = bytes!!, onPageError = { pageError = it })
         }
     }
 }
@@ -107,25 +113,31 @@ private fun UnsupportedDocument(item: FileMetadata) {
 
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
-private fun OfficeWebView(kind: String, bytes: ByteArray) {
+private fun OfficeWebView(kind: String, bytes: ByteArray, onPageError: (String) -> Unit) {
     AndroidView(
         factory = { ctx ->
             WebView(ctx).apply {
                 settings.javaScriptEnabled = true
-                // 纯离线只读预览：不要文件/内容访问，不要 DOM storage，也不要 JS 桥
+                // 纯离线只读预览：不要文件/内容访问、不要 JS 桥；DOM storage 开着
+                // （个别渲染库会摸 sessionStorage，且页面只加载我们自己的资产、不联网）
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
-                settings.domStorageEnabled = false
+                settings.domStorageEnabled = true
                 settings.setSupportZoom(true)
                 settings.builtInZoomControls = true
                 settings.displayZoomControls = false
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = true
-                webViewClient = OfficeWebViewClient(ctx, bytes, kind)
-                val html = runCatching {
-                    ctx.assets.open("office/index.html").bufferedReader().use { it.readText() }
-                }.getOrNull() ?: "<html><body style='font-family:sans-serif;padding:24px'>预览页资源缺失</body></html>"
-                loadDataWithBaseURL(OFFICE_BASE_URL, html, "text/html", "utf-8", null)
+                webViewClient = OfficeWebViewClient(ctx, bytes, kind, onPageError)
+                webChromeClient = object : WebChromeClient() {
+                    override fun onConsoleMessage(msg: ConsoleMessage): Boolean {
+                        Logx.d("OfficePreview", "${msg.message()} @${msg.sourceId()}:${msg.lineNumber()}")
+                        return true
+                    }
+                }
+                // 主页面走同源 https + 拦截（不要用 loadDataWithBaseURL：主文档是 data: URL，
+                // 一旦被拦截返回非 2xx 就整页 ERR_HTTP_RESPONSE_CODE_FAILURE）
+                loadUrl(OFFICE_BASE_URL + "index.html?kind=" + kind)
             }
         },
         onRelease = { webView -> runCatching { webView.destroy() } },
@@ -138,12 +150,17 @@ private class OfficeWebViewClient(
     private val context: Context,
     private val bytes: ByteArray,
     private val kind: String,
+    private val onPageError: (String) -> Unit,
 ) : WebViewClient() {
 
     override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
-        val url = request.url ?: return notFound()
+        val url = request.url ?: return null
+        val scheme = url.scheme?.lowercase()
+        // ⚠️ 非 http(s)（data: / blob: / about: …）必须返回 null 交回 WebView：
+        // 早期实现一律回 404，主文档直接 ERR_HTTP_RESPONSE_CODE_FAILURE（整页打不开）。
+        if (scheme != "http" && scheme != "https") return null
         if (url.host != OFFICE_HOST) return notFound()
-        val path = url.path ?: return notFound()
+        val path = url.path.orEmpty()
         return when {
             path == "/doc/current" -> WebResourceResponse(
                 when (kind) {
@@ -154,17 +171,38 @@ private class OfficeWebViewClient(
                 null,
                 ByteArrayInputStream(bytes),
             )
+            path == "/office" || path == "/office/" || path == "/office/index.html" -> serveAsset("index.html")
             path.startsWith("/office/") -> serveAsset(path.removePrefix("/office/"))
             else -> notFound()
         }
     }
 
-    /** 预览页里的链接 / 表单跳转一律拦住（只读预览，没有可去的地方）。 */
-    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
+    /** 预览页只读：同源与非 http 协议放行，外链一律拦下。 */
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
+        val url = request.url ?: return true
+        val scheme = url.scheme?.lowercase()
+        if (scheme != "http" && scheme != "https") return false
+        return url.host != OFFICE_HOST
+    }
+
+    override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+        if (request.isForMainFrame) {
+            onPageError("预览页加载失败：${error.description}（${error.errorCode}）")
+        }
+    }
+
+    override fun onReceivedHttpError(view: WebView, request: WebResourceRequest, response: WebResourceResponse) {
+        if (request.isForMainFrame) {
+            onPageError("预览页加载失败：HTTP ${response.statusCode}")
+        }
+    }
 
     private fun serveAsset(assetPath: String): WebResourceResponse {
-        // 防目录穿越
-        if (assetPath.contains("..") || assetPath.startsWith("/")) return notFound()
+        // 归一化：去掉空段与 "."，遇到 ".." 直接拒绝（防目录穿越；AssetManager 不认 "./" 这类路径）
+        val segments = assetPath.split('/').filter { it.isNotEmpty() && it != "." }
+        if (segments.any { it == ".." }) return notFound()
+        val normalized = segments.joinToString("/")
+        if (normalized.isEmpty()) return notFound()
         return runCatching {
             val mime = when (assetPath.substringAfterLast('.', "").lowercase()) {
                 "html" -> "text/html"
@@ -174,7 +212,7 @@ private class OfficeWebViewClient(
                 else -> "application/octet-stream"
             }
             val encoding = if (mime.startsWith("text/") || mime == "application/javascript" || mime == "application/json") "utf-8" else null
-            WebResourceResponse(mime, encoding, context.assets.open("office/$assetPath"))
+            WebResourceResponse(mime, encoding, context.assets.open("office/$normalized"))
         }.getOrElse { notFound() }
     }
 

@@ -26,17 +26,23 @@
 
 ## 3. 关键设计点（改代码前先看）
 
-1. **页面注入 + 全拦截，不联网**：`loadDataWithBaseURL("https://office.panelfm/office/", html, ...)`。
-   `baseUrl` 决定页面的 origin，页面里的相对路径、动态 `import()`、`fetch('/doc/current')`
-   都由 `WebViewClient.shouldInterceptRequest` 从 assets / 内存提供；
-   任何其它 host 一律 404 —— 预览页没有任何出网路径。
+1. **同源加载 + 全拦截，不联网**：主页面直接 `loadUrl("https://office.panelfm/office/index.html?kind=…")`，
+   所有资源（页面 / JS / CSS / 文件字节）都由 `WebViewClient.shouldInterceptRequest`
+   从 assets / 内存提供；其它 host 一律 404 —— 预览页没有任何出网路径。
+   ⚠️ **不要改回 `loadDataWithBaseURL`**：它的主文档是 `data:` URL，一旦拦截器对它回了非 2xx，
+   WebView 会把整页升级成 `net::ERR_HTTP_RESPONSE_CODE_FAILURE`（v1.8.0 的线上故障）。
 2. **文件字节走内存**：`readCapped()` 读 ≤16 MB 到 `ByteArray`，每次请求用新的
    `ByteArrayInputStream`（拦截可能被调用多次）。大文件在读之前就被拦下给提示。
 3. **只读 & 最小攻击面**：不开 DOM storage、不注册 JS 桥、`allowFileAccess=false`、
    `allowContentAccess=false`、`shouldOverrideUrlLoading` 全部拦（页面里没有可跳转的链接）。
 4. **旧的 .doc / .ppt 不进 WebView**：`OfficeFormats.viewerKindOf()` 返回空串时直接渲染说明页 ——
    避免把二进制垃圾喂给解析器再报一堆看不懂的错。
-5. **`shouldInterceptRequest` 里的路径要防穿越**（`..` / 前导 `/` 直接 404）。
+5. **`shouldInterceptRequest` 的三条铁律**：
+   - **非 http(s) 请求一律返回 `null`**（`data:` / `blob:` / `about:` 交回 WebView），
+     绝不能回错误码 —— 主文档被拦成 404 会整页打不开（见第 1 条）；
+   - 资产路径要归一化：去掉空段与 `.`、遇到 `..` 拒绝（`AssetManager` 不认 `./` 这类路径）；
+   - `/office/`、`/office/index.html` 都映射到 `index.html`（页面地址带 query，按 path 匹配）。
+6. **页面里引用资源用绝对路径**（`/office/vendor/xxx.js`），避免 `./` 段带来的路径歧义。
 
 ## 4. 怎么升级渲染库
 
