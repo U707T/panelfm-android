@@ -17,8 +17,8 @@ class MtGestureTest {
         assertEquals(400L, MtGesture.LongPressMs)
         assertEquals(12f, MtGesture.LongPressSlopDp, 0.001f)
         assertEquals(24f, MtGesture.SwipeSelectDp, 0.001f)
-        assertEquals(48f, MtGesture.SwipeMenuDp, 0.001f)
         assertEquals(32f, MtGesture.SwipeBookmarkDp, 0.001f)
+        assertEquals(12f, MtGesture.SwipeAnimDp, 0.001f)
         assertEquals(2000L, MtGesture.PressAgainMs)
     }
 
@@ -29,14 +29,6 @@ class MtGestureTest {
         assertTrue(MtGesture.isSwipeSelect(-30f, 0f))
         assertFalse(MtGesture.isSwipeSelect(24f, 13f))
         assertTrue(MtGesture.isSwipeSelect(26f, 12f))
-    }
-
-    @Test
-    fun `右滑出菜单要求 48dp 且只在横向占优时成立`() {
-        assertTrue(MtGesture.isSwipeMenu(48f, 0f))
-        assertFalse(MtGesture.isSwipeMenu(47.9f, 0f))
-        assertFalse(MtGesture.isSwipeMenu(-60f, 0f))
-        assertFalse(MtGesture.isSwipeMenu(60f, 40f))
     }
 
     @Test

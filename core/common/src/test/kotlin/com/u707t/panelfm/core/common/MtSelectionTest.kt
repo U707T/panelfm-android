@@ -2,15 +2,15 @@ package com.u707t.panelfm.core.common
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * MT 选择模型的回归测试（见 [MtSelection] 的类注释：语义依据 MT 字符串 `0x7f11062f/630/631/632/6f3`）。
+ * MT 选择模型的回归测试（见 [MtSelection] 的类注释：语义依据 MT 字符串与用户实机确认）。
  *
- * 重点盯两组容易退化的性质：
- *  1. **追加语义**：扫选 / 连选都不许把用户之前选好的项抹掉（旧实现就是在这里踩坑）；
- *  2. **跟手语义**：手指退回锚点时，区间要跟着收回去。
+ * 重点盯三组容易退化的性质：
+ *  1. **滑动选中是离散的**：无锚点 → 只选它；有锚点 → 连成闭区间（不会「按住一路刷」）；
+ *  2. **追加语义**：连选不许把用户之前选好的项抹掉；
+ *  3. **锚点失效要退化**（刷新 / 换目录后不许在错误区间上乱选）。
  */
 class MtSelectionTest {
 
@@ -53,53 +53,52 @@ class MtSelectionTest {
         assertEquals(setOf("a", "c", "d", "e"), MtSelection.unionRange(selection, keys, "c", "d"))
     }
 
+    // ------------------------------------------------------------------ 滑动选中（离散）
+
     @Test
-    fun `滑动进入多选：按下那一行立刻选中，且不推翻已有选择`() {
-        val (sel, sweep) = MtSelection.beginSweep(setOf("e"), "b")
+    fun `第一次滑动只选它，并把锚点设在它身上`() {
+        val (sel, anchor) = MtSelection.swipe(emptySet(), keys, "c", anchor = null)
+        assertEquals(setOf("c"), sel)
+        assertEquals("c", anchor)
+    }
+
+    @Test
+    fun `第一次滑动不推翻已有选择（追加）`() {
+        val (sel, anchor) = MtSelection.swipe(setOf("e"), keys, "b", anchor = null)
         assertEquals(setOf("b", "e"), sel)
-        assertEquals("b", sweep.anchorKey)
-        assertEquals(setOf("e"), sweep.base)
+        assertEquals("b", anchor)
     }
 
     @Test
-    fun `扫选跟手：区间随手指增长`() {
-        val (sel, sweep) = MtSelection.beginSweep(emptySet(), "b")
-        assertEquals(setOf("b", "c"), MtSelection.swept(keys, sweep, "c"))
-        assertEquals(setOf("b", "c", "d"), MtSelection.swept(keys, sweep, "d"))
-        assertEquals(setOf("b"), MtSelection.swept(keys, sweep, "b"))
-        // 往回滑：区间收回去（跟手语义；旧实现只增不减）
-        assertEquals(setOf("b", "c"), MtSelection.swept(keys, sweep, "c"))
-        assertEquals(setOf("b", "c"), MtSelection.swept(keys, sweep, "c"))
-        assertEquals(sel, setOf("b"))
+    fun `滑动第二项 → 两项之间的闭区间全部选中，锚点挪过去`() {
+        val (first, anchor1) = MtSelection.swipe(emptySet(), keys, "b", anchor = null)
+        val (second, anchor2) = MtSelection.swipe(first, keys, "d", anchor1)
+        assertEquals(setOf("b", "c", "d"), second)
+        assertEquals("d", anchor2)
+        // 第三次滑动继续延伸（b..e）
+        val (third, _) = MtSelection.swipe(second, keys, "e", anchor2)
+        assertEquals(setOf("b", "c", "d", "e"), third)
     }
 
     @Test
-    fun `扫选跟手：向上滑时区间在下半段也不会丢掉锚点`() {
-        val (_, sweep) = MtSelection.beginSweep(emptySet(), "d")
-        assertEquals(setOf("c", "d"), MtSelection.swept(keys, sweep, "c"))
-        assertEquals(setOf("a", "b", "c", "d"), MtSelection.swept(keys, sweep, "a"))
+    fun `反向滑动同样连区间（右往左）`() {
+        val (first, anchor1) = MtSelection.swipe(emptySet(), keys, "d", anchor = null)
+        val (second, _) = MtSelection.swipe(first, keys, "a", anchor1)
+        assertEquals(setOf("a", "b", "c", "d"), second)
     }
 
     @Test
-    fun `扫选跟手：base 里的选择在整段扫选中始终保留`() {
-        val (_, sweep) = MtSelection.beginSweep(setOf("a", "e"), "c")
-        assertEquals(setOf("a", "c", "d", "e"), MtSelection.swept(keys, sweep, "d"))
-        // 退回锚点：只剩 base ∪ {锚点}
-        assertEquals(setOf("a", "c", "e"), MtSelection.swept(keys, sweep, "c"))
+    fun `滑动同一项两次：只保留它，不会误扩成整段`() {
+        val (first, anchor1) = MtSelection.swipe(emptySet(), keys, "c", anchor = null)
+        val (second, anchor2) = MtSelection.swipe(first, keys, "c", anchor1)
+        assertEquals(setOf("c"), second)
+        assertEquals("c", anchor2)
     }
 
     @Test
-    fun `扫选跟手：当前行已不在列表时返回 null（调用方保持原选择）`() {
-        val (_, sweep) = MtSelection.beginSweep(emptySet(), "b")
-        assertNull(MtSelection.swept(keys, sweep, "ghost"))
-        // 连锚点都失效（换目录 / 刷新）同样返回 null
-        assertNull(MtSelection.swept(keys, MtSelection.Sweep(anchorKey = "ghost"), "b"))
-    }
-
-    @Test
-    fun `扫选：锚点永远在区间里（滑回自身也保持选中）`() {
-        val (sel, sweep) = MtSelection.beginSweep(emptySet(), "c")
-        assertTrue(sel.contains("c"))
-        assertTrue(MtSelection.swept(keys, sweep, "c")!!.contains("c"))
+    fun `锚点失效（列表刷新过）时退化为只选这一项`() {
+        val (sel, anchor) = MtSelection.swipe(setOf("e"), keys, "b", anchor = "ghost")
+        assertEquals(setOf("b", "e"), sel)
+        assertEquals("b", anchor)
     }
 }

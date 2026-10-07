@@ -38,19 +38,15 @@ data class PaneState(
      */
     val selection: Set<String> = emptySet(),
     /**
-     * 长按连选的锚点（MT `0x7f110631`「可通过分别长按两个项目来进行连选」）。
+     * **滑动锚点**（MT `0x7f11062f`「滑动选择列表中任意两个文件，将会自动选择它们中间所有的文件」）：
+     * 上一次「左右滑动选中」落在哪一项。再滑动另一项时，两项之间的闭区间会被追加进选择。
      *
-     * 放在 [PaneState] 里而不是控制器字段：旧实现两个锚点都是控制器上的**全局字段**，
-     * 左右窗格共用 —— 在左窗格长按后去右窗格长按，会直接连出一个跨窗格的区间。
+     * 放在 [PaneState] 里而不是控制器字段：旧实现锚点都是控制器上的**全局字段**，
+     * 左右窗格共用 —— 在左窗格滑动后去右窗格滑动，会直接连出一个跨窗格的区间。
      */
     val selectionAnchor: String? = null,
-    /** 「点击连选」的锚点（MT `0x7f110630`）；与长按锚点分开，避免两种手势互相干扰 */
+    /** 「点击连选」的锚点（MT `0x7f110630`，默认关）；与滑动锚点分开，避免两种手势互相干扰 */
     val tapAnchor: String? = null,
-    /**
-     * 正在进行的扫选会话（MT `0x7f11062f`：滑动选择两个文件 → 自动选中中间所有项）。
-     * 只在手指按住期间存在；抬起、换目录、清空选择都会收掉它。
-     */
-    val selectionSweep: com.u707t.panelfm.core.common.MtSelection.Sweep? = null,
     val sort: SortSpec = SortSpec(),
     val showHidden: Boolean = false,
     /**
@@ -89,13 +85,13 @@ data class PaneState(
     val selectedItems: List<FileMetadata> get() = items.filter { selection.contains(it.uri.toString()) }
 
     /**
-     * 清空选择，并把**锚点 / 扫选会话**一起收掉。
+     * 清空选择，并把**两个锚点**一起收掉。
      *
      * 换目录、切标签页、退出多选、动作执行完都走这里：旧实现只在少数几处写 `selection = emptySet()`，
      * 锚点留在原地 —— 于是「清空选择后长按另一项」还会按旧锚点连选出一个莫名其妙的区间。
      */
     fun withSelectionCleared(): PaneState =
-        copy(selection = emptySet(), selectionAnchor = null, tapAnchor = null, selectionSweep = null)
+        copy(selection = emptySet(), selectionAnchor = null, tapAnchor = null)
 
     /** 处于压缩包内时，压缩包自身的文件名（用于「解压到单独的文件夹」命名）；否则 null */
     val archiveHostName: String?

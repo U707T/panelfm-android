@@ -180,7 +180,7 @@ fun PaneView(
     }
 
     /**
-     * 扫选跟手预览：`previewKey` 那一行横向跟着手指走（阻尼后最多 [MtGesture.SweepPreviewDp]），
+     * 滑动选中的行动效：`previewKey` 那一行朝滑动方向轻推 [MtGesture.SwipeAnimDp] 再弹回，
      * 抬手弹回原位。这里只放「目标位移」，实际动画在行内（[MtFileRow]）—— 只让那一行重绘。
      */
     var previewKey by remember { mutableStateOf<String?>(null) }
@@ -193,10 +193,12 @@ fun PaneView(
      * 放在组合里而不是 `pointerInput` 里：边缘自动滚动的协程也要用它重算区间。
      */
     val touchSlopDp = with(LocalDensity.current) { LocalViewConfiguration.current.touchSlop / this.density }
+    /** 滑动选中的行动效位移（px）：在组合里算好，供非 @Composable 的处理函数使用 */
+    val swipeAnimPx = with(LocalDensity.current) { MtGesture.SwipeAnimDp.dp.toPx() }
     val machine = remember(touchSlopDp) { MtRowGesture(touchSlopDp = touchSlopDp) }
 
     // ------------------------------------------------------------------
-    // 行点击 / 长按 / 右滑菜单（手势层在下面 rowListGestures 里，这里只放「做什么」）
+    // 行点击 / 长按 / 滑动选中（手势层在下面 rowListGestures 里，这里只放「做什么」）
     // ------------------------------------------------------------------
 
     /** 单击：多选态 = 切换选中（开启「点击连选」= 区间选择）；否则 = 打开 / 预览 */
@@ -212,20 +214,29 @@ fun PaneView(
         }
     }
 
-    /** 长按 400ms：锚点 + 多选；再长按另一项 = 连选区间（MT 0x7f110631）；松手弹动作菜单 */
+    /**
+     * 长按（400ms）= **直接弹该项的二级菜单**，不改选择、不进多选（MT 实机行为）。
+     * 菜单里的「复制 / 移动 / 删除」等按该项处理；对选择集的操作在底栏 / 顶栏。
+     */
     fun handleRowLongPress(item: FileMetadata) {
-        controller.longPressSelect(side, item)
+        controller.focus(side)
         onRowAction(item)
     }
 
     /**
-     * MT 0x7f110697「右滑列表项可进行更多操作」：已多选态右滑 ≥48dp → 弹动作菜单。
-     * 已有多选且包含该项 → 保留多选（菜单作用于整个选择集）；否则只选该项（与长按菜单语义一致）。
+     * 左右滑动一项（MT `0x7f1106f3` / `0x7f11062f`）：震动 + 动效 → 进入多选并选中该行；
+     * 若之前滑动过另一项，两项之间的闭区间一并选中（语义在 [com.u707t.panelfm.core.common.MtSelection.swipe]）。
      */
-    fun handleRowSwipeMenu(item: FileMetadata) {
-        controller.focus(side)
-        if (!pane.selection.contains(item.uri.toString())) controller.enterSelectionMode(side, item)
-        onRowAction(item)
+    fun handleRowSwipeSelect(item: FileMetadata, towardRight: Boolean) {
+        controller.swipeSelect(side, item)
+        // 动效：该行朝滑动方向轻推 [MtGesture.SwipeAnimDp] 再弹回（读它的只有这一行）
+        val key = item.uri.toString()
+        previewKey = key
+        previewTarget = swipeAnimPx * if (towardRight) 1f else -1f
+        uiScope.launch {
+            kotlinx.coroutines.delay(90)
+            if (previewKey == key) previewTarget = 0f
+        }
     }
 
     /**
@@ -237,22 +248,9 @@ fun PaneView(
             enabled = { !pane.loading },
             indexAtY = { y -> indexAtY(y) },
             itemAt = { index -> pane.items.getOrNull(index) },
-            keyAt = { index -> pane.items.getOrNull(index)?.uri?.toString() },
-            selectionMode = { pane.hasSelection },
             onTapRow = { item -> handleRowTap(item) },
             onLongPressRow = { item -> handleRowLongPress(item) },
-            onSweepStart = { index ->
-                // MT：左右滑动 = 进入多选（按下那一行入选，并开启扫选会话）
-                controller.focus(side)
-                controller.beginSweep(side, index)
-            },
-            onSweepTo = { index -> controller.sweepTo(side, index) },
-            onSweepEnd = { controller.endSweep(side) },
-            onSwipeMenu = { item -> handleRowSwipeMenu(item) },
-            onPreview = { key, x ->
-                previewKey = key
-                previewTarget = x
-            },
+            onSwipeSelect = { item, towardRight -> handleRowSwipeSelect(item, towardRight) },
         )
     )
 
@@ -335,8 +333,6 @@ fun PaneView(
                         .rowListGestures(
                             machine = machine,
                             gestures = { gestures },
-                            listState = listState,
-                            scope = uiScope,
                             haptic = haptic,
                         ),
                 ) {
@@ -489,7 +485,7 @@ private fun MtFileRow(
     skipThumb: Boolean,
     item: FileMetadata,
     selected: Boolean,
-    /** 扫选跟手预览：非 null = 这一行正被手指扫过（值 = 目标横向位移 px），抬手弹回 0 */
+    /** 滑动选中的行动效：非 null = 这一行刚被滑动选中（值 = 目标横向位移 px），随后弹回 0 */
     preview: Float?,
     onTap: () -> Unit,
     onLongPress: () -> Unit,
@@ -508,8 +504,8 @@ private fun MtFileRow(
         ),
     )
     val dark = LocalPanelDarkTheme.current
-    val previewMaxPx = with(LocalDensity.current) { MtGesture.SweepPreviewDp.dp.toPx() }
-    // 跟手位移：用高刚度弹簧追目标值 —— 拖动时几乎零延迟地跟手，抬手（目标回 0）自然弹回。
+    val previewMaxPx = with(LocalDensity.current) { MtGesture.SwipeAnimDp.dp.toPx() }
+    // 行动效位移：用高刚度弹簧追目标值 —— 轻推过去、目标回 0 时自然弹回。
     // 动画只影响这一行：读取位置在 graphicsLayer 里（只重绘图层，不带着列表一起重组）。
     val previewSpec = remember { spring<Float>(dampingRatio = 1f, stiffness = 1400f) }
     val previewOffset by animateFloatAsState(targetValue = preview ?: 0f, animationSpec = previewSpec)
@@ -519,7 +515,7 @@ private fun MtFileRow(
             .fillMaxWidth()
             .height(ROW_HEIGHT)
             // ------------------------------------------------------------------
-            // 扫选跟手预览：整行跟着手指横向走一点，并轻微缩一点（最多 2%）。
+            // 滑动选中的行动效：整行朝滑动方向轻推一点再弹回，并轻微缩一点（最多 2%）。
             // 放在 graphicsLayer 里读动画值 —— 只重绘这一层，不触发重组、不影响其它行。
             // ------------------------------------------------------------------
             .graphicsLayer {
@@ -534,7 +530,7 @@ private fun MtFileRow(
                     if (dark) MtSpec.RowSelectedDark else MtSpec.RowSelectedLight
                 } else Color.Transparent
             )
-            // 触摸手势（点击 / 长按 / 左右滑动多选 / 右滑菜单）全部挂在**列表**上，
+            // 触摸手势（点击 / 长按弹菜单 / 左右滑动选中）全部挂在**列表**上，
             // 这里只保留无障碍语义（见 PaneView 里的 ListGestures）。
             .clearAndSetSemantics {
                 contentDescription = buildString {

@@ -342,8 +342,9 @@ class BrowserController(private val container: AppContainer) {
                         error = null,
                         space = space,
                         loadedUri = VfsUris.stripped(uri).toString(),
-                        // 内容换了一批 → 扫选会话失效（否则手指还按着，区间会连着新列表乱铺）
-                        selectionSweep = null,
+                        // 内容换了一批 → 滑动锚点失效（否则下一次滑动会连着旧列表的项算区间）
+                        selectionAnchor = null,
+                        tapAnchor = null,
                     )
                 }
                 if (isCurrentLoad(side, generation, uri)) {
@@ -361,7 +362,8 @@ class BrowserController(private val container: AppContainer) {
                         error = (e as? VfsException)?.userMessage ?: (e.message ?: "加载失败"),
                         items = emptyList(),
                         loadedUri = null,
-                        selectionSweep = null,
+                        selectionAnchor = null,
+                        tapAnchor = null,
                     )
                 }
             }
@@ -661,26 +663,31 @@ class BrowserController(private val container: AppContainer) {
     //
     // 语义全部收敛在 core.common.MtSelection（纯逻辑 + 单测），这里只负责「把当前列表的 key
     // 喂进去 / 把结果写回状态」。四类入口：
-    //   1. 滑动  beginSweep → sweepTo → endSweep（MT 0x7f1106f3 / 0x7f11062f）
-    //   2. 长按  longPressSelect（MT 0x7f110631）
-    //   3. 点击  tapSelect / toggleSelection（MT 0x7f110630）
+    //   1. 滑动  swipeSelect（MT 0x7f1106f3「左右滑动文件可直接选择」/ 0x7f11062f「滑动选择两个文件连选」）
+    //   2. 长按  **不动选择**（只弹该项二级菜单，见 PaneView.handleRowLongPress）
+    //   3. 点击  tapSelect / toggleSelection（MT 0x7f110630；点击会清掉滑动锚点）
     //   4. 底栏  全选 / 反选 / 类选（MT 0x7f11062b/632/633）
 
     /** 当前列表的全部 key（键的闭区间运算都基于它） */
     private fun keysOf(pane: PaneState): List<String> = pane.items.map { it.uri.toString() }
 
-    /** 多选态单击 = 切换单项 */
+    /** 多选态单击 = 切换单项；同时清掉滑动锚点（点击是「加/减选」，不该让它变成之后的连选端点） */
     fun toggleSelection(side: PaneSide, uri: VfsUri) {
-        updatePane(side) { pane -> pane.copy(selection = MtSelection.toggle(pane.selection, uri.toString())) }
+        updatePane(side) { pane ->
+            pane.copy(
+                selection = MtSelection.toggle(pane.selection, uri.toString()),
+                selectionAnchor = null,
+            )
+        }
     }
 
     fun selectAll(side: PaneSide) = updatePane(side) { pane ->
-        pane.copy(selection = MtSelection.all(keysOf(pane)))
+        pane.copy(selection = MtSelection.all(keysOf(pane)), selectionAnchor = null)
     }
 
     /** MT 的「反选」 */
     fun invertSelection(side: PaneSide) = updatePane(side) { pane ->
-        pane.copy(selection = MtSelection.invert(pane.selection, keysOf(pane)))
+        pane.copy(selection = MtSelection.invert(pane.selection, keysOf(pane)), selectionAnchor = null)
     }
 
     /** MT 的「类选」：与当前选中项同类型（同扩展名分类）的全部选中 */
@@ -691,49 +698,29 @@ class BrowserController(private val container: AppContainer) {
             if (kind == "dir") it.isDirectory
             else !it.isDirectory && com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kind
         }.map { it.uri.toString() }.toSet()
-        pane.copy(selection = pane.selection + same)
+        pane.copy(selection = pane.selection + same, selectionAnchor = null)
     }
 
+    // ---- 滑动选中（MT `0x7f1106f3` 左右滑动文件可直接选择 / `0x7f11062f` 滑动选择两个文件连选）
+
     /**
-     * 连选区间（**追加**语义）：把两个 key 之间的项加进选择。
+     * 左右滑动一项 = 选中它；**再滑动另一项** = 两项之间的闭区间全部追加进选择。
      *
-     * 旧实现是替换语义（`selection = 区间`）—— 已经点选了好几项，再长按连选一段，
-     * 之前的全会消失。MT 的写法是「将会自动选择它们中间所有的项」，是补进去而不是推平。
-     */
-    fun selectRange(side: PaneSide, fromKey: String, toKey: String) = updatePane(side) { pane ->
-        pane.copy(selection = MtSelection.unionRange(pane.selection, keysOf(pane), fromKey, toKey))
-    }
-
-    // ---- 扫选（左右滑动直接选择 + 滑动定义区间）
-
-    /**
-     * 左右滑动进入多选（MT `0x7f1106f3`）：**按下那一行**立刻选中，并开启一次扫选会话。
+     * 语义在 [MtSelection.swipe]（纯逻辑 + 单测）：
+     *  - 没有滑动锚点（或锚点就是这一项）→ 只选它，锚点 = 它；
+     *  - 有锚点且是另一项 → 闭区间追加，锚点挪到这一项（第三次滑动可继续延伸）。
      *
-     * 锚点取「按下那一行」而不是「跨过 24dp 那一刻手指所在的行」：手指扫过去会飘，
-     * 用后者会出现「明明按的是第 3 行，却从第 5 行开始选」。后续手指滑到哪一行，
-     * 就按 [sweepTo] 把区间铺到哪一行。
+     * 滑动是**离散动作**（用户实机确认的 MT 行为）：没有「按住一路刷」的跟手扫选。
      */
-    fun beginSweep(side: PaneSide, index: Int) = updatePane(side) { pane ->
-        val key = pane.items.getOrNull(index)?.uri?.toString() ?: return@updatePane pane
-        val (selection, sweep) = MtSelection.beginSweep(pane.selection, key)
-        pane.copy(selection = selection, selectionSweep = sweep)
-    }
-
-    /**
-     * 扫选跟手：手指（或列表边缘自动滚动）落到新的一行，
-     * 选择 = 「按下时已有的选择」∪ [锚点 .. 这一行]。
-     * 手指往回滑时区间会跟着收回去（划过 = 选中，退回 = 取消）。
-     */
-    fun sweepTo(side: PaneSide, index: Int) = updatePane(side) { pane ->
-        val sweep = pane.selectionSweep ?: return@updatePane pane
-        val key = pane.items.getOrNull(index)?.uri?.toString() ?: return@updatePane pane
-        val next = MtSelection.swept(keysOf(pane), sweep, key) ?: return@updatePane pane
-        if (next == pane.selection) pane else pane.copy(selection = next)
-    }
-
-    /** 手指抬起：结束扫选会话（选择保留，只是不再跟手） */
-    fun endSweep(side: PaneSide) = updatePane(side) { pane ->
-        if (pane.selectionSweep == null) pane else pane.copy(selectionSweep = null)
+    fun swipeSelect(side: PaneSide, item: FileMetadata) {
+        focus(side)
+        updatePane(side) { pane ->
+            if (pane.items.none { it.uri == item.uri }) return@updatePane pane
+            val key = item.uri.toString()
+            val (selection, anchor) = MtSelection.swipe(pane.selection, keysOf(pane), key, pane.selectionAnchor)
+            if (selection == pane.selection && anchor == pane.selectionAnchor) pane
+            else pane.copy(selection = selection, selectionAnchor = anchor)
+        }
     }
 
     fun clearSelection(side: PaneSide) {
@@ -920,45 +907,6 @@ class BrowserController(private val container: AppContainer) {
         load(side)
     }
 
-    /** 只选中该项（右滑出菜单前的兜底：菜单随后作用于**整个选择集**） */
-    fun enterSelectionMode(side: PaneSide, first: FileMetadata) {
-        focus(side)
-        updatePane(side) { it.copy(selection = setOf(first.uri.toString())) }
-    }
-
-    /**
-     * MT「可通过分别长按两个项目来进行连选」（0x7f110631）：
-     * 第一次长按 = 设锚点（只选它）；第二次长按另一项 = 选中两者之间的**全部**（含两端）。
-     * 再长按第三次则重新设锚点（与 MT 一致：连选是「两两成对」的操作）。
-     *
-     * 与旧实现的差别（都为了「不静默毁掉用户已经选好的东西」）：
-     *  - 长按的**已选中**项只是把锚点挪过去，不会把其它已选项推平（原来会 `selection = setOf(key)`）；
-     *  - 区间是**追加**（[selectRange]），不再替换；
-     *  - 锚点存在窗格里（[PaneState.selectionAnchor]），左右窗格不串味。
-     */
-    fun longPressSelect(side: PaneSide, item: FileMetadata) {
-        focus(side)
-        val pane = pane(side)
-        if (pane.items.none { it.uri == item.uri }) return
-        val key = item.uri.toString()
-        val anchor = pane.selectionAnchor
-        when {
-            // 已有锚点且按的是另一项 → 连选区间，并收掉锚点（两两成对）
-            anchor != null && anchor != key && pane.hasSelection -> {
-                updatePane(side) {
-                    it.copy(
-                        selection = MtSelection.unionRange(it.selection, keysOf(it), anchor, key),
-                        selectionAnchor = null,
-                    )
-                }
-            }
-            // 已经选中的项：保留整个多选（菜单作用于整个选择集），只把锚点挪到它身上
-            pane.selection.contains(key) -> updatePane(side) { it.copy(selectionAnchor = key) }
-            // 否则：锚点 + 只选它（MT 第一次长按只选中这一项）
-            else -> updatePane(side) { it.copy(selection = setOf(key), selectionAnchor = key) }
-        }
-    }
-
     /**
      * MT 0x7f110630「开启后点击列表中任意两个项，将会自动选择它们中间所有的项。」
      *
@@ -977,6 +925,8 @@ class BrowserController(private val container: AppContainer) {
                 it.copy(
                     selection = MtSelection.unionRange(it.selection, keysOf(it), anchor, key),
                     tapAnchor = key,
+                    // 点击连选是「点击」这一路：清掉滑动锚点，避免之后一次滑动把区间接到滑动那一路去
+                    selectionAnchor = null,
                 )
             }
             return true
@@ -984,7 +934,11 @@ class BrowserController(private val container: AppContainer) {
         updatePane(side) {
             val next = MtSelection.toggle(it.selection, key)
             // 取消选中时不再留锚点：从一项「没被选中」的项开始连选没有意义
-            it.copy(selection = next, tapAnchor = if (next.contains(key)) key else null)
+            it.copy(
+                selection = next,
+                tapAnchor = if (next.contains(key)) key else null,
+                selectionAnchor = null,
+            )
         }
         return true
     }
