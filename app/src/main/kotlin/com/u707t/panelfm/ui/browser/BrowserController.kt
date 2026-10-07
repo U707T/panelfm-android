@@ -560,6 +560,8 @@ class BrowserController(private val container: AppContainer) {
             com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
         password: String? = null,
         encryptNames: Boolean = false,
+        /** 显式目标（长按菜单按「这一项」压缩时传入）；null = 当前选择集 / 当前目录 */
+        overrideSources: List<VfsUri>? = null,
     ) {
         val st = _state.value
         val srcPane = st.pane(side)
@@ -1015,9 +1017,14 @@ class BrowserController(private val container: AppContainer) {
         }
     }
 
-    fun deleteSelected(side: PaneSide, fastDelete: Boolean = false) {
+    fun deleteSelected(
+        side: PaneSide,
+        fastDelete: Boolean = false,
+        /** 显式目标（长按菜单按「这一项」删除时传入）；null = 当前选择集 / 当前目录 */
+        overrideSources: List<VfsUri>? = null,
+    ) {
         val pane = pane(side)
-        val sources = targetSources(side)
+        val sources = overrideSources ?: targetSources(side)
         if (sources.isEmpty()) {
             showStatus("没有可删除的项")
             return
@@ -1550,7 +1557,11 @@ class BrowserController(private val container: AppContainer) {
         return runCatching { VfsUri.parse(VfsUri.decodeHost(raw)) }.getOrNull()
     }
 
-    fun copyToOther(side: PaneSide = _state.value.focused) = startCrossPane(side, TransferOp.COPY)
+    fun copyToOther(
+        side: PaneSide = _state.value.focused,
+        /** 显式目标（长按菜单按「这一项」复制时传入）；null = 当前选择集 / 当前目录 */
+        overrideSources: List<VfsUri>? = null,
+    ) = startCrossPane(side, TransferOp.COPY, overrideSources = overrideSources)
 
     /**
      * MT「选择当前目录」模式的落地动作：把活动窗格的选中项复制到指定目录（[startCrossPane] 的
@@ -1561,18 +1572,23 @@ class BrowserController(private val container: AppContainer) {
     /** MT「选择当前目录」模式的落地动作：移动到指定目录 */
     fun moveTo(side: PaneSide, dest: VfsUri) = startCrossPane(side, TransferOp.MOVE, overrideDest = dest)
 
-    fun moveToOther(side: PaneSide = _state.value.focused) {
+    fun moveToOther(
+        side: PaneSide = _state.value.focused,
+        /** 显式目标（长按菜单按「这一项」移动时传入）；null = 当前选择集 / 当前目录 */
+        overrideItems: List<FileMetadata>? = null,
+    ) {
         val st = _state.value
         val srcPane = st.pane(side)
         val dstPane = st.pane(side.other)
-        val sources = targetSources(side)
+        // 目标项：显式传入 > 当前选择集 > 当前目录（与 targetSources 的优先级一致）
+        val picked = overrideItems ?: if (srcPane.hasSelection) srcPane.selectedItems else srcPane.items
+        val sources = picked.map { it.uri }
         if (sources.isEmpty()) {
             showStatus("当前目录为空")
             return
         }
-        val count = if (srcPane.hasSelection) srcPane.selection.size else srcPane.items.size
-        val bytes = if (srcPane.hasSelection) srcPane.selectedItems.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0) }
-        else srcPane.items.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0) }
+        val count = picked.size
+        val bytes = picked.sumOf { if (it.isDirectory) 0L else it.size.coerceAtLeast(0) }
         val crossVfs = container.locator.find(srcPane.uri) !== container.locator.find(dstPane.uri)
         update {
             it.copy(
@@ -1752,8 +1768,8 @@ class BrowserController(private val container: AppContainer) {
      * 把选中项「复制到剪贴板」：记录源 URI 列表（应用内剪贴板，跨窗格 / 跨会话可用）。
      * MT 的剪贴板图标 FAB 是「粘贴」，对应的复制入口在动作菜单。
      */
-    fun copySelectionToClipboard(side: PaneSide) {
-        val sources = targetSources(side)
+    fun copySelectionToClipboard(side: PaneSide, overrideSources: List<VfsUri>? = null) {
+        val sources = overrideSources ?: targetSources(side)
         if (sources.isEmpty()) {
             showStatus("当前目录没有可复制的项")
             return
@@ -1830,10 +1846,12 @@ class BrowserController(private val container: AppContainer) {
             com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
         password: String? = null,
         encryptNames: Boolean = false,
+        /** 显式目标（长按菜单按「这一项」压缩时传入）；null = 当前选择集 / 当前目录 */
+        overrideSources: List<VfsUri>? = null,
     ) {
         val st = _state.value
         val pane = st.pane(side)
-        val sources = targetSources(side)
+        val sources = overrideSources ?: targetSources(side)
         if (sources.isEmpty()) {
             showStatus("当前目录没有可压缩的项")
             return

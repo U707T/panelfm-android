@@ -146,7 +146,9 @@ fun DualPaneScreen(
     var rowAction by remember { mutableStateOf<FileMetadata?>(null) }
     var toolsFor by remember { mutableStateOf<FileMetadata?>(null) }
     var renaming by remember { mutableStateOf<FileMetadata?>(null) }
-    var deleting by remember { mutableStateOf<FileMetadata?>(null) }
+    var deleting by remember { mutableStateOf<List<FileMetadata>?>(null) }
+    /** 压缩对话框的目标项（长按菜单可能只针对「这一项」，不能退化成整个目录） */
+    var compressTargets by remember { mutableStateOf<List<FileMetadata>?>(null) }
     var creatingFolder by remember { mutableStateOf(false) }
     var creatingFile by remember { mutableStateOf(false) }
     var showCreateMenu by remember { mutableStateOf(false) }
@@ -401,7 +403,7 @@ fun DualPaneScreen(
                                 focused = focused,
                                 focusSide = focusSide,
                                 controller = controller,
-                                onDelete = { deleting = it },
+                                onDelete = { picked -> deleting = picked },
                                 onRename = { item: FileMetadata ->
                                     when {
                                         focused.uri.scheme == "archive" -> archiveRename = item
@@ -409,7 +411,10 @@ fun DualPaneScreen(
                                         else -> renaming = item
                                     }
                                 },
-                                onCompress = { compressFormatPicker = true },
+                                onCompress = {
+                                    compressTargets = focused.selectedItems
+                                    compressFormatPicker = true
+                                },
                                 onCopyTo = { controller.startPickDir(PickDirPurpose.COPY_TO) },
                                 onMoveTo = { controller.startPickDir(PickDirPurpose.MOVE_TO) },
                                 onProperties = { item: FileMetadata -> controller.showProperties(item) },
@@ -419,7 +424,9 @@ fun DualPaneScreen(
                                 onTypedAction = { id, it ->
                                     // 与长按菜单同一套处理（复用同一份实现，避免两处行为漂移）
                                     when (id) {
-                                        TypeActions.ACTION_EXTRACT_HERE -> controller.extractTo(focusSide, focused.uri)
+                                        TypeActions.ACTION_EXTRACT_HERE ->
+                                            if (it.uri.scheme == "archive") controller.extractTo(focusSide, focused.uri)
+                                            else controller.extractArchiveTo(it, focused.uri)
                                         TypeActions.ACTION_INSTALL -> installApk(container, context, it) { msg ->
                                             controller.showStatus(msg)
                                         }
@@ -890,8 +897,11 @@ fun DualPaneScreen(
 
     // ---------------- MT 动作菜单（长按文件，截图2 布局）
     rowAction?.let { item ->
-        val multi = focused.selection.size
-        val picked = focused.selectedItems.ifEmpty { listOf(item) }
+        // 长按弹的是「这一项」的菜单：它若在当前选择集里 → 作用于整个选择集，否则只作用于这一项。
+        // （不能让下游退化成 targetSources()：没有选择时那会指向**整个目录**，见 menuTargets 注释）
+        val picked = menuTargets(focused.selectedItems, item)
+        val multi = picked.size
+        val pickedUris = picked.map { it.uri }
         // MT 置灰规则：选中项含文件夹时，分享 / 打开方式 不可用（系统不支持分享文件夹）
         val anyDirectory = picked.any { it.isDirectory }
         // MT：同时选中两个文件时长按出现「文件对比」
@@ -947,40 +957,50 @@ fun DualPaneScreen(
             onAction = { id ->
                 rowAction = null
                 when (id) {
-                    "copy_to" -> controller.copyToOther(focusSide)
-                    "move_to" -> controller.moveToOther(focusSide)
+                    "copy_to" -> controller.copyToOther(focusSide, overrideSources = pickedUris)
+                    "move_to" -> controller.moveToOther(focusSide, overrideItems = picked)
                     "delete" -> {
                         if (focused.uri.scheme == "archive") {
                             controller.deleteInsideArchive(focusSide, picked)
                         } else {
-                            deleting = item
+                            deleting = picked
                         }
                     }
                     "rename" -> {
                         when {
                             focused.uri.scheme == "archive" -> archiveRename = item
                             picked.size > 1 -> batchRenameFor = picked
-                            else -> renaming = item
+                            else -> renaming = picked.first()
                         }
                     }
                     "diff" -> controller.startFileDiff(focusSide)
                     "tools" -> toolsFor = item
-                    "compress" -> compressFormatPicker = true
-                    "properties" -> controller.showProperties(item)
-                    "share" -> shareItem(container, context, item) { msg -> controller.showStatus(msg) }
-                    "open_with" -> openWithFor = item
-                    "clipboard" -> controller.copySelectionToClipboard(focusSide)
+                    "compress" -> {
+                        compressTargets = picked
+                        compressFormatPicker = true
+                    }
+                    "properties" -> controller.showProperties(picked.first())
+                    "share" -> shareItems(container, context, picked) { msg -> controller.showStatus(msg) }
+                    "open_with" -> openWithFor = picked.first()
+                    "clipboard" -> controller.copySelectionToClipboard(focusSide, overrideSources = pickedUris)
 
                     "bookmark" -> {
                         controller.addBookmark(focusSide)
                     }
 
                     // ---- 按类型的二级菜单（MT 语义）
+                    // ⚠️ 文件列表里的压缩包 → extractArchiveTo（整包展开）；
+                    //    旧接线误用了「压缩包内部解压」的 extractTo → 「解压到当前目录」实际是**复制**压缩包自身。
                     TypeActions.ACTION_EXTRACT_HERE ->
-                        controller.extractTo(focusSide, focused.uri)
+                        if (item.uri.scheme == "archive") controller.extractTo(focusSide, focused.uri)
+                        else controller.extractArchiveTo(item, focused.uri)
                     TypeActions.ACTION_EXTRACT_OWN_FOLDER -> {
-                        val parent = focused.uri.parent
-                        if (parent != null) controller.extractToOwnFolder(focusSide, parent)
+                        val parent = item.uri.parent
+                        when {
+                            parent == null -> controller.showStatus("无法确定压缩包所在目录")
+                            item.uri.scheme == "archive" -> controller.extractToOwnFolder(focusSide, parent)
+                            else -> controller.extractArchiveTo(item, parent, ownFolder = true)
+                        }
                     }
                     TypeActions.ACTION_EXTRACT_PICK -> {
                         extractDialogFor = item
@@ -1338,16 +1358,19 @@ fun DualPaneScreen(
 
     // 压缩（复刻 MT 0x7f0c0080「创建压缩文件」：文件名 / 格式 / 压缩级别 / 密码 / 同时加密文件名）
     if (compressFormatPicker) {
+        val targets = compressTargets ?: focused.selectedItems
+        val targetUris = targets.map { it.uri }
         MtCompressDialog(
-            itemCount = focused.selectedItems.size,
-            onDismiss = { compressFormatPicker = false },
+            itemCount = targets.size,
+            onDismiss = { compressFormatPicker = false; compressTargets = null },
             onConfirm = { toOther, fmt, fileName, level, pwd, encNames ->
                 compressFormatPicker = false
                 if (toOther) {
-                    controller.compressToOther(focusSide, fmt, fileName, level, pwd, encNames)
+                    controller.compressToOther(focusSide, fmt, fileName, level, pwd, encNames, overrideSources = targetUris)
                 } else {
-                    controller.compressHere(focusSide, fmt, fileName, level, pwd, encNames)
+                    controller.compressHere(focusSide, fmt, fileName, level, pwd, encNames, overrideSources = targetUris)
                 }
+                compressTargets = null
             },
         )
     }
@@ -1468,13 +1491,15 @@ fun DualPaneScreen(
             onDismiss = { renaming = null },
         )
     }
-    deleting?.let { item ->
-        var bigCount by remember { mutableStateOf(-1) }
-        LaunchedEffect(item.uri) {
-            bigCount = if (item.isDirectory && item.uri.scheme == "local") controller.countLocalEntries(item.uri) else -1
+    deleting?.let { targets ->
+        val first = targets.firstOrNull()
+        var bigCount by remember(first?.uri) { mutableStateOf(-1) }
+        LaunchedEffect(first?.uri) {
+            bigCount = if (first != null && first.isDirectory && first.uri.scheme == "local") controller.countLocalEntries(first.uri) else -1
         }
-        // 多选时删除的是整个选择集（顶栏动作条 / 底栏「删除」都走这里）
-        val delCount = focused.selection.size
+        // 目标列表由调用方给定：顶栏动作条 = 当前选择集；长按菜单 = 「这一项」（或包含它时=选择集）
+        val delCount = targets.size
+        val delSources = targets.map { it.uri }
         AlertDialog(
             onDismissRequest = { deleting = null },
             title = { Text("删除") },
@@ -1482,7 +1507,7 @@ fun DualPaneScreen(
                 Column {
                     Text(
                         if (delCount > 1) "确定删除已选中的 $delCount 项？"
-                        else "确定删除「${item.name}」？" + if (item.isDirectory) "（含目录内容）" else ""
+                        else "确定删除「${first?.name ?: ""}」？" + if (first?.isDirectory == true) "（含目录内容）" else ""
                     )
                     if (bigCount > 1000) {
                         Text(
@@ -1498,12 +1523,12 @@ fun DualPaneScreen(
                 Row {
                     if (bigCount > 1000) {
                         TextButton(onClick = {
-                            controller.deleteSelected(focusSide, fastDelete = true)
+                            controller.deleteSelected(focusSide, fastDelete = true, overrideSources = delSources)
                             deleting = null
                         }) { Text("极速删除") }
                     }
                     TextButton(onClick = {
-                        controller.deleteSelected(focusSide)
+                        controller.deleteSelected(focusSide, overrideSources = delSources)
                         deleting = null
                     }) { Text("删除") }
                 }
@@ -1616,7 +1641,7 @@ private fun TopActionItems(
     focused: PaneState,
     focusSide: PaneSide,
     controller: BrowserController,
-    onDelete: (FileMetadata) -> Unit,
+    onDelete: (List<FileMetadata>) -> Unit,
     onRename: (FileMetadata) -> Unit,
     onCompress: () -> Unit,
     onCopyTo: () -> Unit,
@@ -1645,8 +1670,8 @@ private fun TopActionItems(
     MtActionButton(MtIcon.COPY, crossPaneLabel("复制", focusSide)) { controller.copyToOther(focusSide) }
     MtActionButton(MtIcon.CUT, crossPaneLabel("移动", focusSide)) { controller.moveToOther(focusSide) }
     MtActionButton(MtIcon.DELETE, "删除", enabled = picked.isNotEmpty()) {
-        picked.firstOrNull()?.let { item ->
-            if (inArchive) controller.deleteInsideArchive(focusSide, picked) else onDelete(item)
+        if (picked.isNotEmpty()) {
+            if (inArchive) controller.deleteInsideArchive(focusSide, picked) else onDelete(picked)
         }
     }
     MtActionButton(MtIcon.EDIT, "重命名", enabled = picked.isNotEmpty()) {
@@ -1844,33 +1869,54 @@ private fun MtSortManageDialog(
 }
 
 /** 分享：本地文件走 FileProvider（可分享给任何应用） */
-internal fun shareItem(    container: AppContainer,
+internal fun shareItem(
+    container: AppContainer,
     context: android.content.Context,
     item: FileMetadata,
     onMessage: (String) -> Unit,
+) = shareItems(container, context, listOf(item), onMessage)
+
+/**
+ * 分享（支持多选）：一个文件走 [Intent.ACTION_SEND]，多个走 [Intent.ACTION_SEND_MULTIPLE]
+ * —— MT 的多选分享会把选中的文件一次全交出去。
+ */
+internal fun shareItems(
+    container: AppContainer,
+    context: android.content.Context,
+    items: List<FileMetadata>,
+    onMessage: (String) -> Unit,
 ) {
-    if (item.uri.scheme != "local") {
+    if (items.isEmpty()) return
+    if (items.any { it.uri.scheme != "local" }) {
         onMessage("网络文件请先复制到本地再分享")
         return
     }
-    val file = File(container.localVfs.absolutePath(item.uri))
-    if (!file.exists()) {
+    val uris = items.mapNotNull { item ->
+        val file = File(container.localVfs.absolutePath(item.uri))
+        if (!file.exists()) null
+        else runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        }.getOrNull()
+    }
+    if (uris.isEmpty()) {
         onMessage("文件不存在")
         return
     }
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    }.getOrNull()
-    if (uri == null) {
-        onMessage("无法生成分享链接")
-        return
+    val intent = if (uris.size == 1) {
+        Intent(Intent.ACTION_SEND).apply {
+            type = items.first().mimeType ?: "*/*"
+            putExtra(Intent.EXTRA_STREAM, uris.first())
+        }
+    } else {
+        val sameType = items.mapNotNull { it.mimeType }.distinct().singleOrNull()
+        Intent(Intent.ACTION_SEND_MULTIPLE).apply {
+            type = sameType ?: "*/*"
+            putParcelableArrayListExtra(Intent.EXTRA_STREAM, ArrayList(uris))
+        }
     }
-    val intent = Intent(Intent.ACTION_SEND).apply {
-        type = item.mimeType ?: "*/*"
-        putExtra(Intent.EXTRA_STREAM, uri)
-        addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    }
-    runCatching { context.startActivity(Intent.createChooser(intent, "分享 ${item.name}")) }
+    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val title = if (uris.size == 1) "分享 ${items.first().name}" else "分享 ${uris.size} 个文件"
+    runCatching { context.startActivity(Intent.createChooser(intent, title)) }
         .onFailure { onMessage("没有可用的分享目标") }
 }
 

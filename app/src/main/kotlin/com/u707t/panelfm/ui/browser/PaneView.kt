@@ -188,10 +188,7 @@ fun PaneView(
     val haptic = LocalHapticFeedback.current
     val uiScope = rememberCoroutineScope()
 
-    /**
-     * 行手势判定机（纯逻辑在 core.ui.MtRowGesture）。
-     * 放在组合里而不是 `pointerInput` 里：边缘自动滚动的协程也要用它重算区间。
-     */
+    /** 行手势判定机（纯逻辑在 core.ui.MtRowGesture；判定与派发分离，便于单测） */
     val touchSlopDp = with(LocalDensity.current) { LocalViewConfiguration.current.touchSlop / this.density }
     /** 滑动选中的行动效位移（px）：在组合里算好，供非 @Composable 的处理函数使用 */
     val swipeAnimPx = with(LocalDensity.current) { MtGesture.SwipeAnimDp.dp.toPx() }
@@ -241,7 +238,7 @@ fun PaneView(
 
     /**
      * 列表手势配置（包在 rememberUpdatedState 里：手势跨越多帧，回调必须取**最新一帧**的，
-     * 否则长按 / 扫选过程中目录被刷新，会拿着过期的 items 算出错误的行号）。
+     * 否则长按过程中目录被刷新，会拿着过期的 items 算出错误的行号）。
      */
     val gestures by rememberUpdatedState(
         ListGestures(

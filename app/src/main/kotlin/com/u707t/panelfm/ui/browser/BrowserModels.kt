@@ -199,3 +199,17 @@ enum class BrowseMode(val label: String) {
  */
 fun crossPaneLabel(base: String, from: PaneSide): String =
     if (from == PaneSide.LEFT) "$base ->" else "<- $base"
+
+/**
+ * 「长按动作菜单」的目标项（见 v1.9.1 的回归说明）。
+ *
+ * MT 语义：长按 = 弹**这一项**的二级菜单（不改选择）。于是：
+ *  - 按下的项在当前选择集里 → 动作作用于**整个选择集**（与顶栏动作条同一套语义）；
+ *  - 按下的项不在选择集里（或根本没有选择）→ 动作只作用于**这一项**。
+ *
+ * ⚠️ 必须显式把「目标项」传给下游，不能让它们退化成 `BrowserController.targetSources()`：
+ * 后者在**没有选择**时会返回**整个目录**的内容 —— v1.9.0 把「长按不再设选择」改掉之后，
+ * 「长按 A → 删除 / 复制 / 移动 / 压缩 / 加入剪贴板」一度变成对整个目录操作（v1.9.1 修复）。
+ */
+internal fun menuTargets(selection: List<FileMetadata>, pressed: FileMetadata): List<FileMetadata> =
+    if (selection.any { it.uri == pressed.uri }) selection else listOf(pressed)

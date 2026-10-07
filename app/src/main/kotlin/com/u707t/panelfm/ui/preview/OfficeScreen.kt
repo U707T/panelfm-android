@@ -225,7 +225,9 @@ private suspend fun readCapped(container: AppContainer, item: FileMetadata, max:
     if (item.size > max) {
         throw IllegalStateException("文件超过 ${Fmt.size(max)}，暂不支持内置预览。\n\n请用「打开方式…」交给外部应用。")
     }
-    val vfs = container.locator.find(item.uri) ?: throw IllegalStateException("会话不可用")
+    // resolveSession：会话被回收 / URI 丢过连接号时自动重连（与预览页一致，
+    // 旧写法只用 locator.find，网络盘放一会儿再进来会直接报「会话不可用」）
+    val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用")
     val reader = vfs.openRead(item.uri)
     try {
         val out = ByteArrayOutputStream(minOf(item.size, max).toInt().coerceAtLeast(0))
