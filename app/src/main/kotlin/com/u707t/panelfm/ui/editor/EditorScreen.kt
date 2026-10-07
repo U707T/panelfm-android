@@ -3,9 +3,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.size
 import androidx.compose.ui.draw.clip
-
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -16,7 +14,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
@@ -26,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -46,7 +44,6 @@ import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.TransformedText
 import androidx.compose.ui.text.input.VisualTransformation
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
@@ -60,9 +57,11 @@ import com.u707t.panelfm.core.common.CodeFormatter
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.LineOps
 import com.u707t.panelfm.core.common.TextEncodings
+import com.u707t.panelfm.core.common.TextSearch
+import com.u707t.panelfm.core.common.TextSearchOptions
+import com.u707t.panelfm.core.common.TextSearchQuery
 import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.ui.ErrorState
-import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
@@ -87,8 +86,8 @@ import java.nio.charset.Charset
  *  - 「压缩代码」（保守实现：去行尾空白 + 去首尾空行，`0x7f110424`）
  *  - 「格式化代码」（JSON / XML，`0x7f110411`）
  *  - 「转到指定行」（`0x7f1106f5`~`6f8` 的定位系列）
- *  - 「查找」条抄 MT `0x7f0c004f` 的一行式（输入框 + 上个 + 下个 + 替换 + 全部替换），
- *    并补 MT 的「找不到文本」差异化提示（`0x7f1106e7`~`6ec`，按正则 / 大小写 / 全词组合给不同文案）
+ *  - 「查找」条对齐 MT `0x7f0c0048` 的底部布局（查找 / 替换两行 + 上个 / 下个 / 替换 / 全部 / ⋮），
+ *    查找/替换在后台线程执行，并补 MT 的「找不到文本」差异化提示（`0x7f1106e7`~`6ec`）
  */
 @Composable
 fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
@@ -115,6 +114,9 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var showMenu by remember { mutableStateOf(false) }
     var gotoLineDialog by remember { mutableStateOf(false) }
     var gotoLineText by remember { mutableStateOf("") }
+    var findOptionsMenu by remember { mutableStateOf(false) }
+    var searchBusy by remember { mutableStateOf(false) }
+    var searchRequestId by remember { mutableLongStateOf(0L) }
 
     // ---- 大文件只读分段浏览
     var paged by remember { mutableStateOf(false) }
@@ -125,8 +127,15 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     val text = value.text
     val dirty = text != original && !paged
+    val searchOptions = TextSearchOptions(
+        regex = useRegex,
+        matchCase = matchCase,
+        wholeWord = wholeWord,
+    )
 
     LaunchedEffect(uri) {
+        searchRequestId++
+        searchBusy = false
         try {
             val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
             val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
@@ -175,6 +184,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         if (pageLoading) return
         val info = meta ?: return
         val t = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
+        searchRequestId++
+        searchBusy = false
         scope.launch {
             pageLoading = true
             try {
@@ -204,81 +215,162 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     androidx.activity.compose.BackHandler(enabled = true) { attemptLeave() }
 
     // ---------------- 查找（MT 的「找不到文本」差异化提示 0x7f1106e7~6ec）
-    fun notFoundMessage(): String = buildString {
-        append("找不到文本")
-        val flags = buildList {
-            if (useRegex) add("正则表达式")
-            if (matchCase) add("区分大小写")
-            if (wholeWord) add("全词匹配")
-        }
-        if (flags.isNotEmpty()) append("（已开启").append(flags.joinToString("和")).append("）")
+    fun notFoundMessage(options: TextSearchOptions): String = when {
+        options.regex && options.matchCase && options.wholeWord ->
+            "找不到文本（已开启正则表达式、全词匹配和区分大小写）"
+        options.regex && options.matchCase -> "找不到文本（已开启正则表达式和区分大小写）"
+        options.regex && options.wholeWord -> "找不到文本（已开启正则表达式和全词匹配）"
+        options.regex -> "找不到文本（已开启正则表达式）"
+        options.wholeWord && options.matchCase -> "找不到文本（已开启全词匹配和区分大小写）"
+        options.wholeWord -> "找不到文本（已开启全词匹配）"
+        options.matchCase -> "找不到文本（已开启区分大小写）"
+        else -> "找不到文本"
     }
 
-    /** 找下一个匹配（循环）；[backward] = 上个 */
+    /** 输入条件/正文发生变化时，让正在后台执行的查找结果失效。 */
+    fun invalidateSearch(clearStatus: Boolean = true) {
+        searchRequestId++
+        searchBusy = false
+        if (clearStatus) status = null
+    }
+
+    /** 找下一个匹配（后台执行、循环）；[backward] = 上个。 */
     fun findNext(backward: Boolean = false) {
-        if (findText.isEmpty()) return
-        val total = countMatches(text, findText, useRegex, matchCase, wholeWord)
-        if (total == 0) {
-            status = notFoundMessage()
+        val needle = findText
+        if (needle.isEmpty()) {
+            status = "请输入查找内容"
             return
         }
-        val hits = matchOffsets(text, findText, useRegex, matchCase, wholeWord)
-        val cur = value.selection.start
-        val target = if (backward) {
-            hits.lastOrNull { it < cur } ?: hits.last()
-        } else {
-            hits.firstOrNull { it > cur } ?: hits.first()
+        if (searchBusy) return
+        val source = text
+        val options = searchOptions
+        val selection = value.selection
+        val from = if (backward || selection.collapsed) selection.start else selection.end
+        val requestId = searchRequestId + 1
+        searchRequestId = requestId
+        searchBusy = true
+        status = "查找中…"
+        scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                TextSearch.findNext(source, TextSearchQuery(needle, options), from, backward)
+            }
+            if (requestId == searchRequestId) searchBusy = false
+            // 查询、正文或选项在后台计算期间发生变化时，丢弃旧结果，避免跳回旧位置。
+            if (
+                requestId != searchRequestId ||
+                value.text != source ||
+                findText != needle ||
+                searchOptions != options
+            ) return@launch
+            when {
+                result.error != null -> status = result.error
+                result.match == null -> status = notFoundMessage(options)
+                else -> {
+                    val match = result.match ?: return@launch
+                    value = value.copy(selection = TextRange(match.start, match.end))
+                    val line = withContext(Dispatchers.Default) { lineNumberAt(source, match.start) }
+                    status = "已找到 · 第 $line 行"
+                    container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_FIND, needle)
+                }
+            }
         }
-        val len = hitLength(text, findText, target, useRegex, matchCase, wholeWord)
-        value = value.copy(selection = TextRange(target, target + len))
-        val line = text.take(target).count { it == '\n' } + 1
-        val ordinal = hits.indexOf(target) + 1
-        status = "第 $ordinal / $total 处 · 第 $line 行"
-        scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_FIND, findText) }
     }
 
+    /** 替换当前已选中的命中；没有命中时沿用 MT 的操作习惯先定位下一个。 */
     fun replaceCurrent() {
-        if (findText.isEmpty()) return
-        val sel = value.selection
-        val selected = if (sel.collapsed) "" else text.substring(sel.start, sel.end)
-        val matches = selected.isNotEmpty() &&
-            matchesPattern(selected, findText, useRegex, matchCase, wholeWord)
-        if (!matches) {
-            findNext()
+        if (readOnly) return
+        val needle = findText
+        if (needle.isEmpty()) {
+            status = "请输入查找内容"
             return
         }
-        val out = buildString {
-            append(text, 0, sel.start)
-            append(if (useRegex) Regex(findText).replace(selected, replaceText) else replaceText)
-            append(text, sel.end, text.length)
+        val selection = value.selection
+        if (selection.collapsed || searchBusy) {
+            if (!searchBusy) findNext()
+            return
         }
-        value = TextFieldValue(out, TextRange(sel.start + replaceText.length))
-        status = "已替换 1 处"
+        val source = text
+        val replacement = replaceText
+        val options = searchOptions
+        val requestId = searchRequestId + 1
+        searchRequestId = requestId
+        searchBusy = true
+        status = "替换中…"
+        scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                TextSearch.replaceOne(
+                    source,
+                    TextSearchQuery(needle, options),
+                    selection.start,
+                    selection.end,
+                    replacement,
+                )
+            }
+            if (requestId == searchRequestId) searchBusy = false
+            if (
+                requestId != searchRequestId ||
+                value.text != source ||
+                findText != needle ||
+                replaceText != replacement ||
+                searchOptions != options
+            ) return@launch
+            when {
+                result.error != null -> status = result.error
+                result.count == 0 -> findNext()
+                else -> {
+                    value = TextFieldValue(
+                        result.text,
+                        TextRange(selection.start + result.replacementLength),
+                    )
+                    status = "已替换 1 处"
+                    container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replacement)
+                }
+            }
+        }
     }
 
+    /** 全部替换只做一次后台扫描，并保留当前光标的大致位置。 */
     fun replaceAll() {
-        if (findText.isEmpty()) return
-        val count = countMatches(text, findText, useRegex, matchCase, wholeWord)
-        if (count == 0) {
-            status = notFoundMessage()
+        if (readOnly) return
+        val needle = findText
+        if (needle.isEmpty()) {
+            status = "请输入查找内容"
             return
         }
-        val out = if (useRegex) {
-            val r = Regex(findText)
-            if (matchCase && wholeWord) text.replace(r) { m -> replaceText }
-            else text.replace(r, replaceText)
-        } else if (matchCase && wholeWord) {
-            Regex("\\b" + Regex.escape(findText) + "\\b").replace(text, replaceText)
-        } else if (!matchCase && !wholeWord) {
-            text.replace(findText, replaceText, ignoreCase = true)
-        } else if (!matchCase) {
-            Regex(Regex.escape(findText), RegexOption.IGNORE_CASE).replace(text, replaceText)
-        } else {
-            Regex("\\b" + Regex.escape(findText) + "\\b").replace(text, replaceText)
+        if (searchBusy) return
+        val source = text
+        val replacement = replaceText
+        val options = searchOptions
+        val cursor = value.selection.start
+        val requestId = searchRequestId + 1
+        searchRequestId = requestId
+        searchBusy = true
+        status = "替换中…"
+        scope.launch {
+            val result = withContext(Dispatchers.Default) {
+                TextSearch.replaceAll(source, TextSearchQuery(needle, options), replacement)
+            }
+            if (requestId == searchRequestId) searchBusy = false
+            if (
+                requestId != searchRequestId ||
+                value.text != source ||
+                findText != needle ||
+                replaceText != replacement ||
+                searchOptions != options
+            ) return@launch
+            when {
+                result.error != null -> status = result.error
+                result.count == 0 -> status = notFoundMessage(options)
+                else -> {
+                    value = TextFieldValue(
+                        result.text,
+                        TextRange(cursor.coerceAtMost(result.text.length)),
+                    )
+                    status = "已替换 ${result.count} 处"
+                    container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replacement)
+                }
+            }
         }
-        value = TextFieldValue(out)
-        status = "已替换 $count 处"
-        scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.EDITOR_REPLACE, replaceText) }
     }
 
     // ---------------- 行操作（MT 菜单 0x7f0e001b）
@@ -358,12 +450,19 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                         }
                     },
                     onGotoLine = { showMenu = false; gotoLineText = (cursorLine + 1).toString(); gotoLineDialog = true },
-                    onToggleFind = { showMenu = false; showFind = !showFind },
+                    onToggleFind = {
+                        showMenu = false
+                        showFind = !showFind
+                        findOptionsMenu = false
+                    },
                 )
             }
             TextButton(onClick = { fontSize = (fontSize - 1).coerceAtLeast(10) }) { Text("A-") }
             TextButton(onClick = { fontSize = (fontSize + 1).coerceAtMost(28) }) { Text("A+") }
-            TextButton(onClick = { showFind = !showFind }) { Text("查找") }
+            TextButton(onClick = {
+                showFind = !showFind
+                findOptionsMenu = false
+            }) { Text("查找") }
             TextButton(
                 enabled = !readOnly && dirty,
                 onClick = {
@@ -402,34 +501,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             }
         }
 
-        // ---- 查找条（抄 MT 0x7f0c004f 的一行式：输入框 + 上个 + 下个 + 替换 + 全部替换）
-        if (showFind) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    EditorField(findText, { findText = it }, "查找", Modifier.weight(1f))
-                    HistoryButton(findHistory) { findText = it }
-                    TextButton(onClick = { findNext(backward = true) }) { Text("上个") }
-                    TextButton(onClick = { findNext() }) { Text("下个") }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    EditorField(replaceText, { replaceText = it }, "替换为", Modifier.weight(1f))
-                    HistoryButton(replaceHistory) { replaceText = it }
-                    TextButton(enabled = !readOnly, onClick = { replaceCurrent() }) { Text("替换") }
-                    TextButton(enabled = !readOnly, onClick = { replaceAll() }) { Text("全部替换") }
-                }
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    FlagCheckbox("正则表达式", useRegex) { useRegex = it }
-                    FlagCheckbox("区分大小写", matchCase) { matchCase = it }
-                    FlagCheckbox("全词匹配", wholeWord) { wholeWord = it }
-                }
-            }
-        }
+        // 查找条本体固定在编辑器底部，避免遮住正文。
 
         status?.let {
             Text(
@@ -441,11 +513,12 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         }
 
         when {
-            loading -> LoadingState()
-            error != null -> ErrorState("打开失败：$error")
+            loading -> LoadingState(modifier = Modifier.weight(1f).fillMaxWidth())
+            error != null -> ErrorState("打开失败：$error", modifier = Modifier.weight(1f).fillMaxWidth())
             else -> Column(
                 Modifier
-                    .fillMaxSize()
+                    .weight(1f)
+                    .fillMaxWidth()
                     .verticalScroll(rememberScrollState())
                     .padding(10.dp),
             ) {
@@ -459,7 +532,12 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 }
                 BasicTextField(
                     value = value,
-                    onValueChange = { if (!readOnly) value = it },
+                    onValueChange = {
+                        if (!readOnly) {
+                            value = it
+                            invalidateSearch()
+                        }
+                    },
                     textStyle = TextStyle(
                         fontSize = fontSize.sp,
                         lineHeight = (fontSize * 1.35f).sp,
@@ -481,6 +559,43 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                     modifier = Modifier.padding(top = 12.dp),
                 )
             }
+        }
+        if (showFind) {
+            EditorSearchBar(
+                findText = findText,
+                onFindTextChange = {
+                    findText = it
+                    invalidateSearch()
+                },
+                replaceText = replaceText,
+                onReplaceTextChange = {
+                    replaceText = it
+                    invalidateSearch()
+                },
+                findHistory = findHistory,
+                replaceHistory = replaceHistory,
+                readOnly = readOnly,
+                busy = searchBusy,
+                options = searchOptions,
+                optionsMenuExpanded = findOptionsMenu,
+                onOptionsMenuExpandedChange = { findOptionsMenu = it },
+                onRegexChange = {
+                    useRegex = it
+                    invalidateSearch()
+                },
+                onMatchCaseChange = {
+                    matchCase = it
+                    invalidateSearch()
+                },
+                onWholeWordChange = {
+                    wholeWord = it
+                    invalidateSearch()
+                },
+                onPrevious = { findNext(backward = true) },
+                onNext = { findNext() },
+                onReplace = { replaceCurrent() },
+                onReplaceAll = { replaceAll() },
+            )
         }
     }
 
@@ -603,38 +718,6 @@ private fun EditorMenu(
     }
 }
 
-/** 小号输入框（查找条用） */
-@Composable
-private fun EditorField(value: String, onChange: (String) -> Unit, hint: String, modifier: Modifier = Modifier) {
-    Box(
-        modifier.background(MaterialTheme.colorScheme.surface),
-    ) {
-        BasicTextField(
-            value = value,
-            onValueChange = onChange,
-            singleLine = true,
-            textStyle = TextStyle(fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurface),
-            decorationBox = { inner ->
-                if (value.isEmpty()) {
-                    Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-                inner()
-            },
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(6.dp),
-        )
-    }
-}
-
-@Composable
-private fun FlagCheckbox(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Checkbox(checked = checked, onCheckedChange = onChange)
-        Text(label, style = MaterialTheme.typography.labelSmall)
-    }
-}
-
 /** 按语言给行注释前缀（MT 的「切换注释」按语法规则；不支持的语言返回 null） */
 internal fun commentPrefixOf(lang: SyntaxLanguage): String? = when (lang) {
     SyntaxLanguage.KOTLIN, SyntaxLanguage.JAVA, SyntaxLanguage.JAVASCRIPT, SyntaxLanguage.TYPESCRIPT,
@@ -646,48 +729,12 @@ internal fun commentPrefixOf(lang: SyntaxLanguage): String? = when (lang) {
     else -> null
 }
 
-// ------------------------------------------------------------------ 匹配工具
-
-/** 找出所有匹配起点（支持正则 / 大小写 / 全词） */
-internal fun matchOffsets(text: String, needle: String, useRegex: Boolean, matchCase: Boolean, wholeWord: Boolean): List<Int> {
-    if (needle.isEmpty()) return emptyList()
-    return runCatching {
-        val out = ArrayList<Int>()
-        if (useRegex) {
-            val opts = if (matchCase) emptySet() else setOf(RegexOption.IGNORE_CASE)
-            Regex(needle, opts).findAll(text).forEach { out.add(it.range.first) }
-        } else {
-            val pattern = if (wholeWord) "\\b" + Regex.escape(needle) + "\\b" else Regex.escape(needle)
-            val opts = if (matchCase) emptySet() else setOf(RegexOption.IGNORE_CASE)
-            Regex(pattern, opts).findAll(text).forEach { out.add(it.range.first) }
-        }
-        out
-    }.getOrDefault(emptyList())
+private fun lineNumberAt(text: String, offset: Int): Int {
+    var line = 1
+    val end = offset.coerceIn(0, text.length)
+    for (i in 0 until end) if (text[i] == '\n') line++
+    return line
 }
-
-internal fun countMatches(text: String, needle: String, useRegex: Boolean, matchCase: Boolean, wholeWord: Boolean): Int =
-    matchOffsets(text, needle, useRegex, matchCase, wholeWord).size
-
-/** 命中的长度（正则按实际匹配长度） */
-internal fun hitLength(text: String, needle: String, at: Int, useRegex: Boolean, matchCase: Boolean, wholeWord: Boolean): Int {
-    if (!useRegex) return needle.length
-    return runCatching {
-        val opts = if (matchCase) emptySet() else setOf(RegexOption.IGNORE_CASE)
-        val m = Regex(needle, opts).find(text, at)
-        if (m != null && m.range.first == at) m.value.length else needle.length
-    }.getOrDefault(needle.length)
-}
-
-internal fun matchesPattern(text: String, needle: String, useRegex: Boolean, matchCase: Boolean, wholeWord: Boolean): Boolean =
-    runCatching {
-        val pattern = when {
-            useRegex -> needle
-            wholeWord -> "\\b" + Regex.escape(needle) + "\\b"
-            else -> Regex.escape(needle)
-        }
-        val opts = if (matchCase) emptySet() else setOf(RegexOption.IGNORE_CASE)
-        Regex(pattern, opts).matches(text)
-    }.getOrDefault(false)
 
 // ------------------------------------------------------------------ 分段浏览
 
