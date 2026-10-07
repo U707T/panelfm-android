@@ -22,18 +22,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import org.apache.commons.compress.PasswordRequiredException
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.zip.ZipFile
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
 import java.io.BufferedInputStream
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 
 /**
  * 压缩包只读挂载：`archive://zip/<encoded host uri>!/inner/path`
  *
- *  - 支持 zip / jar / 7z / tar / tar.gz / tgz（顺序格式在读取时按需重扫）
+ *  - 支持 zip / jar / 7z / tar / tar.gz / tgz / tar.bz2（顺序格式在读取时按需重扫）
  *  - 挂载后就是普通 VFS：可以直接「复制到对面窗格」= 解压；可以进压缩包内的目录层层浏览
  *  - 只读（不提供写入/删除/重命名），不含任何 APK / DEX 逆向能力
  */
@@ -62,6 +65,7 @@ class ArchiveVfs(
         SEVEN_Z("7z", "7z"),
         TAR("tar", "TAR"),
         TAR_GZ("targz", "tar.gz"),
+        TAR_BZ2("tarbz2", "tar.bz2"),
         ;
 
         companion object {
@@ -71,6 +75,7 @@ class ArchiveVfs(
                     n.endsWith(".zip") || n.endsWith(".jar") || n.endsWith(".apk") || n.endsWith(".xpi") -> ZIP
                     n.endsWith(".7z") -> SEVEN_Z
                     n.endsWith(".tar.gz") || n.endsWith(".tgz") -> TAR_GZ
+                    n.endsWith(".tar.bz2") || n.endsWith(".tbz2") -> TAR_BZ2
                     n.endsWith(".tar") -> TAR
                     else -> null
                 }
@@ -103,6 +108,12 @@ class ArchiveVfs(
     private val mutex = Mutex()
     private var zipFile: ZipFile? = null
     private var sevenZ: SevenZFile? = null
+
+    /** 索引已就绪（与「索引为空」区分：0 条目的压缩包也只应构建一次，第 5 批审计 🔵7） */
+    private var indexed = false
+
+    /** ZIP：是否存在加密条目（决定是否需要口令、探测能否走中央目录，第 5 批 🔴1） */
+    private var zipHasEncryptedEntries = false
 
     /** 条目索引：`/dir/file` → 元数据 */
     private val index = LinkedHashMap<String, Entry>()
@@ -139,11 +150,19 @@ class ArchiveVfs(
     )
 
     override suspend fun connect() {
-        if (index.isNotEmpty()) return
+        if (indexed) return
         _state.value = VfsState.Connecting
         try {
             withContext(env.dispatchers.io) { buildIndex() }
+            indexed = true
             _state.value = VfsState.Ready
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            _state.value = VfsState.Idle
+            throw e
+        } catch (e: VfsException) {
+            // 口令类错误原样上抛：应用侧据此弹「输入压缩包口令」（第 5 批 🔴1）
+            _state.value = VfsState.Error(e.message ?: "无法打开压缩包")
+            throw e
         } catch (e: Exception) {
             _state.value = VfsState.Error(e.message ?: "无法打开压缩包")
             throw VfsException.ProtocolError("无法打开压缩包：${e.message}", e)
@@ -151,6 +170,13 @@ class ArchiveVfs(
     }
 
     private fun buildIndex() {
+        // 重开前先放掉旧句柄（空包重建 / close 后重连场景，第 5 批审计 🔵7）：
+        // 旧实现直接覆盖 zipFile/sevenZ 字段，旧句柄只能等 finalizer 兜底。
+        runCatching { zipFile?.close() }
+        runCatching { sevenZ?.close() }
+        zipFile = null
+        sevenZ = null
+        zipHasEncryptedEntries = false
         index.clear()
         when (kind) {
             ArchiveKind.ZIP -> {
@@ -158,6 +184,7 @@ class ArchiveVfs(
                 val zf = ZipFile.builder().setFile(localFile).get()
                 zipFile = zf
                 zf.entries.asSequence().forEach { e ->
+                    if (e.generalPurposeBit.usesEncryption()) zipHasEncryptedEntries = true
                     val path = normalize(e.name, e.isDirectory)
                     if (path != null) {
                         index[path] = Entry(
@@ -192,7 +219,7 @@ class ArchiveVfs(
                     e = sz.nextEntry
                 }
             }
-            ArchiveKind.TAR, ArchiveKind.TAR_GZ -> {
+            ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2 -> {
                 openTar().use { tar ->
                     var e = tar.nextEntry
                     while (e != null) {
@@ -235,13 +262,74 @@ class ArchiveVfs(
     private fun sevenZFile(): SevenZFile {
         val builder = SevenZFile.builder().setFile(localFile)
         if (!password.isNullOrEmpty()) builder.setPassword(password)
-        return builder.get()
+        return try {
+            builder.get()
+        } catch (e: PasswordRequiredException) {
+            // 头加密的 7z（少见）：没口令连条目名都读不出来 → 走「需要口令」路径（第 5 批 🔴1）
+            throw VfsException.Auth("该压缩包已加密，请输入口令")
+        } catch (e: java.io.FileNotFoundException) {
+            throw e
+        } catch (e: IOException) {
+            // 已给口令仍打不开（头解密失败）→ 口令错误或文件损坏：也走口令重试流程
+            if (!password.isNullOrEmpty()) throw VfsException.Auth("压缩包口令不正确或文件已损坏")
+            throw e
+        }
     }
 
     private fun openTar(): TarArchiveInputStream {
         val raw = BufferedInputStream(localFile.inputStream(), 64 * 1024)
-        return if (kind == ArchiveKind.TAR_GZ) TarArchiveInputStream(GzipCompressorInputStream(raw))
-        else TarArchiveInputStream(raw)
+        return when (kind) {
+            ArchiveKind.TAR_GZ -> TarArchiveInputStream(GzipCompressorInputStream(raw))
+            ArchiveKind.TAR_BZ2 -> TarArchiveInputStream(BZip2CompressorInputStream(raw))
+            else -> TarArchiveInputStream(raw)
+        }
+    }
+
+    // ------------------------------------------------------------------ 口令探测（第 5 批 🔴1）
+
+    /** 口令探测结果：应用侧据此决定弹不弹「输入压缩包口令」。 */
+    enum class PasswordCheck { OK, NEEDED, WRONG }
+
+    /**
+     * 探测当前口令状态（挂载后由应用侧调用）：
+     *  - ZIP：加密标志来自中央目录；口令已给出时试读一个加密条目 —— ZipCrypto 的校验字节
+     *    在流打开时即验证，所以这一步就能判出口令对错；
+     *  - 7z：试读第一个文件条目。未给口令 = [PasswordRequiredException]（内容加密，
+     *    commons-compress 不加密文件头，条目名可见）；已给口令仍失败 = 口令错误或数据损坏；
+     *  - 其它格式：永远 OK（没有口令概念）。
+     */
+    suspend fun checkPassword(): PasswordCheck = withContext(env.dispatchers.io) {
+        when (kind) {
+            ArchiveKind.ZIP -> when {
+                !zipHasEncryptedEntries -> PasswordCheck.OK
+                password.isNullOrEmpty() -> PasswordCheck.NEEDED
+                runCatching { readFirstEncryptedZipEntry() }.isSuccess -> PasswordCheck.OK
+                else -> PasswordCheck.WRONG
+            }
+            ArchiveKind.SEVEN_Z -> {
+                val first = index.values.firstOrNull {
+                    !it.isDirectory && it.size > 0 &&
+                        it.source is org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
+                } ?: return@withContext PasswordCheck.OK
+                val err = runCatching { openEntryStream(first.path).use { it.read() } }.exceptionOrNull()
+                when {
+                    err == null -> PasswordCheck.OK
+                    err is VfsException.Auth -> PasswordCheck.NEEDED
+                    password.isNullOrEmpty() -> PasswordCheck.NEEDED
+                    else -> PasswordCheck.WRONG
+                }
+            }
+            else -> PasswordCheck.OK
+        }
+    }
+
+    /** 试读第一个加密 ZIP 条目（读 1 字节即触发流打开时的校验字节比对）。 */
+    private suspend fun readFirstEncryptedZipEntry() {
+        val entry = index.values.firstOrNull {
+            !it.isDirectory && (it.source as? org.apache.commons.compress.archivers.zip.ZipArchiveEntry)
+                ?.generalPurposeBit?.usesEncryption() == true
+        } ?: return
+        openEntryStream(entry.path).use { it.read() }
     }
 
     // ------------------------------------------------------------------ 列表
@@ -256,6 +344,12 @@ class ArchiveVfs(
         mutex.withLock {
             // 当前层的合成目录集合（用 dirPaths 一次性判定，避免逐条线性查重 = O(n²)）
             val childDirs = LinkedHashSet<String>()
+            val filter = options.filter
+            // 目录同样要过「隐藏 / 过滤」两道语义（与 LocalVfs 对齐，第 5 批审计 🟡3）：
+            // 旧实现只过滤「叶子是文件」的条目，隐藏目录与搜索不匹配的目录会被合成出来。
+            fun visibleDir(name: String): Boolean =
+                (options.showHidden || !name.startsWith(".")) &&
+                    (filter.isNullOrBlank() || name.contains(filter, ignoreCase = true))
             index.values.forEach { entry ->
                 if (!entry.path.startsWith(prefix) || entry.path == base) return@forEach
                 val rest = entry.path.removePrefix(prefix).trimEnd('/')
@@ -263,12 +357,12 @@ class ArchiveVfs(
                 val slash = rest.indexOf('/')
                 if (slash >= 0) {
                     // 深层条目：只贡献一个合成目录名
-                    childDirs.add(rest.substring(0, slash))
+                    val dirName = rest.substring(0, slash)
+                    if (visibleDir(dirName)) childDirs.add(dirName)
                     return@forEach
                 }
-                if (entry.isDirectory) childDirs.add(entry.name)
+                if (entry.isDirectory && visibleDir(entry.name)) childDirs.add(entry.name)
                 if (!options.showHidden && entry.name.startsWith(".")) return@forEach
-                val filter = options.filter
                 if (!filter.isNullOrBlank() && !entry.name.contains(filter, ignoreCase = true)) return@forEach
                 items.add(
                     FileMetadata(
@@ -455,9 +549,9 @@ class ArchiveVfs(
                 while (e != null && e.name != (entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry).name) {
                     e = sz.nextEntry
                 }
-                SevenZInputStream(sz)
+                SevenZInputStream(sz, password)
             }
-            ArchiveKind.TAR, ArchiveKind.TAR_GZ -> {
+            ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2 -> {
                 val tar = openTar()
                 var e = tar.nextEntry
                 while (e != null && e.name != (entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry).name) {
@@ -482,18 +576,30 @@ class ArchiveVfs(
         runCatching { sevenZ?.close() }
         zipFile = null
         sevenZ = null
+        indexed = false // 句柄已关：下次 connect 必须重建索引（第 5 批审计 🔵7）
         _state.value = VfsState.Idle
     }
 
     /** 把 SevenZFile 适配成 InputStream（commons-compress 的 SevenZFile 不是 InputStream） */
-    private class SevenZInputStream(private val zf: SevenZFile) : InputStream() {
+    private class SevenZInputStream(private val zf: SevenZFile, private val password: String?) : InputStream() {
         override fun read(): Int {
             val b = ByteArray(1)
             val n = zf.read(b, 0, 1)
             return if (n <= 0) -1 else b[0].toInt() and 0xFF
         }
 
-        override fun read(b: ByteArray, off: Int, len: Int): Int = zf.read(b, off, len)
+        override fun read(b: ByteArray, off: Int, len: Int): Int = try {
+            zf.read(b, off, len)
+        } catch (e: PasswordRequiredException) {
+            // 内容加密且未给口令：给出可执行文案（第 5 批 🔴1）
+            throw VfsException.Auth("该压缩包已加密，请输入口令")
+        } catch (e: org.tukaani.xz.CorruptedInputException) {
+            // 错误口令会用错误密钥解出乱码 → LZMA 层报 corrupt；与真实损坏同型，文案覆盖两种可能
+            if (password.isNullOrEmpty()) {
+                throw VfsException.ProtocolError("压缩包数据已损坏（${e.message}）")
+            }
+            throw VfsException.ProtocolError("压缩包口令不正确或数据已损坏（${e.message}）")
+        }
 
         override fun close() {
             runCatching { zf.close() }

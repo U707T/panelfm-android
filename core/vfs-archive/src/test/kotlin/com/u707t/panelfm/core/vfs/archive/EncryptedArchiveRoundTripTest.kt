@@ -260,6 +260,103 @@ class EncryptedArchiveRoundTripTest {
     }
 
     @Test
+    fun `加密 STORED 条目 seek 与 readFullyAt 都经过解密（skip 回归）`() = runBlocking {
+        val f = fixture()
+        val dest = VfsUri.of("mem", "one", "/store-seek.zip")
+        ArchiveCompressor(f.locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")), dest,
+            ArchiveCompressor.Format.ZIP,
+            level = ArchiveCompressor.Level.STORE,
+            password = "pw",
+        )
+        val vfs = mount(f, dest, ArchiveVfs.ArchiveKind.ZIP, "pw")
+        vfs.connect()
+        val source = f.mem.content("/src/sub/nested.bin")
+        val reader = vfs.openRead(VfsUri.of("archive", "zip", basePath(dest) + "src/sub/nested.bin"))
+        try {
+            val got = reader.readFullyAt(100, 64)
+            assertTrue("STORED 随机读必须与源一致", source.copyOfRange(100, 164).contentEquals(got))
+            reader.seek(50)
+            val buf = ByteArray(64)
+            val n = reader.read(buf, 0, buf.size)
+            assertEquals(64, n)
+            assertTrue("STORED seek 后续读必须与源一致", source.copyOfRange(50, 114).contentEquals(buf))
+        } finally {
+            runCatching { reader.close() }
+        }
+    }
+
+    @Test
+    fun `加密 ZIP 未给口令：报告需要口令、读取给出可执行文案`() = runBlocking {
+        val f = fixture()
+        val dest = VfsUri.of("mem", "one", "/need-pw.zip")
+        ArchiveCompressor(f.locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")), dest,
+            ArchiveCompressor.Format.ZIP, password = "pw",
+        )
+        val vfs = mount(f, dest, ArchiveVfs.ArchiveKind.ZIP, null)
+        vfs.connect()
+        assertEquals(ArchiveVfs.PasswordCheck.NEEDED, vfs.checkPassword())
+        val err = runCatching {
+            readAll(vfs, VfsUri.of("archive", "zip", basePath(dest) + "src/hello.txt"))
+        }.exceptionOrNull()
+        assertTrue("必须是 VfsException，实际 ${err?.javaClass?.name}", err is VfsException)
+        assertTrue(
+            "文案应说明口令，实际：${(err as VfsException).userMessage}",
+            err.userMessage.contains("口令"),
+        )
+    }
+
+    @Test
+    fun `加密 ZIP 口令错误：检查给出 WRONG`() = runBlocking {
+        val f = fixture()
+        val dest = VfsUri.of("mem", "one", "/wrong-check.zip")
+        ArchiveCompressor(f.locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")), dest,
+            ArchiveCompressor.Format.ZIP, password = "pw",
+        )
+        val vfs = mount(f, dest, ArchiveVfs.ArchiveKind.ZIP, "bad")
+        vfs.connect()
+        assertEquals(ArchiveVfs.PasswordCheck.WRONG, vfs.checkPassword())
+    }
+
+    @Test
+    fun `加密 7z 未给口令：条目名可见、报告需要口令、读取文案可执行`() = runBlocking {
+        val f = fixture()
+        val dest = VfsUri.of("mem", "one", "/need-pw.7z")
+        ArchiveCompressor(f.locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")), dest,
+            ArchiveCompressor.Format.SEVEN_Z, password = "pw",
+        )
+        val vfs = mount(f, dest, ArchiveVfs.ArchiveKind.SEVEN_Z, null)
+        vfs.connect()
+        // 实测：commons-compress 的 7z 写侧不加密文件头，条目名可无口令列出
+        val names = vfs.list(VfsUri.of("archive", "7z", basePath(dest) + "src")).map { it.name }
+        assertTrue("条目名应可见：$names", names.contains("hello.txt"))
+        assertEquals(ArchiveVfs.PasswordCheck.NEEDED, vfs.checkPassword())
+        val err = runCatching {
+            readAll(vfs, VfsUri.of("archive", "7z", basePath(dest) + "src/hello.txt"))
+        }.exceptionOrNull()
+        assertTrue(
+            "必须是 VfsException 且文案含「口令」，实际：${(err as? VfsException)?.userMessage}",
+            err is VfsException && err.userMessage.contains("口令"),
+        )
+    }
+
+    @Test
+    fun `加密 7z 口令错误：检查给出 WRONG`() = runBlocking {
+        val f = fixture()
+        val dest = VfsUri.of("mem", "one", "/wrong.7z")
+        ArchiveCompressor(f.locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")), dest,
+            ArchiveCompressor.Format.SEVEN_Z, password = "pw",
+        )
+        val vfs = mount(f, dest, ArchiveVfs.ArchiveKind.SEVEN_Z, "bad")
+        vfs.connect()
+        assertEquals(ArchiveVfs.PasswordCheck.WRONG, vfs.checkPassword())
+    }
+
+    @Test
     fun `加密 ZIP 不允许内部增删改名（避免整包重写破坏加密）`() = runBlocking {
         val f = fixture()
         val dest = VfsUri.of("mem", "one", "/edit.zip")

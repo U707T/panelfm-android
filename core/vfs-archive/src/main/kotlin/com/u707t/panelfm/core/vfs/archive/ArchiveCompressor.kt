@@ -1,7 +1,6 @@
 package com.u707t.panelfm.core.vfs.archive
 
 import com.u707t.panelfm.core.common.Logx
-import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.vfs.ProgressCallback
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsLocator
@@ -40,10 +39,6 @@ class ArchiveCompressor(private val locator: VfsLocator) {
 
         /** 是否支持加密（zip 传统加密 / 7z AES-256） */
         val supportsPassword: Boolean get() = this == ZIP || this == SEVEN_Z
-
-        companion object {
-            fun ofExt(name: String): Format? = entries.firstOrNull { name.lowercase().endsWith(".${it.ext}") }
-        }
     }
 
     /**
@@ -58,19 +53,15 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         MAXIMUM("最大压缩", 9),
         ULTRA("极限压缩", 9),
         ;
-
-        companion object {
-            fun ofLabel(label: String): Level = entries.firstOrNull { it.label == label } ?: NORMAL
-        }
     }
 
     /**
      * 压缩。
      *
      * @param level    压缩级别（仅存储 / 极速…极限）；tar 系忽略
-     * @param password 口令；空 = 不加密。zip 走传统加密（[ZipCrypto]），7z 走 AES-256
-     * @param encryptNames 「同时加密文件名」（MT 勾选项）。ZIP 传统加密**无法**加密文件名，
-     *        这里只在 7z 下生效（7z 的头加密会一并隐藏文件名）；zip 请求该选项时忽略并保持数据加密。
+     * @param password 口令；空 = 不加密。zip 走传统加密（[ZipCrypto]），7z 走 AES-256。
+     *        注意（第 5 批实测修正）：commons-compress 1.27.1 的 7z 写侧**不加密文件头**，
+     *        条目名始终可见 —— 本实现无法提供 MT 的「同时加密文件名」。
      */
     suspend fun compress(
         sources: List<VfsUri>,
@@ -79,7 +70,6 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         onProgress: ProgressCallback? = null,
         level: Level = Level.NORMAL,
         password: String? = null,
-        encryptNames: Boolean = false,
     ) {
         val pwd = password?.takeIf { it.isNotEmpty() }
         if (pwd != null && !format.supportsPassword) {
@@ -87,7 +77,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         }
         if (format == Format.SEVEN_Z) {
             // 7z 需要随机访问（先写本地临时文件，再整包回传到目标）
-            compressSevenZ(sources, destFile, onProgress, level, pwd, encryptNames)
+            compressSevenZ(sources, destFile, onProgress, level, pwd)
             return
         }
         if (format == Format.ZIP && pwd != null) {
@@ -118,7 +108,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                 }
                 archive.use { out ->
                     sources.forEach { source ->
-                        val vfs = locator.find(source) ?: return@forEach
+                        val vfs = locator.find(source)
+                            ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${source.name}")
                         val meta = vfs.stat(source)
                         if (meta.isDirectory) {
                             entries += addDirectory(out, format, vfs, source, meta.name) { bytes ->
@@ -159,7 +150,6 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         onProgress: ProgressCallback?,
         level: Level,
         password: String?,
-        encryptNames: Boolean,
     ) {
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
         val tmp = File.createTempFile("panelfm-7z-", ".7z")
@@ -173,10 +163,12 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                 out.use { sevenZ ->
                     // 级别：仅存储 → COPY；其余用 7z 默认（LZMA2）
                     if (level.store) sevenZ.setContentCompression(SevenZMethod.COPY)
-                    // 口令已在构造器给出：commons-compress 会用 AES-256 加密内容，
-                    // 并默认加密文件头（等价于 MT 的「同时加密文件名」）。
+                    // 口令已在构造器给出：commons-compress 用 AES-256 加密**内容**。
+                    // （第 5 批实测修正：1.27.1 的 SevenZOutputFile 不加密文件头 —— 无口令也能
+                    //   列出条目名；「同时加密文件名」在本库无法实现，旧注释「默认加密文件头」不成立。）
                     sources.forEach { source ->
-                        val vfs = locator.find(source) ?: return@forEach
+                        val vfs = locator.find(source)
+                            ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${source.name}")
                         val meta = vfs.stat(source)
                         if (meta.isDirectory) addSevenZDirectory(sevenZ, vfs, source, meta.name, onProgress)
                         else addSevenZFile(sevenZ, vfs, source, meta.name)
@@ -373,7 +365,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                     }
                 }
                 sources.forEach { source ->
-                    val vfs = locator.find(source) ?: return@forEach
+                    val vfs = locator.find(source)
+                        ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${source.name}")
                     addOne(vfs, source, vfs.stat(source).name)
                 }
                 zip.finish()
@@ -415,7 +408,5 @@ class ArchiveCompressor(private val locator: VfsLocator) {
             }
             return "$base.zip"
         }
-
-        fun contentTypeOf(name: String): String = MimeTypes.of(name.substringAfterLast('.', "")) ?: "application/zip"
     }
 }

@@ -93,5 +93,23 @@ internal object ZipCryptoReader {
             if (n > 0) keys.decrypt(b, off, n)
             return n
         }
+
+        /**
+         * 位置前进必须**经过解密**：`FilterInputStream` 的默认 `skip` 直接跳原始密文流、
+         * 密钥状态不推进 —— 之后所有字节都会解错（加密 STORED 条目的 seek / readFullyAt
+         * 曾静默读出乱码，第 5 批审计 🟡2）。这里读进临时缓冲丢弃，顺带推进密钥。
+         */
+        override fun skip(n: Long): Long {
+            if (n <= 0) return 0
+            val buf = ByteArray(8 * 1024)
+            var skipped = 0L
+            while (skipped < n) {
+                val want = minOf(buf.size.toLong(), n - skipped).toInt()
+                val r = read(buf, 0, want)
+                if (r < 0) break
+                skipped += r
+            }
+            return skipped
+        }
     }
 }

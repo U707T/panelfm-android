@@ -43,11 +43,52 @@ import java.util.concurrent.atomic.AtomicLong
 /** 把压缩包挂载成只读 VFS 并在当前窗格进入（MT 的「进入压缩包」体验）。远程包先下载：可见进度、可取消（审计 U4）。 */
 fun BrowserController.openArchiveInPane(side: PaneSide, item: FileMetadata) {
     launchBusy("打开压缩包 ${item.name}") { report ->
-        val archive = container.openArchive(item.uri) { done, total ->
+        val archive = mountArchiveInteractive(item.uri, item.name) { done, total ->
             report.report(done, total, "下载中 " + Fmt.transferred(done, total))
-        }
+        } ?: return@launchBusy
         val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, archive.kind)
         open(side, inner, connectionId = null, label = "${item.name} · ${archive.kind.label}")
+    }
+}
+
+/**
+ * 挂载压缩包并处理口令（第 5 批 🔴1 的应用侧接线）：
+ *  - 需要口令（ZIP 加密条目 / 7z 内容加密）→ 弹「输入压缩包口令」，重挂载后复检；
+ *  - 口令错误 → 带提示重试；
+ *  - 用户取消：文件名可见（ZIP / 7z 明文头）就照常返回（可浏览，读取时给可执行文案）；
+ *    头加密的 7z 连挂载都不行，取消 = 放弃本次操作。
+ * 返回 null = 用户取消了「必须口令才能继续」的路径。
+ */
+private suspend fun BrowserController.mountArchiveInteractive(
+    host: VfsUri,
+    displayName: String,
+    onProgress: com.u707t.panelfm.core.vfs.ProgressCallback? = null,
+): com.u707t.panelfm.core.vfs.archive.ArchiveVfs? {
+    var password: String? = null
+    var wrongOnce = false
+    while (true) {
+        val archive = try {
+            container.openArchive(host, onProgress, password)
+        } catch (e: VfsException.Auth) {
+            // 头加密的 7z（少见）：没口令连挂载都不行，必须输入或放弃
+            val entered = promptArchivePassword(displayName, wrongOnce) ?: return null
+            password = entered
+            wrongOnce = true
+            continue
+        }
+        val check = archive.checkPassword()
+        if (check == com.u707t.panelfm.core.vfs.archive.ArchiveVfs.PasswordCheck.OK) return archive
+        val entered = promptArchivePassword(
+            displayName,
+            wrong = wrongOnce || check == com.u707t.panelfm.core.vfs.archive.ArchiveVfs.PasswordCheck.WRONG,
+        )
+        if (entered == null) {
+            // 取消：文件名可见时仍允许进入（读取会再提示口令）
+            return archive
+        }
+        container.forgetArchive(host.toString())
+        password = entered
+        wrongOnce = true
     }
 }
 
@@ -60,7 +101,6 @@ fun BrowserController.compressToOther(
     level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level =
         com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
     password: String? = null,
-    encryptNames: Boolean = false,
     /** 显式目标（长按菜单按「这一项」压缩时传入）；null = 当前选择集 / 当前目录 */
     overrideSources: List<VfsUri>? = null,
 ) {
@@ -82,7 +122,7 @@ fun BrowserController.compressToOther(
         update { it.copy(highlight = false) }
     }
     launchBusy("压缩 ${sources.size} 项 → $name") { report ->
-        compressInto(report, sources, dest, name, format, level, password, encryptNames)
+        compressInto(report, sources, dest, name, format, level, password)
         load(side.other)
     }
 }
@@ -96,7 +136,6 @@ private suspend fun BrowserController.compressInto(
     format: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format,
     level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level,
     password: String?,
-    encryptNames: Boolean,
 ) {
     // 目标是否是「本次新建」：取消时据此决定是否清理半成品
     val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
@@ -109,7 +148,6 @@ private suspend fun BrowserController.compressInto(
                 },
                 level = level,
                 password = password,
-                encryptNames = encryptNames,
             )
     } catch (e: CancellationException) {
         // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理
@@ -188,8 +226,8 @@ fun BrowserController.extractArchiveTo(item: FileMetadata, destDir: VfsUri, ownF
             // ⚠️ 必须先**挂载**压缩包：引擎按 URI 找会话（SessionLocator 对 archive:// 只查已挂载的
             // `archiveOf`），旧实现直接构造 archive:// 根 URI 就入队 → 计划阶段报
             // 「源位置不可用」/在某些路径上直接抛异常（用户报的「解压闪退/报错」）。
-            val vfs = try {
-                container.openArchive(item.uri) { done, total ->
+            val mounted = try {
+                mountArchiveInteractive(item.uri, item.name) { done, total ->
                     report.report(done, total, "下载中 " + Fmt.transferred(done, total))
                 }
             } catch (e: CancellationException) {
@@ -198,6 +236,8 @@ fun BrowserController.extractArchiveTo(item: FileMetadata, destDir: VfsUri, ownF
                 showStatus("打开压缩包失败：${e.message ?: "未知错误"}")
                 return@launchBusy
             }
+            if (mounted == null) return@launchBusy
+            val vfs = mounted
             if (vfs.kind != kind) {
                 // 挂载出来的类型与后缀推断不一致（少见：改名 / 伪装），以实际挂载结果为准继续
                 Logx.w("Browser", "extract: kind mismatch ${item.name} ${vfs.kind} != $kind")
@@ -244,7 +284,7 @@ fun BrowserController.testArchive(side: PaneSide) {
             return@launchBusy
         }
         report.note("正在列出压缩包内容…")
-        val vfs = container.openArchive(host)
+        val vfs = mountArchiveInteractive(host, host.name) ?: return@launchBusy
         val all = withContext(container.dispatchers.vfs) {
             listRecursive(vfs, com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, vfs.kind))
         }
@@ -253,6 +293,7 @@ fun BrowserController.testArchive(side: PaneSide) {
         var doneBytes = 0L
         var ok = 0
         var bad = 0
+        var needPassword = 0
         files.forEachIndexed { index, item ->
             val label = "第 ${index + 1}/${files.size} 项 · " + Fmt.transferred(doneBytes, totalBytes)
             report.report(doneBytes, totalBytes, label)
@@ -273,11 +314,20 @@ fun BrowserController.testArchive(side: PaneSide) {
                 ok++
             } catch (e: CancellationException) {
                 throw e
+            } catch (e: VfsException.Auth) {
+                // 需要口令 / 口令不正确：不是「损坏」（第 5 批 🔴1 ③）
+                needPassword++
             } catch (e: Exception) {
                 bad++
             }
         }
-        showStatus(if (bad == 0) "压缩包完整性检查通过（$ok 个文件）" else "压缩包有 $bad 个文件损坏（共 $ok 正常）")
+        showStatus(
+            when {
+                needPassword > 0 -> "压缩包部分内容需要口令（未提供或口令不正确），未能完成检查"
+                bad == 0 -> "压缩包完整性检查通过（$ok 个文件）"
+                else -> "压缩包有 $bad 个文件损坏（共 $ok 正常）"
+            }
+        )
     }
 }
 
@@ -318,44 +368,42 @@ private suspend fun BrowserController.refreshArchive(side: PaneSide) {
         if (host != null) {
             // 先丢弃旧挂载（旧索引），再**重新挂载**——否则 load() 里 locator.find(archive://…)
             // 找不到会话，面板会变成「未连接」（旧实现漏了重挂载这一步）。
+            // 已输入过的口令要保留（第 5 批 🔴1）：不然重写后刷新会把加密包退回「未输入口令」。
+            val password = container.archiveOf(host.toString())?.password
             container.forgetArchive(host.toString())
-            runCatching { container.openArchive(host) }
+            runCatching { container.openArchive(host, password = password) }
                 .onFailure { showStatus("重新打开压缩包失败：${it.message}") }
         }
     }
     load(side)
 }
 
-/** 删除压缩包内条目（整包重写） */
+/** 删除压缩包内条目（整包重写）。第 5 批 🟡5：U4 接法 —— 进度 + 取消（取消不 commit 半成品）。 */
 fun BrowserController.deleteInsideArchive(side: PaneSide, items: List<FileMetadata>) {
-    container.scope.launch {
-        try {
-            val editor = archiveEditor(side) ?: return@launch
-            showStatus("正在重写压缩包（删除 ${items.size} 项）…")
-            val remove = items.map { entryPathOf(side, it) }.toSet()
-            editor.rewrite(remove = remove)
-            showStatus("已从压缩包删除 ${items.size} 项")
-            clearSelection(side)
-            refreshArchive(side)
-        } catch (e: Exception) {
-            showStatus((e as? VfsException)?.userMessage ?: "修改压缩包失败：${e.message}")
+    launchBusy("修改压缩包（删除 ${items.size} 项）") { report ->
+        val editor = archiveEditor(side) ?: return@launchBusy
+        val remove = items.map { entryPathOf(side, it) }.toSet()
+        report.note("正在重写压缩包（删除 ${items.size} 项）…")
+        editor.rewrite(remove = remove) { done, total ->
+            report.report(done, total, "重写中 " + Fmt.transferred(done, total))
         }
+        showStatus("已从压缩包删除 ${items.size} 项")
+        clearSelection(side)
+        refreshArchive(side)
     }
 }
 
-/** 重命名压缩包内条目（完整路径，可改父目录 = 移动） */
+/** 重命名压缩包内条目（完整路径，可改父目录 = 移动）。第 5 批 🟡5：U4 接法 —— 进度 + 取消。 */
 fun BrowserController.renameInsideArchive(side: PaneSide, item: FileMetadata, newFullPath: String) {
-    container.scope.launch {
-        try {
-            val editor = archiveEditor(side) ?: return@launch
-            val from = entryPathOf(side, item)
-            showStatus("正在重写压缩包…")
-            editor.rewrite(rename = mapOf(from to newFullPath.trimStart('/')))
-            showStatus("已更新压缩包")
-            refreshArchive(side)
-        } catch (e: Exception) {
-            showStatus((e as? VfsException)?.userMessage ?: "重命名失败：${e.message}")
+    launchBusy("修改压缩包（重命名）") { report ->
+        val editor = archiveEditor(side) ?: return@launchBusy
+        val from = entryPathOf(side, item)
+        report.note("正在重写压缩包…")
+        editor.rewrite(rename = mapOf(from to newFullPath.trimStart('/'))) { done, total ->
+            report.report(done, total, "重写中 " + Fmt.transferred(done, total))
         }
+        showStatus("已更新压缩包")
+        refreshArchive(side)
     }
 }
 
@@ -373,21 +421,19 @@ fun BrowserController.addToArchive(side: PaneSide) {
         )
         return
     }
-    container.scope.launch {
-        try {
-            val editor = archiveEditor(side) ?: return@launch
-            val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(pane(side).uri.path)
-            showStatus("正在添加 ${sources.size} 项到压缩包…")
-            val additions = sources.map { uri ->
-                val name = (if (inner.isEmpty()) "" else "$inner/") + uri.name
-                name to uri
-            }
-            editor.rewrite(additions = additions)
-            showStatus("已添加 ${sources.size} 项到压缩包")
-            refreshArchive(side)
-        } catch (e: Exception) {
-            showStatus((e as? VfsException)?.userMessage ?: "添加失败：${e.message}")
+    launchBusy("修改压缩包（添加 ${sources.size} 项）") { report ->
+        val editor = archiveEditor(side) ?: return@launchBusy
+        val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(pane(side).uri.path)
+        report.note("正在添加 ${sources.size} 项到压缩包…")
+        val additions = sources.map { uri ->
+            val name = (if (inner.isEmpty()) "" else "$inner/") + uri.name
+            name to uri
         }
+        editor.rewrite(additions = additions) { done, total ->
+            report.report(done, total, "重写中 " + Fmt.transferred(done, total))
+        }
+        showStatus("已添加 ${sources.size} 项到压缩包")
+        refreshArchive(side)
     }
 }
 
@@ -406,7 +452,6 @@ fun BrowserController.compressHere(
     level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level =
         com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
     password: String? = null,
-    encryptNames: Boolean = false,
     /** 显式目标（长按菜单按「这一项」压缩时传入）；null = 当前选择集 / 当前目录 */
     overrideSources: List<VfsUri>? = null,
 ) {
@@ -422,7 +467,7 @@ fun BrowserController.compressHere(
     val name = plan.name
     val dest = pane.uri.child(name)
     launchBusy("压缩 ${sources.size} 项 → $name") { report ->
-        compressInto(report, sources, dest, name, format, level, password, encryptNames)
+        compressInto(report, sources, dest, name, format, level, password)
         clearSelection(side)
         load(side)
     }

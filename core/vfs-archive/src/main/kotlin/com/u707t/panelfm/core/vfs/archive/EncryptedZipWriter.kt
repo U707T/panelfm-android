@@ -186,6 +186,10 @@ class EncryptedZipWriter(
 
     /** 收尾：中央目录 + EOCD */
     fun finish() {
+        // 条目数超过 u16 上限会在 EOCD 里静默截断（与 4GB 检查同类，第 5 批审计 🔵11）
+        if (central.size > 0xFFFF) {
+            throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("条目数超过 65535，加密 ZIP 请改用 7z 格式")
+        }
         val cdStart = offset
         check4GB("中央目录", cdStart)
         central.forEach { r ->

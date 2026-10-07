@@ -397,6 +397,32 @@ class BrowserController(internal val container: AppContainer) {
     var pendingArchiveExtract: FileMetadata? = null
         internal set
 
+    // ------------------------------------------------------------------ 压缩包口令（第 5 批 🔴1）
+
+    /** 正在等待「输入压缩包口令」的协程（null = 没有在等） */
+    private var archivePasswordWaiter: kotlinx.coroutines.CompletableDeferred<String?>? = null
+
+    /**
+     * 弹出「输入压缩包口令」对话框并**挂起**等待结果（与冲突对话框同一模式：
+     * UI 的选择回传给正在等待的挂载协程）；返回 null = 用户取消。
+     */
+    internal suspend fun promptArchivePassword(name: String, wrong: Boolean = false): String? {
+        val waiter = kotlinx.coroutines.CompletableDeferred<String?>()
+        archivePasswordWaiter = waiter
+        update { it.copy(archivePassword = ArchivePasswordAsk(name, wrong)) }
+        return try {
+            waiter.await()
+        } finally {
+            if (archivePasswordWaiter === waiter) archivePasswordWaiter = null
+            update { it.copy(archivePassword = null) }
+        }
+    }
+
+    /** 提交口令（UI 调用）；取消 = 传 null。 */
+    fun submitArchivePassword(password: String?) {
+        archivePasswordWaiter?.complete(password)
+    }
+
     // ------------------------------------------------------------------ 列表滚动位置记忆
     //  复刻 MT：进入子文件夹再返回上一级时，列表停在刚才的位置（原地不动），
     //  而不是跳回顶部重新加载。实现 = 每个窗格一张「目录 → (首个可见项, 像素偏移)」表。

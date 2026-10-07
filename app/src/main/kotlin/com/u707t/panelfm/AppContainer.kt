@@ -341,14 +341,21 @@ class AppContainer(val app: Application) {
     suspend fun openArchive(
         host: com.u707t.panelfm.core.vfs.VfsUri,
         onProgress: com.u707t.panelfm.core.vfs.ProgressCallback? = null,
+        password: String? = null,
     ): ArchiveVfs {
-        archives[host.toString()]?.let { return it }
+        archives[host.toString()]?.let { cached ->
+            // 口令匹配（或调用方不关心口令）直接复用；否则换新实例重挂（第 5 批 🔴1）
+            if (password == null || cached.password == password) return cached
+        }
         val key = host.toString()
         val mine = kotlinx.coroutines.CompletableDeferred<ArchiveVfs>()
         val inflight = openingArchives.putIfAbsent(key, mine)
         if (inflight != null) return inflight.await()
         try {
-            val vfs = openArchiveInner(host, onProgress)
+            // 先丢弃口令不符的旧挂载，再重建 —— 否则 openArchiveInner 的复用检查会把
+            // 旧实例原样返回，口令永远换不上去。
+            forgetArchive(key)
+            val vfs = openArchiveInner(host, onProgress, password)
             mine.complete(vfs)
             return vfs
         } catch (t: Throwable) {
@@ -362,8 +369,11 @@ class AppContainer(val app: Application) {
     private suspend fun openArchiveInner(
         host: com.u707t.panelfm.core.vfs.VfsUri,
         onProgress: com.u707t.panelfm.core.vfs.ProgressCallback?,
+        password: String?,
     ): ArchiveVfs {
-        archives[host.toString()]?.let { return it }
+        archives[host.toString()]?.let { cached ->
+            if (password == null || cached.password == password) return cached
+        }
         val kind = ArchiveVfs.ArchiveKind.ofFileName(host.name)
             ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("不支持的压缩格式：${host.name}")
         val local = withContext(Dispatchers.IO) {
@@ -406,7 +416,7 @@ class AppContainer(val app: Application) {
                 tmp
             }
         }
-        val vfs = ArchiveVfs(host, kind, local, env)
+        val vfs = ArchiveVfs(host, kind, local, env, password)
         vfs.connect()
         archives[host.toString()] = vfs
         return vfs

@@ -145,6 +145,9 @@ data class BusyOp(
     val cancellable: Boolean = true,
 )
 
+/** 「输入压缩包口令」对话框状态（第 5 批 🔴1：加密包读侧接线）。 */
+data class ArchivePasswordAsk(val name: String, val wrong: Boolean)
+
 data class BrowserUiState(
     val left: PaneState = PaneState(),
     val right: PaneState = PaneState(),
@@ -175,6 +178,8 @@ data class BrowserUiState(
      * （解压到文件夹… / 单窗格复制到…）。
      */
     val pickDirFor: PickDirPurpose? = null,
+    /** 「输入压缩包口令」对话框（加密包读侧接线，第 5 批 🔴1）；null = 未在等待输入 */
+    val archivePassword: ArchivePasswordAsk? = null,
 ) {
     fun pane(side: PaneSide): PaneState = if (side == PaneSide.LEFT) left else right
     val focusedPane: PaneState get() = pane(focused)

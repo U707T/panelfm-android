@@ -573,11 +573,84 @@ fun InfoRow(label: String, value: String) {
 }
 
 // ---------------------------------------------------------------------------
+// 压缩包口令输入（第 5 批 🔴1：加密包读侧接线 —— 打开 / 解压 / 完整性测试前的输入框）
+// ---------------------------------------------------------------------------
+
+@Composable
+fun ArchivePasswordDialog(
+    archiveName: String,
+    wrong: Boolean,
+    onConfirm: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var field by remember { mutableStateOf("") }
+    var show by remember { mutableStateOf(false) }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val submit = { if (field.isNotEmpty()) onConfirm(field) }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(60)
+        runCatching { focusRequester.requestFocus() }
+        keyboard?.show()
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("输入压缩包口令") },
+        text = {
+            Column {
+                Text(
+                    "「$archiveName」已加密，请输入口令。",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                if (wrong) {
+                    Text(
+                        "口令不正确或数据已损坏，请重试。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
+                }
+                OutlinedTextField(
+                    value = field,
+                    onValueChange = { field = it },
+                    label = { Text("口令") },
+                    singleLine = true,
+                    visualTransformation = if (show) VisualTransformation.None else PasswordVisualTransformation(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onDone = { submit() },
+                    ),
+                    trailingIcon = {
+                        Box(Modifier.clickable { show = !show }.padding(horizontal = 10.dp)) {
+                            MtVectorIcon(
+                                icon = if (show) MtIcon.EYE_OFF else MtIcon.EYE,
+                                size = 20.dp,
+                                tint = if (show) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp)
+                        .focusRequester(focusRequester),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = submit, enabled = field.isNotEmpty()) { Text("确定") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+// ---------------------------------------------------------------------------
 // 压缩对话框（复刻 MT 0x7f0c0080「创建压缩文件」）
 //
 // MT 布局：文件名 / 格式（Spinner）/ 压缩级别（Spinner，取自 0x7f030020 数组
 // 「仅存储·极速压缩·快速压缩·标准压缩·最大压缩·极限压缩·APK模式」）/ 密码（不加密请留空，👁）
-// / ☐ 同时加密文件名。
+// （MT 的「同时加密文件名」未复刻：commons-compress 1.27.1 无法加密 7z 文件名，见第 5 批 🟡4）
 // ---------------------------------------------------------------------------
 
 @Composable
@@ -590,7 +663,6 @@ fun MtCompressDialog(
         fileName: String?,
         level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level,
         password: String?,
-        encryptNames: Boolean,
     ) -> Unit,
 ) {
     var format by remember { mutableStateOf(com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP) }
@@ -598,7 +670,6 @@ fun MtCompressDialog(
     var fileName by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
-    var encryptNames by remember { mutableStateOf(false) }
     var toOther by remember { mutableStateOf(false) }
     var formatMenu by remember { mutableStateOf(false) }
     var levelMenu by remember { mutableStateOf(false) }
@@ -657,7 +728,6 @@ fun MtCompressDialog(
                                     formatMenu = false
                                     // 切到不支持加密的格式时，连密码一起清掉（否则确定后必报「不支持加密」，且用户看不到密码字段）
                                     if (!f.supportsPassword) {
-                                        encryptNames = false
                                         password = ""
                                     }
                                 },
@@ -707,13 +777,16 @@ fun MtCompressDialog(
                         modifier = Modifier.padding(top = 2.dp),
                     )
                 }
-                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 4.dp)) {
-                    Checkbox(checked = encryptNames, enabled = supportsPassword, onCheckedChange = { encryptNames = it })
-                    Text("同时加密文件名", style = MaterialTheme.typography.bodyMedium)
-                }
+                // 说明行（第 5 批 🟡4：旧的「同时加密文件名」开关从未生效 —— commons-compress
+                // 1.27.1 既不写 7z 头加密、ZIP 也无法隐藏文件名；删除开关，改为如实说明。）
                 Text(
-                    if (encryptNames) "7z：文件名一并加密；ZIP 传统加密无法隐藏文件名，将仅加密内容。"
-                    else "共 $itemCount 项",
+                    when {
+                        password.isNotEmpty() && format == com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.SEVEN_Z ->
+                            "7z 带口令：内容加密；文件名不加密（当前实现限制，无法关闭）。"
+                        password.isNotEmpty() && format == com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.ZIP ->
+                            "ZIP 传统加密无法隐藏文件名，将仅加密内容。"
+                        else -> "共 $itemCount 项"
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -727,7 +800,6 @@ fun MtCompressDialog(
                     fileName.trim().takeIf { it.isNotEmpty() },
                     if (levelApplies) level else com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.NORMAL,
                     password.takeIf { it.isNotEmpty() },
-                    encryptNames && supportsPassword,
                 )
             }) { Text("确定") }
         },

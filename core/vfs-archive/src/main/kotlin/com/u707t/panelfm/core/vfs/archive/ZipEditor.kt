@@ -6,10 +6,13 @@ import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.apache.commons.compress.archivers.zip.ZipFile
+import org.apache.commons.compress.archivers.zip.ZipMethod
 import java.io.File
 
 /**
@@ -18,8 +21,10 @@ import java.io.File
  *  - 删除 ZIP 内文件
  *  - 重命名（完整路径，可改父目录 = 移动）
  *
- * 实现方式：整包重写到临时文件 → 回传到压缩包本体（本地直接改名，网络走流式写 + commit）。
- * 大 ZIP 会 O(size) 重写，UI 上会显示进度提示。
+ * 实现方式：整包重写到临时文件 → 回传到压缩包本体（本地走 commit 原子替换，网络走流式写 + commit）。
+ * 大 ZIP 会 O(size) 重写；[rewrite] 的 `onProgress` 供 UI 接入「修改压缩包」长操作（进度 + 取消；
+ * 取消只回滚临时区，原包不动 —— 第 5 批 🟡5）。重写保留条目的压缩方法（STORED 原样搬运）、
+ * 外部属性（权限位）与注释（第 5 批 🔵6）。
  */
 class ZipEditor(
     private val archive: ArchiveVfs,
@@ -30,6 +35,7 @@ class ZipEditor(
         remove: Set<String> = emptySet(),
         additions: List<Pair<String, VfsUri>> = emptyList(),
         rename: Map<String, String> = emptyMap(),
+        onProgress: com.u707t.panelfm.core.vfs.ProgressCallback? = null,
     ) {
         val host = archive.host
         val hostVfs = locator.find(host) ?: throw VfsException.Unsupported("压缩包所在位置不可写")
@@ -49,35 +55,61 @@ class ZipEditor(
         val tmp = File.createTempFile("panelfm-zip-", ".zip")
         try {
             withContext(Dispatchers.IO) {
+                var done = 0L
                 ZipArchiveOutputStream(tmp).use { out ->
                     out.setEncoding("UTF-8")
                     val src = ZipFile.builder().setFile(archive.localFile).get()
                     src.use { zf ->
                         zf.entries.asSequence().forEach { entry ->
+                            currentCoroutineContext().ensureActive()
                             val name = entry.name
                             if (matchesPrefix(name, remove)) return@forEach
                             val target = safeEntryName(applyRename(name, rename))
                             if (entry.isDirectory) {
-                                out.putArchiveEntry(ZipArchiveEntry("${target.trimEnd('/')}/").apply { time = entry.time })
+                                out.putArchiveEntry(
+                                    ZipArchiveEntry("${target.trimEnd('/')}/").apply {
+                                        time = entry.time
+                                        externalAttributes = entry.externalAttributes // 权限位等（🔵6）
+                                        comment = entry.comment
+                                    }
+                                )
                                 out.closeArchiveEntry()
                             } else {
-                                val newEntry = ZipArchiveEntry(target).apply { time = entry.time }
-                                out.putArchiveEntry(newEntry)
-                                zf.getInputStream(entry).use { input ->
-                                    val buf = ByteArray(128 * 1024)
-                                    while (true) {
-                                        val n = input.read(buf)
-                                        if (n < 0) break
-                                        out.write(buf, 0, n)
+                                val newEntry = ZipArchiveEntry(target).apply {
+                                    time = entry.time
+                                    externalAttributes = entry.externalAttributes
+                                    comment = entry.comment
+                                }
+                                if (entry.method == ZipMethod.STORED.code) {
+                                    // 「仅存储」条目原样搬运（不重压缩）：必须带 size / crc 才能写入
+                                    newEntry.method = ZipMethod.STORED.code
+                                    newEntry.size = entry.size
+                                    newEntry.compressedSize = entry.compressedSize
+                                    newEntry.crc = entry.crc
+                                    out.putArchiveEntry(newEntry)
+                                    zf.getRawInputStream(entry).use { input ->
+                                        copyStream(input, out) { n ->
+                                            done += n
+                                            onProgress?.onProgress(done, -1)
+                                        }
+                                    }
+                                } else {
+                                    out.putArchiveEntry(newEntry)
+                                    zf.getInputStream(entry).use { input ->
+                                        copyStream(input, out) { n ->
+                                            done += n
+                                            onProgress?.onProgress(done, -1)
+                                        }
                                     }
                                 }
                                 out.closeArchiveEntry()
                             }
                         }
                     }
-                    // 追加新文件
+                    // 追加新文件（源会话缺失不再静默跳过——与压缩器同口径，第 5 批 🔵9 同类）
                     additions.forEach { (entryName, sourceUri) ->
-                        val vfs = locator.find(sourceUri) ?: return@forEach
+                        val vfs = locator.find(sourceUri)
+                            ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${sourceUri.name}")
                         addEntry(out, vfs, sourceUri, safeEntryName(entryName))
                     }
                     out.finish()
@@ -87,12 +119,16 @@ class ZipEditor(
             withContext(Dispatchers.IO) {
                 val writer = hostVfs.openWrite(host, size = tmp.length(), offset = 0L)
                 try {
+                    var uploaded = 0L
                     tmp.inputStream().use { input ->
                         val buf = ByteArray(256 * 1024)
                         while (true) {
+                            currentCoroutineContext().ensureActive()
                             val n = input.read(buf)
                             if (n < 0) break
                             writer.write(buf, 0, n)
+                            uploaded += n
+                            onProgress?.onProgress(uploaded, tmp.length())
                         }
                     }
                     writer.commit()
@@ -104,6 +140,22 @@ class ZipEditor(
             Logx.i("ZipEditor", "rewrote ${archive.host.name}: -${remove.size} +${additions.size} ~${rename.size}")
         } finally {
             runCatching { tmp.delete() }
+        }
+    }
+
+    /** 复制流并逐块回调（进度上报与协作式取消都经 [onChunk] 检查）。 */
+    private suspend fun copyStream(
+        input: java.io.InputStream,
+        out: ZipArchiveOutputStream,
+        onChunk: (Long) -> Unit,
+    ) {
+        val buf = ByteArray(128 * 1024)
+        while (true) {
+            currentCoroutineContext().ensureActive()
+            val n = input.read(buf)
+            if (n < 0) break
+            out.write(buf, 0, n)
+            onChunk(n.toLong())
         }
     }
 

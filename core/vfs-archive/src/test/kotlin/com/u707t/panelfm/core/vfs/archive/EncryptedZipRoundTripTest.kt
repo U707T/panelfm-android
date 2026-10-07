@@ -77,7 +77,7 @@ class EncryptedZipRoundTripTest {
                 try:
                     for i in zf.infolist():
                         if i.is_dir(): continue
-                        data = zf.read(i.filename, pwd=b'$password')
+                        data = zf.read(i.filename, pwd=bytes('$password', 'utf-8'))
                         out[i.filename] = base64.b64encode(data).decode()
                 except Exception as ex:
                     out['__error__'] = str(ex)
@@ -170,6 +170,14 @@ class EncryptedZipRoundTripTest {
         w.finish()
         val read = readAll(bos.toByteArray(), "pw")
         assertEquals("inside", String(read["folder/a.txt"]!!))
+    }
+
+    @Test
+    fun `非 ASCII 口令按 UTF-8 字节编码（zipfile 交叉验证）`() {
+        val files = linkedMapOf("uni.txt" to "unicode pw payload".toByteArray())
+        val zipBytes = writeEncrypted(files, "密语123")
+        val read = readAll(zipBytes, "密语123")
+        assertEquals("unicode pw payload", String(read["uni.txt"]!!))
     }
 
     @Test

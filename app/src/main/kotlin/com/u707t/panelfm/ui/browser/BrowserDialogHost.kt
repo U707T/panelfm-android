@@ -464,15 +464,24 @@ internal fun BrowserDialogHost(
             MtCompressDialog(
                 itemCount = targets.size,
                 onDismiss = { compressFormatPicker = false; compressTargets = null },
-                onConfirm = { toOther, fmt, fileName, level, pwd, encNames ->
+                onConfirm = { toOther, fmt, fileName, level, pwd ->
                     compressFormatPicker = false
                     if (toOther) {
-                        controller.compressToOther(focusSide, fmt, fileName, level, pwd, encNames, overrideSources = targetUris)
+                        controller.compressToOther(focusSide, fmt, fileName, level, pwd, overrideSources = targetUris)
                     } else {
-                        controller.compressHere(focusSide, fmt, fileName, level, pwd, encNames, overrideSources = targetUris)
+                        controller.compressHere(focusSide, fmt, fileName, level, pwd, overrideSources = targetUris)
                     }
                     compressTargets = null
                 },
+            )
+        }
+        // 压缩包口令（第 5 批 🔴1：加密包读侧接线 —— 进入 / 解压 / 完整性测试前的输入框）
+        ui.archivePassword?.let { ask ->
+            ArchivePasswordDialog(
+                archiveName = ask.name,
+                wrong = ask.wrong,
+                onConfirm = { controller.submitArchivePassword(it) },
+                onDismiss = { controller.submitArchivePassword(null) },
             )
         }
         // 压缩包内重命名（完整路径，可改父目录 = 移动）

@@ -32,8 +32,11 @@ object ZipCrypto {
         private var k2 = 0x34567890
 
         init {
-            // ZIP 口令按字节处理（MT 同款：非 ASCII 口令按平台默认编码取字节）
-            password.forEach { ch -> updateKeys(ch.code.toByte()) }
+            // 口令按 **UTF-8 字节**参与密钥流（第 5 批审计 🔵10）。
+            // 旧实现 `ch.code.toByte()` 是 UTF-16 码元截断：与注释声称的「平台默认编码」不符，
+            // 且非 ASCII 口令与外部工具（Python zipfile / 7-Zip 等按 UTF-8 取字节）互不兼容 ——
+            // 对方打的加密包即便口令正确也会被判「口令不正确」。
+            password.toByteArray(Charsets.UTF_8).forEach { updateKeys(it) }
         }
 
         private fun crc32Update(crc: Int, b: Byte): Int =

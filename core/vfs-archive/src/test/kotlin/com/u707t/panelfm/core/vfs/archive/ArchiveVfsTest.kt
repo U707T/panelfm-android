@@ -6,6 +6,7 @@ import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.ProgressCallback
 import com.u707t.panelfm.core.vfs.VfsEnv
+import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsReader
 import com.u707t.panelfm.core.vfs.VfsUri
@@ -258,6 +259,84 @@ class ArchiveVfsTest {
 
         assertTrue("危险条目不能直接出现在根列表", root.none { it.name == ".." || it.name == "escape.txt" || it.name == "absolute.txt" })
         assertTrue("正常条目仍可浏览", root.any { it.name == "safe" && it.isDirectory })
+    }
+
+    @Test
+    fun `隐藏与搜索过滤对目录生效（与 LocalVfs 同语义）`() = runTest {
+        val dir = Files.createTempDirectory("arc-filter").toFile()
+        val zip = File(dir, "filter.zip")
+        ZipOutputStream(zip.outputStream()).use { zos ->
+            listOf("alpha/x.txt", "beta/y.txt", ".hidden/z.txt", "note.txt").forEach { name ->
+                zos.putNextEntry(ZipEntry(name))
+                zos.write("x".toByteArray())
+                zos.closeEntry()
+            }
+        }
+        val host = VfsUri.of("local", "emulated", "/${zip.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, zip, env())
+        vfs.connect()
+        val root = VfsUri.of("archive", "zip", "/" + VfsUri.encodeHost(host.toString()) + "!/")
+
+        val hiddenOff = vfs.list(root, ListOptions(showHidden = false)).map { it.name }
+        assertTrue("隐藏目录不应出现：$hiddenOff", hiddenOff.none { it == ".hidden" })
+        assertTrue("正常目录应保留：$hiddenOff", hiddenOff.containsAll(listOf("alpha", "beta", "note.txt")))
+
+        val filtered = vfs.list(root, ListOptions(filter = "alph")).map { it.name }
+        assertTrue("过滤后只应剩 alpha：$filtered", filtered == listOf("alpha"))
+
+        assertTrue("默认（showHidden=true）应显示隐藏目录", vfs.list(root).any { it.name == ".hidden" })
+    }
+
+    @Test
+    fun `空压缩包列目录稳定（0 条目不会触发重复重建）`() = runTest {
+        val dir = Files.createTempDirectory("arc-empty").toFile()
+        val zip = File(dir, "empty.zip")
+        ZipOutputStream(zip.outputStream()).use { /* EOCD-only */ }
+        val host = VfsUri.of("local", "emulated", "/${zip.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, zip, env())
+        vfs.connect()
+        val root = VfsUri.of("archive", "zip", "/" + VfsUri.encodeHost(host.toString()) + "!/")
+        repeat(3) {
+            assertTrue("空包列表应为空", vfs.list(root).isEmpty())
+        }
+        assertTrue(vfs.stat(root).isDirectory)
+    }
+
+    @Test
+    fun `创建 tar bz2 压缩包并回读`() = runTest {
+        val mem = MemoryVfs()
+        mem.put("/src/a.txt", "hello bz2".toByteArray())
+        val locator = object : VfsLocator {
+            override fun find(uri: VfsUri): VirtualFileSystem? = if (uri.authority == "one") mem else null
+        }
+        val dest = VfsUri.of("mem", "one", "/out.tar.bz2")
+        ArchiveCompressor(locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")),
+            dest,
+            ArchiveCompressor.Format.TAR_BZ2,
+        )
+        assertEquals(ArchiveVfs.ArchiveKind.TAR_BZ2, ArchiveVfs.ArchiveKind.ofFileName("out.tar.bz2"))
+        val file = File.createTempFile("out", ".tar.bz2").apply { writeBytes(mem.content("/out.tar.bz2")) }
+        val vfs = ArchiveVfs(dest, ArchiveVfs.ArchiveKind.TAR_BZ2, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(dest.toString()) + "!/"
+        assertTrue(vfs.list(VfsUri.of("archive", "tarbz2", base)).any { it.name == "src" })
+        val inner = vfs.list(VfsUri.of("archive", "tarbz2", base + "src"))
+        assertTrue(inner.any { it.name == "a.txt" && it.size == 9L })
+    }
+
+    @Test
+    fun `压缩源会话缺失时明确失败而不是静默跳过`() = runTest {
+        val mem = MemoryVfs()
+        val locator = object : VfsLocator {
+            override fun find(uri: VfsUri): VirtualFileSystem? = if (uri.authority == "one") mem else null
+        }
+        val dest = VfsUri.of("mem", "one", "/out.zip")
+        val err = runCatching {
+            ArchiveCompressor(locator).compress(listOf(VfsUri.of("mem", "ghost", "/x.txt")), dest)
+        }.exceptionOrNull()
+        assertTrue("应抛 VfsException，实际 ${err?.javaClass?.name}", err is VfsException)
+        assertTrue("不应写入目标", mem.content("/out.zip").isEmpty())
     }
 
     /** 极简内存 VFS：只实现压缩测试所需的能力 */
