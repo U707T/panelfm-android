@@ -7,6 +7,58 @@
 > 不再作为任何结论的依据（其中大量资源 ID 推断无法从本仓库复核）。这些段落保留为历史记录，
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`。
 
+## v1.8.0 — Office 文档只读预览（docx / xlsx / pptx，WebView + 前端渲染库）
+
+> 一句话：新增「文档预览」——`.docx` / `.xls/.xlsx` / `.pptx` 直接在应用内只读浏览
+> （`.doc` / `.ppt` 旧二进制格式给说明页并引导「打开方式…」）。引擎是三个宽松许可的前端库，
+> 跑在**全拦截、不联网**的 WebView 里：`.docx` → docx-preview、表格 → SheetJS CE、
+> 幻灯片 → @aiden0z/pptx-renderer（版本与许可证写进 `third_party/`）。
+
+### 新增能力
+
+| 后缀 | 预览 | 说明 |
+|---|---|---|
+| `.docx` | ✅ docx-preview | 分页、表格、图片、基础版式 |
+| `.xls` / `.xlsx` | ✅ SheetJS CE | 多工作表用顶部标签切换；含旧 BIFF `.xls` |
+| `.pptx` | ✅ @aiden0z/pptx-renderer | 文字 / 形状 / 图片 / 表格 / 图表 / SmartArt |
+| `.doc` / `.ppt` | ⚠️ 说明页 | 旧二进制格式无可用渲染器 → 引导「打开方式…」 |
+
+### 为什么是 WebView（而不是原生库）
+
+- 原生侧没有轻量方案：Apache POI 只能解析不能渲染（依赖 Java2D，且 10 MB+）；
+  LibreOffice 没有可用的 Android 移植；「Android Office viewer」类项目全是停更多年的玩具；
+- 因此走 **WebView + 前端库**（只读），并做成**完全离线**：页面用 `loadDataWithBaseURL`
+  注入（origin 固定 `office.panelfm`），文件字节由 `shouldInterceptRequest` 从内存提供，
+  其它 host 一律 404；不开 DOM storage、不注册 JS 桥、拦截一切跳转；
+- 体积：资产 2.8 MB（APK 增量约 +1 MB）；单文件 > 16 MB 不进预览（给提示，不做半截渲染）。
+
+### 一处如实说明：pptx 渲染库的替换
+
+选型先看的是 `pptx-preview`（体积接近），但其 README 明确「**源码不开放**、不得改源码转自有项目」
+—— 不符合依赖「开源」的要求；**改用 Apache-2.0 的 @aiden0z/pptx-renderer**
+（浏览器 ESM 1.8 MB，自带 JSZip + ECharts，保真度更高）。三件套里另两件不变。
+
+### 入口与菜单
+
+- 打开方式网格新增「文档预览」；长按二级菜单对 Office 文档给「文档预览 + 打开方式…」；
+- 预览页 ⋮ 菜单按类型给项（文档类型 → 「文档预览」）；
+- 自动分派：`MimeTypes.Kind.DOCUMENT`（doc/docx/xls/xlsx/ppt/pptx）→ 文档预览页。
+
+### 验证
+
+- 全量单测 **312 例全绿**（新增 `OfficeFormatsTest` 4 例 + 二级菜单文档用例）；
+- 三个 JS 库都做了 Node 模拟浏览器环境的加载冒烟（核对 UMD/ESM 全局名与导出函数，
+  避免「装进 APK 才发现名字不对」）；
+- `:app:compileDebugKotlin` / `assembleDebug` / `lintDebug` 通过；
+- **未跑真机**：WebView 里的排版观感、缩放手势要实机确认
+  （检查清单见 `docs/OFFICE-PREVIEW.md` 第 4 节）。
+
+### 未做 / 取舍
+
+- 不做编辑、不做格式转换（导出 PDF 等）；不做 `odt / ods / odp`；
+- 带密码的文档不支持；`.doc` / `.ppt` 不支持（说明页兜底）；
+- 保真度上限由上游库决定：复杂域代码、精确分栏、3D 效果会走样。
+
 ## v1.7.0 — Hex 预览下线；菜单/选项按文件类型给（未识别走通用，编辑器可手动选语法）
 
 > 一句话：三件事 —— ① **Hex 预览整个去掉**（含数值解释面板与 core 的 `HexInterpreter`）；
