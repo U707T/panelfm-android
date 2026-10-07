@@ -191,23 +191,30 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         dst.parentFile?.mkdirs()
         // 同卷直接改名（秒级）
         if (src.renameTo(dst)) return@withContext true
-        // 跨卷：Files.move 也会抛（EXDEV）→ 复制 + 删除源（此前注释说「退化」但实际不可用，重命名直接失败）
-        runCatching {
-            if (src.isDirectory) {
-                java.nio.file.Files.walk(src.toPath()).use { stream ->
-                    stream.forEach { p ->
-                        val target = dst.toPath().resolve(src.toPath().relativize(p))
-                        if (java.nio.file.Files.isDirectory(p)) java.nio.file.Files.createDirectories(target)
-                        else java.nio.file.Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING)
-                    }
-                }
-            } else {
-                java.nio.file.Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
-            }
-            deleteRecursively(src)
-            true
-        }.getOrDefault(false)
+        // 跨卷：Files.move 也会抛（EXDEV）→ 复制 + 删除源（此前注释说「退化」但实际不可用，
+        // 重命名直接失败）。退化逻辑抽成独立函数，JVM 单测可直接命中这条事故路径。
+        copyAndDelete(src, dst)
     }
+
+    /**
+     * 跨卷 rename 的退化实现：复制（目录递归）→ 删除源。
+     * 提升为 internal：跨卷环境在 CI 里难以稳定构造，单测直接调它覆盖这条路径。
+     */
+    internal fun copyAndDelete(src: File, dst: File): Boolean = runCatching {
+        if (src.isDirectory) {
+            java.nio.file.Files.walk(src.toPath()).use { stream ->
+                stream.forEach { p ->
+                    val target = dst.toPath().resolve(src.toPath().relativize(p))
+                    if (java.nio.file.Files.isDirectory(p)) java.nio.file.Files.createDirectories(target)
+                    else java.nio.file.Files.copy(p, target, StandardCopyOption.REPLACE_EXISTING)
+                }
+            }
+        } else {
+            java.nio.file.Files.copy(src.toPath(), dst.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }
+        deleteRecursively(src)
+        true
+    }.getOrDefault(false)
 
     override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean = withContext(env.dispatchers.io) {
         val src = toFile(from)
@@ -313,14 +320,22 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         }
 
         override suspend fun readFullyAt(position: Long, length: Int): ByteArray = withContext(env.dispatchers.io) {
+            // 位置读走 FileChannel.read(buffer, position)：**不改共享文件指针**。
+            // 旧实现 raf.seek(position) 后不回原位 —— 与顺序 read() 混用会把后续读取位置带偏
+            //（契约见 VfsStreams.readFullyAt）。
             val data = ByteArray(length)
-            raf.seek(position)
-            var read = 0
-            while (read < length) {
-                val n = raf.read(data, read, length - read)
+            val buffer = java.nio.ByteBuffer.wrap(data)
+            var emptyReads = 0
+            while (buffer.hasRemaining()) {
+                val n = raf.channel.read(buffer, position + buffer.position())
                 if (n < 0) break
-                read += n
+                if (n == 0) {
+                    if (++emptyReads >= 3) break
+                    continue
+                }
+                emptyReads = 0
             }
+            val read = buffer.position()
             if (read == length) data else data.copyOf(read)
         }
 

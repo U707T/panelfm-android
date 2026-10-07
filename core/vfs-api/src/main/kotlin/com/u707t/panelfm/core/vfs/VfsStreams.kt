@@ -42,6 +42,11 @@ interface VfsReader : AutoCloseable {
 
     suspend fun seek(position: Long)
     suspend fun read(buffer: ByteArray, offset: Int = 0, length: Int = buffer.size): Int
+
+    /**
+     * 从 [position] 起读取最多 [length] 字节（不足 = 读到文件尾）。
+     * **不得移动共享读指针** —— 实现必须走位置读，避免与顺序 [read] 混用时把后续位置带偏。
+     */
     suspend fun readFullyAt(position: Long, length: Int): ByteArray
     override fun close()
 }

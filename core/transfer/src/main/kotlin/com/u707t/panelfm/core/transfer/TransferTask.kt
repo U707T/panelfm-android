@@ -50,6 +50,11 @@ class TransferTask internal constructor(
 
     fun pause() {
         // 已取消 / 正在取消的任务不再接受暂停（否则会把 paused 闸门又关回去）。
+        //
+        // ⚠️ 已知取舍（第 4 批审计 🟡3 · 轻量修法）：暂停中的任务**占用并发位** —— worker 会先把
+        //    任务从队列取出、占住槽位，再挂进闸门等恢复；并发=2 时暂停两个任务，后续任务会一直
+        //    「排队中」。占用语义已显式化到任务行文案（「已暂停（占用传输位）」+ 见 [toSnapshot]）。
+        //    彻底修法（暂停即退出 run() 释放槽位、resume() 重新入队走断点续传）见总文档 §4 修复记录。
         if (gate.isCancelled) return
         val s = _state.value
         if (s is TaskState.Running || s == TaskState.Queued) {
@@ -229,7 +234,7 @@ class TransferTask internal constructor(
                                 ok++
                             }
                             else -> {
-                                when (decideConflict(item.source, destination, existing, item)) {
+                                when (decideConflict(item.source, destination, existing, item, item.isDirectory)) {
                                     ConflictPolicy.SKIP -> {
                                         skippedRoots += item.source
                                         skipped++
@@ -252,7 +257,7 @@ class TransferTask internal constructor(
                     } else {
                         val vfsDst = locator.find(destination) ?: throw VfsException.Unsupported("目标会话已关闭")
                         val vfsSrc = locator.find(item.source) ?: throw VfsException.Unsupported("源会话已关闭")
-                        val target = resolveDest(item.source, destination, vfsDst)
+                        val target = resolveDest(item, destination, vfsDst)
                         if (target == null) {
                             skipped++
                         } else {
@@ -353,7 +358,7 @@ class TransferTask internal constructor(
             }
             is TaskState.Failed -> s.message
             is TaskState.Cancelled -> "已取消"
-            is TaskState.Paused -> "已暂停"
+            is TaskState.Paused -> "已暂停（占用传输位）"
             is TaskState.WaitingConflict -> "等待冲突处理"
             is TaskState.Cancelling -> "正在取消操作…"
             TaskState.Queued -> "排队中"
@@ -383,7 +388,7 @@ class TransferTask internal constructor(
         if (sameAsSource) return FastPathTarget.Skip
 
         val existing = existingOrNull(vfs, desired) ?: return FastPathTarget.Execute(desired)
-        val decision = decideConflict(source, desired, existing, null)
+        val decision = decideConflict(source, desired, existing, null, sourceIsDirectory = sourceMeta.isDirectory)
 
         // 目录覆盖目录不能走「删除目标再服务端复制」：慢路径语义是目录合并，
         // 需要逐项按冲突策略处理。保留原目标，交给慢路径。
@@ -467,7 +472,7 @@ class TransferTask internal constructor(
                     return@forEach
                 }
 
-                when (decideConflict(root.source, desired, existing, root)) {
+                when (decideConflict(root.source, desired, existing, root, root.isDirectory)) {
                     ConflictPolicy.SKIP -> skipped += root.source
                     ConflictPolicy.KEEP_BOTH -> {
                         val target = keepBoth(destVfs, desired)
@@ -523,6 +528,13 @@ class TransferTask internal constructor(
         null
     }
 
+    /**
+     * 覆盖前的整目标删除。**只应在这三条路径上使用**：
+     *  - 快路径：rename / serverSideCopy 需要一个不存在的目标名腾位；
+     *  - 源目类型冲突（文件↔文件夹）：改名语义上无法「替换」异型目标；
+     *  - 不可续传目标：没有 `.part` 可回退，替换语义由预删保证。
+     * 可续传目标的同名文件覆盖**不预删**（见 [resolveDest]）：交给 commit 原子替换。
+     */
     private suspend fun deleteForOverwrite(
         vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
         uri: VfsUri,
@@ -540,19 +552,29 @@ class TransferTask internal constructor(
 
     /** 冲突处理：返回实际写入目标（null = 跳过） */
     private suspend fun resolveDest(
-        source: VfsUri,
+        item: PlanItem,
         desired: VfsUri,
         destVfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
     ): VfsUri? {
+        val source = item.source
         val sameAsSource = source.sameMount(desired) &&
             source.path.trimEnd('/') == desired.path.trimEnd('/')
         // 先判断自身复制，避免对某些 VFS 再 stat 一次后误删源文件。
         if (sameAsSource) return null
         val existing = existingOrNull(destVfs, desired) ?: return desired
-        val decided = decideConflict(source, desired, existing, null)
+        val decided = decideConflict(source, desired, existing, item, item.isDirectory)
         return when (decided) {
             ConflictPolicy.OVERWRITE -> {
-                deleteForOverwrite(destVfs, desired)
+                // 可续传目标（本地 / SFTP / SMB）**不预删**：写入走 `.part`，commit 时由协议侧
+                // 原子替换（本地 ATOMIC_MOVE + REPLACE_EXISTING、SFTP CopyMode.Overwrite、
+                // SMB rename(replace=true)）。旧实现「先删旧文件、再传输」：中途失败 / 取消 =
+                // 旧版本永久丢失，只剩半截 `.part`。
+                // 仍需预删的两类：
+                //  - 目标类型不同（文件覆盖文件夹）：commit 的改名无法把文件替换进目录；
+                //  - 不可续传目标（FTP / WebDAV / S3 / 压缩包）：没有 .part 可回退，替换语义靠预删。
+                if (existing.isDirectory || destVfs.capabilities.resumable == Resumability.NONE) {
+                    deleteForOverwrite(destVfs, desired)
+                }
                 desired
             }
             ConflictPolicy.SKIP -> null
@@ -566,10 +588,11 @@ class TransferTask internal constructor(
         desired: VfsUri,
         existing: FileMetadata,
         sourceItem: PlanItem?,
+        sourceIsDirectory: Boolean,
     ): ConflictPolicy {
         val policy = appliedPolicy ?: request.conflict
         return when (policy) {
-            ConflictPolicy.ASK -> askConflict(source, desired, existing, sourceItem)
+            ConflictPolicy.ASK -> askConflict(source, desired, existing, sourceItem, sourceIsDirectory)
             else -> policy
         }
     }
@@ -579,6 +602,7 @@ class TransferTask internal constructor(
         desired: VfsUri,
         existing: FileMetadata,
         sourceItem: PlanItem?,
+        sourceIsDirectory: Boolean,
     ): ConflictPolicy {
         val info = ConflictInfo(
             index = 0,
@@ -591,6 +615,7 @@ class TransferTask internal constructor(
             destModified = existing.lastModified,
             isDirectory = existing.isDirectory,
             isMove = request.op == TransferOp.MOVE,
+            sourceIsDirectory = sourceIsDirectory,
         )
         val waiter = CompletableDeferred<ConflictDecision>()
         conflictWaiter = waiter

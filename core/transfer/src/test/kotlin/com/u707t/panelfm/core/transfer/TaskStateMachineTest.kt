@@ -1,10 +1,15 @@
 package com.u707t.panelfm.core.transfer
 
+import com.u707t.panelfm.core.common.PanelDispatchers
 import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -21,7 +26,8 @@ import java.util.concurrent.CopyOnWriteArrayList
  *  - 取消立即进入「正在取消…」（MT 同款文案），传输循环收尾后落到「已取消」；
  *  - 「先暂停、再取消」不再挂死 —— checkpoint 里取消优先于暂停等待（旧实现会永远
  *    停在 `while (paused)` 循环里，任务卡死、前台服务退不出去）；
- *  - 目录统计（plan）期间也响应取消（旧实现统计大目录时点取消毫无反应）。
+ *  - 目录统计（plan）期间也响应取消（旧实现统计大目录时点取消毫无反应）；
+ *  - 第 4 批审计 🟡3：钉住「暂停占用并发位」的已知语义（彻底修法落地时此用例需改断言）。
  */
 class TaskStateMachineTest {
 
@@ -112,5 +118,46 @@ class TaskStateMachineTest {
             // 预期路径
         }
         assertTrue("扫描期必须真的调用 checkpoint（实际 $calls 次）", calls >= 3)
+    }
+
+    @Test
+    fun `已知语义：暂停的任务占用并发位（后续任务等待，恢复后接上）`() = runBlocking {
+        // 第 4 批审计 🟡3 · 轻量修法：并发位占用语义显式化到任务行文案，本用例把当前行为
+        // 钉死 —— 彻底修法（暂停即退出 run() 释放槽位）落地时，此用例应改为断言
+        // 「并发位被释放，t2 能先跑起来」。
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000)
+        val dstVfs = FakeVfs().dir("/dst")
+        val gate = CompletableDeferred<Unit>()
+        srcVfs.readGate = gate
+        val locator = FakeLocator(mapOf("srcv" to srcVfs, "dstv" to dstVfs))
+        val engine = TransferEngine(
+            planner = FileOperationPlanner(locator),
+            locator = locator,
+            resumeStore = InMemoryResumeStore(),
+            dispatchers = PanelDispatchers(main = Dispatchers.Default),
+            scope = scope,
+            maxConcurrent = 1,
+        )
+
+        val t1 = engine.enqueue(
+            TransferRequest(listOf(uri("srcv", "/src/big.bin")), uri("dstv", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
+        )
+        withTimeout(15_000) { while (srcVfs.readsStarted.get() == 0) delay(5) }
+        t1.pause()
+        assertEquals(TaskState.Paused, t1.state.value)
+
+        val t2 = engine.enqueue(
+            TransferRequest(listOf(uri("srcv", "/src/big.bin")), uri("dstv", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
+        )
+        gate.complete(Unit)
+        delay(400) // 给 t2 充足的「本可开跑」窗口
+        assertTrue("并发位被暂停任务占住，后续任务必须还在排队", t2.state.value is TaskState.Queued)
+
+        t1.resume()
+        withTimeout(15_000) {
+            while (t1.state.value !is TaskState.Done || t2.state.value !is TaskState.Done) delay(10)
+        }
+        scope.cancel()
     }
 }

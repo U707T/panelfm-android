@@ -256,7 +256,6 @@ private fun BrowserController.startCrossPane(
             destDir = destDir,
             op = op,
             conflict = ConflictPolicy.ASK,
-            wholeDirectory = false,
         )
     )
     clearSelection(side)

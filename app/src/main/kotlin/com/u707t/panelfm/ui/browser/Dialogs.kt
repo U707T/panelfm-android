@@ -44,6 +44,8 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.model.ConflictInfo
 import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.model.defaultPolicy
+import com.u707t.panelfm.core.model.explanationText
 import com.u707t.panelfm.core.ui.DialogIcon
 import com.u707t.panelfm.core.ui.DialogIconMode
 import com.u707t.panelfm.core.ui.HistoryButton
@@ -96,7 +98,8 @@ fun ConflictDialog(
 ) {
     // 按「冲突对」重置：两个冲突在一帧内先后到达（对话框没来得及离开组合）时，不应沿用上一个冲突的选择。
     var applyAll by remember(info.sourceName, info.destName) { mutableStateOf(false) }
-    var policy by remember(info.sourceName, info.destName) { mutableStateOf(ConflictPolicy.OVERWRITE) }
+    // 默认预选项由模型决定：只有「文件 → 文件夹」（替换 = 递归删除整个文件夹）默认「跳过」。
+    var policy by remember(info.sourceName, info.destName) { mutableStateOf(info.defaultPolicy()) }
     val verb = if (info.isMove) "移动" else "复制"
 
     AlertDialog(
@@ -113,13 +116,16 @@ fun ConflictDialog(
                 Text("源：${info.sourceName}")
                 Text("目标：${info.destName}" + if (info.destSize >= 0) "（${Fmt.size(info.destSize)}）" else "")
                 Text(
-                    if (info.isDirectory) "目标是一个文件夹，替换将递归合并/覆盖。" else "替换会覆盖目标文件的内容。",
+                    info.explanationText(),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 6.dp, bottom = 4.dp),
                 )
+                // 「文件 → 文件夹」的替换有整目录删除后果，选项标签直接写明（与解说文案同源）。
+                val overwriteLabel =
+                    if (!info.sourceIsDirectory && info.isDirectory) "${verb}并替换（将删除文件夹）" else "${verb}并替换"
                 listOf(
-                    ConflictPolicy.OVERWRITE to "${verb}并替换",
+                    ConflictPolicy.OVERWRITE to overwriteLabel,
                     ConflictPolicy.SKIP to "跳过该文件",
                     ConflictPolicy.KEEP_BOTH to "${verb}但保留两个文件",
                 ).forEach { (p, label) ->

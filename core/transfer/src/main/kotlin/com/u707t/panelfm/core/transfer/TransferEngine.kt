@@ -91,6 +91,9 @@ class TransferEngine(
                     }
                 }
                 try {
+                    // ⚠️ 槽位在 `run()` 返回后才释放：暂停 / 等待冲突的任务会一直占着并发位
+                    //（run() 挂在闸门里不返回）。占用语义已显式化到任务行文案「已暂停（占用传输位）」；
+                    //  彻底修法见 TransferTask.pause() 注释与总文档 §4 修复记录（留档）。
                     runCatching { task.run() }
                         .onFailure { Logx.e("TransferEngine", "worker crashed: ${it.message}", it) }
                 } finally {

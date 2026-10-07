@@ -78,6 +78,10 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
             )
             """.trimIndent()
         )
+        // 断点续传按 (source, dest) 路径查找（ResumeDao.findFor）——没有索引时每次全表扫描。
+        db.execSQL(
+            "CREATE INDEX IF NOT EXISTS idx_resume_source_dest ON resume_entry(source, dest)"
+        )
         db.execSQL(
             """
             CREATE TABLE task_record(
@@ -151,9 +155,16 @@ class PanelDb(context: Context) : SQLiteOpenHelper(context, "panel.db", null, DB
                 """.trimIndent()
             )
         }
+        if (oldVersion < 4) {
+            // 断点续传查询按 (source, dest) 走索引（第 4 批审计 🔵4）：大目录批量复制的逐文件
+            // 查找不再全表扫描。IF NOT EXISTS：v3 老库升级与 v4 新装库都安全（迁移幂等）。
+            db.execSQL(
+                "CREATE INDEX IF NOT EXISTS idx_resume_source_dest ON resume_entry(source, dest)"
+            )
+        }
     }
 
     companion object {
-        const val DB_VERSION = 3
+        const val DB_VERSION = 4
     }
 }

@@ -4,7 +4,10 @@ import com.u707t.panelfm.core.common.PanelDispatchers
 import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.model.VerifyMode
+import com.u707t.panelfm.core.vfs.Resumability
+import com.u707t.panelfm.core.vfs.VfsCapabilities
 import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -21,6 +24,9 @@ import org.junit.Test
  *  1. 覆盖自身保护（把「复制」到源自身的父目录时绝不能先删目标）
  *  2. 续传记录按路径查找（旧实现按任务 id，永远命中不了）
  *  3. 并发下调后实际并发度不超过设定值
+ *  4. 覆盖语义（第 4 批审计 🟡1/🟡2）：文件覆盖文件夹 = 整目录删除；可续传目标在传输
+ *     失败 / 取消后**旧文件仍在**（不再预删）；不可续传目标保留「预删失败不写入」保险
+ *  5. FakeVfs 与真实协议对齐：写入落 `.part`、commit 才替换正式名
  */
 class TransferRegressionTest {
 
@@ -419,6 +425,124 @@ class TransferRegressionTest {
                 delay(5)
             }
         }
+        scope.cancel()
+    }
+
+    @Test
+    fun `文件覆盖文件夹时整目录删除并写入文件（对话框警示的语义回归）`() = runBlocking {
+        // 第 4 批审计 🟡1：这个组合的「替换」实质 = 递归删除整个文件夹。行为不变，
+        // 但对话框文案 / 默认项（默认「跳过」）与这条断言对齐，并钉住回归。
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").file("/src/a.txt", 4)
+        val dstVfs = FakeVfs()
+            .dir("/dst").dir("/dst/a.txt").file("/dst/a.txt/inner.txt", 2)
+        val locator = FakeLocator(mapOf("srcv" to srcVfs, "dstv" to dstVfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("srcv", "/src/a.txt")),
+                destDir = uri("dstv", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals(0, state.failed)
+        val node = dstVfs.nodes["/dst/a.txt"]
+        assertTrue("同名的文件夹必须被整体删除后写入文件", node != null && !node.isDirectory)
+        assertTrue("原文件夹内的子项不能残留", !dstVfs.nodes.containsKey("/dst/a.txt/inner.txt"))
+        assertEquals("文件内容来自源", 4L, node?.size)
+        assertTrue(
+            "内容必须与源一致",
+            srcVfs.nodes["/src/a.txt"]!!.content.toByteArray()
+                .contentEquals(node!!.content.toByteArray()),
+        )
+        assertTrue("part 不能残留", !dstVfs.nodes.containsKey("/dst/.a.txt.panelfm.part"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `覆盖中途失败时旧目标文件仍在（可续传目标不预删）`() = runBlocking {
+        // 第 4 批审计 🟡2：旧实现「先删旧文件、再传输」——中途失败 = 旧版本永久丢失。
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").file("/src/a.bin", 64)
+        srcVfs.failRead = true // 传输一开头就断流
+        val dstVfs = FakeVfs().dir("/dst").file("/dst/a.bin", 8) // 旧版本
+        val locator = FakeLocator(mapOf("srcv" to srcVfs, "dstv" to dstVfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("srcv", "/src/a.bin")),
+                destDir = uri("dstv", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals(1, state.failed)
+        assertEquals("失败后旧目标必须原样保留（不预删）", 8L, dstVfs.nodes["/dst/a.bin"]?.size)
+        scope.cancel()
+    }
+
+    @Test
+    fun `覆盖中途取消时旧目标文件仍在且保留断点`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val srcVfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000)
+        val gate = CompletableDeferred<Unit>()
+        srcVfs.readGate = gate
+        val dstVfs = FakeVfs().dir("/dst").file("/dst/big.bin", 5) // 旧版本
+        val store = InMemoryResumeStore()
+        val locator = FakeLocator(mapOf("srcv" to srcVfs, "dstv" to dstVfs))
+        val engine = engine(scope, locator, store)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("srcv", "/src/big.bin")),
+                destDir = uri("dstv", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(15_000) { while (srcVfs.readsStarted.get() == 0) delay(5) }
+        task.cancel()
+        gate.complete(Unit)
+        withTimeout(10_000) { while (task.state.value !is TaskState.Cancelled) delay(10) }
+
+        assertEquals("取消后旧目标必须原样保留（不预删）", 5L, dstVfs.nodes["/dst/big.bin"]?.size)
+        assertTrue(
+            "断点记录必须保留（下次入队从 .part 接上）",
+            store.findFor(uri("srcv", "/src/big.bin"), uri("dstv", "/dst/big.bin")) != null,
+        )
+        scope.cancel()
+    }
+
+    @Test
+    fun `不可续传目标：预删失败时不能继续写入目标`() = runBlocking {
+        // 对照「可续传目标不预删」：不可续传目标（FTP / WebDAV / S3 / 压缩包）保留预删，
+        // 预删失败必须中断写入（旧承诺，不变）。
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val vfs = FakeVfs(capabilities = VfsCapabilities(resumable = Resumability.NONE))
+            .dir("/src").file("/src/a.txt", 3)
+            .dir("/dst").file("/dst/a.txt", 2)
+        vfs.failDelete = true
+        val locator = FakeLocator(mapOf("one" to vfs))
+        val engine = engine(scope, locator)
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("one", "/src/a.txt")),
+                destDir = uri("one", "/dst"),
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
+
+        val state = task.state.value as TaskState.Done
+        assertEquals(1, state.failed)
+        assertEquals("预删失败后目标保持原样", 2L, vfs.nodes["/dst/a.txt"]?.size)
         scope.cancel()
     }
 }

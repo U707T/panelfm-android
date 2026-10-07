@@ -13,8 +13,6 @@ data class TransferRequest(
     val op: TransferOp,
     val conflict: ConflictPolicy = ConflictPolicy.ASK,
     val verify: VerifyMode = VerifyMode.NONE,
-    /** 无选中项时表示「整个目录」 */
-    val wholeDirectory: Boolean = false,
     /** MT「保留文件时间」：复制/解压/下载完成后把源 mtime 写回目标（默认开，设置可关） */
     val preserveModifiedTime: Boolean = true,
 )
@@ -151,6 +149,5 @@ data class TransferTaskSnapshot(
 
 fun TransferRequest.describe(): String {
     val opText = if (op == TransferOp.COPY) "复制" else "移动"
-    val what = if (wholeDirectory) "当前目录" else "${sources.size} 项"
-    return "$opText $what"
+    return "$opText ${sources.size} 项"
 }
