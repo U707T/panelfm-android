@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.RadioButton
@@ -620,6 +621,62 @@ fun DualPaneScreen(
                                 .fillMaxWidth()
                                 .clickableNoRipple { onOpenTasks() }
                                 .padding(vertical = 2.dp),
+                        )
+                    }
+                }
+            }
+
+            // ---------------- 长操作状态条（审计 U4：压缩 / 校验 / 对比 / 完整性测试 / 远程包下载）
+            // 不可消失（没有关闭按钮），一律带「取消」；点过取消后转为「正在取消…」直到作业收尾。
+            ui.busy?.let { op ->
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        if (op.progress == null) {
+                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                            Spacer(Modifier.width(8.dp))
+                        }
+                        Text(
+                            op.title,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium,
+                            modifier = Modifier.weight(1f),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        op.progress?.let {
+                            Text(
+                                "${(it * 100).roundToInt()}%",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                        }
+                        if (op.cancellable) {
+                            TextButton(onClick = { controller.cancelBusy() }) {
+                                Text("取消", style = MaterialTheme.typography.labelSmall)
+                            }
+                        } else {
+                            Text(
+                                "正在取消…",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 6.dp),
+                            )
+                        }
+                    }
+                    op.progress?.let { ThinProgressBar(it) }
+                    op.detail?.let {
+                        Text(
+                            it,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                 }

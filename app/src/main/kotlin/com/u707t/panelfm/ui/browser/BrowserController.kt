@@ -25,6 +25,7 @@ import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
@@ -55,6 +56,10 @@ class BrowserController(private val container: AppContainer) {
     fun dismissDiffRequest() { _diffRequest.value = null }
 
     private val loadJobs = mutableMapOf<PaneSide, Job>()
+
+    /** 长操作（审计 U4）：同一时间至多一个；进度状态条 + 取消。 */
+    private val busyIdGen = AtomicLong(0)
+    private var busyJob: Job? = null
     private val loadGeneration = mutableMapOf(
         PaneSide.LEFT to AtomicLong(0),
         PaneSide.RIGHT to AtomicLong(0),
@@ -301,6 +306,67 @@ class BrowserController(private val container: AppContainer) {
 
     /** 一条状态提示显示多久（纯函数在 [statusDurationMs]，便于单测） */
     fun statusDurationMs(message: String): Long = com.u707t.panelfm.ui.browser.statusDurationMs(message)
+
+    // ------------------------------------------------------------------ 长操作（审计 U4）
+
+    /**
+     * 统一的「长操作」执行器：同一时间只允许一个长操作在跑，期间页面底部显示
+     * 一条**不可消失**的状态条（进度 + 取消）。
+     *
+     * [block] 通过 [BusyReporter] 上报进度；每次上报都会做取消检查 —— 压缩 / 校验 /
+     * 下载等按块循环的长任务在一次循环内就能响应「取消」。
+     */
+    private fun launchBusy(title: String, block: suspend (BusyReporter) -> Unit) {
+        if (busyJob?.isActive == true) {
+            showStatus("已有操作进行中（${_state.value.busy?.title ?: "请稍候"}），完成或取消后再试")
+            return
+        }
+        val id = busyIdGen.incrementAndGet()
+        update { it.copy(busy = BusyOp(id = id, title = title)) }
+        busyJob = container.scope.launch {
+            val ctxJob = kotlin.coroutines.coroutineContext[Job]
+            val reporter = BusyReporter(
+                ensureActive = { if (ctxJob?.isActive != true) throw CancellationException("长操作已取消") },
+                sink = { progress, detail ->
+                    update { st ->
+                        if (st.busy?.id == id) st.copy(busy = st.busy.copy(progress = progress, detail = detail))
+                        else st
+                    }
+                },
+            )
+            var announced = false
+            try {
+                block(reporter)
+            } catch (e: CancellationException) {
+                // 用户取消不是失败（审计 U5 同类教训），原样上抛给协程框架
+                announced = true
+                showStatus("已取消：$title")
+                throw e
+            } catch (e: Exception) {
+                announced = true
+                Logx.w("Browser", "长操作失败：$title", e)
+                showStatus((e as? VfsException)?.userMessage ?: "$title 失败：${e.message ?: e::class.simpleName}")
+            } finally {
+                update { st -> if (st.busy?.id == id) st.copy(busy = null) else st }
+                if (ctxJob?.isActive == false && !announced) showStatus("已取消：$title")
+            }
+        }
+    }
+
+    /** 「取消」：立即反馈「正在取消…」，作业在下一个取消点收尾（见 [launchBusy]）。 */
+    fun cancelBusy() {
+        val op = _state.value.busy ?: return
+        if (!op.cancellable) return
+        val job = busyJob ?: run {
+            update { it.copy(busy = null) }
+            return
+        }
+        update { st ->
+            if (st.busy?.id == op.id) st.copy(busy = st.busy.copy(cancellable = false, detail = "正在取消…"))
+            else st
+        }
+        job.cancel()
+    }
 
     // ------------------------------------------------------------------ 列表加载
 
@@ -554,16 +620,14 @@ class BrowserController(private val container: AppContainer) {
         _diffRequest.value = candidates[0].uri to candidates[1].uri
     }
 
-    /** 把压缩包挂载成只读 VFS 并在当前窗格进入（MT 的「进入压缩包」体验） */
+    /** 把压缩包挂载成只读 VFS 并在当前窗格进入（MT 的「进入压缩包」体验）。远程包先下载：可见进度、可取消（审计 U4）。 */
     fun openArchiveInPane(side: PaneSide, item: FileMetadata) {
-        container.scope.launch {
-            try {
-                val archive = container.openArchive(item.uri)
-                val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, archive.kind)
-                open(side, inner, connectionId = null, label = "${item.name} · ${archive.kind.label}")
-            } catch (e: Exception) {
-                showStatus((e as? VfsException)?.userMessage ?: "无法打开压缩包：${e.message}")
+        launchBusy("打开压缩包 ${item.name}") { report ->
+            val archive = container.openArchive(item.uri) { done, total ->
+                report.report(done, total, "下载中 " + Fmt.transferred(done, total))
             }
+            val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, archive.kind)
+            open(side, inner, connectionId = null, label = "${item.name} · ${archive.kind.label}")
         }
     }
 
@@ -596,22 +660,28 @@ class BrowserController(private val container: AppContainer) {
         container.scope.launch {
             kotlinx.coroutines.delay(1200)
             update { it.copy(highlight = false) }
+        }
+        launchBusy("压缩 ${sources.size} 项 → $name") { report ->
+            // 目标是否是「本次新建」：取消时据此决定是否清理半成品，绝不碰用户原有文件
+            val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
             try {
                 com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
                     .compress(
                         sources, dest, format,
-                        onProgress = { _, _ ->
-                            // 进度节流由 UI 侧省略；这里只在结束时提示
+                        onProgress = { done, total ->
+                            report.report(done, total, "已处理 " + Fmt.transferred(done, total))
                         },
                         level = level,
                         password = password,
                         encryptNames = encryptNames,
                     )
-                showStatus("已压缩为 ${name}")
-                load(side.other)
-            } catch (e: Exception) {
-                showStatus((e as? VfsException)?.userMessage ?: "压缩失败：${e.message}")
+            } catch (e: CancellationException) {
+                // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理，绝不碰用户原有文件
+                if (!existedBefore) runCatching { container.locator.find(dest)?.delete(listOf(dest)) }
+                throw e
             }
+            showStatus("已压缩为 $name")
+            load(side.other)
         }
     }
 
@@ -1207,17 +1277,20 @@ class BrowserController(private val container: AppContainer) {
             showStatus("不支持的压缩格式：${item.name}")
             return
         }
-        container.scope.launch {
-            // 整段包在 try/catch 里：这条链路以前有「未挂载 + 未捕获异常 → 直接闪退」的问题，
-            // 现在任何失败都变成状态栏里一句能看懂的话。
+        // 整段包在 launchBusy 里（有兜底 catch）——这条链路以前有「未挂载 + 未捕获异常 → 直接闪退」
+        // 的问题；远程包下载期间状态条可见、可取消（审计 U4）。
+        launchBusy("打开压缩包 ${item.name}") { report ->
             try {
                 val target = if (ownFolder) {
                     val dir = container.uniqueChild(destDir, archiveName)
-                    runCatching { container.locator.find(destDir)?.mkdir(dir) }
-                        .getOrElse {
-                            showStatus("创建目录失败：${it.message}")
-                            return@launch
-                        }
+                    try {
+                        container.locator.find(destDir)?.mkdir(dir)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        showStatus("创建目录失败：${e.message}")
+                        return@launchBusy
+                    }
                     dir
                 } else {
                     destDir
@@ -1225,9 +1298,15 @@ class BrowserController(private val container: AppContainer) {
                 // ⚠️ 必须先**挂载**压缩包：引擎按 URI 找会话（SessionLocator 对 archive:// 只查已挂载的
                 // `archiveOf`），旧实现直接构造 archive:// 根 URI 就入队 → 计划阶段报
                 // 「源位置不可用」/在某些路径上直接抛异常（用户报的「解压闪退/报错」）。
-                val vfs = runCatching { container.openArchive(item.uri) }.getOrElse {
-                    showStatus("打开压缩包失败：${it.message ?: "未知错误"}")
-                    return@launch
+                val vfs = try {
+                    container.openArchive(item.uri) { done, total ->
+                        report.report(done, total, "下载中 " + Fmt.transferred(done, total))
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    showStatus("打开压缩包失败：${e.message ?: "未知错误"}")
+                    return@launchBusy
                 }
                 if (vfs.kind != kind) {
                     // 挂载出来的类型与后缀推断不一致（少见：改名 / 伪装），以实际挂载结果为准继续
@@ -1268,38 +1347,51 @@ class BrowserController(private val container: AppContainer) {
     var pendingArchiveExtract: FileMetadata? = null
         private set
 
-    /** 压缩包完整性测试（ZIP：逐条读取校验 CRC） */
+    /** 压缩包完整性测试（ZIP：逐条读取校验 CRC）—— 状态条显示进度、可取消（审计 U4） */
     fun testArchive(side: PaneSide) {
         val pane = pane(side)
-        container.scope.launch {
-            try {
-                val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(pane.uri.path)
-                val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
-                if (host == null) {
-                    showStatus("当前不在压缩包内")
-                    return@launch
-                }
-                val vfs = container.openArchive(host)
-                val all = withContext(container.dispatchers.vfs) { listRecursive(vfs, com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, vfs.kind)) }
-                var ok = 0
-                var bad = 0
-                all.forEach { item ->
-                    if (!item.isDirectory) {
-                        runCatching {
-                            val reader = vfs.openRead(item.uri)
-                            val buf = ByteArray(64 * 1024)
-                            try {
-                                while (reader.read(buf, 0, buf.size) >= 0) { /* 逐条读取校验完整性 */ }
-                            } finally {
-                                runCatching { reader.close() }
-                            }
-                        }.onSuccess { ok++ }.onFailure { bad++ }
-                    }
-                }
-                showStatus(if (bad == 0) "压缩包完整性检查通过（$ok 个文件）" else "压缩包有 $bad 个文件损坏（共 $ok 正常）")
-            } catch (e: Exception) {
-                showStatus("测试失败：${e.message}")
+        launchBusy("测试压缩包完整性") { report ->
+            val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(pane.uri.path)
+            val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
+            if (host == null) {
+                showStatus("当前不在压缩包内")
+                return@launchBusy
             }
+            report.note("正在列出压缩包内容…")
+            val vfs = container.openArchive(host)
+            val all = withContext(container.dispatchers.vfs) {
+                listRecursive(vfs, com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, vfs.kind))
+            }
+            val files = all.filter { !it.isDirectory }
+            val totalBytes = files.sumOf { it.size.coerceAtLeast(0) }
+            var doneBytes = 0L
+            var ok = 0
+            var bad = 0
+            files.forEachIndexed { index, item ->
+                val label = "第 ${index + 1}/${files.size} 项 · " + Fmt.transferred(doneBytes, totalBytes)
+                report.report(doneBytes, totalBytes, label)
+                try {
+                    val reader = vfs.openRead(item.uri)
+                    val buf = ByteArray(64 * 1024)
+                    try {
+                        while (true) {
+                            val n = reader.read(buf, 0, buf.size)
+                            if (n < 0) break
+                            doneBytes += n.coerceAtLeast(0)
+                            // 逐块上报：单条大文件中途也能取消
+                            report.report(doneBytes, totalBytes, label)
+                        }
+                    } finally {
+                        runCatching { reader.close() }
+                    }
+                    ok++
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    bad++
+                }
+            }
+            showStatus(if (bad == 0) "压缩包完整性检查通过（$ok 个文件）" else "压缩包有 $bad 个文件损坏（共 $ok 正常）")
         }
     }
 
@@ -1761,14 +1853,10 @@ class BrowserController(private val container: AppContainer) {
 
     fun compareDirectories() {
         val st = _state.value
-        container.scope.launch {
-            showStatus("正在对比两个目录…")
-            runCatching { FolderDiffEngine.compare(container, st.left.uri, st.right.uri) }
-                .onSuccess { result ->
-                    update { it.copy(diff = result) }
-                    showStatus("对比完成：相同 ${result.identical} / 不同 ${result.different}")
-                }
-                .onFailure { showStatus("对比失败：${it.message}") }
+        launchBusy("对比两个目录") { report ->
+            val result = FolderDiffEngine.compare(container, st.left.uri, st.right.uri, report)
+            update { it.copy(diff = result) }
+            showStatus("对比完成：相同 ${result.identical} / 不同 ${result.different}")
         }
     }
 
@@ -1897,17 +1985,28 @@ class BrowserController(private val container: AppContainer) {
             ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
         val name = if (base.endsWith(".${format.ext}")) base else "$base.${format.ext}"
         val dest = pane.uri.child(name)
-        container.scope.launch {
-            showStatus("正在压缩为 ${format.label} → $name")
+        launchBusy("压缩 ${sources.size} 项 → $name") { report ->
+            // 目标是否是「本次新建」：取消时据此决定是否清理半成品，绝不碰用户原有文件
+            val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
             try {
                 com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
-                    .compress(sources, dest, format, level = level, password = password, encryptNames = encryptNames)
-                showStatus("已压缩为 $name")
-                clearSelection(side)
-                load(side)
-            } catch (e: Exception) {
-                showStatus((e as? VfsException)?.userMessage ?: "压缩失败：${e.message}")
+                    .compress(
+                        sources, dest, format,
+                        onProgress = { done, total ->
+                            report.report(done, total, "已处理 " + Fmt.transferred(done, total))
+                        },
+                        level = level,
+                        password = password,
+                        encryptNames = encryptNames,
+                    )
+            } catch (e: CancellationException) {
+                // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理，绝不碰用户原有文件
+                if (!existedBefore) runCatching { container.locator.find(dest)?.delete(listOf(dest)) }
+                throw e
             }
+            showStatus("已压缩为 $name")
+            clearSelection(side)
+            load(side)
         }
     }
 
@@ -1973,15 +2072,35 @@ class BrowserController(private val container: AppContainer) {
         }
     }
 
-    /** 校验值（MD5/SHA-256）：本地与网络都能算 */
+    /** 校验值（MD5/SHA-256）：本地与网络都能算；状态条显示读取进度、可取消（审计 U4） */
     fun checksum(uri: VfsUri, algorithm: String, onResult: (String?) -> Unit) {
-        container.scope.launch {
-            onResult(runCatching { checksumNow(uri, algorithm) }.getOrNull())
+        launchBusy("计算 $algorithm") { report ->
+            val vfs = container.locator.find(uri)
+            if (vfs == null) {
+                onResult(null)
+                return@launchBusy
+            }
+            val total = runCatching { withContext(container.dispatchers.vfs) { vfs.stat(uri).size } }.getOrDefault(-1L)
+            onResult(
+                checksumNow(uri, algorithm, total) { done, effectiveTotal ->
+                    report.report(done, effectiveTotal, "已读取 " + Fmt.transferred(done, effectiveTotal))
+                }
+            )
         }
     }
 
-    /** 校验值的挂起实现（APK 信息页等复用；算法：CRC32 / MD5 / SHA-1 / SHA-256） */
-    suspend fun checksumNow(uri: VfsUri, algorithm: String): String? {
+    /**
+     * 校验值的挂起实现（APK 信息页等复用；算法：CRC32 / MD5 / SHA-1 / SHA-256）。
+     *
+     * @param totalHint 总字节数（-1 = 未知，只报已读量）
+     * @param onProgress 按块上报（本地/网络逐块回调；调用方负责节流）
+     */
+    suspend fun checksumNow(
+        uri: VfsUri,
+        algorithm: String,
+        totalHint: Long = -1L,
+        onProgress: ((done: Long, total: Long) -> Unit)? = null,
+    ): String? {
         val vfs = container.locator.find(uri) ?: return null
         return withContext(container.dispatchers.vfs) {
             val reader = vfs.openRead(uri)
@@ -1991,11 +2110,14 @@ class BrowserController(private val container: AppContainer) {
                 val crc = if (algorithm == "CRC32") java.util.zip.CRC32() else null
                 val digest = if (crc == null) java.security.MessageDigest.getInstance(algorithm) else null
                 val buf = ByteArray(256 * 1024)
+                var done = 0L
                 while (true) {
                     val n = reader.read(buf, 0, buf.size)
                     if (n < 0) break
                     crc?.update(buf, 0, n)
                     digest?.update(buf, 0, n)
+                    done += n.coerceAtLeast(0)
+                    onProgress?.invoke(done, totalHint)
                 }
                 // Locale.ROOT：校验值必须是固定 ASCII 十六进制（本地化数字会让「比对校验值」失去意义）
                 crc?.let { "%08x".format(java.util.Locale.ROOT, it.value) }

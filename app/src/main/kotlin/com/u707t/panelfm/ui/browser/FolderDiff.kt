@@ -44,14 +44,28 @@ data class DiffResult(
 
 object FolderDiffEngine {
 
-    suspend fun compare(container: AppContainer, left: VfsUri, right: VfsUri): DiffResult =
+    /**
+     * 对比两个目录。
+     *
+     * [report] = 长操作进度（审计 U4）：读取两侧目录、逐项比较都会上报，同时获得协作式取消
+     * （取消后不再出结果框，只留「已取消」提示）。
+     */
+    suspend fun compare(
+        container: AppContainer,
+        left: VfsUri,
+        right: VfsUri,
+        report: BusyReporter? = null,
+    ): DiffResult =
         withContext(Dispatchers.IO) {
+            report?.note("读取左侧目录…")
             val leftVfs = container.locator.find(left)
             val rightVfs = container.locator.find(right)
             val leftItems = leftVfs?.list(left).orEmpty().associateBy { it.name }
+            report?.note("读取右侧目录…")
             val rightItems = rightVfs?.list(right).orEmpty().associateBy { it.name }
             val names = (leftItems.keys + rightItems.keys).sorted()
-            val entries = names.map { name ->
+            val entries = names.mapIndexed { index, name ->
+                report?.report((index + 1).toLong(), names.size.toLong(), "比较 ${index + 1}/${names.size}")
                 val l = leftItems[name]
                 val r = rightItems[name]
                 val state = when {

@@ -126,8 +126,11 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                                 onProgress?.onProgress(doneBytes, -1)
                             }
                         } else {
-                            addFile(out, format, vfs, source, meta.name, meta.size)
-                            doneBytes += meta.size.coerceAtLeast(0)
+                            // 逐块上报：单个大文件也能看见进度、中途取消
+                            addFile(out, format, vfs, source, meta.name, meta.size) { n ->
+                                doneBytes += n
+                                onProgress?.onProgress(doneBytes, -1)
+                            }
                             entries++
                         }
                     }
@@ -139,6 +142,11 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                 "ArchiveCompressor",
                 "compressed $entries entries → $destFile (level=${level.label}, encrypted=${pwd != null})",
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            // 用户取消（长操作状态条的「取消」）：半成品交给 abort() 清掉，CancellationException 原样上抛。
+            // 旧实现会把它包成「压缩失败：Job was cancelled」——与审计 U5 的教训一致，取消不是失败。
+            runCatching { writer.abort() }
+            throw e
         } catch (e: Exception) {
             runCatching { writer.abort() }
             throw if (e is VfsException) e else VfsException.Io("压缩失败：${e.message}", e)
@@ -259,8 +267,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
             if (child.isDirectory) {
                 count += addDirectory(zip, format, vfs, child.uri, name, onBytes)
             } else {
-                addFile(zip, format, vfs, child.uri, name, child.size)
-                onBytes(child.size.coerceAtLeast(0))
+                // 逐块上报（累计由 onBytes 的调用方维护）；单文件也能在中途取消
+                addFile(zip, format, vfs, child.uri, name, child.size) { n -> onBytes(n) }
                 count++
             }
         }
@@ -272,7 +280,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         else -> TarArchiveEntry(name).apply { modTime = java.util.Date() }
     }
 
-    /** 写一个文件条目（非加密路径；加密 ZIP 见 [compressEncryptedZip]）。 */
+    /** 写一个文件条目（非加密路径；加密 ZIP 见 [compressEncryptedZip]）。[onChunk] = 每写入 n 字节回调一次（累计由调用方维护）。 */
     private suspend fun addFile(
         zip: ArchiveOutputStream<out ArchiveEntry>,
         format: Format,
@@ -280,6 +288,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         file: VfsUri,
         entryName: String,
         size: Long,
+        onChunk: ((Long) -> Unit)? = null,
     ) {
         val entry: ArchiveEntry = if (format == Format.ZIP) {
             ZipArchiveEntry(entryName).apply { if (size > 0) setSize(size) }
@@ -295,6 +304,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                 val n = reader.read(buffer, 0, buffer.size)
                 if (n < 0) break
                 zip.write(buffer, 0, n)
+                onChunk?.invoke(n.toLong())
             }
         } finally {
             runCatching { reader.close() }
@@ -349,14 +359,17 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                             ) { buf ->
                                 // 阻塞式读取（已在本模块的 IO 上下文里）
                                 val n = kotlinx.coroutines.runBlocking { reader.read(buf, 0, buf.size) }
+                                if (n > 0) {
+                                    // 逐块上报：大文件中途也能取消 / 看见进度
+                                    doneBytes += n
+                                    onProgress?.onProgress(doneBytes, -1)
+                                }
                                 if (n <= 0) -1 else n
                             }
                         } finally {
                             runCatching { reader.close() }
                         }
                         entries++
-                        doneBytes += meta.size.coerceAtLeast(0)
-                        onProgress?.onProgress(doneBytes, -1)
                     }
                 }
                 sources.forEach { source ->
@@ -370,6 +383,9 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                 "ArchiveCompressor",
                 "compressed $entries entries → $destFile (level=${level.label}, encrypted=true, zipcrypto)",
             )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            runCatching { writer.abort() }
+            throw e
         } catch (e: Exception) {
             runCatching { writer.abort() }
             throw if (e is VfsException) e else VfsException.Io("压缩失败：${e.message}", e)

@@ -127,6 +127,24 @@ data class RenameConflict(
     val keepOldName: String,
 )
 
+/**
+ * 进行中的「长操作」（审计 U4）：压缩 / 完整性测试 / 校验值 / 目录对比 / 远程压缩包下载。
+ *
+ * 同一时间至多一个（[BrowserController.launchBusy] 闸门），页面底部渲染成一条
+ * **不可消失**的状态条：标题 + 进度（可能不确定）+ 详情 + 取消。
+ */
+data class BusyOp(
+    val id: Long,
+    /** 动作描述，如「正在压缩 3 项 → xxx.zip」 */
+    val title: String,
+    /** 0..1；null = 进度未知（转圈） */
+    val progress: Float? = null,
+    /** 细节行，如「已处理 12.3 MB」/「第 3/120 项」 */
+    val detail: String? = null,
+    /** 点过取消后置 false（状态条转为「正在取消…」直到作业真正结束） */
+    val cancellable: Boolean = true,
+)
+
 data class BrowserUiState(
     val left: PaneState = PaneState(),
     val right: PaneState = PaneState(),
@@ -146,6 +164,8 @@ data class BrowserUiState(
     /** 是否宽屏（由界面按屏宽写入，供 [BrowseMode.AUTO] 判定） */
     val wideEnough: Boolean = true,
     val diff: DiffResult? = null,
+    /** 进行中的长操作（压缩/校验/对比/完整性测试/远程包下载）：页面底部状态条（审计 U4） */
+    val busy: BusyOp? = null,
     /** 左窗格宽度比例（可拖动分隔条） */
     val splitRatio: Float = 0.5f,
     /** 重命名冲突（MT：交换 / 删除 / 备份） */

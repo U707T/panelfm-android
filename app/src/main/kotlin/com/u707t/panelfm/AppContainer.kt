@@ -108,6 +108,13 @@ class AppContainer(val app: Application) {
     /** 已挂载的压缩包（hostUri → ArchiveVfs） */
     private val archives = ConcurrentHashMap<String, ArchiveVfs>()
 
+    /**
+     * 正在挂载中的压缩包（审计 U4）：同一 host 的并发请求共享同一个挂载任务。
+     * 解决的问题：远程包下载期间没有任何反馈，用户连点两次会**并发下载、并发写同一个临时文件**，
+     * 可能写出坏缓存。现在第二个调用直接 await 第一个的结果。
+     */
+    private val openingArchives = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<ArchiveVfs>>()
+
     val planner = FileOperationPlanner(locator)
 
     val engine = TransferEngine(
@@ -326,8 +333,36 @@ class AppContainer(val app: Application) {
 
     /**
      * 挂载压缩包：本地文件直接随机访问；远程文件先下载到 cache（zip 才支持随机访问，7z/tar 顺序读）。
+     *
+     * 审计 U4：
+     *  - **单飞去重**：同一 host 只允许一个挂载在途（见 [openingArchives]），连点不会并发下载；
+     *  - **[onProgress]** 上报下载字节（done/total），供长操作状态条显示进度与「取消」。
      */
-    suspend fun openArchive(host: com.u707t.panelfm.core.vfs.VfsUri): ArchiveVfs {
+    suspend fun openArchive(
+        host: com.u707t.panelfm.core.vfs.VfsUri,
+        onProgress: com.u707t.panelfm.core.vfs.ProgressCallback? = null,
+    ): ArchiveVfs {
+        archives[host.toString()]?.let { return it }
+        val key = host.toString()
+        val mine = kotlinx.coroutines.CompletableDeferred<ArchiveVfs>()
+        val inflight = openingArchives.putIfAbsent(key, mine)
+        if (inflight != null) return inflight.await()
+        try {
+            val vfs = openArchiveInner(host, onProgress)
+            mine.complete(vfs)
+            return vfs
+        } catch (t: Throwable) {
+            mine.completeExceptionally(t)
+            throw t
+        } finally {
+            openingArchives.remove(key, mine)
+        }
+    }
+
+    private suspend fun openArchiveInner(
+        host: com.u707t.panelfm.core.vfs.VfsUri,
+        onProgress: com.u707t.panelfm.core.vfs.ProgressCallback?,
+    ): ArchiveVfs {
         archives[host.toString()]?.let { return it }
         val kind = ArchiveVfs.ArchiveKind.ofFileName(host.name)
             ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("不支持的压缩格式：${host.name}")
@@ -350,10 +385,14 @@ class AppContainer(val app: Application) {
                     try {
                         tmp.outputStream().use { out ->
                             val buf = ByteArray(256 * 1024)
+                            var done = 0L
                             while (true) {
                                 val n = reader.read(buf, 0, buf.size)
                                 if (n < 0) break
                                 out.write(buf, 0, n)
+                                done += n
+                                // 下载进度（审计 U4）：取消会在下一次回调时立刻生效
+                                onProgress?.onProgress(done, meta.size)
                             }
                         }
                     } finally {
