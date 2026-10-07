@@ -365,4 +365,324 @@
 
 ---
 
-（后续批次在本文档追加 §3、§4 …）
+## §3 模块审查：app/ui/editor（2026-10-08 · 第 3 批）
+
+> 结论一句话：sora-editor 的**适配层是本项目与库契约吃得最透的一处**（实例不进 state / 版本号灌文本 /
+> 查找三件套——逐条按库字节码核验成立）；但 `EditorScreen.kt` 是又一座 1,064 行大山（主 Composable 664 行
+> + 40 个状态），且**保存编码不闭环**（BOM 丢、UTF-16 存后自己读不回、Latin-1 静默转码）、
+> 大文件分页存在**页间重复展示**（最多 64 KB/页）。
+> 范围：`ui/editor/`（3 文件 / 1,444 行）+ 测试（1 文件 / 77 行）　分诊等级：🔴（维持）
+> 基线：`e841697`（第 1 批修复与修复记录均已入档；第 2 批修复进行中，未触及本批文件）。
+> 方法：3 文件全文通读 + `EDITOR-ENGINE.md` 逐条对照 + **反汇编 sora-editor 0.24.6** 核验库交互
+> （事件 action 码 / 搜索线程 / `replaceAll` 回调线程 / 正则预编译）＋ 与 mt-analysis 菜单语义对照。
+
+### 🔴 阻断性问题（必须修）
+
+#### 1. `EditorScreen.kt` 1,064 行大山：主 Composable 664 行 + 40 个状态 + 文件尾 195 行纯 IO
+
+- 位置：`EditorScreen.kt:83-746`（主 Composable，**664 行**）；`by remember` 状态 40 处（`:92-138`）；
+  `:870-1064` 尾段 195 行是 `loadPage` / `readAtMost` / `saveText` / `backupBeforeSave` 等
+  **与 Compose 无关的 IO 基础设施**。
+- 问题：本批 4 个 🟡 全部落在这个函数及其尾部基础设施的交叉地带（编码表 / 分页边界 / 会话重连 / 剪贴板），
+  与 browser、preview 的大文件教训同构；`EDITOR-ENGINE.md` 自称「页面壳」，实际壳里背着读写引擎。
+- 修复（拆 4 文件，主文件收敛 ≤450 行；沿用第 1 批 `BrowserController` 的拆分先例）：
+  1. `EditorFileIo.kt`（~200 行）：`MAX_EDIT_SIZE` / `PAGE_*` / `HL_MAX_CHARS` 常量、`PageSlice`、
+     `loadPage` / `indexOfByte` / `decodeWith` / `readAtMost` / `saveText` / `backupBeforeSave`；
+     编码表顺手收进 `TextEncodings`（与 🟡2 同一动作）；
+  2. `EditorFindController.kt`（~190 行）：`lastQuery` / `pendingAfterSearch` / `searchResultsReady` /
+     `suppressSearchStatus` 四状态 + `notFoundMessage` / `currentSpec` / `startSearch` /
+     `refreshSearchStatus` / `jump` / `replaceCurrent` / `replaceAll` / `closeFind` 一组方法；
+  3. `EditorMenu.kt`（~100 行）：`EditorMenu` + `LanguageOption` + `PageButton`；
+  4. `EditorDialogs.kt`（~100 行）：语法 / 转到指定行 / 未保存三个 `AlertDialog`。
+  状态重组后主文件剩 ~15 个状态（分页组 5 个可并成 `PageUiState`）。
+
+### 🟡 建议修复（应该修）
+
+#### 2. 保存编码不闭环：BOM 不写回；UTF-16 存完自己都读不回；Latin-1 静默转 UTF-8 且状态栏报旧编码
+
+- 位置：`EditorScreen.kt:994-1000`（写侧映射）；`:913-915` + `:928-935`（读侧 `decodeWith`）；
+  `TextEncodings.kt:27-43`（识别侧，`"UTF-8 (BOM)"` / `"UTF-16LE/BE"` / `"ISO-8859-1"`）。
+- 问题：识别侧能区分 5 种编码，写侧只忠实 3 种——
+  ① `"UTF-8 (BOM)"` 走 `startsWith("UTF-8")` → 写**无 BOM** 的 UTF-8，BOM 丢；
+  ② UTF-16 同病且更重：这类文件**只能靠 BOM 被识别出来**（`TextEncodings` 的判定顺序），保存后 BOM 没了
+     → 重开走启发式（UTF-8/GBK）→ ASCII 内容显示成「字符夹 NUL」、中文直接乱码；
+  ③ `ISO-8859-1` 落到 `else -> UTF-8`：字节被换成 UTF-8，状态栏却仍显示「已保存（ISO-8859-1…）」。
+  与 `CHANGELOG.md:383` 自己承诺的「同编码写回」不符。
+- 为什么：BOM 文件常是给 Windows 工具（`.bat` / `.ps1` / 旧配置）吃的；UTF-16 路径是「保存 → 本应用
+  重开乱码」的静默事故面。同一张编码表散在读 / 写 / 识别三处，必然漂移（本次就是漂移现场）。
+- 修复：把编解码收成 `TextEncodings` 单一表（`encode(text, charset)` + `decode(bytes, charset)`）；
+  BOM 分支重建 BOM；ISO-8859-1 真编码（无法表示的字符明确回退 UTF-8 并在状态栏注明已转码）；
+  补 round-trip 单测 `decode(encode(x, c), c) == x`，覆盖 5 种 charset。
+
+#### 3. 大文件分页显示重叠：每页尾部多带冗余且断在半行，与下一页重复
+
+- 位置：`EditorScreen.kt:894-916`（`loadPage`；`PAGE_SLACK` 见 `:875-876`）。
+- 问题：页头对 `page>0` 做了行对齐（`skip`），**页尾从不裁剪**：显示区间是 `[start+skip, start+off)`，
+  而 `off` 包含 `PAGE_SLACK`——于是「段 1 = 0 B – 576 KB」「段 2 = 512 KB+ε – …」，相邻页**重复展示
+  最多 64 KB 内容**（约一页的 11%，且页尾常断在半行）。注释与 `EDITOR-ENGINE.md` §2.6 都写
+  「每段 512 KB / 冗余是『对齐行边界用』」——对齐只做了一半。
+- 为什么：分段浏览就是给读大文件用的；每翻一页都要重读上一页尾部，范围标注（0–576 / 512–…）也自相矛盾。
+- 修复：页尾与下一页页头用同一行边界：`page < last` 时在 `[end, readEnd)` 内找第一个 `\n`、显示到 `nl+1`
+  （找不到才用 `off`）；`indexOfByte` 加 `from` 参数；保持不变式
+  `displayEnd(pageN) == displayStart(pageN+1)`，`goPage` 传入 `pageCount`。给不变式补纯函数单测。
+
+#### 4. `goPage` / `saveText` 不走 `resolveSession`：断线后翻页、保存直接失败（其余入口都会自动重连）
+
+- 位置：`EditorScreen.kt:235`（`goPage`）、`:993`（`saveText`）；对照 `:191`（初次加载已用 `resolveSession`）。
+- 问题：两处都是裸 `container.locator.find(uri)`——`find` 只查注册表，**不会触发重连**；
+  `AppContainer.kt:248` 的 `resolveSession` 才是「找不到就 `openConnection` 自动重连一次」。
+  会话断开（网络切换 / 服务端重启 / 租约回收）后：翻页报「读取分段失败：会话不可用」、保存报
+  「保存失败：会话不可用」；同样的会话状态在初次打开时却能自动恢复。全项目约定（preview 全模块、
+  AppRoot）都是 `resolveSession`——这是本项目为消灭「请重新打开该存储」专门做的基础设施。
+- 为什么：保存是编辑器的最后一道承诺，失败原因还是应用自己有能力修复的一种；用户得先退出、重开文件
+  （或手动重连存储）才能保存，改动只能靠屏幕上的草稿。
+- 修复：两处改 `container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")`（两行）；
+  顺带 `goPage` 的错误文案补 `e.message ?: "会话不可用"` 兜底（现在会打出 "null"）。
+
+#### 5. 「剪切行 / 复制行」与剪贴板脱节：剪切不写剪贴板；复制行 ≡ 重复行
+
+- 位置：`EditorScreen.kt:808-812`（菜单接线）；`LineOps.kt:54-59`（`cutLine` 返回的第二值是载荷）。
+- 问题：`剪切行` 取 `cutLine(...).first`，被剪内容**直接丢弃**（剪贴板不动）；`复制行` 与 `重复行` 都调
+  `duplicateLine`——两个菜单项完全同款。MT 侧这三个是三个动作：Copy line（`0x7f1103e7`）/ Cut line
+  （`0x7f1103e9`）/ Duplicate line（`0x7f1103f2`）（`mt-analysis/v2/resources_dump.txt:23975/23999/24107`）。
+- 为什么：「剪切 / 复制行」是用户把内容搬去别处编辑的入口；现在剪切后去粘贴得到**旧剪贴板内容**，
+  「复制行」则把正文改脏（和「重复行」一样），多按几次就多几行——用户会以为菜单坏了。
+  `LineOpsTest` 专门为「剪切行返回被剪内容」写了断言，说明该载荷本来就是给剪贴板预留的。
+- 修复：`EditorScreen` 里取 `LocalClipboardManager.current`（browser 全量在用，先例充足）：
+  `剪切行` → 取 `(rest, cut)`，`clipboard.setText(AnnotatedString(cut))` 后再替换正文；`复制行` →
+  不改正文，直接复制当前行文本（可加 `LineOps.lineAt`，或复用 `cutLine(t,i).second`）；`重复行` 不动。
+  真机复核一次剪贴板落地。
+
+### 🔵 可选优化（可以修）
+
+#### 6. 只读模式（大文件分段）下，行操作 / 代码整理菜单整组可点但静默无操作
+
+- 位置：`EditorScreen.kt:808-839`（两组 12 项只有 `canFormat` / `canToggleComment` 两处 `enabled`，
+  未接 `readOnly`）；`:385-386`（`applyWholeTextOp` 的 `if (readOnly) return` 静默返回）。
+- 修复：`EditorMenu` 把 `readOnly` 也用于行操作 / 压缩 / 格式化项（`enabled = !readOnly`，与保存 /
+  撤销 / 重做同款）；或点击时给 `status = "只读模式（大文件分段）不支持行操作"`。
+
+#### 7. CSS 的「切换注释」写 `//`——纯 CSS 里是非法注释
+
+- 位置：`EditorScreen.kt:865`（`source.css -> "//"`）；`EditorLanguages.kt:68`（css/scss/less 同 scope）。
+- 问题：`//` 只在 scss/less 合法；对 `.css` 使用会把行注释写成语法错误（设计文档 §4 注明未用库的注释规则）。
+- 修复：最小改法——`commentPrefixOf` 增加扩展名维度：`css` 返回 null（置灰 + 提示「当前语言不支持」），
+  `scss` / `less` 保持 `//`；若要真支持 `/* */` 需给 `LineOps.toggleComment` 加成对前缀（可延后）。
+
+#### 8. 「格式化代码」：支持清单两处维护；失败提示与「不支持的语言」混淆
+
+- 位置：`EditorScreen.kt:439`（`canFormat` 硬编码 JSON/XML）、`:472-475`（失败一律提示「暂不支持该语言」）；
+  `CodeFormatter.kt:16`（`supports()` 已有同一判定）。
+- 问题：JSON 内容有语法错误时 `format()` 返回 null → 提示「暂不支持该语言的格式化」——但 JSON 明明
+  被支持，用户会去查「语法」设置；支持清单散两处，以后加语言必漂移。
+- 修复：`canFormat` 改用 `CodeFormatter.supports(...)`；`null` 分支区分「语法不支持」（按钮已置灰，
+  理论上到不了）与「格式化失败：内容不是有效的 JSON/XML」。
+
+#### 9. UTF-16 大文件（>2 MB）分页：首字符错位 + 伪换行
+
+- 位置：`EditorScreen.kt:908-911`（单字节找 `0x0A`、`skip = nl + 1`）、`:928-935`（按 2 字节码元解码）。
+- 问题：UTF-16 中 `0x0A` 可能只是某码元的半个字节；真换行 `0A 00`（LE）也只会跳 1 字节 → 解码从奇
+  偏移开始，每页首字符乱码。UTF-8 / GBK 不受影响（0x0A 不会出现在多字节序列内部）。
+- 修复：charset 为 UTF-16LE/BE 时按双字节（`0A 00` / `00 0A`）搜换行并把 skip 对齐到 2 的倍数；
+  或对 UTF-16 直接放弃行对齐（宁可见页首断行也不乱码）。
+
+#### 10. 无扩展名文件的「语法」记忆静默丢失
+
+- 位置：`PrefsStore.kt:204-209`（`idx <= 0` 把 `"|scope"` 整条丢弃）。
+- 问题：Makefile / Dockerfile 等（`currentExt == ""`）手动选语法后存的是 `"|source.shell"`，读回时
+  `idx == 0` 被判无效 → 下次打开回到「自动」。功能承诺「按扩展名记忆」，对这类文件静默失效。
+- 修复：判定放宽为 `idx >= 0`（或空扩展名用哨兵键如 `"(noext)"` 存储）；补一条 round-trip 单测。
+
+#### 11. 「保存并返回」路径不刷新浏览器列表
+
+- 位置：`EditorScreen.kt:725-733`（confirmDiscard 内）对照 `:407-416`（`save()` 成功后会 `refreshAll()`）。
+- 问题：同一文件两条保存路径行为不一致——正常保存会刷新目录（大小 / 时间戳），「保存并返回」不会。
+- 修复：把 `save()` 的成功回调抽成共用（`dirty = false; container.browser.refreshAll()`），两条路径共用。
+
+#### 12. 测试缺口（纯 JVM 可覆盖）
+
+- 位置：`EditorLanguagesTest.kt`（77 行，仅覆盖后缀映射 / 标签 / 菜单清单）。
+- 修复：编码往返（随 🟡2 的 `encode` 一起加进 `TextEncodingsTest`）；分页边界（把 `loadPage` 的
+  「页头 / 页尾对齐」抽成纯函数后测不变式，随 🟡3）；`PrefsStore` 覆盖解析 round-trip（随 🔵10）。
+
+### 🟢 做得好的地方
+
+- **sora 适配层是本项目与库契约吃得最透的一处**：实例不进 Compose state（`editorHolder` 数组）、
+  版本号灌文本防「清撤销栈 + 跳滚动」、`update` 里做同步——**逐条用 0.24.6 字节码核验：注释描述全部
+  成立**（`setText` 事件 action=1 → 不脏；插入 / 删除 action=2/3 → 脏；整文 `replace()` 经监听回调
+  同样置脏）。
+- **查找链路三件套与库行为严丝合缝**：延帧读结果（`SearchRunnable` 完成 → `postInLifecycle` →
+  `dispatchEvent`）、`lastQuery` 快照防重搜、`suppressSearchStatus` 防覆盖；`search()` 对正则类型
+  **同步预编译**，`catch (PatternSyntaxException)` 因而能生效（核过 `TYPE_REGULAR_EXPRESSION == 3`
+  与调用点）；`replaceAll` 的用户回调经 `postInLifecycle` 回主线程——回调里写 Compose 状态是安全的。
+- **编码识别的线程安全修复**（`strictUtf8Decoder()` 每次新建 + `TextEncodingsConcurrencyTest`）：
+  「共享 `CharsetDecoder` 并发误判」类事故的干净收口。
+- **行操作 CRLF 归一 + `LineOpsTest` 16 例**（含「剪切行返回被剪内容」这种为 UI 预留载荷的断言）。
+- **`.bak` 备份收口**（复制到不冲突名 + 服务端复制优先 + 成败都进状态栏）：v1.9 事故的完整延续。
+- **错误可执行化**：保存失败 / 备份失败 / 正则错误 / 行号越界 /「没有可操作的内容」全有具体文案。
+- **语法注册表全量对齐**：`languages.json` 12 条 scopeName ↔ `scopeOf()` / `LABELS` / `ORDER` /
+  语法文件存在性——逐条核过，无一漏挂。
+
+### 安全（轻量两项抽查）
+
+- 无硬编码密钥/密码；编辑器面唯一的外部输入是用户自己的编辑内容，无命令 / 路径拼接面；
+  备份文件名经 `uniqueChild` 生成、无注入面。未见越界发现。
+
+### 下一批建议
+
+- 下一模块：**core/transfer**（🟡）——`TransferTask.kt`（812 行）的断点续传状态机 / 取消语义 /
+  与 `vfs-local`（零测试的本地删 / 复制 / 移动）的联合核对。
+- 备注：本批（editor）**已全量修复**（🔴1–🔵12，见下方「修复记录」）；第 2 批（preview）已修复（`3479639`）。
+
+### 修复记录（第 3 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🔴1 | ✅ | `EditorScreen.kt` 1,064 行 → **512 行壳** + 5 个新文件（`EditorFileIo` 237 / `EditorFindController` 213 / `EditorChrome` 129 / `EditorMenu` 157 / `EditorDialogs` 130）；查找 11 态进 controller、菜单展开态内聚顶栏（点击项自动收起） |
+| 🟡2 | ✅ | 保存编码闭环：`TextEncodings.encode/decodeWith` 单表化——UTF-8 BOM / UTF-16 重建 BOM（不再丢、不再存后读乱码）、GBK / Latin-1 往返校验失败回退 UTF-8 并注明；round-trip 单测 7 例 |
+| 🟡3 | ✅ | 分页分区不变式：页尾与下一页页头同窗口对齐（不重叠 / 不漏内容 / 空末页合法）；`EditorFileIoTest` 4 例（普通 / CRLF / 超长行 / UTF-16） |
+| 🟡4 | ✅ | `goPage` / `saveText` 改走 `resolveSession`（断线自动重连）+ 错误文案 `?: "会话不可用"` 兜底 |
+| 🟡5 | ✅ | 「复制行」→ 只写剪贴板；「剪切行」→ 剪贴板 + 删除；「重复行」保持原地复制（对齐 MT Copy / Cut / Duplicate line） |
+| 🔵6 | ✅ | 只读（分段浏览）下禁用全部改正文项；「复制行」保持可用 |
+| 🔵7 | ✅ | 「切换注释」按扩展名区分：纯 css 置灰、scss / less 为 `//`（+单测） |
+| 🔵8 | ✅ | `canFormat` 改走 `CodeFormatter.supports`；失败提示改为「内容不是有效的 JSON/XML」 |
+| 🔵9 | ✅ | UTF-16 分页按 2 字节码元识别换行并对齐（随 🟡3 落地，测试覆盖） |
+| 🔵10 | ✅ | 空扩展名（无后缀文件）语法覆盖可存回（`parseLangOverride` + 4 例单测） |
+| 🔵11 | ✅ | 「保存并返回」与正常保存共用 `saveAnd(onSaved)`（两条路径都刷新目录） |
+| 🔵12 | ✅ | 新增测试 16 例：编码往返 7 / 分页不变式 4 / 覆盖解析 4 / 注释前缀 1 |
+
+> 组织说明：拆分是**文件级职责拆分**（顶栏 / 分页条 / 菜单 / 对话框 / 查找控制器 / 文件 IO 单文件化），
+> 除 🔴1–🔵12 外行为零改动。验证：`compileDebugKotlin` / `testDebugUnitTest` / `assembleDebug`
+> 三连绿——app 138 例 + core:common 85 例 + core:data 6 例全通过（含本批新增 16 例）。
+
+---
+
+## §4 模块审查：core/transfer + core/vfs-local（2026-10-08 · 第 4 批 · 联合核对）
+
+> 结论一句话：这是全仓**质量水位最高**的核心里——断点续传的每一处坑（按 source→dest 而非任务 id、
+> `.part` 长度校验、mtime 校验、节流+收尾补记）都有出处注释与回归；取消/暂停闸门与「静默失败删除」
+> 变异测试补丁都是事故后真修。本轮**未发现阻断性问题**，三条 🟡 集中在「覆盖语义的两个风险窗口」
+> 与「暂停占用并发位」。
+> 范围：`core/transfer/`（6 文件 / 1,376 行 + 测试 7 文件 / 1,207 行 / **34 用例**）+
+> `core/vfs-local/`（2 文件 / 459 行 · 零测试）　分诊等级：🟡（维持）
+> 方法：6+2 文件全文通读 + 关键依赖交叉验证（`ResumeDao` / `VfsStreams` 契约 / `Throttle` /
+> 引擎接线 / `PanelDb` schema）+ 34 用例逐名核对。未跑真机。
+
+### 🔴 阻断性问题（必须修）
+
+无。审查前最可疑的三处——快路径降级、取消语义、断点续传闭环——均有实现与用例双重兜底
+（见 🟢 与代码内历史注释）。
+
+### 🟡 建议修复（应该修）
+
+#### 1. 「文件覆盖同名文件夹」= 整目录删除；对话框文案却说「递归合并/覆盖」且默认选中「替换」
+
+- 位置：`TransferTask.kt:399-406`（快路径 OVERWRITE 分支）/ `:553-557`（慢路径 `resolveDest`）/
+  `:526-538`（`deleteForOverwrite`，含删后二次 stat 确认）；UI 共用 `ui/browser/Dialogs.kt:99`
+  （默认 `OVERWRITE`）、`:116`（文案按「目标是文件夹」一律说「递归合并/覆盖」）。
+- 问题：源是文件、目标是文件夹时「合并」在语义上不存在；实际行为 = **递归删除整个文件夹**后写入文件
+  （本地走 `LocalVfs.delete → deleteRecursively`）。对话框此时显示的却是「目标是一个文件夹，替换将
+  递归合并/覆盖。」，且单选默认就是「替换」——随手点「确定」= 一个目录的全部内容没了。
+  34 个用例里只有「目录覆盖目录走合并」（`TransferRegressionTest:307`），**没有**「文件覆盖目录」的
+  语义断言。
+- 为什么：本批最贵的一次误触（丢一整个目录），文案却把破坏性动作写成「合并」。
+- 修复：`ConflictDialog` 文案按 (源类型, 目标类型) 四组合分派——文件→文件夹明确写「将删除该文件夹
+  及其全部内容，然后写入文件」；「目标是文件夹」的冲突不预选「替换」（默认改为「跳过」或未选中）。
+  补一条 file→dir OVERWRITE 的回归测试。
+
+#### 2. 覆盖策略「先删旧文件、再传输」：失败 / 取消后旧版本已不可恢复
+
+- 位置：`TransferTask.kt:554-556`（`resolveDest` 在写入前先 `deleteForOverwrite`）、`:526-538`；
+  对照慢路径本已具备「写 `.part` → commit 替换」的基础设施——`LocalVfs.kt:379-401` 的
+  `ATOMIC_MOVE + REPLACE_EXISTING` 本就支持原子替换已存在的目标。
+- 问题：可续传目标（本地 / SFTP / SMB）完全可以在**提交那一刻**再替换目标；当前顺序是
+  「先删旧文件 → 传输 → commit」。传输中途失败 / 取消 / 校验不过：旧文件已没了（只剩新文件的
+  `.part`），若续传记录再失效（源被替换、7 天过期清理、用户清空），旧内容永久丢失。
+- 为什么：覆盖大文件 + 网络抖动是常态；用户预期「替换失败 = 旧文件还在」，现在变成
+  「替换失败 = 旧文件没了」。`deleteForOverwrite` 的注释只论证了「目录 vs 文件异型冲突」，对
+  「文件覆盖文件」（最常见）没有预删的必要性论证。
+- 修复：慢路径文件项在目标可续传时**不预删**，替换交给协议侧 commit（本地已支持，SFTP/SMB 对齐后
+  同做）；预删只保留给「快路径 rename 需要腾位」与「目标不可续传」两类；补「覆盖失败后旧文件仍在」
+  的回归测试。（若产品语义坚持「替换=立即清旧」，至少把这一条写进对话框文案。）
+
+#### 3. 暂停中的任务占用并发位：默认并发 2 时，暂停两个任务 → 后续入队任务永远「排队中」
+
+- 位置：`TransferEngine.kt:83-98`（worker 先占并发槽再 `task.run()`；槽位在 run 返回后的 finally
+  才释放）+ `TransferTask.pause()`（挂起点在 `run()` 内部，暂停期间不会返回）。
+- 问题：`maxConcurrent = 2`（默认）下暂停两个运行中任务，再入队第三个 → 第三个永远停在
+  「排队中」，直到恢复 / 取消暂停的任务。「等待冲突」占槽同理（排在用户回答之前）。
+- 为什么：用户视角就是「队列卡死」；与注释「任务之间由引擎控制并发」的意图（暂停 ≠ 占传输位）不符。
+- 修复（两档）：轻量——把占用语义显式化（任务行显示「已暂停（占用传输位）」+ 引擎注释写明）；
+  彻底——`pause()` 让任务在下一个 checkpoint **退出 `run()` 并释放槽位**，`resume()` 重新入队、
+  走断点续传接上（本地/SFTP/SMB 天然支持；FTP/WebDAV 等不可续传目标退化为重传，需按目标能力
+  选择策略）。建议先做轻量版，彻底版留档。
+
+### 🔵 可选优化（可以修）
+
+#### 4. 每个文件都做一次断点查询；`resume_entry` 无 (source, dest) 索引
+
+- 位置：`TransferTask.kt:687-701`（每文件 `resumeStore.findFor`）；`ResumeDao.kt:27-35`（查询）；
+  `PanelDb.kt:67-78`（建表：`PRIMARY KEY(task_id, item_index)`，**(source, dest) 无索引**）。
+- 问题：全新传输（绝大多数文件无断点）也要逐个查库；无索引 = 每次全表扫描。表由 7 天 purge 与
+  `clearFor` 兜底（有界），但大目录批量复制下是纯浪费。
+- 修复：补 `CREATE INDEX resume_entry_source_dest ON resume_entry(source, dest)`（走一次 DB 迁移）；
+  或批量任务先做一次「本批是否有任何断点」查询再逐文件找。
+
+#### 5. vfs-local 零测试：建议把 `android.system.Os` / `StatFs` 收进可注入的小接口
+
+- 位置：`LocalVfs.kt` 全文件（`Os.stat/lstat/chmod` 直接静态调用 → JVM 单测跑不动，这是全仓目前
+  唯一零自动化覆盖的数据路径）。
+- 问题：本地删除 / 复制 / 移动是**用户数据第一现场**，四条历史事故路径全在这里却无回归网：
+  符号链接删除保护（`:176-184`）、commit 原子替换（`:379-401`）、续传截断尾巴（`:347-356`）、
+  跨卷 rename 退化（`:194-209`）。
+- 修复：把 `Os`/`StatFs` 包成 `LocalOs` 接口（默认实现走 android.system），JVM 测试注入 fake +
+  临时目录即可覆盖上述四条路径；比引入 Robolectric 更轻。
+
+#### 6. `LocalReader.readFullyAt` 会移动共享文件指针
+
+- 位置：`LocalVfs.kt:315-325`（`raf.seek(position)` 后读取，不回原位）；契约见 `VfsStreams.kt:45`。
+- 问题：与顺序 `read()` 混用会把后续读取位置带偏；目前调用方未混用，但契约未注明「不得混用」。
+- 修复：改用 `FileChannel.read(buffer, position)`（不改指针），或在校验 / 注释里写明契约。
+
+#### 7. 死字段 `wholeDirectory`
+
+- 位置：`TransferModels.kt:17`（字段）、`:154`（`describe()` 的「当前目录」分支）；
+  全仓唯一赋值 `BrowserControllerTransfers.kt:259` 为 `false`。
+- 问题：`describe()` 的「当前目录」标题分支不可达（恒走「N 项」）。
+- 修复：删除字段与分支，或把「整目录操作」入口真正接上它。
+
+### 🟢 做得好的地方
+
+- **闸门设计**（`TransferGate.kt:38-49`）：取消优先于暂停、暂停循环内双重取消检查、退出后再查一次
+  ——「暂停中取消永远挂起」在代码与用例（`暂停中取消不会永远挂在暂停等待里`）双向钉死。
+- **断点续传闭环**：按 (source→dest) 而非任务 id（`ResumeStore.kt:19-27` 注释即历史事故）；
+  `.part` 长度不足拒绝续写（`TransferTask.kt:692-700`）、mtime validator 防「源被替换误续」、
+  1s 节流 + 失败/取消时 NonCancellable 补记最终偏移（`:759-777`）。
+- **快路径降级语义**（`:115-196`）：`serverSideCopy`/`rename` 返回 false、目录合并场景全部降级慢路径，
+  且降级后子树重映射（`rebaseDestination`）避免 KEEP_BOTH 二次改名；两条降级用例覆盖。
+- **删除保险**：`deleteForOverwrite` 删后二次 stat 确认（`:526-538`）+ FakeVfs 的
+  `silentlyIgnoreDelete` 钩子（测试注释写明：旧测试只覆盖抛异常分支、变异测试全绿后补另一条）。
+- **目录语义**：目录覆盖目录走合并而非「先删再抄」（用例 `:307`）；SKIP / KEEP_BOTH 整棵子树
+  阻断 / 重映射；MOVE 收尾只删空目录、跳过子树不删（`:300-311`）。
+- **引擎收场**：完成 / 已取消 8 秒保留后自动收走、失败不自动收走（三条用例）；并发下调后超编
+  worker 完成手头任务即退出（用例 `并发下调后…`）。
+- **ResumeDao 坏行容忍**（`ResumeDao.kt:47-70`）：「断电留下的半截记录不能打崩续传链路」——事故收口。
+- **vfs-local 三处安全细节**：符号链接删除不跟随（`:176-184`）、commit ATOMIC_MOVE 优先且回退路径
+  有保护（`:379-401`）、续传打开时截断残留尾巴（`:347-356`）。
+
+### 安全（轻量两项抽查）
+
+- 无硬编码密钥/密码；vfs-local 的路径均来自用户自身设备的浏览操作（文件管理器语义），`LocalWriter`
+  临时文件名固定模式、无外部拼接注入面。未见越界发现。
+
+### 下一批建议
+
+- 下一模块：**core/vfs-archive**（🟡）——`ZipEditor` 整包重写 / 加密 zip 读写 / 压缩解压与
+  `ArchiveVfs` 的取消语义（与 transfer 的 `.part` / commit 语义衔接处重点看）。
+
+> 备注：本批行号为 `e841697` 基线；与在途的第 2 批修复（preview / PrefsStore，未提交）零交叉，
+> 本批文件未被其触达。
+
+---
+
+（后续批次在本文档追加 §5、§6 …）
