@@ -5,7 +5,7 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1–5、7 批已修复收口**（见各批末尾「修复记录」）；第 6 批修复进行中；其余批次待审计后继续。
+> 修复：**第 1–7 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
 
 ---
 
@@ -904,7 +904,33 @@
 
 - 下一模块：**app/ui/connections**（🟡）——`ConnectionEditScreen.kt` 710 行 + 深缩进；重点：凭据写入 / 编辑回显的 secret 生命周期（`SecretStore` 与 `disconnectConnection` 的衔接）、选项面板（trustSelfSigned / 编码 / 跳板机字段）与各协议 Config 的一致性、测试连接路径。说「继续」即开审。
 
-> 备注：本批行号为 `d117924` 基线（会话期间自 `b51c3a2` 前进：第 2 批收口；工作树同时有第 5 批修复会话在途——vfs-archive / browser / AppContainer 等，与本批零交叉；AppContainer 两处引用已按在途版校准）。未提交，修复记录表待修复会话补。
+> 备注：本批行号为 `d117924` 基线；修复落地于 `03ea6aa`（core/vfs 六模块，与并行第 7 批 `a33f6d4` 零文件交叉）。
+
+### 修复记录（第 6 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🔴1 | ✅ | ListObjectsV2 解析重写为「父元素感知」状态机：回显 Prefix / Contents 残留 / 缩进空白三类污染全修（「丢子目录 + 末文件复制成假目录」实测必现级）。`S3Client.parserFactory` 测试接缝（修掉单测环境 `android.util.Xml` 是桩的历史障碍），样例驱动测试 6 例 + MockWebServer 分页端到端 1 例。 |
+| 🟡2 | ✅ | `saveText` 失败补 abort/close 收尾（与引擎同款口径）——FTP 控制锁不再泄漏（会话死锁）；WebDAV/S3/SFTP/SMB 遗留 `.part` / 分片 / 句柄一并清理。 |
+| 🟡3 | ✅ | 建连与全部命令共用同一把控制锁（`withControl` 入锁执行）；锁等待 30s 超时给「控制连接忙」文案（旧实现无限挂起）。 |
+| 🟡4 | ✅ | FTP 上传改 `.part` 原子落位：写 part → commit `RNTO` 落位；abort 只清 part，不再 `deleteFile(目标)`（覆盖上传中断不再毁原文件）；0 字节提交（touch）补 `ensureOpen`。 |
+| 🟡5 | ✅ | SMB `rename`：按类型打开（目录 `FILE_DIRECTORY_FILE`，此前目录改名必失败）；源缺失用 `FILE_OPEN` 直接报错（不再凭空造空文件）。 |
+| 🟡6 | ✅ | WebDAV Range 校验：拒绝「忽略 Range 的 200 全量」（照读会静默错位数据）；`readFullyAt` 仅 `position==0` 时按窗口截取接受。 |
+| 🟡7 | ✅ | `S3Vfs.list` 按 continuation-token 翻页拉全（>1000 条不再静默只显示第一页）。 |
+| 🟡8 | ✅ | `splitSmbPath` 纯函数化 + 「根 + 无共享名」引导文案接通（两处死代码清理）；SmbConfig 注释据实修正（smbj 0.13 无共享枚举 API，不做「列出所有共享」）。 |
+| 🟡9 | ✅ | FTP / SMB 首套测试基建：`SmbPathTest` 4 例、`FtpConfigTest` 4 例（S3 解析 7 例见 🔴1）。 |
+| 🔵10 | ✅ | `SmbVfs.connect` 入 mutex（并发首开不再双连泄漏）。 |
+| 🔵11 | ✅ | 移除 S3 全局 `Mutex`（无保护对象、还会串行化独立操作；结论注释在案）。 |
+| 🔵12 | ✅ | S3 `DeleteObjects` 批量删除（每批 ≤1000，大目录 10 万请求 → 100）+ key 的 XML 转义。 |
+| 🔵13 | ✅ | `FtpReader.readFullyAt` 收紧为「仅从 0 起的首次预读」+ 预读后同步推进 pos（旧实现读完不动指针）。 |
+| 🔵14 | ✅ | 隐式 FTPS 默认端口 990（旧实现两个分支都写 21）。 |
+| 🔵15 | ✅ | `partPathOf` 改用 `partNameOf`（`.part` 命名唯一来源契约的最后一处手写）。 |
+| 🔵16 | ✅ | `VfsCapabilities` 注记消费现状（13 位仅 4 位被读取，其余属预留；勿据此驱动行为）。 |
+| 🔵17 | ✅ | 删死字段 `lastKeyWarning`；SshException 不再一律映射「认证失败」——认证阶段在调用点归类 Auth、其余按网络错误（sshd 2.x 无独立认证异常类，替代方案已注明）。 |
+| 🔵18 | ✅ | `VfsRegistry.acquire` 接线 Android 17 局域网授权（`LOCAL_NETWORK_DENIED` 文案此前无人抛出）。 |
+
+> 验证：core 六模块 **62 用例全绿**（vfs-api 17 / vfs-s3 15 / vfs-ftp 4 / vfs-smb 4 / vfs-webdav 17 / vfs-sftp 5；本批新增 15：S3 解析 6 + 分页 1 + SMB 路径 4 + FTP 配置 4）；`app` 单测、transfer / vfs-local / vfs-archive / data / ui 回归全绿（并发构建的产物竞态重试后通过——与第 7 批记录同一现象）。
+> 修复提交：`03ea6aa`（core/vfs 六模块 + 编辑器收尾 + 测试，18 文件，+699/−174）。
 
 ---
 
