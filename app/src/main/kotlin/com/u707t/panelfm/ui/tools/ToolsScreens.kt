@@ -45,6 +45,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.u707t.panelfm.ui.browser.refresh
+import com.u707t.panelfm.ui.browser.refreshAll
 
 // ---------------------------------------------------------------------------
 // 回收站（本地文件：删除 → 回收站，可还原 / 彻底删除）

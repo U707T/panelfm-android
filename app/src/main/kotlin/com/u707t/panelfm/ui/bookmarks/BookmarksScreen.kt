@@ -40,6 +40,10 @@ import com.u707t.panelfm.core.ui.MtListRow
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import com.u707t.panelfm.ui.browser.bookmarks
+import com.u707t.panelfm.ui.browser.openBookmark
+import com.u707t.panelfm.ui.browser.removeBookmark
+import com.u707t.panelfm.ui.browser.reorderBookmarks
 
 /**
  * 书签管理（复刻 MT 的书签面板）：

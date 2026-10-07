@@ -46,6 +46,7 @@ import com.u707t.panelfm.core.vfs.FileMetadata
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.u707t.panelfm.ui.browser.checksumNow
 
 /**
  * APK 信息查看（**只读，非逆向**；复刻 MT 的「APK 信息」入口）：

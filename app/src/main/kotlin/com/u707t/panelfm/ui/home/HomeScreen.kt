@@ -68,6 +68,7 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVolumes
 import com.u707t.panelfm.ui.browser.MessageDialog
 import kotlinx.coroutines.launch
+import com.u707t.panelfm.ui.browser.open
 
 /**
  * 主页（对齐 MT 管理器）：

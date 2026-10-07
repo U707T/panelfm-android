@@ -65,6 +65,7 @@ import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.nio.charset.Charset
 import java.util.regex.PatternSyntaxException
+import com.u707t.panelfm.ui.browser.refreshAll
 
 /**
  * 文本编辑器。
