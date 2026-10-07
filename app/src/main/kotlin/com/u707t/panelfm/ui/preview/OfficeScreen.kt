@@ -122,6 +122,10 @@ private fun OfficeWebView(kind: String, bytes: ByteArray, onPageError: (String) 
                 // （个别渲染库会摸 sessionStorage，且页面只加载我们自己的资产、不联网）
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
+                // 复审 F20：显式关掉两条 file:// URL 的同源放宽（纵深防御；页面全部走
+                // 拦截器提供的同一 https 源，不依赖 file:// 加载）
+                settings.allowFileAccessFromFileURLs = false
+                settings.allowUniversalAccessFromFileURLs = false
                 settings.domStorageEnabled = true
                 settings.setSupportZoom(true)
                 settings.builtInZoomControls = true

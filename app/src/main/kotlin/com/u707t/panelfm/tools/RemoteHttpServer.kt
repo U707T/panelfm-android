@@ -95,9 +95,9 @@ class RemoteHttpServer(private val locator: VfsLocator) {
             val line = reader.readLine() ?: break
             if (line.isEmpty()) break
         }
-        val path = runCatching { URLDecoder.decode(rawPath, "UTF-8") }.getOrDefault(rawPath)
+        val path = decodeRemotePath(rawPath)
         // 安全：规整路径并拒绝任何向上穿越（..），避免通过 HTTP 访问到「服务根」之外的文件
-        val safePath = normalizePath(path)
+        val safePath = normalizeRemotePath(path)
         if (safePath == null) {
             val out = BufferedOutputStream(client.getOutputStream())
             respond(out, 400, "text/plain; charset=utf-8", "非法路径".toByteArray())
@@ -168,22 +168,6 @@ class RemoteHttpServer(private val locator: VfsLocator) {
         return if (idx <= 0) "/" else trimmed.substring(0, idx + 1)
     }
 
-    /**
-     * 路径规整：合并重复斜杠、解析 `.` 与 `..`；任何试图逃出根的路径返回 null（HTTP 400）。
-     * 修复：旧实现直接使用客户端路径，`/../` 可以访问到服务根之外。
-     */
-    private fun normalizePath(raw: String): String? {
-        val segments = ArrayDeque<String>()
-        for (seg in raw.split('/')) {
-            when (seg) {
-                "", "." -> Unit
-                ".." -> if (segments.isEmpty()) return null else segments.removeLast()
-                else -> segments.addLast(seg)
-            }
-        }
-        return "/" + segments.joinToString("/")
-    }
-
     /** HTML 转义（文件名 / 路径注入页面） */
     private fun escapeHtml(s: String): String = s
         .replace("&", "&amp;")
@@ -223,4 +207,36 @@ class RemoteHttpServer(private val locator: VfsLocator) {
         /** 请求头读取 / 响应写入的 socket 超时 */
         const val READ_TIMEOUT_MS = 30_000
     }
+}
+
+// ---------------------------------------------------------------------------
+// 路径解析（顶层 internal：安全关键逻辑，直接被单测覆盖 —— 见 RemoteHttpPathTest）
+// ---------------------------------------------------------------------------
+
+/**
+ * URL 路径的 percent 解码。
+ *
+ * **不要**直接 `URLDecoder.decode(rawPath)`：它的表单语义会把 `+` 解成空格 ——
+ * 文件名里的 `+` 会被当成空格，请求 `/a+b.txt` 会去找 `/a b.txt`
+ * （两个文件同时存在时甚至会**读错文件**）。这里先把 `+` 转义成 `%2B` 再解码。
+ */
+internal fun decodeRemotePath(raw: String): String =
+    runCatching { URLDecoder.decode(raw.replace("+", "%2B"), "UTF-8") }.getOrDefault(raw)
+
+/**
+ * 路径规整（安全关键）：合并重复斜杠、解析 `.` 与 `..`；
+ * 任何试图逃出服务根的路径返回 null（调用方回 HTTP 400）。
+ *
+ * 历史修复：旧实现直接使用客户端路径，`/../` 可以访问到服务根之外。
+ */
+internal fun normalizeRemotePath(raw: String): String? {
+    val segments = ArrayDeque<String>()
+    for (seg in raw.split('/')) {
+        when (seg) {
+            "", "." -> Unit
+            ".." -> if (segments.isEmpty()) return null else segments.removeLast()
+            else -> segments.addLast(seg)
+        }
+    }
+    return "/" + segments.joinToString("/")
 }

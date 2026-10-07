@@ -247,6 +247,9 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 val d = player.duration
                 durationMs = if (d in 1..(24L * 3600 * 1000)) d else 0
                 bufferedMs = player.bufferedPosition.coerceAtLeast(0)
+                // 复审 F19：READY / ENDED 等状态级变化时也刷新一次位置 ——
+                // 只靠「播放中 500ms 轮询」的话，暂停拖动 / 播完时进度条会落后半拍
+                positionMs = player.currentPosition.coerceAtLeast(0)
             }
         }
         player.addListener(listener)

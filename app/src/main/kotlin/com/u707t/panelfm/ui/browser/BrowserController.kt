@@ -1585,14 +1585,6 @@ class BrowserController(private val container: AppContainer) {
     fun recallScroll(side: PaneSide, uri: VfsUri): com.u707t.panelfm.core.common.ScrollMemory.Entry? =
         scrollMemory[side]?.recall(scrollKey(uri))
 
-    /**
-     * 「刷新」语义：用户主动刷新当前目录时，期望回到顶部重新看一遍，
-     * 所以顺手忘掉这个目录的滚动位置（否则刷新完还停在中间，会显得「没刷」）。
-     */
-    fun forgetScroll(side: PaneSide, uri: VfsUri) {
-        scrollMemory[side]?.forget(scrollKey(uri))
-    }
-
     fun createFolder(side: PaneSide, name: String) {
         val dir = pane(side).uri
         if (!isValidChildName(name)) {
