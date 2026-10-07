@@ -54,6 +54,7 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.LocalNetwork
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.ThemeMode
+import com.u707t.panelfm.core.data.next
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.ui.IconTextButton
@@ -202,12 +203,22 @@ fun HomeScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                val themeNext = settings.themeMode.next()
+                val themeIcon = when (settings.themeMode) {
+                    ThemeMode.SYSTEM -> "◐"
+                    ThemeMode.LIGHT -> "☀"
+                    ThemeMode.DARK -> "☾"
+                }
                 IconTextButton(
-                    if (settings.themeMode == ThemeMode.DARK) "☀" else "☾",
-                    contentDescription = if (settings.themeMode == ThemeMode.DARK) "切换到浅色主题" else "切换到深色主题",
+                    themeIcon,
+                    contentDescription = when (themeNext) {
+                        ThemeMode.SYSTEM -> "切换到主题跟随系统"
+                        ThemeMode.LIGHT -> "切换到浅色主题"
+                        ThemeMode.DARK -> "切换到深色主题"
+                    },
                 ) {
                     scope.launch {
-                        container.prefs.setTheme(if (settings.themeMode == ThemeMode.DARK) ThemeMode.LIGHT else ThemeMode.DARK)
+                        container.prefs.setTheme(themeNext)
                     }
                 }
                 Box {

@@ -234,6 +234,54 @@ fun crossPaneLabel(base: String, from: PaneSide): String =
 internal fun menuTargets(selection: List<FileMetadata>, pressed: FileMetadata): List<FileMetadata> =
     if (selection.any { it.uri == pressed.uri }) selection else listOf(pressed)
 
+/**
+ * 「显式目标优先」的取源（F7/F8 的口径固化）。
+ *
+ * 长按菜单等入口传入的显式目标**必须端到端生效**：[override] 非 null（即使是空列表）一律以它为准，
+ * 绝不回退；只有 null 才用 [fallback]（选择集 / 当前目录）。
+ * v1.9.1 的教训：`overrideSources` 参数加了、函数体忘了用 → 静默对整个目录操作。
+ */
+internal fun explicitTargets(override: List<VfsUri>?, fallback: () -> List<VfsUri>): List<VfsUri> =
+    override ?: fallback()
+
+/** 压缩入口的目标解析结果（见 [planCompressTargets]）。 */
+internal data class CompressPlan(val sources: List<VfsUri>, val name: String)
+
+/**
+ * 压缩入口的取源与命名（纯函数 → 可直接回归 F7）：
+ *  - 显式目标优先（同 [explicitTargets]）——「长按这一项 → 压缩」必须只压这一项；
+ *  - 命名：用户填的名字优先；否则按源自动命名（单文件 = 主名、多项 = archive），并补格式后缀。
+ * 返回 null = 没有任何可压缩的项（调用方给出提示，而不是静默改压整个目录）。
+ */
+internal fun planCompressTargets(
+    overrideSources: List<VfsUri>?,
+    fallbackSources: List<VfsUri>,
+    fileName: String?,
+    formatExt: String,
+): CompressPlan? {
+    val sources = overrideSources ?: fallbackSources
+    if (sources.isEmpty()) return null
+    val base = fileName?.trim()?.takeIf { it.isNotEmpty() }
+        ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
+    val name = if (base.endsWith(".$formatExt")) base else "$base.$formatExt"
+    return CompressPlan(sources, name)
+}
+
+/**
+ * 「解压到文件夹…」输入框的路径解析（F10）。
+ *
+ *  - 留空 / 与当前目录相同 → null（保持原「选择当前目录」模式：默认值不改行为）；
+ *  - 否则返回规范化的绝对路径（不以 / 开头自动补 /，末尾多余 / 去掉）。
+ *
+ * 解析结果由调用方转换 VfsUri（相对锚点 = 当前存储 / 压缩包宿主存储）。
+ */
+internal fun typedExtractPath(customPath: String?, currentPath: String): String? {
+    val raw = customPath?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val norm = "/" + raw.trim('/')
+    val current = currentPath.trimEnd('/').ifEmpty { "/" }
+    return if (norm == current) null else norm
+}
+
 /** 状态提示里像"出错"的措辞：这类消息显示更久（审计 U9）。 */
 private val STATUS_ERROR_HINTS = listOf("失败", "错误", "异常", "无法", "⚠️")
 

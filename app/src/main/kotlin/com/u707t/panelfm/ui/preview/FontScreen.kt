@@ -33,6 +33,7 @@ import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
@@ -45,13 +46,15 @@ import java.io.File
 @Composable
 fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val context = LocalContext.current
-    var typeface by remember { mutableStateOf<Typeface?>(null) }
+    var typeface by remember(uri) { mutableStateOf<Typeface?>(null) }
+    /** 解析失败原因（F12：旧实现 `getOrNull()` 吞掉异常 → 页面永远停在「解析字体…」） */
+    var parseError by remember(uri) { mutableStateOf<String?>(null) }
     var sample by remember { mutableStateOf("PanelFM 字体预览 AaBbCc 0123456789 你好，世界") }
     var sizeText by remember { mutableStateOf("") }
     var page by remember { mutableStateOf(0) }
 
     LaunchedEffect(uri) {
-        val tf = withContext(Dispatchers.IO) {
+        val result = withContext(Dispatchers.IO) {
             runCatching {
                 // 缓存名用完整 URI 的 hash（不同目录的同名字体不互相覆盖）
                 val local = File(container.appDirs.tmpDir, "font-${uri.toString().hashCode()}-${uri.name}")
@@ -72,9 +75,13 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                     }
                 }
                 Typeface.createFromFile(local)
-            }.getOrNull()
+            }
         }
-        typeface = tf
+        result.onSuccess { typeface = it }
+            .onFailure {
+                // 失败必须可见：给「失败态」，而不是继续装「加载中」
+                parseError = it.message?.takeIf { m -> m.isNotBlank() } ?: "文件可能已损坏或不是字体格式"
+            }
         sizeText = runCatching {
             val vfs = container.resolveSession(uri)
             vfs?.stat(uri)?.size?.let { Fmt.size(it) }.orEmpty()
@@ -88,6 +95,10 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             onBack = onBack,
         )
 
+        if (parseError != null) {
+            ErrorState("字体解析失败：$parseError")
+            return@Column
+        }
         val tf = typeface
         if (tf == null) {
             LoadingState("解析字体…")

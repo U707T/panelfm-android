@@ -20,12 +20,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
@@ -61,6 +63,24 @@ fun MtSearchDialog(
     var minSizeText by remember { mutableStateOf("") }
     var maxSizeText by remember { mutableStateOf("") }
     var fieldMenu by remember { mutableStateOf(false) }
+    // F16：打开即聚焦输入框（搜索是最高频入口之一；U3 只修了 TextInputDialog 一族）
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(60)
+        runCatching { focusRequester.requestFocus() }
+        keyboard?.show()
+    }
+    val submit = {
+        onSearch(
+            query.trim(),
+            field,
+            recursive,
+            parseSizeText(minSizeText),
+            parseSizeText(maxSizeText),
+        )
+        onDismiss()
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -104,7 +124,15 @@ fun MtSearchDialog(
                         )
                     },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Search,
+                    ),
+                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(
+                        onSearch = { if (query.isNotBlank()) submit() },
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(focusRequester),
                 )
                 Row(
                     Modifier
@@ -163,16 +191,7 @@ fun MtSearchDialog(
         confirmButton = {
             TextButton(
                 enabled = query.isNotBlank(),
-                onClick = {
-                    onSearch(
-                        query.trim(),
-                        field,
-                        recursive,
-                        parseSizeText(minSizeText),
-                        parseSizeText(maxSizeText),
-                    )
-                    onDismiss()
-                },
+                onClick = { submit() },
             ) { Text("确定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

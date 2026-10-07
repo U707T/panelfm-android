@@ -44,8 +44,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 67
-        versionName = "1.9.2"
+        versionCode = 68
+        versionName = "1.10.0"
     }
 
     signingConfigs {

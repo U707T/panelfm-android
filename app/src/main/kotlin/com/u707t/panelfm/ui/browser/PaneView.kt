@@ -88,12 +88,11 @@ private val ROW_HEIGHT = MtSpec.RowHeight
 /**
  * 单个窗格（对齐 MT 管理器 `0x7f0c0033`）：
  *  - 列表首行 `..`；行高固定 48dp、行间 **1px** 分割线（MT `dividerHeight=1px`）
- *  - **左右滑动 ≥24dp 且 |dx| > 2|dy| = 进入多选**（MT `0x7f1106f3`）；继续滑过行间 = 区间跟手（MT `0x7f11062f`）
- *  - **已多选态右滑 ≥48dp = 呼出更多操作**（MT `0x7f110697`；文档 F.5 冲突消解顺序第 5 条）
- *  - **长按 400ms = 锚点 + 多选**；**长按第二项 = 连选区间**（MT `0x7f110631`）
+ *  - **左右滑动 ≥24dp 且 |dx| > 2|dy| = 进入多选并选中该行**（MT `0x7f1106f3`，实机对照为**离散**一次一行）；
+ *    再滑动另一行 = 两项之间的闭区间选中（MT `0x7f11062f` 语义，见 `MtSelection.swipe`）
+ *  - **长按 400ms = 直接弹该项二级菜单**：不改选择、不进多选（MT 实机行为；v1.9.0 已推翻旧模型）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
- *  - 手势挂在**列表**上（一个指针节点）：扫选可以一路扫到屏幕之外（边缘自动滚动），
- *    绑在行上的话行一被回收手势就断了 —— 见 [ListGestures]
+ *  - 手势挂在**列表**上（一个指针节点）；行回收不影响进行中的手势 —— 见 [ListGestures]
  *  - **每窗格两枚 FAB**（复刻 MT A.2）：📋 粘贴（bottom|end 12dp）/ ✕ 关闭（bottom|end 74dp），
  *    50dp / 图标 20dp / 底色 `#FFFF0000`，**显隐由状态决定**（布局里 MT 都写 visible）
  *  - **加载遮罩**：`#66222222` + 转圈 + 「取消」+ 10sp 百分比（MT `09020D/09020E`）
@@ -355,7 +354,7 @@ fun PaneView(
                             skipThumb = listState.isScrollInProgress && settings.skipThumbsWhileScrolling,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
-                            // 跟手预览：只有被扫到的那一行读这个位移（其余行传 null，不参与重组）
+                            // 行动效预览：只有被滑动的那一行读这个位移（其余行传 null，不参与重组）
                             preview = if (previewKey == item.uri.toString()) previewTarget else null,
                             onTap = { handleRowTap(item) },
                             onLongPress = { handleRowLongPress(item) },

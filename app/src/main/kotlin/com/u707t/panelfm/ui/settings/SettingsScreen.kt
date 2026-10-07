@@ -17,6 +17,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -25,6 +26,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.ui.MtScreenTopBar
@@ -118,9 +120,9 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setTapRangeSelect(it) }
         }
         Text(
-            "· 长按 = 锚点 + 进入多选；**长按第二项 = 连选区间**（MT 0x7f110631）\n" +
-                "· 左右滑动 ≥24dp = 进入多选；滑动跨行 = 区间选择（MT 0x7f1106f3 / 62f）\n" +
-                "· 已多选态右滑 ≥48dp = 滑出该项的更多操作（MT 0x7f110697）\n" +
+            "· 长按 = 弹出该项二级菜单（不改选择、不进多选）\n" +
+                "· 左右滑动 ≥24dp = 选中该行进入多选；再滑动另一项 = 连选两项之间的所有项\n" +
+                "· 滑动后点击另一项 = 只加选这两项（点击会清掉滑动锚点，不再连出大区间）\n" +
                 "· 底栏长按「同步」= 过滤；底栏上滑 = 书签（MT 0x7f11028f / 7ca）",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -303,6 +305,14 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
 
     if (editUserAgent) {
         var text by remember { mutableStateOf(settings.userAgent) }
+        // F16：打开即聚焦
+        val uaFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+        val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        LaunchedEffect(Unit) {
+            kotlinx.coroutines.delay(60)
+            runCatching { uaFocus.requestFocus() }
+            keyboard?.show()
+        }
         AlertDialog(
             onDismissRequest = { editUserAgent = false },
             title = { Text("全局 User-Agent") },
@@ -313,7 +323,9 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                         onValueChange = { text = it },
                         label = { Text("User-Agent") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(uaFocus),
                     )
                     Text(
                         "用于 WebDAV 等协议的请求头；改完立即生效（新请求即用新 UA）。留空恢复默认。",

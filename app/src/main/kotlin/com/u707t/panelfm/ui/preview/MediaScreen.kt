@@ -235,6 +235,19 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 // 「错误文案可执行化」的约定一致）
                 error = describePlaybackError(e)
             }
+
+            // U16：状态级变化改用监听器（旧实现 250ms 无条件轮询一切 → 4Hz 重组）
+            override fun onIsPlayingChanged(playing: Boolean) {
+                isPlaying = playing
+                positionMs = player.currentPosition.coerceAtLeast(0)
+                bufferedMs = player.bufferedPosition.coerceAtLeast(0)
+            }
+
+            override fun onPlaybackStateChanged(state: Int) {
+                val d = player.duration
+                durationMs = if (d in 1..(24L * 3600 * 1000)) d else 0
+                bufferedMs = player.bufferedPosition.coerceAtLeast(0)
+            }
         }
         player.addListener(listener)
         onDispose {
@@ -248,15 +261,13 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         }
     }
 
-    // 状态轮询（250ms）
-    LaunchedEffect(player) {
+    // 位置/缓冲轮询：**仅播放中**、500ms 一次（进度条足够顺滑；暂停时不再空转）
+    LaunchedEffect(player, isPlaying) {
+        if (!isPlaying) return@LaunchedEffect
         while (true) {
-            isPlaying = player.isPlaying
             positionMs = player.currentPosition.coerceAtLeast(0)
             bufferedMs = player.bufferedPosition.coerceAtLeast(0)
-            val d = player.duration
-            durationMs = if (d in 1..(24L * 3600 * 1000)) d else 0
-            delay(250)
+            delay(500)
         }
     }
 

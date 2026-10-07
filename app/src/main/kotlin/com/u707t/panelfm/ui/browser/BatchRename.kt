@@ -14,12 +14,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.HistoryButton
@@ -124,6 +126,14 @@ fun BatchRenameDialog(
     var find by remember { mutableStateOf("") }
     var replace by remember { mutableStateOf("") }
     var useRegex by remember { mutableStateOf(false) }
+    // F16：打开即聚焦「命名表达式」
+    val expressionFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(60)
+        runCatching { expressionFocus.requestFocus() }
+        keyboard?.show()
+    }
     val regexError = useRegex && find.isNotEmpty() &&
         runCatching { Regex(find) }.isFailure
 
@@ -139,7 +149,12 @@ fun BatchRenameDialog(
                         onValueChange = { expression = it },
                         label = { Text("命名表达式") },
                         singleLine = true,
-                        modifier = Modifier.weight(1f),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .focusRequester(expressionFocus),
                     )
                     if (patternHistory.isNotEmpty()) HistoryButton(patternHistory) { expression = it }
                 }

@@ -115,7 +115,7 @@ import kotlinx.coroutines.launch
  * 双列主界面（对齐 MT 管理器 · 官方手册 + 截图复刻）：
  *  - **打开即是双列**；顶部 ≡（侧边栏抽屉）+ 面包屑路径 + 统计 + ⋮
  *  - 侧边栏：本地（占用条）/ 网络 / 工具，点击在活动窗口打开；右上 ⋮ = 主题跟随系统 / 添加存储 / 分组 / 设置
- *  - 列表首行 `..`，行高固定；**左右滑动任意项 = 进入多选**（继续滑过行间 = 连续区间选择）
+ *  - 列表首行 `..`，行高固定；**左右滑动任意项 = 进入多选并选中该行**（再滑动另一项 = 连选闭区间）
  *  - 长按松手 = 动作菜单（跨窗格复制/移动走动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已移除）
  *  - 底部 `← → ＋ ⇄ ↑`：＋弹新建菜单；**⇄ 点击 = 交换窗口**（长按 = 过滤）；长按 ↑ = 路径跳转；底栏上滑 = 书签
  *  - 长按文件 → MT 动作菜单（`复制 ->` / `移动 ->`，**箭头指向另一窗口**；带 ● 支持长按单窗口操作）
@@ -162,6 +162,10 @@ fun DualPaneScreen(
     var filterInput by remember { mutableStateOf(false) }
     var showSearch by remember { mutableStateOf(false) }
     var searchResults by remember { mutableStateOf<List<FileMetadata>?>(null) }
+    /** 结果对话框是否显示（F13：与数据分开 —— 关闭后不再被中间/最终结果顶出来） */
+    var searchResultsOpen by remember { mutableStateOf(false) }
+    /** 用户是否主动收起过结果（收起后只在 ⋮ →「搜索结果」重新打开） */
+    var searchResultsDismissed by remember { mutableStateOf(false) }
     var searching by remember { mutableStateOf(false) }
     var searchStopped by remember { mutableStateOf(false) }
     var searchJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
@@ -169,6 +173,8 @@ fun DualPaneScreen(
     /** MT 0x7f110430「已搜索到 %s 个结果，你确定继续搜索？」→ 暂停搜索等用户回答 */
     var searchAsk by remember { mutableStateOf<Pair<Int, kotlinx.coroutines.CompletableDeferred<Boolean>>?>(null) }
     var singleWindowOp by remember { mutableStateOf<TransferOp?>(null) }
+    /** 长按「复制/移动 ->」的显式目标（F8）：确认单窗口操作时按它执行，绝不回退成整个目录 */
+    var singleWindowTargets by remember { mutableStateOf<List<FileMetadata>>(emptyList()) }
     var permissionFor by remember { mutableStateOf<FileMetadata?>(null) }
     var message by remember { mutableStateOf<Pair<String, String>?>(null) }
     var openWithFor by remember { mutableStateOf<FileMetadata?>(null) }
@@ -419,8 +425,9 @@ fun DualPaneScreen(
                                 onCopyTo = { controller.startPickDir(PickDirPurpose.COPY_TO) },
                                 onMoveTo = { controller.startPickDir(PickDirPurpose.MOVE_TO) },
                                 onProperties = { item: FileMetadata -> controller.showProperties(item) },
-                                onShare = { item: FileMetadata ->
-                                    shareItem(container, context, item) { msg -> controller.showStatus(msg) }
+                                onShare = { items: List<FileMetadata> ->
+                                    // F9：顶栏「分享」与长按菜单共用多选实现（旧入口只取第一个文件）
+                                    shareItems(container, context, items) { msg -> controller.showStatus(msg) }
                                 },
                                 onTypedAction = { id, it ->
                                     // 与长按菜单同一套处理（复用同一份实现，避免两处行为漂移）
@@ -850,6 +857,14 @@ fun DualPaneScreen(
         if (!hiddenSub) {
             MtMenuRow(MtIcon.SYNC, "刷新") { showMoreMenu = false; controller.refresh(focusSide) }
             MtMenuRow(MtIcon.SEARCH, "搜索") { showMoreMenu = false; showSearch = true }
+            // F13：结果被用户收起后，从这里重新打开（不再被中间结果自动弹回来）
+            if (searchResultsDismissed && searchResults != null) {
+                MtMenuRow(MtIcon.SEARCH, "搜索结果（${searchResults?.size ?: 0}）${if (searching) " · 搜索中" else ""}") {
+                    showMoreMenu = false
+                    searchResultsOpen = true
+                    searchResultsDismissed = false
+                }
+            }
             MtMenuRow(MtIcon.SELECT_ALL, "全选") { showMoreMenu = false; controller.selectAll(focusSide) }
             MtMenuRow(MtIcon.LOW_PRIORITY, "过滤") { showMoreMenu = false; filterInput = true }
             // 已过滤时给一个显式出口（不必再打开对话框清空）
@@ -1082,8 +1097,15 @@ fun DualPaneScreen(
             onLongAction = { id ->
                 rowAction = null
                 when (id) {
-                    "copy_to" -> singleWindowOp = TransferOp.COPY
-                    "move_to" -> singleWindowOp = TransferOp.MOVE
+                    // F8：把本次菜单的显式目标一起记下来（菜单长按 = 单窗口操作，目标不能丢）
+                    "copy_to" -> {
+                        singleWindowTargets = picked
+                        singleWindowOp = TransferOp.COPY
+                    }
+                    "move_to" -> {
+                        singleWindowTargets = picked
+                        singleWindowOp = TransferOp.MOVE
+                    }
                 }
             },
             onDismiss = { rowAction = null },
@@ -1239,6 +1261,8 @@ fun DualPaneScreen(
                         searching = true
                         searchStopped = false
                         searchResults = emptyList()
+                        searchResultsOpen = true
+                        searchResultsDismissed = false
                         searchJob?.cancel()
                         searchJob = scope.launch {
                             container.prefs.addSearchQuery(q)
@@ -1263,7 +1287,11 @@ fun DualPaneScreen(
                                         gate.await()
                                     },
                                     isCancelled = { !searching },
-                                    onPartial = { partial -> searchResults = partial },
+                                    onPartial = { partial ->
+                                        searchResults = partial
+                                        // 只在用户没有收起结果时自动刷新弹窗（F13）
+                                        if (!searchResultsDismissed) searchResultsOpen = true
+                                    },
                                 )
                             } catch (e: kotlinx.coroutines.CancellationException) {
                                 null        // 取消不是错误；「已停止搜索」已由 onStop 提示过
@@ -1275,6 +1303,11 @@ fun DualPaneScreen(
                             if (outcome != null) {
                                 searchResults = outcome.items
                                 searchStopped = outcome.stopped
+                                if (!searchResultsDismissed) {
+                                    searchResultsOpen = true
+                                } else {
+                                    controller.showStatus("搜索完成：${outcome.items.size} 条（可从 ⋮ →「搜索结果」查看）")
+                                }
                                 if (outcome.stopped && outcome.items.size >= 300) {
                                     controller.showStatus("搜索结果数量过多，已停止搜索")
                                 }
@@ -1286,7 +1319,7 @@ fun DualPaneScreen(
             onDismiss = { showSearch = false },
         )
     }
-    searchResults?.let { results ->
+    if (searchResultsOpen) searchResults?.let { results ->
         MtSearchResultsDialog(
             results = results,
             searching = searching,
@@ -1304,14 +1337,24 @@ fun DualPaneScreen(
             },
             onClear = {
                 searchResults = null
+                searchResultsOpen = false
+                searchResultsDismissed = false
                 searchStopped = false
                 controller.showStatus("已清除搜索")
             },
             onPick = { item ->
-                searchResults = null
+                // F13：收起但保留结果数据（可从 ⋮ →「搜索结果」重开）；后台搜索不再把它顶回来
+                searchResultsOpen = false
+                searchResultsDismissed = true
                 controller.reveal(focusSide, item.uri)
             },
-            onDismiss = { searchResults = null },
+            onDismiss = {
+                searchResultsOpen = false
+                searchResultsDismissed = true
+                if (searching) {
+                    controller.showStatus("搜索继续中（已找到 ${searchResults?.size ?: 0} 条）：可从 ⋮ →「搜索结果」重新打开")
+                }
+            },
         )
     }
     if (refineInput) {
@@ -1351,10 +1394,15 @@ fun DualPaneScreen(
             hint = "单窗口操作：目标仍在当前窗格内，输入目录后立即执行",
             onConfirm = { path ->
                 val dest = focused.uri.withPath(if (path.startsWith("/")) path else "/$path")
-                if (op == TransferOp.COPY) controller.copyWithinPane(focusSide, dest)
-                else controller.moveWithinPane(focusSide, dest)
+                // F8：显式目标必须跟着菜单长按的那次操作走（onDismiss 会在提交后被调用，先取出来）
+                val targets = singleWindowTargets.map { it.uri }
+                if (op == TransferOp.COPY) controller.copyWithinPane(focusSide, dest, targets)
+                else controller.moveWithinPane(focusSide, dest, targets)
             },
-            onDismiss = { singleWindowOp = null },
+            onDismiss = {
+                singleWindowOp = null
+                singleWindowTargets = emptyList()
+            },
         )
     }
     permissionFor?.let { item ->
@@ -1379,15 +1427,30 @@ fun DualPaneScreen(
         val host = encoded?.let { VfsUri.decodeHost(it) }?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
         val archiveParent = pickedArchive?.uri?.parent ?: host?.parent
         val archiveName = pickedArchive?.name ?: host?.name ?: "压缩包"
+        val otherPaneUri = ui.pane(focusSide.other).uri.takeIf { it.scheme != "archive" }
+        // F10：路径输入的解析锚点（压缩包内 = 压缩包宿主存储；否则 = 当前目录所在存储）
+        val pathAnchor = host ?: focused.uri
+        // F10：路径输入的对照基准（与它相同 = 未自定义 → 保持原「选择当前目录」模式）
+        val basePath = if (pickedArchive != null) focused.uri.displayPath
+        else archiveParent?.displayPath ?: focused.uri.displayPath
         MtExtractDialog(
             archiveName = archiveName.substringBeforeLast('.', archiveName),
-            currentDirPath = (pickedArchive?.uri ?: focused.uri).displayPath,
-            otherPanePath = ui.pane(focusSide.other).uri.takeIf { it.scheme != "archive" }?.displayPath,
+            currentDirPath = basePath,
+            otherPanePath = otherPaneUri?.displayPath,
             onDismiss = { extractDirPicker = false; extractDialogFor = null },
-            onConfirm = { target, customPath ->
+            onConfirm = { target, customPath, useOtherPane ->
                 val archiveItem = pickedArchive
                 extractDirPicker = false
                 extractDialogFor = null
+                // 把「目标路径 / 另一窗口路径」解析成真实目标；解析不出来 = null（走选择目录模式）
+                val typed = typedExtractPath(customPath, basePath)
+                val direct: VfsUri? = if (target == ExtractTarget.PICK_FOLDER) {
+                    when {
+                        useOtherPane && otherPaneUri != null -> otherPaneUri
+                        typed != null -> runCatching { pathAnchor.withPath(typed) }.getOrNull()
+                        else -> null
+                    }
+                } else null
                 if (archiveItem != null) {
                     // 长按文件列表里的压缩包：按三项语义解压该压缩包
                     when (target) {
@@ -1395,7 +1458,18 @@ fun DualPaneScreen(
                             controller.extractArchiveTo(archiveItem, it, ownFolder = true)
                         } ?: controller.showStatus("无法确定压缩包所在目录")
                         ExtractTarget.HERE -> controller.extractArchiveTo(archiveItem, focused.uri)
-                        ExtractTarget.PICK_FOLDER -> controller.startPickArchiveExtract(archiveItem)
+                        ExtractTarget.PICK_FOLDER ->
+                            if (direct == null) {
+                                controller.startPickArchiveExtract(archiveItem)
+                            } else {
+                                // F10：先校验目标目录真实存在（输入框里的路径不再被忽略）
+                                container.scope.launch {
+                                    val ok = runCatching { container.locator.find(direct)?.stat(direct)?.isDirectory == true }
+                                        .getOrDefault(false)
+                                    if (ok) controller.extractArchiveTo(archiveItem, direct)
+                                    else controller.showStatus("目标目录不存在或不是文件夹：${direct.displayPath}")
+                                }
+                            }
                     }
                 } else {
                     when (target) {
@@ -1403,10 +1477,18 @@ fun DualPaneScreen(
                             if (archiveParent != null) controller.extractToOwnFolder(focusSide, archiveParent)
                             else controller.showStatus("无法确定压缩包所在目录")
                         ExtractTarget.HERE -> controller.extractTo(focusSide, focused.uri)
-                        ExtractTarget.PICK_FOLDER -> {
-                            // MT 0x7f0c0025：进入「选择当前目录」模式，用户浏览到目标后点底栏的确认按钮
-                            controller.startPickDir(PickDirPurpose.EXTRACT)
-                        }
+                        ExtractTarget.PICK_FOLDER ->
+                            if (direct == null) {
+                                // MT 0x7f0c0025：进入「选择当前目录」模式，用户浏览到目标后点底栏的确认按钮
+                                controller.startPickDir(PickDirPurpose.EXTRACT)
+                            } else {
+                                container.scope.launch {
+                                    val ok = runCatching { container.locator.find(direct)?.stat(direct)?.isDirectory == true }
+                                        .getOrDefault(false)
+                                    if (ok) controller.extractTo(focusSide, direct)
+                                    else controller.showStatus("目标目录不存在或不是文件夹：${direct.displayPath}")
+                                }
+                            }
                     }
                 }
             },
@@ -1705,7 +1787,7 @@ private fun TopActionItems(
     onCopyTo: () -> Unit,
     onMoveTo: () -> Unit,
     onProperties: (FileMetadata) -> Unit,
-    onShare: (FileMetadata) -> Unit,
+    onShare: (List<FileMetadata>) -> Unit,
     /** 按类型的二级动作（压缩包解压 / APK 安装 / APK 信息 / 内置查看） */
     onTypedAction: (String, FileMetadata) -> Unit = { _, _ -> },
 ) {
@@ -1762,8 +1844,8 @@ private fun TopActionItems(
     MtActionButton(MtIcon.INFO, "属性", enabled = picked.size == 1) {
         picked.firstOrNull()?.let(onProperties)
     }
-    MtActionButton(MtIcon.SHARE, "分享", enabled = !anyDirectory && !inArchive) {
-        picked.firstOrNull()?.let(onShare)
+    MtActionButton(MtIcon.SHARE, "分享", enabled = !anyDirectory && !inArchive && picked.isNotEmpty()) {
+        onShare(picked)
     }
 }
 
@@ -1925,14 +2007,6 @@ private fun MtSortManageDialog(
         dismissButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
 }
-
-/** 分享：本地文件走 FileProvider（可分享给任何应用） */
-internal fun shareItem(
-    container: AppContainer,
-    context: android.content.Context,
-    item: FileMetadata,
-    onMessage: (String) -> Unit,
-) = shareItems(container, context, listOf(item), onMessage)
 
 /**
  * 分享（支持多选）：一个文件走 [Intent.ACTION_SEND]，多个走 [Intent.ACTION_SEND_MULTIPLE]

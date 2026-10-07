@@ -27,6 +27,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -150,10 +151,21 @@ fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
 @Composable
 fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
     var apps by remember { mutableStateOf<List<ApplicationInfo>>(emptyList()) }
+    /** U19：加载完成前不显示「0 个」（旧实现先把 0 闪出来） */
+    var loaded by remember { mutableStateOf(false) }
     var status by remember { mutableStateOf<String?>(null) }
+    /** U7b：同一时间只导出一个，防连点并发写同一目录 */
+    var exporting by remember { mutableStateOf(false) }
+    // F16：打开即聚焦搜索框
+    val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(60)
+        runCatching { searchFocus.requestFocus() }
+        keyboard?.show()
+    }
 
     LaunchedEffect(Unit) {
         apps = withContext(Dispatchers.IO) {
@@ -165,12 +177,13 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
                 .filter { it.packageName != context.packageName }
                 .sortedBy { pm.getApplicationLabel(it).toString().lowercase() }
         }
+        loaded = true
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
             title = "已安装应用",
-            subtitle = "${apps.size} 个",
+            subtitle = if (loaded) "${apps.size} 个" else "读取中…",
             onBack = onBack,
         )
         OutlinedTextField(
@@ -180,7 +193,8 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
             singleLine = true,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 12.dp),
+                .padding(horizontal = 12.dp)
+                .focusRequester(searchFocus),
         )
         status?.let {
             Text(it, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary,
@@ -199,9 +213,23 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
                     subtitle = "${info.packageName} · v" + runCatching { pm.getPackageInfo(info.packageName, 0).versionName }.getOrNull().orEmpty(),
                     icon = { FileIcon(name = "app.apk", isDirectory = false, size = 38.dp) },
                     onClick = {
-                        scope.launch {
-                            val out = exportApk(context, container, info)
-                            status = out
+                        // U7b：导出改到容器作用域执行 —— 旧实现用 rememberCoroutineScope，离开本页即被取消；
+                        // 进度直接写 status，完成后同时进浏览器状态栏（返回时能看到结果）
+                        if (!exporting) {
+                            exporting = true
+                            val appLabel = pm.getApplicationLabel(info).toString()
+                            val side = container.browser.state.value.focused
+                            status = "导出中：$appLabel…"
+                            container.scope.launch {
+                                val msg = exportApk(context, container, side, info) { done, total ->
+                                    val pct = if (total > 0) (done * 100 / total) else -1
+                                    status = if (pct >= 0) "导出中：$appLabel $pct%"
+                                    else "导出中：$appLabel " + Fmt.transferred(done, total)
+                                }
+                                status = msg
+                                container.browser.showStatus(msg)
+                                exporting = false
+                            }
                         }
                     },
                     trailing = { Text("导出", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) },
@@ -214,24 +242,36 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
 private suspend fun exportApk(
     context: android.content.Context,
     container: AppContainer,
+    side: com.u707t.panelfm.ui.browser.PaneSide,
     info: ApplicationInfo,
+    onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
 ): String = withContext(Dispatchers.IO) {
     runCatching {
         val src = info.sourceDir ?: return@runCatching "无 APK 路径"
-        val pane = container.browser.state.value.focusedPane
+        val pane = container.browser.state.value.pane(side)
         val label = context.packageManager.getApplicationLabel(info).toString().replace('/', '_')
         // 目标名不能固定成 `$label.apk`：`VfsWriter.commit()`（本地实现）是「先删同名再改名」，
         // 直接写会**静默覆盖**已存在的同名 APK。改用统一的重名策略 `名称 (1).apk`。
         val dest = container.uniqueChild(pane.uri, "$label.apk")
         val vfs = container.locator.find(pane.uri) ?: return@runCatching "当前窗格不可写"
-        val writer = vfs.openWrite(dest, size = File(src).length(), offset = 0L)
+        val total = File(src).length()
+        val writer = vfs.openWrite(dest, size = total, offset = 0L)
         try {
             File(src).inputStream().use { input ->
                 val buf = ByteArray(256 * 1024)
+                var done = 0L
+                var lastTick = 0L
                 while (true) {
                     val n = input.read(buf)
                     if (n < 0) break
                     writer.write(buf, 0, n)
+                    done += n
+                    val now = System.currentTimeMillis()
+                    // 250ms 节流：进度可见但不刷爆重组
+                    if (now - lastTick >= 250) {
+                        lastTick = now
+                        onProgress(done, total)
+                    }
                 }
             }
             writer.commit()
@@ -239,7 +279,8 @@ private suspend fun exportApk(
             runCatching { writer.abort() }
             throw e
         }
-        container.browser.refresh(pane.let { container.browser.state.value.focused })
+        onProgress(total, total)
+        container.browser.refresh(side)
         "已导出 ${dest.name} 到 ${pane.uri.displayPath}"
     }.getOrElse { "导出失败：${it.message}" }
 }
@@ -251,6 +292,7 @@ private suspend fun exportApk(
 @Composable
 fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     var running by remember { mutableStateOf(false) }
     var url by remember { mutableStateOf("") }
     var log by remember { mutableStateOf("") }
@@ -284,7 +326,19 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
                     }
                 }
             }) { Text(if (running) "停止服务" else "启动服务") }
-            Text(url, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+            Text(
+                url,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.weight(1f),
+            )
+            // U11：地址可一键复制（旧实现只能肉眼抄）
+            if (url.isNotBlank()) {
+                TextButton(onClick = {
+                    clipboard.setText(androidx.compose.ui.text.AnnotatedString(url))
+                    log = "已复制到剪贴板：$url"
+                }) { Text("复制") }
+            }
         }
         Text(log, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp))
         Text(

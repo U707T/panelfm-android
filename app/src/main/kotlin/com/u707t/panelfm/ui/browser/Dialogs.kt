@@ -595,6 +595,14 @@ fun MtCompressDialog(
     var toOther by remember { mutableStateOf(false) }
     var formatMenu by remember { mutableStateOf(false) }
     var levelMenu by remember { mutableStateOf(false) }
+    // F16：打开即聚焦「文件名」（留空自动命名，但想命名可直接打字）
+    val fileNameFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(60)
+        runCatching { fileNameFocus.requestFocus() }
+        keyboard?.show()
+    }
 
     val supportsPassword = format.supportsPassword
     val levelApplies = format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR &&
@@ -622,7 +630,12 @@ fun MtCompressDialog(
                     onValueChange = { fileName = it },
                     placeholder = { Text("留空则按选中项自动命名") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .focusRequester(fileNameFocus),
                 )
                 // 格式
                 Text("格式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
@@ -723,11 +736,22 @@ fun MtExtractDialog(
     currentDirPath: String,
     otherPanePath: String?,
     onDismiss: () -> Unit,
-    onConfirm: (target: ExtractTarget, customPath: String?) -> Unit,
+    onConfirm: (target: ExtractTarget, customPath: String?, useOtherPane: Boolean) -> Unit,
 ) {
     var target by remember { mutableStateOf(ExtractTarget.PICK_FOLDER) }
     var customPath by remember { mutableStateOf(currentDirPath) }
+    // F10：旧实现只写不读（死控件）；现在通过 onConfirm 输出，由调用方决定解压目标
     var useOtherPane by remember { mutableStateOf(false) }
+    // F16：打开即聚焦路径框（高频输入不再需要先点一下）
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(target) {
+        if (target == ExtractTarget.PICK_FOLDER) {
+            kotlinx.coroutines.delay(60)
+            runCatching { focusRequester.requestFocus() }
+            keyboard?.show()
+        }
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -756,18 +780,49 @@ fun MtExtractDialog(
                         onValueChange = { customPath = it },
                         label = { Text("目标路径") },
                         singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
+                        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                            imeAction = androidx.compose.ui.text.input.ImeAction.Done,
+                        ),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .focusRequester(focusRequester),
+                    )
+                    Text(
+                        "· 路径与当前目录相同 → 进入「选择当前目录」模式；不同 → 直接解压到该路径\n" +
+                            "· 相对路径会补全为绝对路径（以 / 开头）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp),
                     )
                 }
                 if (otherPanePath != null) {
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clickable { useOtherPane = !useOtherPane }
+                            .clickable {
+                                val checked = !useOtherPane
+                                useOtherPane = checked
+                                // 勾选 = 预填另一窗口路径；取消勾选且未被改过 → 还原默认
+                                customPath = when {
+                                    checked -> otherPanePath
+                                    customPath == otherPanePath -> currentDirPath
+                                    else -> customPath
+                                }
+                            }
                             .padding(top = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Checkbox(checked = useOtherPane, onCheckedChange = { useOtherPane = it })
+                        Checkbox(
+                            checked = useOtherPane,
+                            onCheckedChange = { checked ->
+                                useOtherPane = checked
+                                customPath = when {
+                                    checked -> otherPanePath
+                                    customPath == otherPanePath -> currentDirPath
+                                    else -> customPath
+                                }
+                            },
+                        )
                         Text("基于另一窗口路径（$otherPanePath）", style = MaterialTheme.typography.bodySmall)
                     }
                 }
@@ -775,7 +830,11 @@ fun MtExtractDialog(
         },
         confirmButton = {
             TextButton(onClick = {
-                onConfirm(target, if (target == ExtractTarget.PICK_FOLDER) customPath.trim().takeIf { it.isNotEmpty() } else null)
+                onConfirm(
+                    target,
+                    if (target == ExtractTarget.PICK_FOLDER) customPath.trim().takeIf { it.isNotEmpty() } else null,
+                    useOtherPane,
+                )
             }) { Text("确定") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },

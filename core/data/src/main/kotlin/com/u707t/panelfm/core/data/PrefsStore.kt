@@ -15,6 +15,16 @@ import kotlinx.coroutines.flow.map
 
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 
+/**
+ * 主题快捷按钮的循环顺序（审计 U18）：跟随系统 → 浅色 → 深色 → 跟随系统。
+ * 旧实现只会在 亮/暗 之间切，回到「跟随系统」必须进 ⋮ 菜单。
+ */
+fun ThemeMode.next(): ThemeMode = when (this) {
+    ThemeMode.SYSTEM -> ThemeMode.LIGHT
+    ThemeMode.LIGHT -> ThemeMode.DARK
+    ThemeMode.DARK -> ThemeMode.SYSTEM
+}
+
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     /** 动态取色默认关闭（MT 观感是固定中性色板，设置里可开） */

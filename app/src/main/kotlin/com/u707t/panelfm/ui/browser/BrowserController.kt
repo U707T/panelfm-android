@@ -645,16 +645,15 @@ class BrowserController(private val container: AppContainer) {
         overrideSources: List<VfsUri>? = null,
     ) {
         val st = _state.value
-        val srcPane = st.pane(side)
         val dstPane = st.pane(side.other)
-        val sources = targetSources(side)
-        if (sources.isEmpty()) {
+        // F7：显式目标必须端到端生效 —— 长按「这一项压缩」时不得退化成选择集 / 整个目录
+        val plan = planCompressTargets(overrideSources, targetSources(side), fileName, format.ext)
+        if (plan == null) {
             showStatus("当前目录没有可压缩的项")
             return
         }
-        val base = fileName?.trim()?.takeIf { it.isNotEmpty() }
-            ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
-        val name = if (base.endsWith(".${format.ext}")) base else "$base.${format.ext}"
+        val sources = plan.sources
+        val name = plan.name
         val dest = dstPane.uri.child(name)
         update { it.copy(highlight = true, status = "压缩 ${sources.size} 项 → ${dest.displayPath}") }
         container.scope.launch {
@@ -1815,9 +1814,14 @@ class BrowserController(private val container: AppContainer) {
     fun addToArchive(side: PaneSide) {
         val st = _state.value
         val other = st.pane(side.other)
-        val sources = other.selectedItems.map { it.uri }.ifEmpty { other.items.map { it.uri } }
+        // F14：旧实现在对面**没有选中项**时静默改成「对面整个目录」，与菜单文案「添加对面选中项」不符。
+        // 现在语义与文案一致：没有选中项就提示先选（要整目录请先「全选」）。
+        val sources = other.selectedItems.map { it.uri }
         if (sources.isEmpty()) {
-            showStatus("对面窗格没有可添加的项")
+            showStatus(
+                if (other.items.isEmpty()) "对面窗格为空"
+                else "请先在对面窗格选中要添加的项（把整个目录加进压缩包请先「全选」）"
+            )
             return
         }
         container.scope.launch {
@@ -1892,11 +1896,15 @@ class BrowserController(private val container: AppContainer) {
     /**
      * 把选中项「复制到剪贴板」：记录源 URI 列表（应用内剪贴板，跨窗格 / 跨会话可用）。
      * MT 的剪贴板图标 FAB 是「粘贴」，对应的复制入口在动作菜单。
+     *
+     * F15：没有选择时**不再静默把整个目录放进剪贴板**（旧实现经 `targetSources()` 回退），
+     * 与菜单文案保持一致 —— 提示用户先选中。
      */
     fun copySelectionToClipboard(side: PaneSide, overrideSources: List<VfsUri>? = null) {
-        val sources = overrideSources ?: targetSources(side)
+        val pane = _state.value.pane(side)
+        val sources = overrideSources ?: if (pane.hasSelection) pane.selectedItems.map { it.uri } else emptyList()
         if (sources.isEmpty()) {
-            showStatus("当前目录没有可复制的项")
+            showStatus("请先选中要复制到剪贴板的项（无选择时不取整个目录）")
             return
         }
         clipboard = sources
@@ -1941,14 +1949,20 @@ class BrowserController(private val container: AppContainer) {
     /** 应用内剪贴板（源 URI 列表）。放控制器而不是系统剪贴板：能表达「多项 + 移动语义」 */
     private var clipboard: List<VfsUri> = emptyList()
 
-    fun copyWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.COPY, destDir)
+    fun copyWithinPane(side: PaneSide, destDir: VfsUri, overrideSources: List<VfsUri>? = null) =
+        enqueueWithinPane(side, TransferOp.COPY, destDir, overrideSources)
 
-    fun moveWithinPane(side: PaneSide, destDir: VfsUri) = enqueueWithinPane(side, TransferOp.MOVE, destDir)
+    fun moveWithinPane(side: PaneSide, destDir: VfsUri, overrideSources: List<VfsUri>? = null) =
+        enqueueWithinPane(side, TransferOp.MOVE, destDir, overrideSources)
 
-    private fun enqueueWithinPane(side: PaneSide, op: TransferOp, destDir: VfsUri) {
-        val st = _state.value
-        val srcPane = st.pane(side)
-        val sources = targetSources(side)
+    /**
+     * 单窗口复制 / 移动。
+     *
+     * [overrideSources] = 长按菜单「长按复制/移动 ->」传入的显式目标（F8 修复：旧入口不带目标，
+     * `targetSources()` 在没有选择时回退成**整个目录**，会把整个目录搬走）。
+     */
+    private fun enqueueWithinPane(side: PaneSide, op: TransferOp, destDir: VfsUri, overrideSources: List<VfsUri>? = null) {
+        val sources = explicitTargets(overrideSources) { targetSources(side) }
         if (sources.isEmpty()) {
             showStatus("当前目录没有可操作的项")
             return
@@ -1976,14 +1990,14 @@ class BrowserController(private val container: AppContainer) {
     ) {
         val st = _state.value
         val pane = st.pane(side)
-        val sources = overrideSources ?: targetSources(side)
-        if (sources.isEmpty()) {
+        // F7：显式目标必须端到端生效（长按「这一项」压缩时不能退化成选择集/整个目录）
+        val plan = planCompressTargets(overrideSources, targetSources(side), fileName, format.ext)
+        if (plan == null) {
             showStatus("当前目录没有可压缩的项")
             return
         }
-        val base = fileName?.trim()?.takeIf { it.isNotEmpty() }
-            ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
-        val name = if (base.endsWith(".${format.ext}")) base else "$base.${format.ext}"
+        val sources = plan.sources
+        val name = plan.name
         val dest = pane.uri.child(name)
         launchBusy("压缩 ${sources.size} 项 → $name") { report ->
             // 目标是否是「本次新建」：取消时据此决定是否清理半成品，绝不碰用户原有文件
