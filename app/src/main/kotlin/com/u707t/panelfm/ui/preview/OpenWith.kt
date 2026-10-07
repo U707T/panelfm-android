@@ -62,6 +62,7 @@ enum class PreviewMode(val handlerId: String, val label: String, val icon: MtIco
     IMAGE("image", "查看图片", MtIcon.IMAGE),
     MEDIA("media", "播放音乐/视频", MtIcon.MOVIE),
     PDF("pdf", "查看 PDF", MtIcon.DESC),
+    OFFICE("office", "文档预览", MtIcon.DESC),
     APK_INFO("apk", "APK 信息", MtIcon.ANDROID),
     ARCHIVE("archive", "浏览压缩包", MtIcon.ARCHIVE),
     FONT("font", "查看字体", MtIcon.FONT),
@@ -305,6 +306,7 @@ private fun builtinColor(mode: PreviewMode): Color = when (mode) {
     PreviewMode.IMAGE -> Color(0xFF26A69A)
     PreviewMode.MEDIA -> Color(0xFFE57373)
     PreviewMode.PDF -> Color(0xFFEF5350)
+    PreviewMode.OFFICE -> Color(0xFF5D8AA8)
     PreviewMode.APK_INFO -> Color(0xFF66BB6A)
     PreviewMode.ARCHIVE -> Color(0xFF8D6E63)
     PreviewMode.FONT -> Color(0xFF7E57C2)

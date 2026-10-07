@@ -123,6 +123,8 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 // APK：只读信息（PackageManager 解析），不做 dex/arsc 编辑
                 MimeTypes.Kind.APK -> PreviewMode.APK_INFO
                 MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
+                // Office 文档（docx/xlsx/pptx；旧 .doc/.ppt 进页面后给说明）：只读文档预览
+                MimeTypes.Kind.DOCUMENT -> PreviewMode.OFFICE
                 // 未识别格式：一律文本预览（最多读前 1 MB，界面会标注「已截断」）
                 else -> PreviewMode.TEXT
             }
@@ -150,6 +152,10 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             }
             PreviewMode.APK_INFO -> {
                 ApkInfoScreen(container, item, onBack = onBack)
+                return
+            }
+            PreviewMode.OFFICE -> {
+                OfficeScreen(container, item, onBack = onBack)
                 return
             }
             else -> Unit
@@ -182,6 +188,12 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                         DropdownMenuItem(
                             text = { Text("编辑", color = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
                             onClick = { editing = true; modeMenu = false },
+                        )
+                    }
+                    if (kind == MimeTypes.Kind.DOCUMENT) {
+                        DropdownMenuItem(
+                            text = { Text("文档预览", color = if (!editing && resolved == PreviewMode.OFFICE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.OFFICE; editing = false; modeMenu = false },
                         )
                     }
                     if (kind == MimeTypes.Kind.FONT) {
@@ -243,6 +255,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 PreviewMode.PDF -> PdfScreen(container, item, onBack = onBack)
                 PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
                 PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
+                PreviewMode.OFFICE -> Text("文档预览（只读）", Modifier.padding(16.dp))
                 // 文本 / 未识别 → 文本预览（未识别类型走通用兜底）
                 else -> TextPreview(container, item)
             }

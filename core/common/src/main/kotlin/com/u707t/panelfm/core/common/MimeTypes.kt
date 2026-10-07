@@ -21,6 +21,11 @@ object MimeTypes {
         "bz2" to "application/x-bzip2", "zst" to "application/zstd", "jar" to "application/java-archive",
         "apk" to "application/vnd.android.package-archive", "dex" to "application/x-dex",
         "pdf" to "application/pdf", "doc" to "application/msword",
+        "docx" to "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xls" to "application/vnd.ms-excel",
+        "xlsx" to "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "ppt" to "application/vnd.ms-powerpoint",
+        "pptx" to "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         "ttf" to "font/ttf", "otf" to "font/otf", "ttc" to "font/collection", "woff" to "font/woff",
         "woff2" to "font/woff2", "db" to "application/x-sqlite3", "so" to "application/x-sharedlib",
         "bin" to "application/octet-stream", "iso" to "application/x-iso9660-image",
@@ -28,7 +33,7 @@ object MimeTypes {
 
     fun of(extension: String): String? = map[extension.lowercase()]
 
-    enum class Kind { IMAGE, VIDEO, AUDIO, ARCHIVE, APK, TEXT, FONT, PDF, CODE, OTHER }
+    enum class Kind { IMAGE, VIDEO, AUDIO, ARCHIVE, APK, TEXT, FONT, PDF, CODE, DOCUMENT, OTHER }
 
     fun kindOf(extension: String): Kind = when (extension.lowercase()) {
         "jpg", "jpeg", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "ico", "avif" -> Kind.IMAGE
@@ -38,6 +43,8 @@ object MimeTypes {
         "apk" -> Kind.APK
         "ttf", "otf", "ttc", "woff", "woff2" -> Kind.FONT
         "pdf" -> Kind.PDF
+        // Office 文档：内置只读预览（WebView + 前端渲染库，见 OfficeFormats）
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx" -> Kind.DOCUMENT
         "kt", "java", "py", "js", "ts", "c", "cpp", "h", "sh", "json", "xml", "yml", "yaml", "html", "css", "sql" -> Kind.CODE
         "txt", "log", "md", "ini", "conf", "properties", "csv" -> Kind.TEXT
         else -> Kind.OTHER

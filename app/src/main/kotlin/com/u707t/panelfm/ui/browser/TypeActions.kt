@@ -33,10 +33,11 @@ object TypeActions {
 
     fun isApk(kind: MimeTypes.Kind): Boolean = kind == MimeTypes.Kind.APK
 
-    /** 可直接用内置查看器打开（图片 / 音频 / 视频 / 字体 / PDF / 文本 / 代码） */
+    /** 可直接用内置查看器打开（图片 / 音频 / 视频 / 字体 / PDF / 文本 / 代码 / Office 文档） */
     fun hasBuiltinViewer(kind: MimeTypes.Kind): Boolean = kind in setOf(
         MimeTypes.Kind.IMAGE, MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO,
         MimeTypes.Kind.FONT, MimeTypes.Kind.PDF, MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE,
+        MimeTypes.Kind.DOCUMENT,
     )
 
     /** MT 的内置查看标签（菜单文案；null = 该类型没有内置查看器） */
@@ -46,6 +47,7 @@ object TypeActions {
         MimeTypes.Kind.VIDEO -> "播放视频"
         MimeTypes.Kind.FONT -> "查看字体"
         MimeTypes.Kind.PDF -> "查看 PDF"
+        MimeTypes.Kind.DOCUMENT -> "文档预览"
         MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> "查看文本"
         else -> null
     }

@@ -1391,6 +1391,7 @@ fun DualPaneScreen(
                 OpenWithOption(PreviewMode.FONT, available = kind == MimeTypes.Kind.FONT),
                 OpenWithOption(PreviewMode.PDF, available = kind == MimeTypes.Kind.PDF),
                 OpenWithOption(PreviewMode.APK_INFO, available = kind == MimeTypes.Kind.APK),
+                OpenWithOption(PreviewMode.OFFICE, available = kind == MimeTypes.Kind.DOCUMENT),
                 OpenWithOption(PreviewMode.SYSTEM, available = item.uri.scheme == "local"),
             ),
             defaultMode = openWithDefaultMode,

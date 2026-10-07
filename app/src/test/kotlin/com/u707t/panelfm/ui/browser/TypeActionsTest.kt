@@ -11,6 +11,7 @@ import org.junit.Test
  *  - 压缩包 → 解压三件套 + 浏览压缩包 + 打开方式…
  *  - APK → 安装 / APK 信息 / 提取图标 + 打开方式…
  *  - 文本 / 代码 → 查看文本 + 编辑文本 + 打开方式…
+ *  - Office 文档（docx/xlsx/pptx；含旧 doc/ppt）→ 文档预览 + 打开方式…
  *  - 图片 / 视频 / 音频 / 字体 / PDF → 内置查看 + 打开方式…
  *  - 未识别类型 → 通用兜底：查看文本 + 编辑文本 + 打开方式…（手动选择）
  *  - 目录 → 无类型菜单；压缩包内部 → 去掉解压 / 安装
@@ -69,6 +70,17 @@ class TypeActionsTest {
     @Test
     fun `压缩包内的 APK 不给安装`() {
         assertFalse(ids("apk", inArchive = true).contains(TypeActions.ACTION_INSTALL))
+    }
+
+    @Test
+    fun `Office 文档给文档预览入口`() {
+        listOf("doc", "docx", "xls", "xlsx", "ppt", "pptx").forEach { ext ->
+            val out = ids(ext)
+            assertEquals("$ext 应有文档预览", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
+            assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
+            assertFalse("$ext 不应给编辑文本", out.contains(TypeActions.ACTION_EDIT_TEXT))
+        }
+        assertEquals("文档预览", TypeActions.labelOf(TypeActions.ACTION_OPEN_INTERNAL, TypeActions.kindOf("docx")))
     }
 
     @Test

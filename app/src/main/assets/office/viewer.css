@@ -1,0 +1,104 @@
+/* Office 只读预览的极简样式（观感尽量贴近文档本身，只保证可读、可滚动） */
+html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: #f2f2f2;
+    -webkit-text-size-adjust: 100%;
+}
+
+/* 多工作表标签（只在 xlsx 时由 viewer.js 打开） */
+#toolbar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 10;
+    display: none;
+    gap: 6px;
+    padding: 6px 8px;
+    overflow-x: auto;
+    white-space: nowrap;
+    background: #fafafa;
+    border-bottom: 1px solid #e0e0e0;
+}
+
+#toolbar button {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    font-size: 13px;
+    color: #444;
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 14px;
+}
+
+#toolbar button.active {
+    color: #fff;
+    background: #2f6fed;
+    border-color: #2f6fed;
+}
+
+#content {
+    position: absolute;
+    inset: 0;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+}
+
+#status {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    font-size: 14px;
+    color: #666;
+    text-align: center;
+    background: #f2f2f2;
+}
+
+/* ---- Word：白纸效果 ---- */
+.docx-host {
+    padding: 12px 8px 32px;
+}
+
+.docx-host .docx-wrapper {
+    background: transparent !important;
+    padding: 0 !important;
+}
+
+.docx-host .docx-wrapper > section.docx {
+    margin: 0 auto 12px;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
+}
+
+/* ---- 表格：紧凑边框，可横向滚动（顶部留出工作表标签） ---- */
+.xlsx-host {
+    padding-top: 44px;
+    background: #fff;
+}
+
+.xlsx-host table {
+    border-collapse: collapse;
+    font-size: 13px;
+}
+
+.xlsx-host td, .xlsx-host th {
+    border: 1px solid #d5d5d5;
+    padding: 3px 6px;
+    white-space: nowrap;
+}
+
+/* ---- 幻灯片：灰底 ---- */
+.pptx-host {
+    background: #e9e9e9;
+}
+
+.pptx-host img {
+    max-width: 100%;
+}

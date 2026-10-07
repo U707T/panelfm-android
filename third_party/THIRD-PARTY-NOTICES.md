@@ -31,3 +31,24 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 
 > 说明：这些语法文件只影响编辑器着色；删除它们不会影响其它功能（会退化为纯文本）。
 > 若上游许可证有变动，请同步更新本表。
+
+## 3. Office 文档预览（`app/src/main/assets/office/**`）
+
+「文档预览」页（`ui/preview/OfficeScreen.kt`）里的 WebView 渲染栈，全部为宽松许可（无 copyleft）：
+
+| 文件 | 组件 | 版本 | 许可证 | 体积 |
+|---|---|---|---|---|
+| `vendor/jszip.min.js` | [JSZip](https://github.com/Stuk/jszip) | 3.10.2 | MIT **或** GPL-3.0（本仓库按 **MIT** 使用） | 96 KB |
+| `vendor/docx-preview.min.js` | [docx-preview](https://github.com/VolodymyrBaydalka/docxjs) | 0.4.1 | Apache-2.0 | 76 KB |
+| `vendor/xlsx.full.min.js` | [SheetJS CE](https://git.sheetjs.com/SheetJS/sheetjs) | 0.18.5（npm 最后一个 CE 版） | Apache-2.0 | 864 KB |
+| `vendor/pptx-renderer.es.js` | [@aiden0z/pptx-renderer](https://github.com/aiden0z/pptx-renderer)（浏览器版，自带 JSZip + ECharts） | 1.3.0 | Apache-2.0 | 1.8 MB |
+| `index.html` / `viewer.js` / `viewer.css` | PanelFM 自写（粘合与样式） | — | 本仓库 | ~7 KB |
+
+许可证全文见本目录（`LICENSE-*.txt` / `LICENSE-jszip-MIT.markdown`）。
+
+**更新步骤**：从 npm 取对应 tarball，替换 `dist/` 里的 min 产物即可；
+替换后按 `docs/OFFICE-PREVIEW.md` 的检查清单做一次真机抽验，并同步更新上表版本号。
+
+> 说明：曾评估 `pptx-preview`（体积接近），但其授权条款限定「源码不开放、不得改源码转自有项目」，
+> 不符合「开源依赖」的要求，故改用 Apache-2.0 的 `@aiden0z/pptx-renderer`。
+
