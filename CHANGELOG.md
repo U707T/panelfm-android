@@ -7,6 +7,41 @@
 > 不再作为任何结论的依据（其中大量资源 ID 推断无法从本仓库复核）。这些段落保留为历史记录，
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-05-CODE-TRUTH.md`。
 
+## v1.8.1 — 修「文档预览」整页打不开（`net::ERR_HTTP_RESPONSE_CODE_FAILURE`）
+
+> 一句话：v1.8.0 的文档预览在真机上**整页打不开**（系统错误页 `ERR_HTTP_RESPONSE_CODE_FAILURE`）。
+> 根因在请求拦截：主文档当时是 `loadDataWithBaseURL` 的 `data:` URL，而拦截器对一切
+> 「非 http(s)」请求都回了 404 —— WebView 把「主文档被拦成 404」直接升级成整页网络错误。
+
+### 修了什么
+
+| # | 问题 | 修法 |
+|---|---|---|
+| 1 | `shouldInterceptRequest` 对 `data:` / `blob:` / `about:` 等非 http(s) 请求返回 404 → 主文档直接失败 | 非 http(s) **返回 null**（交回 WebView）；只有 http(s) 才参与拦截 |
+| 2 | 主页面随之从 `loadDataWithBaseURL`（data: URL）改成同源 `https://office.panelfm/office/index.html?kind=…`（与 androidx `WebViewAssetLoader` 同一思路，主文档也是 200） | 拦截规则补 `/office/` 与 `/office/index.html` → `index.html` |
+| 3 | 页面实际拿不到 `kind`（`viewer.js` 从 query 读，URL 里没带）→ 会落到「不支持的文档类型」 | `loadUrl(…?kind=docx/xlsx/pptx)` |
+| 4 | `<script src="./vendor/…">` 解析出 `./` 段，`AssetManager` 不认这类路径 | 页面改用绝对路径 `/office/vendor/…`；拦截器对资产路径做归一化（去空段与 `.`、拒绝 `..`） |
+
+### 顺带加固
+
+- 主框架错误（`onReceivedError` / `onReceivedHttpError`）改成在应用内显示可读文案，不再停在系统错误页；
+- `WebChromeClient.onConsoleMessage` 转发到 `Logx`（tag `OfficePreview`）——以后页内 JS 报错能直接从日志看；
+- DOM storage 打开（个别渲染库会摸 `sessionStorage`）；页面依旧只加载自带资产、不联网；
+- SheetJS 读取改 `new Uint8Array(buf)`（最标准的 `'array'` 输入），表格只取 `<table>` 片段。
+
+### 验证（这次把沙箱能做的核对都做了）
+
+- **URL × 拦截规则静态核对**：页面引用的 7 个资源逐个走一遍拦截规则 —— 全部 200 且文件存在，
+  并显式断言 `data:` 主文档返回 null（正是本次故障那条路径）→ 异常项 0；
+- **Node 冒烟**：SheetJS 真跑通（写入 xlsx → 读回 → `sheet_to_html` 出 `<table>`；旧 BIFF `.xls` 也能解析）；
+  jszip + docx-preview 在模拟浏览器环境加载成功、`parseAsync` 一直跑到 Node 缺的 `DOMParser` 为止；
+- 全量单测 **312 例全绿**；`compileDebugKotlin` / `assembleDebug` / `lintDebug` 通过。
+
+### 仍未验证（必须实机）
+
+WebView 里的真实渲染与手势（沙箱无设备）：docx / xlsx / pptx 各开一个看观感；
+`.doc` / `.ppt` 看说明页；**断网**确认照常可用。
+
 ## v1.8.0 — Office 文档只读预览（docx / xlsx / pptx，WebView + 前端渲染库）
 
 > 一句话：新增「文档预览」——`.docx` / `.xls/.xlsx` / `.pptx` 直接在应用内只读浏览
