@@ -5,7 +5,7 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1–4 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
+> 修复：**第 1–5 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
 
 ---
 
@@ -725,4 +725,187 @@
 
 ---
 
-（后续批次在本文档追加 §5、§6 …）
+## §5 模块审查：core/vfs-archive（2026-10-08 · 第 5 批）
+
+> **结论一句话**：模块内部是高分区域——被 C1–C3 事故锤出来的自研解密读侧、三重路径穿越防御、U4 取消语义、34 用例（含 Python 外部交叉验证）本批真跑全绿；但**加密包的「闭环」只活在测试里**：装配层从未把口令传进 `ArchiveVfs`、UI 无输入入口，用户在应用内依旧「能建不能读」（🔴1）；另有 3 条 🟡（加密 STORED 的 seek 静默乱码 / 隐藏目录过滤失效 / 「同时加密文件名」是无效开关）。
+> 范围：`core/vfs-archive/` 6 文件 / 1,546 行 + 测试 5 文件 / 1,106 行 / **34 用例**（本批 `--rerun-tasks` 重跑，`BUILD SUCCESSFUL`）　等级：🟡（维持——模块实现本身质量高，🔴1 是「模块 ↔ 装配」的断线）
+> 方法：6 源文件 + 5 测试文件全文；34 用例逐条核对；交叉核对装配层（`AppContainer` / `BrowserControllerArchive` / `Dialogs`）与 `LocalVfs` 过滤语义；commons-compress 1.27.1 字节码 javap + JDK `skip` 行为实验。未跑真机。
+
+**开工前基线核对**：本批行号为 `b51c3a2`（第 4 批修复 `16f14ce` + 收口已入档，工作树干净），与本批零交叉；文档插入点 = 末尾 `---` 与收尾备注之间。
+
+### 🔴 阻断性问题（必须修）
+
+#### 1. 加密包读侧在生产装配不可达：口令既没人传、也没处输——「能建不能读」在用户路径上原样复现
+- 位置：`AppContainer.kt:341-345`（`openArchive` 签名无 password）与 `:409`（唯一的应用侧构造 `ArchiveVfs(host, kind, local, env)`，口令缺省 `null`；`ArchiveVfs.kt:57` 的 `password` 是构造器 val，无其它入口）；读条目时 `ArchiveVfs.kt:443` 抛 `Auth("该压缩包已加密，请输入口令")`；app 全仓无压缩包口令对话框（`口令` 全在连接体系，`ArchiveVfs(` 构造点仅此一处）。
+- 问题：用户打开加密 ZIP → 能列表（中央目录可读）→ 打开/预览/解压任一文件 → 报「请输入口令」却**无处输入**，整条读链死路；加密 7z（commons 强制头加密）连 `connect()` 都过不去（`ProtocolError` 里还是底层英文异常）；`testArchive` 把「没口令」逐条计成「损坏」（`BrowserControllerArchive.kt:237-298`）。
+- 为什么：v1.1.0 提交即宣称「加密压缩包闭环（C1–C3）」，`EncryptedArchiveRoundTripTest` 的 9 条端到端用例也全绿——但它用 `mount()` 直接构造 `ArchiveVfs(..., password)`，**恰好绕过了断线的那一层**。用户今天体验到的还是 C1 时代的「自产加密包打不开」，而测试给人「已闭环」的信心。这是本轮最容易被漏判的问题：功能测试全绿 ≠ 用户可达。
+- 修复：① `openArchive` 增加 `password: String? = null` 并透传给构造器（挂载表缓存逻辑不变，无口令→有口令走 `forgetArchive` + 重挂载）；② 读条目捕获 `VfsException.Auth` 时弹「输入压缩包口令」对话框，验证后重挂载重试（会话内记住）；③ `testArchive` 对「需要口令」单独文案，不计损坏；④ 装配层补一条最小接线测试（传参 + 重挂载路径）。
+
+### 🟡 建议修复（应该修）
+
+#### 2. 加密 STORED 条目：`skip`/seek/`readFullyAt` 会在不推进密钥的情况下跳过密文 → 静默乱码
+- 位置：`ZipCryptoStream.kt:79-97`（`DecryptingInputStream` 只重写 `read()`，`skip` 继承 `FilterInputStream` = 裸跳底层密文，密钥状态不动）；触发：`ArchiveVfs.kt:379-397`（`readFullyAt` 的 skip 循环）、`:407`（seek 后重开 + `openEntryStream(path, pos)` 的 skip，`:467-476`）。
+- 问题：加密 STORED 条目上 `readFullyAt(p>0)` 与 `seek(p>0)+read` 返回乱码/错位数据，且 CRC 只在 `pos==0` 全程顺序读才校验（`:409-412`），**错误无声**。DEFLATED 不受影响（JDK `InflaterInputStream.skip` 是读式推进 inflater，本批实验确认 + 仓库的 DEFLATED 随机读用例互证）；现有随机读用例（`EncryptedArchiveRoundTripTest.kt:243`）恰好只盖 DEFLATED，STORED 用例（`:225`）只做全量顺序读。
+- 为什么：静默错数据正是这块代码专门装 CRC、校验字节来防的东西——skip 路径恰好绕开全部防线。一旦 🔴1 接通口令，媒体预览（`MediaDataSource.kt:272` 按 `dataSpec.position` 打开）、编辑器分区读（`EditorFileIo.kt:112`）立即踩中。
+- 修复：在 `DecryptingInputStream` 重写 `skip`，走循环 `read` 进临时缓冲丢弃（自然解密并推进密钥）；把 `:243` 用例参数化为 DEFLATED/STORED 两个变体。
+
+#### 3. `showHidden=false` 与搜索词过滤对「目录」失效：压缩包内隐藏目录永远可见、搜索会拖出无关目录
+- 位置：`ArchiveVfs.kt:258-291`——`childDirs` 在两道过滤之前收集（`:266` 深层合成、`:269` 显式目录），`showHidden`（`:270`）与 `filter`（`:272`）只作用于「叶子为文件」的 items；合成目录在 `:285-287` 无条件补入。对照 `LocalVfs.kt:106-109`（本地对**所有**条目统一过滤，是 `ListOptions` 的全仓语义）。
+- 问题：① 关闭「显示隐藏文件」后，压缩包内 `.git` 一类隐藏目录照常显示；② 搜索 `abc` 时，名字不匹配的目录也会被合成出来、并带出无关层级。目录过滤只在文件路径上生效。
+- 为什么：同一个开关/同一个搜索框，在本地、远程都对，一进压缩包就变样；`ListOptions` 是统一契约，这里私有语义，后续任何复用 `dirPaths` 模式的 VFS 会照抄这个错误。
+- 修复：抽 `visibleDir(name)` = （`showHidden || !name.startsWith(".")`）&&（`filter` 为空 || `name.contains(filter, true)`），用于 `:266/:269` 两处 add；`:285` 合成循环自然继承。补用例（隐藏目录 + filter 命中/不命中）。
+
+#### 4. 「同时加密文件名」是无效开关：`encryptNames` 三处流转零使用，7z 勾与不勾产物等价
+- 位置：`ArchiveCompressor.kt:82`（声明）→ `:90`（传给 `compressSevenZ`）→ `:156-162`（收下从不读）；ZIP 加密路径 `:96` 不传；UI `Dialogs.kt:709-716`（勾选框 `enabled = supportsPassword` + 「7z：文件名一并加密」提示）。
+- 问题：参数全链路无人使用。7z 带口令时 commons-compress 1.27.1 **强制**头加密（javap：`SevenZOutputFile` 无任何 header-encryption 开关），勾/不勾除随机量外产物等价；未勾选时用户会以为文件名可见（对方工具里实际被隐藏）。ZIP 忽略该选项是「有说明的弃权」，7z 是「静默做不到」。
+- 为什么：选项说谎最难排查（换任何工具都复现不出预期）；死参数迟早被某个新调用点当真。若未来要让 7z 真正可选，需换/扩展写侧实现，别在原地假装。
+- 修复：删 `encryptNames` 参数；UI 对 7z 改为固定说明行（「7z 带口令时文件名一并加密（库行为）」）或禁用勾选框；对 ZIP 保留现有说明。
+
+#### 5. 包内编辑三部曲无进度、无取消，且取消会被兜底 catch 报成「失败」
+- 位置：`BrowserControllerArchive.kt:330-345`（删）`:347-361`（改）`:363-389`（加）——三处均 `catch (e: Exception)` 兜底（`:341/:357/:389`）；`ZipEditor.kt:22` 注释「大 ZIP 会 O(size) 重写，UI 上会显示进度提示」与实现（`rewrite` 无进度/取消通道）不符。
+- 问题：整包重写 = 本地 O(包大小) 重写 + 整包回传（大包在 SFTP/SMB 上分钟级），没有进度也没有取消；同时 `CancellationException` 会被兜底 catch 报成「修改压缩包失败：Job was cancelled」——同文件的 `extractArchiveTo`/`compressInto` 都单独 rethrow，这三处与 U4/U5 定下的「取消不是失败」不一致。
+- 为什么：GB 级包编辑时用户被锁在不明进度里，唯一的「取消」是杀进程；catch 的议题现在靠「没有取消按钮」掩盖，一旦补取消就立刻变成可见 bug。
+- 修复：照 U4 接法——`launchBusy` + `ZipEditor.rewrite(onProgress)` + 三处 `catch (e: CancellationException) { throw e }`；最起码先改 catch 与 `ZipEditor.kt:22` 的注释（一分钟的活）。
+
+### 🔵 可选优化（可以修）
+
+6. **整包重写丢条目属性**（`ZipEditor.kt:58-76`）：所有条目被重建为默认 DEFLATED（`STORED→DEFLATED`）；外部属性/权限位、comment、extra 全部丢失（重写一次含 exec 位的包后属性即蒸发）。修复：保留 `method`（STORED 走 `getRawInputStream` 原样搬运）、补拷 `externalAttributes` 与 `comment`。
+7. **空压缩包反复重建索引、旧句柄被直接覆盖**（`ArchiveVfs.kt:142` 用 `index.isNotEmpty()` 当「已连接」标志；`:159/:178` 重开时直接覆盖 `zipFile/sevenZ` 不关旧值）：0 条目的包每次 `list/stat` 都重开一个 `ZipFile` 并丢弃上一个（靠 finalizer 兜底）。修复：加 `indexed` 标志（区分「空」与「未索引」），重开前 close 旧句柄。
+8. **tar.bz2 能创建、不能打开**：`ArchiveCompressor.Format.TAR_BZ2` 可产出，但 `ArchiveVfs.ArchiveKind.ofFileName`（`:76-87`）不认识 `.tar.bz2`。修复：补 `BZip2CompressorInputStream` 读侧（kind 映射 + 包装各一行），或从创建列表撤下。
+9. **压缩源会话缺失被静默跳过**（`ArchiveCompressor.kt:121/:179/:376` 三处 `?: return@forEach`）：条目静默缺席而最终状态仍报「已压缩为 …」。修复：汇总「N 项源不可用（已跳过）」提示，或快速失败。
+10. **ZipCrypto 非 ASCII 口令的字节化**（`ZipCrypto.kt:36`）：`ch.code.toByte()` 是 UTF-16 码元截断，与注释「按平台默认编码取字节」不符、与 7-Zip 等（UTF-8/OEM）互不兼容——对方打的加密包即便口令正确也会报「口令不正确」。修复：两侧统一 `password.toByteArray(UTF_8)`，补非 ASCII 口令用例，并注明旧包兼容性权衡。
+11. **加密 ZIP 条目数 ≥ 65535 静默截断**（`EncryptedZipWriter.kt:208` 两处 `u16(central.size)` 溢出）：与既有 4GB 检查（`:69`）同类，补一条「超过 65535 条目请改用 7z」拦截即可。
+12. **三处无调用 API**：`Format.ofExt`（`ArchiveCompressor.kt:45`）、`Level.ofLabel`（`:63`）、`contentTypeOf`（`:419`）全仓零调用——删除或注明预留。
+
+### 🟢 做得好的地方
+- **路径穿越三重防御**：读取侧 `normalize`（`ArchiveVfs.kt:219-233`）拒绝绝对路径/`..`，写入侧 `safeEntryName`（`ZipEditor.kt:150-162`）覆盖改名与添加，且有专项用例（含测试构造的恶意包）。
+- **C1–C3 读回闭环（读侧部分）**：自研 ZipCrypto 解密 + 「bit3 → DOS 时间高字节」校验字节的正确用法（`ArchiveVfs.kt:433-441`，含踩坑注释）、CRC 终读校验（256 分之一的漏网口令也跑不掉）、Python 交叉验证当外部 oracle——全仓少见的「用外部实现当裁判」的测试设计。
+- **ZipCrypto 单测**：Python 参考向量逐字节、加解密不对称防回归、头随机化——教科书式的自研加密回归。
+- **性能事故真修**：`dirPaths` 一次构建把列目录从 O(n²) 拉回 O(n)（`:108-130`）、顺序读持流不再「每块重开 + skip」（`:404-405` 注释记录旧实现灾难）。
+- **U4 取消语义**：压缩器把 `CancellationException` 原样上抛 + `abort()` 清半成品，并有两条回归用例（`ArchiveCompressorCancelTest`）。
+- **装配层 U4**：`openArchive` 单飞去重防并发下载、远程缓存按 (hash+mtime+size) 失效并清理旧版本（`AppContainer.kt:375-405`）。
+- **数据安全取向**：加密包直接拒绝应用内增删改名（可执行中文文案），不静默降级。
+
+### 安全（轻量两项抽查）
+- 无硬编码密钥（测试口令均为占位符）；条目名 / 重命名 / 添加三处外部输入全有校验（见 🟢）。一句话带过：ZipCrypto 的已知密码学弱点与 `ZipCrypto.kt:83` 用 `java.util.Random` 生成头随机数，均属「与 MT 对齐 + 传统格式」层面的取舍，不另开条目。
+
+### 下一批建议
+- 下一模块：**core/vfs 远程协议**（🟡）——ftp / smb 零测试（571 / 576 行）+ webdav / sftp / s3 的 `readFullyAt` / `seek` / 续传契约与 transfer 衔接（与本批同类「skip 语义」风险的协议侧排查）+ S3 分片上传失败面。
+
+> 备注：本批行号为 `b51c3a2` 基线；会话开始时在途的第 4 批修复已随 `16f14ce` 落地、收口随 `b51c3a2` 入档，与本批零交叉。修复随 `e4dd285` 落地（见下表）。
+
+### 修复记录（第 5 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🔴1 | ✅ | **加密包读侧全链路接线**：`AppContainer.openArchive` 透传口令（不符即重挂载、缓存替换）；`ArchiveVfs.checkPassword()` 三态探测（ZIP：中央目录加密标志 + 试读校验字节；7z：试读内容）；口令缺失/损坏异常映射为中文文案；应用侧 `mountArchiveInteractive()` 统一「进入 / 解压 / 完整性测试」的弹框→重挂载→复检→错误重试；新增「输入压缩包口令」对话框（挂起等待，与冲突框同模式）；`testArchive` 的「需要口令」单独计档，不再误报「损坏」。 |
+| 🟡2 | ✅ | `DecryptingInputStream` 重写 `skip`（读式丢弃、经解密推进密钥）：加密 STORED 的 seek / readFullyAt 不再静默乱码。用例：STORED 随机读 + seek 回归 1 例。 |
+| 🟡3 | ✅ | `list()` 抽出 `visibleDir()`：隐藏 / 搜索过滤对（合成）目录生效，与 `LocalVfs` 同语义。用例 1 例。 |
+| 🟡4 | ✅ | 删「同时加密文件名」死开关 + 如实文案。**实测修正**：commons-compress 1.27.1 的 7z 写侧**不加密文件头**（探针 + raw 字节：next header = `0x01` 明文头）——原审查文字里「强制头加密」不成立，真实行为始终是「内容加密、文件名可见」；相关旧注释同步更正。 |
+| 🟡5 | ✅ | `ZipEditor.rewrite` 增 `onProgress` + `ensureActive`；包内增删改三入口改 `launchBusy`（进度 + 取消，取消只回滚临时区）；`CancellationException` 不再被兜底 catch 报成失败。用例：取消回归 1 例。 |
+| 🔵6 | ✅ | 重写保留条目属性：STORED 走 raw 搬运（带 size / crc）、补拷 `externalAttributes`（权限位）与 `comment`。用例 1 例。 |
+| 🔵7 | ✅ | `indexed` 标志区分「空」与「未索引」；重建前先关旧句柄；`close()` 复位。用例：空包列目录稳定性 1 例。 |
+| 🔵8 | ✅ | tar.bz2 读侧（`ArchiveKind.TAR_BZ2` + `BZip2CompressorInputStream`）。用例：创建 + 回读 1 例。 |
+| 🔵9 | ✅ | 源会话缺失静默跳过 → 快速失败（`ArchiveCompressor` ×3 + `ZipEditor.additions`）。用例 1 例。 |
+| 🔵10 | ✅ | ZipCrypto 非 ASCII 口令改 UTF-8 字节（Python zipfile 交叉验证）。用例 1 例。 |
+| 🔵11 | ✅ | 加密 ZIP 条目数 ≥ 65535 拦截（`EncryptedZipWriter.finish()`）。 |
+| 🔵12 | ✅ | 清死 API：`Format.ofExt` / `Level.ofLabel` / `contentTypeOf`。 |
+
+> 验证：`core:vfs-archive` 测试 **46 例全绿**（本批新增 12：口令探测 4 / STORED skip 1 / ZIP 过滤 1 / 空包 1 / tar.bz2 1 / 源缺失 1 / ZipEditor 2 / 非 ASCII 1）；`app` 单测全绿；`compileDebugKotlin`（core + app）全绿。
+> 修复提交：`e4dd285`。
+> 说明：口令的「读时重试」未做全链路拦截（预览 / 编辑器等读取失败仍只给文案，回到压缩包重新进入即可再次触发弹框）；如需可把 `VfsException.Auth` 接到统一重试入口，另立项。
+
+---
+
+## §6 模块审查：core/vfs 远程协议（webdav / ftp / sftp / smb / s3）（2026-10-08 · 第 6 批 · 五协议联合）
+
+> **结论一句话**：S3 的列表 XML 手写状态机有一个必现错误——列任何「含子目录的非根目录」都会**丢第一个子目录**，目录里同时有文件时还会把最后一条文件复制成一个**同名假目录**（kxml2 2.3.0 实物逐行实证）；此外 FTP 的控制连接模型（普通命令不在锁内）与编辑器保存的失败清理（FTP 上会泄漏控制锁导致会话死锁）各带一颗雷。webdav / sftp / s3 共 30 用例本批 `--rerun-tasks` 强制重跑全绿；ftp / smb 571 / 576 行仍为零测试。
+> 范围：5 模块 / 15 源文件 / 3,767 行（webdav 839 · ftp 571 · sftp 777 · smb 576 · s3 1,004）+ 测试 3 模块 / 617 行 / 30 用例。等级：**🟡 维持**（缺陷各有清晰修法，本批未发现 S3 列表级之外的系统性损坏面）。
+> 方法：15 文件全量通读 + 全仓交叉取证（TransferTask 生命周期 / AppContainer 装配 / SessionLocator / PreviewScreen.skip / EditorFileIo）+ **kxml2 2.3.0（Gradle 缓存实物，Android 内置 KXmlParser 的上游）把 `S3Client.listObjects` 解析循环逐行翻译为 JVM 程序、喂 7 组 AWS 风格响应样例（紧凑 / 缩进 / 分页 / 根目录）**。未跑真机。
+>
+> **开工前基线核对**：HEAD `b51c3a2 → d117924`（会话期间第 2 批收口入档）；工作树同时有**第 5 批修复会话在途**（vfs-archive / browser / AppContainer 口令接线等），与本批 5 个协议模块**零文件交叉**；本批引用行号已按当前工作树逐条实测校准。
+
+### 🔴 阻断性问题
+
+**1. S3 列表解析：`key` 残留顶替第一个 `<CommonPrefixes>` —— 丢子目录 / 假目录，必现**
+- 位置：`S3Client.kt:202`（`key` 是跨条目复用的共享变量）、`:226`（`"prefix" -> if (text.isNotBlank() && (key.isEmpty())) key += text`）、`:232-240`（END 分支：`contents` 落条后**不清 key**，`commonprefixes` 拿残留 key 直接落条）。
+- 问题：`key` 的清理点错位（只在 `</CommonPrefixes>` 清）导致两种必然污染——① 响应回显的 `<Prefix>dir/</Prefix>`（请求带前缀时**必然存在**）先占住 key；② 上一条 `<Contents>` 的文件名残留在 key。两者都会在下一个 `</CommonPrefixes>` 被当作「该目录的前缀」落条，而组内真正的 `<Prefix>` 文本因 `key.isEmpty()` 门槛被跳过。实测（A：2 文件+2 子目录 / B：2 子目录）：**A 丢 `s1/` 且 `f2.txt` 复制为同名假目录；B 丢 `s1/`**；只有根目录（回显为空）不受影响。另：同一状态机对缩进格式响应会把空白文本读进 key / size，并覆盖 `IsTruncated` / `NextContinuationToken`（D2 实证：truncated 被清回 false、token 清空、size=0）——触发条件是非紧凑 XML，一并修掉。
+- 为什么：这是 S3 日常浏览的**主路径**——「文件夹少一个 + 多出一个点进去是文件的『文件夹』」；自 v0.3.0（`08387e7`）原样存在两个大版本，因为 5 条 S3 测试全部只覆盖签名与路径（`S3SigningPathTest` / `SigV4Test`），解析层零测试（单测里 `android.util.Xml` 是桩，是历史障碍）。
+- 修复：重写为「父元素感知、每条目独立临时变量」的纯函数 `parseListResult(parser)`：回显 Prefix 不进任何 key；`CommonPrefixes` 只认组内子元素；TEXT 一律 `trim` 后非空才处理。补样例驱动回归（`testImplementation("net.sf.kxml:kxml2:2.3.0")` 驱动纯函数即可绕开 android.util.Xml 桩——kxml2 正是 Android 实现的上游），样例直接取自本批 A/B/D2 三例。
+
+### 🟡 建议修复
+
+**2. 编辑器保存（saveText）失败无任何 writer 清理——FTP 上会泄漏控制锁，整个会话永久卡死**
+- 位置：`EditorFileIo.kt:177-193`（`openWrite` 之后没有 try / finally；异常直接上飘到 `:193` 的 catch 只报「保存失败」）。
+- 问题：六个 `openWrite` 调用方里**唯一**没做生命周期清理的（TransferTask / ArchiveCompressor ×3 / ZipEditor / BrowserFileActions / ToolsScreens / 两个 touch 全部实现「失败 abort」）。后果分协议：**FTP**——对象连同 `controlMutex` 锁一起被丢（`FtpVfs.kt:449` 加锁后无人调 `:499 abort` / `:514 close`）→ 该会话后续所有操作在 Mutex 上无限等待，只能断开重连；WebDAV → 服务器遗留 `.name.panelfm.part`；S3 → 遗留未完成 multipart 分片（占空间、不显示）；SFTP / SMB → channel / handle 泄漏（SMB 的 part 句柄会锁在服务器上）。
+- 为什么：编辑器保存是远程文件高频操作，一次网络闪断或中途取消就留下一处泄漏；对照 `TransferTask.kt:786-798` 的成熟模式（可续传→`close()` 保断点 / 否则 `abort()`），此处照抄即可。
+- 修复：`try { write → commit } catch (e) { if (resumable) runCatching { close() } else runCatching { abort() }; throw e }`（可再补 finally close）。
+
+**3. FTP 控制连接串行模型半途而废：普通命令根本不在锁内**
+- 位置：`FtpVfs.kt:99`（`connected()` 的 withLock 只包住「建连接」）、`:150-153`（`withControl` 拿到 client 后在**锁外**执行 block）——list / stat / mkdir / delete / rename / setModified 全部如此；而 FtpReader / FtpWriter 反而手动持锁（`:396`、`:449`）。
+- 问题：两个并发命令（双窗格同 FTP、刷新 + 传输、批量删除 + 浏览）会同时往**同一条** FTP 控制连接写命令读回复——commons-net 的 FTPClient 非线程安全，响应交错 = 命令与回复错配。另一面：长传输持锁到 `close()` 期间其它命令**无限等待、无超时无提示**。两个缺口是同一个「控制连接串行」意图的两半。
+- 为什么：`:41` 的注释白纸黑字写着「控制连接串行（controlMutex）」，实现只串行了连接建立——是漏改不是取舍；FTP 是分诊表里零测试的协议，这类并发面只能靠审计发现。
+- 修复：`withControl` 改为 `controlMutex.withLock { block(client) }`（建连与命令共用一把锁）；锁等待加 `withTimeoutOrNull` 并在超时时报「控制连接忙（可能正在传输）」而不是无限挂起。
+
+**4. FTP 上传无原子落位：直接写目标文件，失败/取消会连累原文件**
+- 位置：`FtpVfs.kt:447-468`（`storeFileStream(uri.path)` 直写目标）、`:487-497`（commit）、`:499-508`（abort 里 `:505 deleteFile(uri.path)`）、`:514`（close）。
+- 问题：与 SFTP / SMB / WebDAV / 本地的 `.part` 落位设计相反——写侧直接对**目标名**开流，覆盖场景下原文件当场被截断；失败后 `abort()` 还把目标整个删掉（半成品与原文件一起没了）。`close()` 路径则留下半写文件。
+- 为什么：注释只解释了「不做偏移续写」（服务器行为不一致），没解释为什么连 `.part` 也不用；FTP 的 RENAME 是标准命令，同款方案 SFTP / SMB 已在用。覆盖上传中断 = 用户数据损失，这是本模块数据安全面的最大缺口。
+- 修复：写 `.name.panelfm.part`，commit 时 `deleteFile(target)`（若存在）+ `rename(part → target)`（或 RNFR/RNTO）；abort 只删 part，不再碰目标名。`resumable = NONE` 的整文件重传语义保持不变。
+
+**5. SMB rename：目录改名必失败；源不存在时还会凭空造一个空文件**
+- 位置：`SmbVfs.kt:325-343`（rename 先 `openHandle(..., write = true)`）、`:378-383`（openHandle 固定 `FILE_NON_DIRECTORY_FILE` + `FILE_OPEN_IF`）。
+- 问题：`FILE_NON_DIRECTORY_FILE` = 「打开对象必须是文件」——对目录 open 直接失败 → **SMB 上文件夹改名 / 移动永远报「重命名失败」**；`FILE_OPEN_IF` = open-or-create——源不存在时不报错，而是**创建一个 0 字节文件再把它改名过去**（「重命名一个不存在的文件」的净效果是源位置多出一个空文件）。
+- 为什么：目录改名 / 移动是 SMB 日常操作（现在只能报错收场）；「造空文件」更坏——把它从「可感知的失败」变成「静默脏写」，SMB 无回收站，用户事后根本不知道这个 0 字节文件从哪来。
+- 修复：rename 前先 `getFileInformation` 判型（或 `folderExists`）；`openHandle` 增 `forDirectory` 分支（目录用 `share.openDirectory` / 不带 NON_DIRECTORY 选项）；重命名场景改用 `FILE_OPEN`（纯打开、不创建）。
+
+**6. WebDAV 对「服务器忽略 Range」零校验：编辑器 / 预览会静默读到错位数据**
+- 位置：`WebDavVfs.kt:365-388`（ensureStream 请求 `Range: bytes=$pos-` 后直接假定流从 pos 开始）、`:377`（`if (!r.isSuccessful && r.code != 206)`——服务器返回 200 全量也照单全收）、`:350-359`（readFullyAt 同款）。
+- 问题：HTTP 允许服务器忽略 Range 返回 200 全量 body。此时流从文件头开始、代码却按 `pos` 定位——编辑器第 N 页会显示第一页内容且后续顺序读全部错位（改完保存 = 错数据回写）；`readFullyAt` 返回整文件而非请求窗口。没有任何响应校验兜底（对比：S3 / FTP 的 Range 语义由服务端协议保证，这里最脆）。
+- 为什么：错位数据会一路流进编辑器「显示 → 保存」闭环（静默数据损坏）；不尊重 Range 的服务器不多但确实存在，而修复只是零成本的响应码断言——不校验等于把「偶尔错数据」当成可接受风险。
+- 修复：两处断言 `r.code == 206 || (r.code == 200 && pos == 0L)`；不符时要么本地 skip 掉 pos 字节，要么抛 `ProtocolError`（宁报错不静默错数据）。
+
+**7. S3 列表无分页：>1000 个子项静默只显示第一页**
+- 位置：`S3Vfs.kt:119`（单次 `listObjects`，无 continuation 循环；删除 / 复制路径反而有完整翻页 `:209-213`、`:245-252`）。
+- 问题：UI 没有「加载更多」，`list()` 也不翻页——超过 1000 个条目的目录只显示按 key 序的前 1000 条，无任何提示（S3 相册 / 备份目录常见）。
+- 为什么：S3 相册 / 备份目录破千很常见；「少一半且无提示」会直接误导判断——用户把看不到当成不存在，进而重复上传或误以为文件已丢。
+- 修复：`list()` 内补 `do { page } while (truncated && token != null)` 收集（解析层在紧凑响应下已能正确读出 truncated / token，见本批 D_page 实证）；若担心大目录渲染，至少给「仅显示前 1000 项」提示。
+
+**8. SMB 根路径：`split()` 先抛致两处检查成死代码，「列出所有共享」从未实现**
+- 位置：`SmbVfs.kt:148-159`（split 对空路径直接抛 ProtocolError）、`:206-212`（stat 的 isRoot 分支在 split 之后，到不了）、`:164-171`（list 同款）、`SmbConfig.kt:11`（注释「空 = 列出所有共享」）。
+- 问题：不填共享名时用户看到的是「协议错误：请在连接设置里指定共享名（如 public / media）」——而那两句精心写的「或在地址里用 /共享名 进入」引导文案（Unsupported 分支）是**死代码**；Config 承诺的「空 = 列出所有共享」能力在实现里不存在（SMBJ 有 `session.listShares()` 可用）。
+- 为什么：这是 SMB 连接的第一次体验——不填共享名是常态（用户未必知道共享名），当前只能拿到一句「协议错误」；而 Config 注释承诺的正是「让用户从共享列表里选」，不是让用户猜。
+- 修复：把 isRoot 判断提到 split 之前（或让 split 返回可空）；「列出所有共享」要么实现、要么删掉 Config 注释与死分支、只保留一条文案。
+
+**9. FTP / SMB 零测试债（571 / 576 行），S3 解析实测再证「协议层必须有测试」**
+- 位置：`core/vfs-ftp/`（无 test 源集）、`core/vfs-smb/`（无 test 源集）、`core/vfs-s3/src/test`（仅签名 / 路径）。
+- 问题：本批 🔴1 能潜伏两个大版本，直接原因就是解析 / 协议层零覆盖；FTP 是下载上传高频协议、SMB 是局域网主协议，全部行为只靠真机手测。
+- 为什么：🔴1 就是最直接的代价——「目录里恰好有子目录」这种手测不会系统覆盖的组合，让一个必现 bug 活过了两个大版本；FTP 的并发与清理路径（🟡2/3/4）同样属于「手测撞不上、出事就是疑难杂症」的类别，没有回归测试等于每次修复都在赌。
+- 修复：FTP——按 `SftpVfsTest` 的内嵌服务器模式补最小闭环（连接 / 列表 / 上传 / 删除 / 下载）；SMB——把 `split` / `partRel` / 偏移续写语义抽成纯函数补单测 + 列手动测试清单；S3——解析重写后必须带样例测试（见 🔴1 修复栏的 kxml2 方案）。
+
+### 🔵 可选优化
+
+**10.** SMB 连接建立无互斥（`SmbVfs.kt:101-146` `connectBlocking` 无锁；并发首开会双连并覆盖 `client/connection/session` 引用 → 泄漏一个连接）——修复 3 行（Mutex），对照 SFTP / FTP 均有锁；**11.** S3 `mutex` 过宽且不一致（`S3Vfs.kt:69`：包住 list / stat / delete 等，又漏 touch / openWrite；S3 无共享可变状态可护——建议删掉或注释动机）；**12.** S3 目录删除逐条 `deleteObject`（`S3Vfs.kt:209-213`：10 万文件 = 10 万请求；S3 原生有每批 1000 的 DeleteObjects 批量接口未用）；**13.** `FtpReader.readFullyAt` 契约违约（`FtpVfs.kt:378-393`：读了流但不更新 `pos`，与顺序 read 混用会带偏位置——当前全仓零消费，属预防性修复；要么实现为独立短流、要么文档化限制）；**14.** `FtpConfig.kt:27` 死分支（FTPS 两个分支都返回 21；隐式 TLS 应为 990）；**15.** WebDAV 是 `.panelfm.part` 唯一手写处（`WebDavVfs.kt:297-301`；契约 `VfsStreams.kt:21-23` 明说「必须用同一个名字，任何一处改动都会让续传悄悄失效」——改用 `partNameOf`）；**16.** `VfsCapabilities` 13 字段仅 4 个被消费（rename / serverSideCopy / resumable / permissions；`rangeRead/rangeWrite/space/symlinks/recursiveDelete/touch/setModified/streamingList/writable` 零读取——各协议 `recursiveDelete` 填法还不一致（webdav/ftp/s3 为 true、sftp/smb 为 false）却无人验证），删掉或注明预留；**17.** `SftpSession.kt:175` 把所有 `SshException`（含连接中断）一概映射成「认证失败」——用 `UserAuthException` 细分；**18.** 死承诺与死字段：`LOCAL_NETWORK_DENIED` 文案（`VfsExceptions.kt:20/47`）无人抛出且 `VfsEnv.kt:15 localNetworkAllowed` 传入后零消费（「Android 17 未授权时给明确错误」未接线），`SftpSession.kt:47 lastKeyWarning` 声明后从未赋值使用。
+
+### 🟢 做得好的地方
+
+- **S3 签名体系**：`SigV4Test` 对 AWS 官方向量逐字节一致 + `S3SigningPathTest` 的「发送路径 == 签名路径」不变量（锁死 `+`→`%2B`、表单解码两个历史坑）——全仓外部契约测试的标杆；这正是 🔴1 修复模板：解析层值得同等待遇。
+- **SFTP 真服务器端到端测试**：内嵌 MINA SSHD（连接 / 建目录 / 上传 / 偏移续传 / 下载 / 重命名 / 删除 / 随机读 / 错误密码，5 用例）；跳板机两个历史 bug 的正确姿势注释（`break` 而非 `return@repeat`、`SshdSocketAddress` 非 `InetSocketAddress`）；TOFU 指纹变化拒绝带人类可读操作指引。
+- **WebDAV 自研重定向拦截器**（307/308 保方法保 body、跨主机剥 Authorization、根尾斜杠保留）+ 17 用例覆盖；`DavXml` 的 `?c=` query 保留修复（当年「存储会话不可用」的根因，带回归测试）。
+- **`.part` 原子落位家族**（SFTP / SMB / WebDAV / 本地 + 引擎 `partNameOf` 统一）与 `TransferTask.kt:786-798` 的 writer 生命周期契约（可续传→close 保断点 / 否则 abort）——本批 🟡2 正是对照它抓出的漏网。
+- **诚实的能力声明**：FTP / S3 对「上传偏移续写不稳定」显式 `resumable = NONE` 并拒绝 offset（宁重传不写坏）；S3 multipart 边传边分（8 MB 内存地板）+ ETag 校验 + CDN 直链。
+
+### 安全（轻量两项抽查）
+
+- 无硬编码凭据（Kotlin 全仓；测试里 `AKIA…EXAMPLE` 为 AWS 公开文档值）。
+- 外部输入：S3 key 逐段 RFC 3986 编码（含测试）；一句话提及——FTP 路径未做控制字符剥离、直接进入 commons-net 命令拼接（其 3.13 是否逐方法防护未核实），建议在 FtpVfs 入口统一拒绝 CR / LF；按约定不展开。
+
+### 下一批建议
+
+- 下一模块：**app/ui/connections**（🟡）——`ConnectionEditScreen.kt` 710 行 + 深缩进；重点：凭据写入 / 编辑回显的 secret 生命周期（`SecretStore` 与 `disconnectConnection` 的衔接）、选项面板（trustSelfSigned / 编码 / 跳板机字段）与各协议 Config 的一致性、测试连接路径。说「继续」即开审。
+
+> 备注：本批行号为 `d117924` 基线（会话期间自 `b51c3a2` 前进：第 2 批收口；工作树同时有第 5 批修复会话在途——vfs-archive / browser / AppContainer 等，与本批零交叉；AppContainer 两处引用已按在途版校准）。未提交，修复记录表待修复会话补。
+
+---
+
+（后续批次在本文档追加 §7、§8 …）
