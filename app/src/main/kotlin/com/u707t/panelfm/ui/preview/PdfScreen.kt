@@ -76,7 +76,7 @@ fun PdfScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit) {
         )
 
         when {
-            error != null -> ErrorState("PDF 预览失败：$error\n（可在 ⋮ 菜单点「Hex」查看原始数据）")
+            error != null -> ErrorState("PDF 预览失败：$error")
             pdfFile == null -> LoadingState("正在打开 PDF…")
             else -> PdfPager(pdfFile!!, onPageCount = { pageCount = it })
         }

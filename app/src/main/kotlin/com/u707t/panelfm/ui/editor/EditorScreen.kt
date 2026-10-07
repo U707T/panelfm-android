@@ -3,6 +3,8 @@ package com.u707t.panelfm.ui.editor
 import android.graphics.Typeface
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -99,6 +101,11 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var charCount by remember { mutableIntStateOf(0) }
     var lineTotal by remember { mutableIntStateOf(1) }
     var languagesReady by remember { mutableStateOf(false) }
+    var languageDialog by remember { mutableStateOf(false) }
+    var manualLanguage by remember { mutableStateOf(false) }
+    var autoScope by remember { mutableStateOf<String?>(null) }
+    var currentExt by remember { mutableStateOf("") }
+    var wordwrap by remember { mutableStateOf(false) }
     var confirmDiscard by remember { mutableStateOf(false) }
     var showMenu by remember { mutableStateOf(false) }
     var gotoLineDialog by remember { mutableStateOf(false) }
@@ -131,6 +138,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val appliedVersion = remember { intArrayOf(-1) }
     val appliedLanguage = remember { arrayOf<Any?>(NoLanguage) }
     val appliedDark = remember { arrayOfNulls<Boolean>(1) }
+    val appliedWordwrap = remember { arrayOfNulls<Boolean>(1) }
 
     val highlightActive = charCount <= HL_MAX_CHARS
 
@@ -140,6 +148,21 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         applyText = textVersion to text
         charCount = text.length
         lineTotal = text.count { it == '\n' } + 1
+    }
+
+    /** 「语法」选择：null = 自动识别；空串 = 纯文本；其余 = scope。按扩展名记忆。 */
+    fun chooseLanguage(target: String?) {
+        languageDialog = false
+        if (target == null) {
+            manualLanguage = false
+            scopeName = autoScope
+            scope.launch { container.prefs.setEditorLangOverride(currentExt, null) }
+        } else {
+            manualLanguage = true
+            scopeName = target.ifEmpty { null }
+            scope.launch { container.prefs.setEditorLangOverride(currentExt, target) }
+        }
+        wordwrap = defaultWordwrap(scopeName)
     }
 
     /** 离开编辑器：未保存时弹「保存 / 放弃 / 取消」，避免手势返回静默丢修改 */
@@ -168,7 +191,15 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
             meta = info
             originalMode = info.permissions
-            scopeName = EditorLanguages.scopeOf(info.name.ifEmpty { uri.name })
+            val fileName = info.name.ifEmpty { uri.name }
+            val auto = EditorLanguages.scopeOf(fileName)
+            autoScope = auto
+            currentExt = fileName.substringAfterLast('.', "").lowercase()
+            // 「语法」手动选择按扩展名记忆（设置里持久化）；没有记录 = 自动识别
+            val override = container.settings.value.editorLangOverrides[currentExt]
+            manualLanguage = override != null
+            scopeName = override ?: auto
+            wordwrap = defaultWordwrap(override ?: auto)
             if (info.size > MAX_EDIT_SIZE) {
                 readOnly = true
                 paged = true
@@ -401,9 +432,15 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 )
                 EditorMenu(
                     expanded = showMenu,
+                    languageLabel = EditorLanguages.labelOf(scopeName) ?: "纯文本",
+                    languageManual = manualLanguage,
                     canToggleComment = commentPrefix != null,
+                    canFormat = scopeName == "source.json" || scopeName == "text.xml",
+                    wordwrap = wordwrap,
                     readOnly = readOnly,
                     onDismiss = { showMenu = false },
+                    onLanguage = { showMenu = false; languageDialog = true },
+                    onToggleWordwrap = { showMenu = false; wordwrap = !wordwrap },
                     onUndo = { showMenu = false; editorHolder[0]?.undo() },
                     onRedo = { showMenu = false; editorHolder[0]?.redo() },
                     onSave = { showMenu = false; save(editorHolder[0]) },
@@ -569,6 +606,10 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                             }
                             ed.setTextSize(fontSize.toFloat())
                             ed.isEditable = !readOnly
+                            if (appliedWordwrap[0] != wordwrap) {
+                                appliedWordwrap[0] = wordwrap
+                                ed.setWordwrap(wordwrap)
+                            }
                             applyText?.let { (version, text) ->
                                 if (appliedVersion[0] != version) {
                                     appliedVersion[0] = version
@@ -582,7 +623,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                     Text(
                         buildString {
                             append("$lineTotal 行 · $charCount 字符 · $charset")
-                            EditorLanguages.labelOf(scopeName)?.let { append(" · $it") }
+                            append(" · " + (EditorLanguages.labelOf(scopeName) ?: "纯文本"))
                             if (paged) append(" · 分段 ${page + 1}/$pageCount")
                             meta?.size?.let { append(" · ${Fmt.size(it)}") }
                         },
@@ -615,6 +656,29 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 onReplaceAll = { editorHolder[0]?.let { replaceAll(it) } },
             )
         }
+    }
+
+    if (languageDialog) {
+        AlertDialog(
+            onDismissRequest = { languageDialog = false },
+            title = { Text("语法") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    // 自动识别（按扩展名）—— 当前文件后缀对应的语言
+                    LanguageOption(
+                        label = "自动识别" + (EditorLanguages.labelOf(autoScope)?.let { "（$it）" } ?: "（纯文本）"),
+                        selected = !manualLanguage,
+                    ) { chooseLanguage(null) }
+                    EditorLanguages.selectable.forEach { (scope, label) ->
+                        LanguageOption(
+                            label = label,
+                            selected = manualLanguage && scopeName == scope.ifEmpty { null },
+                        ) { chooseLanguage(scope) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { languageDialog = false }) { Text("关闭") } },
+        )
     }
 
     if (gotoLineDialog) {
@@ -695,9 +759,15 @@ private data class SearchSpec(
 @Composable
 private fun EditorMenu(
     expanded: Boolean,
+    languageLabel: String,
+    languageManual: Boolean,
     canToggleComment: Boolean,
+    canFormat: Boolean,
+    wordwrap: Boolean,
     readOnly: Boolean,
     onDismiss: () -> Unit,
+    onLanguage: () -> Unit,
+    onToggleWordwrap: () -> Unit,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
     onSave: () -> Unit,
@@ -714,6 +784,20 @@ private fun EditorMenu(
         DropdownMenuItem(text = { Text("↷  重做") }, onClick = onRedo, enabled = !readOnly)
         DropdownMenuItem(text = { Text("🔍  查找 / 替换") }, onClick = onToggleFind)
         DropdownMenuItem(text = { Text("↧  转到指定行…") }, onClick = onGotoLine)
+        Text(
+            "视图",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 12.dp, top = 6.dp),
+        )
+        DropdownMenuItem(
+            text = { Text("⌨  语法：$languageLabel" + if (languageManual) "（手动）" else "（自动）") },
+            onClick = onLanguage,
+        )
+        DropdownMenuItem(
+            text = { Text((if (wordwrap) "✓  " else "    ") + "自动换行") },
+            onClick = onToggleWordwrap,
+        )
         Text(
             "行操作",
             style = MaterialTheme.typography.labelSmall,
@@ -738,6 +822,7 @@ private fun EditorMenu(
         DropdownMenuItem(
             text = { Text("//  切换注释" + if (canToggleComment) "" else "（当前语言不支持）") },
             onClick = onToggleComment,
+            enabled = canToggleComment,
         )
         Text(
             "代码整理",
@@ -746,9 +831,33 @@ private fun EditorMenu(
             modifier = Modifier.padding(start = 12.dp, top = 6.dp),
         )
         DropdownMenuItem(text = { Text("🗜  压缩代码（去空白）") }, onClick = onCompress)
-        DropdownMenuItem(text = { Text("✨  格式化代码") }, onClick = onFormat)
+        DropdownMenuItem(
+            text = { Text("✨  格式化代码" + if (canFormat) "" else "（仅 JSON / XML）") },
+            onClick = onFormat,
+            enabled = canFormat,
+        )
     }
 }
+
+/** 「语法」对话框里的一行（单选观感）。 */
+@Composable
+private fun LanguageOption(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            if (selected) "◉  $label" else "○  $label",
+            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+}
+
+/** 长行文本（Markdown / 纯文本 / 未识别）默认自动换行；代码默认关。 */
+internal fun defaultWordwrap(scope: String?): Boolean = scope == null || scope == "text.html.markdown"
 
 /** 按 scope 给行注释前缀（不支持的语言返回 null） */
 internal fun commentPrefixOf(scope: String?): String? = when (scope) {

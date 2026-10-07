@@ -38,6 +38,10 @@
    用 `suppressSearchStatus` 抑制一次状态刷新，保证「已替换 N 处」不被覆盖。
 6. **大文件**：> 2 MB 仍进只读分段浏览（每段 512 KB），只是同样交给 sora 渲染；
    > 640k 字符自动退化为纯文本高亮（`HL_MAX_CHARS`）。
+7. **菜单按语言给项**：`EditorMenu` 的「格式化代码」只在 JSON / XML 可点、
+   「切换注释」按 `commentPrefixOf` 置灰；「语法」可手动选择并**按扩展名记忆**
+   （`PrefsStore.editorLangOverrides`，scope 空串 = 纯文本）；「自动换行」默认值见
+   `defaultWordwrap()`（Markdown / 纯文本 / 未识别 → 开）。
 
 ## 3. 怎么加一种语言
 
@@ -48,7 +52,7 @@
 3. 在 `assets/textmate/languages.json` 追加一条
    `{ grammar, name, scopeName, languageConfiguration }`（scopeName 必须与语法文件里的一致；
    跨语法引用用 `embeddedLanguages`，如 html → javascript/css）；
-4. 在 `EditorLanguages.scopeOf()` 加后缀映射、`LABELS` 加显示名；
+4. 在 `EditorLanguages.scopeOf()` 加后缀映射、`LABELS` 加显示名、`ORDER` 加进「语法」菜单顺序；
 5. 跑 `EditorLanguagesTest`（映射用例）+ 打开一个该类型文件实机看一眼。
 
 ## 4. 已知边界

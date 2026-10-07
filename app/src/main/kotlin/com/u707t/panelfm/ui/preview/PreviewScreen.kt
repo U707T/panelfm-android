@@ -59,7 +59,6 @@ import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.common.HexInterpreter
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
@@ -70,9 +69,9 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * 预览调度：按 MIME / 扩展名分派到 播放器 / 编辑器 / 字体 / 图片 / 文本 / Hex。
+ * 预览调度：按 MIME / 扩展名分派到 播放器 / 编辑器 / 字体 / 图片 / 文本。
  *  - 播放器、编辑器、字体预览自带整屏界面（整页接管，不再叠加外壳）
- *  - 顶栏复刻 MT：← 返回 · 文件名（单行省略）· ⋮（文本 / 编辑 / Hex / 字体 / 外部应用）
+ *  - 顶栏 ⋮ 菜单按文件类型给项（文本/代码/未识别 → 文本+编辑；字体/PDF/APK → 各自入口；本地文件 → 外部应用）
  */
 @androidx.media3.common.util.UnstableApi
 @Composable
@@ -124,10 +123,8 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 // APK：只读信息（PackageManager 解析），不做 dex/arsc 编辑
                 MimeTypes.Kind.APK -> PreviewMode.APK_INFO
                 MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
-                // 未知格式兜底：先看内容（文本 → 文本预览；二进制 → Hex），空文件单独提示
-                else -> if (item.size == 0L) PreviewMode.TEXT
-                else if (item.size in 1..MAX_TEXT_SIZE) PreviewMode.TEXT
-                else PreviewMode.HEX
+                // 未识别格式：一律文本预览（最多读前 1 MB，界面会标注「已截断」）
+                else -> PreviewMode.TEXT
             }
         }
         r
@@ -172,33 +169,43 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                     onClick = { modeMenu = true },
                 )
                 DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("文本", color = if (!editing && resolved == PreviewMode.TEXT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                        onClick = { effective = PreviewMode.TEXT; editing = false; modeMenu = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("编辑", color = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                        onClick = { editing = true; modeMenu = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Hex", color = if (!editing && resolved == PreviewMode.HEX) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                        onClick = { effective = PreviewMode.HEX; editing = false; modeMenu = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("字体") },
-                        onClick = { effective = PreviewMode.FONT; editing = false; modeMenu = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("PDF") },
-                        onClick = { effective = PreviewMode.PDF; editing = false; modeMenu = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("APK 信息") },
-                        onClick = { effective = PreviewMode.APK_INFO; editing = false; modeMenu = false },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("外部应用") },
-                        onClick = {
+                    // 菜单按类型给项：文本/代码/未识别 → 文本 + 编辑；字体/PDF/APK → 各自入口；
+                    // 本地文件才有「外部应用」。媒体/图片/压缩包在当前查看器里即可，不再堆无关入口。
+                    val kind = item?.extension?.let { MimeTypes.kindOf(it) }
+                    val textLike = kind == null ||
+                        kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER
+                    if (textLike) {
+                        DropdownMenuItem(
+                            text = { Text("文本", color = if (!editing && resolved == PreviewMode.TEXT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.TEXT; editing = false; modeMenu = false },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("编辑", color = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { editing = true; modeMenu = false },
+                        )
+                    }
+                    if (kind == MimeTypes.Kind.FONT) {
+                        DropdownMenuItem(
+                            text = { Text("字体") },
+                            onClick = { effective = PreviewMode.FONT; editing = false; modeMenu = false },
+                        )
+                    }
+                    if (kind == MimeTypes.Kind.PDF) {
+                        DropdownMenuItem(
+                            text = { Text("PDF") },
+                            onClick = { effective = PreviewMode.PDF; editing = false; modeMenu = false },
+                        )
+                    }
+                    if (kind == MimeTypes.Kind.APK) {
+                        DropdownMenuItem(
+                            text = { Text("APK 信息") },
+                            onClick = { effective = PreviewMode.APK_INFO; editing = false; modeMenu = false },
+                        )
+                    }
+                    if (uri.scheme == "local") {
+                        DropdownMenuItem(
+                            text = { Text("外部应用") },
+                            onClick = {
                             modeMenu = false
                             val file = runCatching { File(container.localVfs.absolutePath(uri)) }.getOrNull()
                             if (uri.scheme != "local") {
@@ -221,7 +228,8 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                                 }
                             }
                         },
-                    )
+                        )
+                    }
                 }
             }
         }
@@ -231,12 +239,11 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             item == null -> LoadingState()
             item.isDirectory -> Text("这是一个文件夹：${uri.displayPath}", Modifier.padding(16.dp))
             else -> when (resolved) {
-                PreviewMode.IMAGE -> ImagePreview(container, item) { effective = PreviewMode.HEX; editing = false }
+                PreviewMode.IMAGE -> ImagePreview(container, item)
                 PreviewMode.PDF -> PdfScreen(container, item, onBack = onBack)
-                PreviewMode.HEX -> HexPreview(container, item)
                 PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
                 PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
-                // 文本 / 其它未识别文本类内容 → 文本预览（修复此前误落到 Hex 的问题）
+                // 文本 / 未识别 → 文本预览（未识别类型走通用兜底）
                 else -> TextPreview(container, item)
             }
         }
@@ -245,7 +252,6 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
 
 private const val MAX_TEXT_SIZE = 1L * 1024 * 1024
 private const val MAX_IMAGE_SIZE = 32L * 1024 * 1024
-private const val HEX_WINDOW = 8 * 1024
 
 /**
  * 图片预览（复刻 MT）：
@@ -254,7 +260,7 @@ private const val HEX_WINDOW = 8 * 1024
  *  - 大图流式采样解码（不整包进内存）
  */
 @Composable
-private fun ImagePreview(container: AppContainer, item: FileMetadata, onSwitchToHex: () -> Unit = {}) {
+private fun ImagePreview(container: AppContainer, item: FileMetadata) {
     // 同目录图片列表（左右滑动切图用；加载完成前不组装 Pager，避免初始页错位）
     var siblings by remember(item.uri.parent) { mutableStateOf<List<FileMetadata>?>(null) }
     var initialPage by remember(item.uri) { mutableStateOf(0) }
@@ -306,7 +312,6 @@ private fun ImagePreview(container: AppContainer, item: FileMetadata, onSwitchTo
                 offset = offset,
                 onScale = { scale = it },
                 onOffset = { offset = it },
-                onOpenHex = { onSwitchToHex() },
             )
         }
         // 页码 + 文件名（MT 观感：底部小字）
@@ -364,7 +369,6 @@ private fun ImagePage(
     offset: androidx.compose.ui.geometry.Offset,
     onScale: (Float) -> Unit,
     onOffset: (androidx.compose.ui.geometry.Offset) -> Unit,
-    onOpenHex: () -> Unit,
 ) {
     var bitmap by remember(item.uri) { mutableStateOf<android.graphics.Bitmap?>(null) }
     var error by remember(item.uri) { mutableStateOf<String?>(null) }
@@ -378,11 +382,7 @@ private fun ImagePage(
     }
 
     when {
-        error != null -> ErrorState(
-            "图片预览失败：$error",
-            actionLabel = "用 Hex 查看",
-            onAction = onOpenHex,
-        )
+        error != null -> ErrorState("图片预览失败：$error")
         bitmap == null -> LoadingState("解码中…")
         else -> {
             val bm = bitmap!!
@@ -611,152 +611,6 @@ private fun TextPreview(container: AppContainer, item: FileMetadata) {
             }
         }
     }
-}
-
-@Composable
-private fun HexPreview(container: AppContainer, item: FileMetadata) {
-    var lines by remember { mutableStateOf<List<Pair<Long, String>>?>(null) }
-    var raw by remember { mutableStateOf(ByteArray(0)) }
-    var error by remember { mutableStateOf<String?>(null) }
-    // MT 检查面板 0x7f0c002a：☑ 大端模式 + 逐类型解释（只读）
-    var showInterpreter by remember { mutableStateOf(false) }
-    var bigEndian by remember { mutableStateOf(true) }
-    var cursor by remember { mutableStateOf(0) }
-
-    LaunchedEffect(item.uri) {
-        try {
-            val bytes = readBytes(container, item.uri, HEX_WINDOW.toLong())
-            raw = bytes
-            lines = bytes.toHexLines()
-        } catch (e: Exception) {
-            error = e.message
-        }
-    }
-    when {
-        error != null -> ErrorState("Hex 预览失败：$error")
-        lines == null -> LoadingState()
-        else -> Column(Modifier.fillMaxSize()) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    "${item.name} · ${Fmt.size(item.size)} · 前 ${HEX_WINDOW / 1024} KB（只读）",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
-                // MT 的「检查」面板入口（0x7f0e0016 菜单 / 0x7f0c002a 面板）
-                TextButton(onClick = { showInterpreter = !showInterpreter }) {
-                    Text(if (showInterpreter) "收起解释" else "数值解释")
-                }
-            }
-            if (showInterpreter) {
-                HexInterpreterPanel(raw, cursor, bigEndian, onBigEndian = { bigEndian = it })
-            }
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(lines!!) { (offset, row) ->
-                    val selected = cursor in offset.toInt() until (offset + 16).toInt()
-                    Row(
-                        Modifier
-                            .padding(horizontal = 12.dp)
-                            .background(
-                                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-                                else Color.Transparent,
-                            )
-                            .clickable { cursor = offset.toInt() },
-                    ) {
-                        Text(
-                            "%08X".format(java.util.Locale.ROOT, offset),
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        Text(
-                            "  $row",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-/** 数值解释面板（复刻 MT 0x7f0c002a 的「检查」：大端模式 + 逐类型解释） */
-@Composable
-private fun HexInterpreterPanel(
-    bytes: ByteArray,
-    offset: Int,
-    bigEndian: Boolean,
-    onBigEndian: (Boolean) -> Unit,
-) {
-    val interpretations = remember(bytes, offset, bigEndian) {
-        if (offset in bytes.indices) HexInterpreter.interpretAll(bytes, offset, bigEndian) else emptyList()
-    }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .padding(horizontal = 12.dp, vertical = 6.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "偏移 0x%08X".format(offset),
-                style = MaterialTheme.typography.labelMedium,
-                fontFamily = FontFamily.Monospace,
-                modifier = Modifier.weight(1f),
-            )
-            Text("大端模式", style = MaterialTheme.typography.labelSmall)
-            Checkbox(checked = bigEndian, onCheckedChange = onBigEndian)
-        }
-        if (interpretations.isEmpty()) {
-            Text(
-                "该偏移超出已读取范围（点列表任意行可切换偏移）",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        } else {
-            interpretations.forEach { (kind, value) ->
-                Row(Modifier.padding(vertical = 1.dp)) {
-                    Text(
-                        kind.label,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.width(112.dp),
-                    )
-                    Text(
-                        value,
-                        style = MaterialTheme.typography.labelSmall,
-                        fontFamily = FontFamily.Monospace,
-                    )
-                }
-            }
-        }
-        Text(
-            "MT 的检查面板文案（0x7f1102e0…2e6）：字节 / 字节(无符号) / 短整数 / 短整数(无符号) / 整数 / 长整数 / 浮点数 / UTF8 字符串 / Unicode 字符串",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-    }
-}
-
-private fun ByteArray.toHexLines(): List<Pair<Long, String>> {
-    val out = ArrayList<Pair<Long, String>>()
-    var offset = 0L
-    while (offset < size) {
-        val end = minOf(offset + 16, size.toLong()).toInt()
-        val chunk = copyOfRange(offset.toInt(), end)
-        val hex = chunk.joinToString(" ") { "%02X".format(java.util.Locale.ROOT, it) }.padEnd(16 * 3 - 1)
-        val ascii = chunk.map { if (it in 32..126) it.toInt().toChar() else '.' }.joinToString("")
-        out.add(offset to "$hex  |$ascii|")
-        offset = end.toLong()
-    }
-    return out
 }
 
 private fun decodeText(bytes: ByteArray): Pair<String, String> {

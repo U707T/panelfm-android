@@ -59,7 +59,6 @@ enum class PreviewMode(val handlerId: String, val label: String, val icon: MtIco
     AUTO("auto", "自动识别", MtIcon.EXPLORE),
     TEXT("text", "文本查看器", MtIcon.DESC),
     EDITOR("editor", "编辑文本", MtIcon.EDIT),
-    HEX("hex", "十六进制", MtIcon.CODE),
     IMAGE("image", "查看图片", MtIcon.IMAGE),
     MEDIA("media", "播放音乐/视频", MtIcon.MOVIE),
     PDF("pdf", "查看 PDF", MtIcon.DESC),
@@ -303,7 +302,6 @@ private fun SystemTile(app: SystemOpenApp, onPick: () -> Unit) {
 private fun builtinColor(mode: PreviewMode): Color = when (mode) {
     PreviewMode.TEXT -> Color(0xFF5C6BC0)
     PreviewMode.EDITOR -> Color(0xFF4F6BED)
-    PreviewMode.HEX -> Color(0xFF78909C)
     PreviewMode.IMAGE -> Color(0xFF26A69A)
     PreviewMode.MEDIA -> Color(0xFFE57373)
     PreviewMode.PDF -> Color(0xFFEF5350)

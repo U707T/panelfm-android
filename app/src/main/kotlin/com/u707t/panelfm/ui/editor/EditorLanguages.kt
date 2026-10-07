@@ -79,6 +79,12 @@ internal object EditorLanguages {
     /** 状态栏显示用的语言名（未登记的后缀返回 null）。 */
     fun labelOf(scope: String?): String? = scope?.let { LABELS[it] }
 
+    private val ORDER = listOf(
+        "source.kotlin", "source.java", "source.js", "source.ts",
+        "source.json", "text.xml", "text.html.basic", "source.css",
+        "source.python", "source.shell", "source.yaml", "text.html.markdown",
+    )
+
     private val LABELS = mapOf(
         "source.kotlin" to "Kotlin",
         "source.java" to "Java",
@@ -93,6 +99,12 @@ internal object EditorLanguages {
         "text.html.markdown" to "Markdown",
         "source.css" to "CSS",
     )
+
+    /**
+     * 「语法」选择菜单的全部条目（scope → 显示名）：
+     * 空串 = 纯文本；其余为 TextMate scope（顺序固定，便于用户找）。
+     */
+    val selectable: List<Pair<String, String>> = listOf("" to "纯文本") + ORDER.map { it to (LABELS[it] ?: it) }
 
     /**
      * 创建配色：以主题为底，把背景 / 行号栏 / 当前行对齐应用配色

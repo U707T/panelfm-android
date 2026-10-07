@@ -49,6 +49,25 @@ class EditorLanguagesTest {
     }
 
     @Test
+    fun `长行文本默认自动换行，代码默认关`() {
+        assertEquals(true, defaultWordwrap(null))
+        assertEquals(true, defaultWordwrap("text.html.markdown"))
+        assertEquals(false, defaultWordwrap("source.kotlin"))
+        assertEquals(false, defaultWordwrap("source.json"))
+    }
+
+    @Test
+    fun `语法选择菜单含纯文本与全部语言`() {
+        val scopes = EditorLanguages.selectable.map { it.first }
+        assertEquals("", scopes.first())
+        assertEquals(listOf("纯文本"), EditorLanguages.selectable.take(1).map { it.second })
+        listOf("source.kotlin", "source.json", "text.xml", "text.html.markdown").forEach {
+            assertEquals("$it 应在选择清单里", true, scopes.contains(it))
+        }
+        assertEquals(scopes.size, scopes.distinct().size)
+    }
+
+    @Test
     fun `状态栏语言名映射`() {
         assertEquals("Kotlin", EditorLanguages.labelOf("source.kotlin"))
         assertEquals("JSON", EditorLanguages.labelOf("source.json"))

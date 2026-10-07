@@ -25,6 +25,8 @@ object TypeActions {
     const val ACTION_APK_INFO = "apk_info"
     const val ACTION_EXTRACT_APK_ICON = "extract_apk_icon"
     const val ACTION_OPEN_INTERNAL = "open_internal"
+    /** 直接用内置编辑器打开（文本 / 代码 / 未识别类型都可手动选） */
+    const val ACTION_EDIT_TEXT = "edit_text"
     const val ACTION_OPEN_WITH = "open_with"
 
     fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
@@ -78,10 +80,33 @@ object TypeActions {
                     add(ACTION_APK_INFO)
                     add(ACTION_EXTRACT_APK_ICON)
                 }
-                else -> Unit
+                // 文本 / 代码：查看 + 编辑
+                MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> {
+                    add(ACTION_OPEN_INTERNAL)
+                    add(ACTION_EDIT_TEXT)
+                }
+                // 未识别：按「通用」处理 —— 文本查看 / 编辑文本 / 打开方式（手动选择打开方式）
+                MimeTypes.Kind.OTHER -> {
+                    add(ACTION_OPEN_INTERNAL)
+                    add(ACTION_EDIT_TEXT)
+                }
+                else -> if (hasBuiltinViewer(kind)) add(ACTION_OPEN_INTERNAL)
             }
-            if (hasBuiltinViewer(kind)) add(ACTION_OPEN_INTERNAL)
             add(ACTION_OPEN_WITH)
         }
+    }
+
+    /** 二级菜单文案（按 id + 类型；未知 id 落到「打开方式…」）。 */
+    fun labelOf(id: String, kind: MimeTypes.Kind): String = when (id) {
+        ACTION_EXTRACT_HERE -> "解压到当前目录"
+        ACTION_EXTRACT_OWN_FOLDER -> "解压到单独的文件夹"
+        ACTION_EXTRACT_PICK -> "解压到文件夹…"
+        ACTION_BROWSE_ARCHIVE -> "浏览压缩包"
+        ACTION_INSTALL -> "安装"
+        ACTION_APK_INFO -> "APK 信息"
+        ACTION_EXTRACT_APK_ICON -> "提取图标"
+        ACTION_OPEN_INTERNAL -> viewerLabel(kind) ?: "查看文本"
+        ACTION_EDIT_TEXT -> "编辑文本"
+        else -> "打开方式…"
     }
 }

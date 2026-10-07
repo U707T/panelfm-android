@@ -927,18 +927,19 @@ fun DualPaneScreen(
                     if (ids.isNotEmpty()) {
                         val section = "对「${single.name}」"
                         ids.forEach { id ->
-                            val (label, icon) = when (id) {
-                                TypeActions.ACTION_EXTRACT_HERE -> "解压到当前目录" to MtIcon.ARCHIVE
-                                TypeActions.ACTION_EXTRACT_OWN_FOLDER -> "解压到单独的文件夹" to MtIcon.FOLDER
-                                TypeActions.ACTION_EXTRACT_PICK -> "解压到文件夹…" to MtIcon.FOLDER
-                                TypeActions.ACTION_BROWSE_ARCHIVE -> "浏览压缩包" to MtIcon.EXPLORE
-                                TypeActions.ACTION_INSTALL -> "安装" to MtIcon.GET_APP
-                                TypeActions.ACTION_APK_INFO -> "APK 信息" to MtIcon.ANDROID
-                                TypeActions.ACTION_EXTRACT_APK_ICON -> "提取图标" to MtIcon.IMAGE
-                                TypeActions.ACTION_OPEN_INTERNAL -> (TypeActions.viewerLabel(kind) ?: "查看") to MtIcon.EYE
-                                else -> "打开方式…" to MtIcon.CHECK
+                            val icon = when (id) {
+                                TypeActions.ACTION_EXTRACT_HERE -> MtIcon.ARCHIVE
+                                TypeActions.ACTION_EXTRACT_OWN_FOLDER -> MtIcon.FOLDER
+                                TypeActions.ACTION_EXTRACT_PICK -> MtIcon.FOLDER
+                                TypeActions.ACTION_BROWSE_ARCHIVE -> MtIcon.EXPLORE
+                                TypeActions.ACTION_INSTALL -> MtIcon.GET_APP
+                                TypeActions.ACTION_APK_INFO -> MtIcon.ANDROID
+                                TypeActions.ACTION_EXTRACT_APK_ICON -> MtIcon.IMAGE
+                                TypeActions.ACTION_OPEN_INTERNAL -> MtIcon.EYE
+                                TypeActions.ACTION_EDIT_TEXT -> MtIcon.EDIT
+                                else -> MtIcon.CHECK
                             }
-                            add(MtAction(id, label, icon, section = section))
+                            add(MtAction(id, TypeActions.labelOf(id, kind), icon, section = section))
                         }
                     }
                 }
@@ -997,6 +998,7 @@ fun DualPaneScreen(
                         controller.showStatus(msg)
                     }
                     TypeActions.ACTION_OPEN_INTERNAL -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
+                    TypeActions.ACTION_EDIT_TEXT -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.EDITOR)
                     TypeActions.ACTION_OPEN_WITH -> openWithFor = item
                 }
             },
@@ -1380,7 +1382,6 @@ fun DualPaneScreen(
             options = listOf(
                 OpenWithOption(PreviewMode.TEXT, available = kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER),
                 OpenWithOption(PreviewMode.EDITOR, available = kind != MimeTypes.Kind.IMAGE && kind != MimeTypes.Kind.AUDIO && kind != MimeTypes.Kind.VIDEO),
-                OpenWithOption(PreviewMode.HEX, available = true),
                 OpenWithOption(PreviewMode.IMAGE, available = kind == MimeTypes.Kind.IMAGE),
                 OpenWithOption(PreviewMode.MEDIA, available = kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO),
                 OpenWithOption(

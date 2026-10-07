@@ -86,6 +86,11 @@ data class AppSettings(
      * 默认关（MT 同默认）；开启后多选态里点第二项 = 区间选择。
      */
     val tapRangeSelect: Boolean = false,
+    /**
+     * 编辑器「语法」的手动选择：扩展名 → TextMate scope（空串 = 纯文本）。
+     * 没有条目的扩展名 = 自动识别（按后缀）。
+     */
+    val editorLangOverrides: Map<String, String> = emptyMap(),
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -127,6 +132,8 @@ class PrefsStore(private val context: Context) {
         val backupOnSave = booleanPreferencesKey("backup_on_save")
         val dialogIconMode = intPreferencesKey("dialog_icon_mode")
         val tapRangeSelect = booleanPreferencesKey("tap_range_select")
+        // 编辑器「语法」手动选择（ext|scope 行；scope 空串 = 纯文本）
+        val editorLangOverrides = androidx.datastore.preferences.core.stringSetPreferencesKey("editor_lang_overrides")
         // MT 对齐（v1.0）：输入框历史（recordKey → 历史值）
         val inputHistory = androidx.datastore.preferences.core.stringSetPreferencesKey("input_history")
         // 「上次打开的文件」：格式 "<mode>|<uri>|<epochMillis>"；用于意外退出/直接退出后自动回到那里
@@ -184,6 +191,12 @@ class PrefsStore(private val context: Context) {
             backupOnSave = p[Keys.backupOnSave] ?: false,
             dialogIconMode = (p[Keys.dialogIconMode] ?: 0).coerceIn(0, 2),
             tapRangeSelect = p[Keys.tapRangeSelect] ?: false,
+            editorLangOverrides = (p[Keys.editorLangOverrides] ?: emptySet())
+                .mapNotNull { line ->
+                    val idx = line.indexOf('|')
+                    if (idx <= 0) null else line.substring(0, idx) to line.substring(idx + 1)
+                }
+                .toMap(),
             inputHistory = (p[Keys.inputHistory] ?: emptySet())
                 .mapNotNull { line ->
                     val idx = line.indexOf('|')
@@ -243,6 +256,13 @@ class PrefsStore(private val context: Context) {
     suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }
     suspend fun setDialogIconMode(mode: Int) = context.panelDataStore.edit { it[Keys.dialogIconMode] = mode.coerceIn(0, 2) }
     suspend fun setTapRangeSelect(on: Boolean) = context.panelDataStore.edit { it[Keys.tapRangeSelect] = on }
+
+    /** 编辑器「语法」：按扩展名记一条手动选择；[scope] 为 null 表示恢复自动识别。 */
+    suspend fun setEditorLangOverride(ext: String, scope: String?) = context.panelDataStore.edit { prefs ->
+        val cleaned = (prefs[Keys.editorLangOverrides] ?: emptySet()).filterNot { it.startsWith("$ext|") }
+        prefs[Keys.editorLangOverrides] =
+            if (scope == null) cleaned.toSet() else (cleaned + "$ext|$scope").toSet()
+    }
 
     /**
      * MT 的输入框历史（`app:recordKey`）：记一条历史（去重、最近在前、最多 [limit] 条）。

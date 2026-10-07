@@ -49,12 +49,4 @@ object TextEncodings {
     } catch (e: CharacterCodingException) {
         false
     }
-
-    /** 粗略判断二进制（用于「未知类型默认用 Hex 还是文本」的启发式） */
-    fun looksBinary(bytes: ByteArray): Boolean {
-        val sample = bytes.take(4096)
-        if (sample.isEmpty()) return false
-        val nul = sample.count { it == 0.toByte() }
-        return nul > 0
-    }
 }

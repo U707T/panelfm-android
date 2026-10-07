@@ -127,5 +127,5 @@ fun PanelTheme(
 /** MT 里面板主色（进度条、选中态） */
 val AccentBlue = Color(0xFF2F6FED)
 
-/** 供 UI 复用的等宽字体样式（Hex / 编辑器） */
+/** 供 UI 复用的等宽字体样式（编辑器 / 文本预览） */
 val MonoStyle = TextStyle(fontSize = 12.sp, lineHeight = 16.sp)

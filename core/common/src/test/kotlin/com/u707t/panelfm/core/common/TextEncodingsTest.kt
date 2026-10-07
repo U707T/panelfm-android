@@ -31,9 +31,4 @@ class TextEncodingsTest {
         assertEquals("abc", decoded.text)
     }
 
-    @Test
-    fun `二进制启发式`() {
-        assertTrue(TextEncodings.looksBinary(byteArrayOf(1, 2, 0, 4)))
-        assertFalse(TextEncodings.looksBinary("hello".toByteArray()))
-    }
 }
