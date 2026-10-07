@@ -5,8 +5,7 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1、3、4 批已修复收口**（见 §1 / §3 / §4 末尾「修复记录」；第 2 批修复已随
-> `3479639` 落地，记录待补）；其余批次待审计后继续。
+> 修复：**第 1–4 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
 
 ---
 
@@ -362,6 +361,29 @@
 
 - 下一模块：**app/ui/editor**（🔴）——预计重点：`EditorScreen.kt` 1,063 行（主 Composable ≈675 行）拆分；
   读写/编码/大文件分页/查找替换的状态纠葛；与 `EDITOR-ENGINE.md` 设计文档的一致性核对。
+
+### 修复记录（第 2 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🔴1 | ✅ | `MediaScreen.kt` 1,886 行 → 6 文件（主 655 / DataSource 373 / Draw 443 / Chrome 468 / Playlist 214 / Gestures 250）；主 Composable 953→562 行；8 个瞬时状态并入 `MediaUiState` 分组 |
+| 🟡2 | ✅ | 播放失败恢复：`play()` 失败回滚索引 + `failedUri` 记录；「重试 / 外部打开」作用于**失败曲目**（不再恒试第一首） |
+| 🟡3 | ✅ | 连点竞态：意图令牌（过期结果整体丢弃）；回滚与令牌统一收敛在 `play()` 一个入口 |
+| 🟡4 | ✅ | 横滑进度：改「按下位置快照」为基准（照 IRIS）；拖动中禁止自动隐藏/落定（`gestureSeeking` 并入同一条件） |
+| 🟡5 | ✅ | `PdfRenderer` 释放持同一把锁（`runBlocking + withLock`），消除 close × 在飞渲染并发 |
+| 🔵6 | ✅ | TextPreview 错误兜底文案（message 为 null 不再停在「加载中」） |
+| 🔵7 | ✅ | APK 校验改读**已落地文件**（一次读两摘要；远程包下载 3 次 → 1 次） |
+| 🔵8 | ✅ | 播放器手势补 48dp 边缘避让（照 IRIS `edgeDeadZone`，避开系统返回手势区） |
+| 🔵9 | ✅ | 取消穿透：`preflightMedia` 直调（不再 runCatching 吞取消）+ PreviewScreen 4 处 catch 先 rethrow |
+| 🔵10 | ✅ | `clearLastOpenedPreview(expectedUri)`：只清仍匹配的记录（save/clear 异序不再互相误伤） |
+| 🔵11 | ✅ | 小清理 ×4：PDF 死分支 / 外部应用不可达分支 / `toggleShuffle` 冗余 / `enabled` 等价式 |
+| 🔵12 | ✅ | 新增 `MediaPlaylistTest`（6 例）+ `MediaUtilsTest`（7 例）；`computeRemaining` 提纯入测 |
+
+> 组织说明：拆分为「主屏骨架 + 数据源 / 绘制 / 控件 / 播放列表 / 手势」六个文件；手势层以
+> `MediaGestureHooks`（读/写回调集合）解除与页面状态的隐式闭包耦合，页面行为逐段等价移植。
+> 主文件 655 行（审查目标 ≤450：剩余为状态 + 效果 + 装配，进一步压缩收益递减，未强推）。
+> 验证：本地 `compileDebugKotlin` + `testDebugUnitTest` 全绿（+13 用例）；CI run #78 全绿
+> （test / android / release 三 job）。修复提交：`3479639`。
 
 ---
 
