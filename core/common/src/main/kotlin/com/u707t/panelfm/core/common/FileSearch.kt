@@ -6,10 +6,10 @@ package com.u707t.panelfm.core.common
  * 语法，按这个顺序判断：
  *  - 空白：全部命中
  *  - `!/` 开头：正则否定；`/` 开头：正则。正则写错 = **不命中**
- *    （旧实现是「全命中」，一个打错的括号会把整个目录倒出来）
+ *    （旧实现是「全命中」，一个打错的括号会把整个目录倒出来；现在对话框侧会先提示「正则表达式有误」）
  *  - `!` 开头：对后面的规则取反
- *  - 含未转义的 `*` / `?`：通配符（MT `0x7f11061c`「欲搜索文件名 (支持通配符*和?)」）。
- *    `*` 任意长度，`?` 恰好一个字符，`\*` / `\?` / `\\` 为字面；大小写不敏感
+ *  - 含 `*` / `?`：通配符（MT `0x7f11061c`「欲搜索文件名 (支持通配符*和?)」）。
+ *    `*` 任意长度、`?` 恰好一个字符；`\*` / `\?` / `\\` 为对应字面量；大小写不敏感
  *  - 否则：子串包含，大小写不敏感
  *
  * [rank] 给结果排序：0 完全同名、1 以关键字开头、2 其它命中；不命中返回 null。
@@ -17,7 +17,7 @@ package com.u707t.panelfm.core.common
  */
 object FileSearch {
 
-    /** 内容搜索直接跳过的二进制后缀（扩展名不在已知文本类里、打开也是乱码）。 */
+    /** 内容搜索直接跳过的二进制后缀（扩展名已知、打开也是乱码的一类）。 */
     private val binaryExtensions = setOf(
         "so", "bin", "iso", "img", "exe", "dll", "dylib", "o", "a", "obj",
         "class", "pyc", "pyo", "wasm", "dat", "pak", "obb", "dex", "dmg",
@@ -88,21 +88,37 @@ object FileSearch {
 
     private fun positiveMatch(name: String, raw: String): Boolean {
         if (raw.isEmpty()) return true
-        return if (containsWildcard(raw)) globMatch(name, raw) else name.contains(raw, ignoreCase = true)
+        // 通配符或有转义 → 走 glob 精确匹配；否则维持「子串包含」（最常用、最快）
+        return if (containsWildcard(raw) || hasEscape(raw)) globMatch(name, raw)
+        else name.contains(raw, ignoreCase = true)
     }
 
     private fun regexMatch(name: String, pattern: String): Boolean =
         runCatching { Regex(pattern).containsMatchIn(name) }.getOrDefault(false)
 
-    /** 未转义的 `*` 或 `?`。`\*` 不算通配。 */
+    /**
+     * 未转义的 `*` 或 `?`（`\*` 这类转义对不算通配）。
+     * 只有 `\` 后面跟 `\` / `*` / `?` 时才构成转义；`\` 后跟其它字符时，`\` 按字面量看。
+     */
     internal fun containsWildcard(pattern: String): Boolean {
         var i = 0
         while (i < pattern.length) {
-            if (pattern[i] == '\\' && i + 1 < pattern.length) {
+            val c = pattern[i]
+            if (c == '\\' && i + 1 < pattern.length && pattern[i + 1] in "\\*?") {
                 i += 2
                 continue
             }
-            if (pattern[i] == '*' || pattern[i] == '?') return true
+            if (c == '*' || c == '?') return true
+            i++
+        }
+        return false
+    }
+
+    /** 是否含转义对（`\\` / `\*` / `\?`）。 */
+    private fun hasEscape(pattern: String): Boolean {
+        var i = 0
+        while (i < pattern.length - 1) {
+            if (pattern[i] == '\\' && pattern[i + 1] in "\\*?") return true
             i++
         }
         return false
@@ -113,7 +129,7 @@ object FileSearch {
         var i = 0
         while (i < pattern.length) {
             val c = pattern[i]
-            if (c == '\\' && i + 1 < pattern.length) {
+            if (c == '\\' && i + 1 < pattern.length && pattern[i + 1] in "\\*?") {
                 sb.append(Regex.escape(pattern[i + 1].toString()))
                 i += 2
                 continue

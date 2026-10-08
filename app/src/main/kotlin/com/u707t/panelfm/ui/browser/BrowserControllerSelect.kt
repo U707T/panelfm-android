@@ -114,22 +114,14 @@ fun BrowserController.setSearch(side: PaneSide, query: String) {
 }
 
 /**
- * MT 的过滤语法：
- *  - 普通文本：包含匹配
+ * MT 的过滤语法（实现在 [com.u707t.panelfm.core.common.FileSearch]，目录过滤与递归搜索共用一个口径）：
+ *  - 普通文本：包含匹配（大小写不敏感）
+ *  - `*` / `?`：通配符（MT `0x7f11061c`）；`\*` / `\?` / `\\` 转义为字面量
  *  - 以 `!` 开头：否定匹配（不含该文本）
- *  - 以 `/` 开头：正则匹配
- *  - 以 `!/` 开头：正则否定匹配
+ *  - 以 `/` 开头：正则匹配；以 `!/` 开头：正则否定匹配
  */
-fun BrowserController.matchesSearch(name: String, query: String): Boolean {
-    val q = query.trim()
-    if (q.isEmpty()) return true
-    return when {
-        q.startsWith("!/") -> runCatching { !Regex(q.removePrefix("!/")).containsMatchIn(name) }.getOrDefault(true)
-        q.startsWith("/") -> runCatching { Regex(q.removePrefix("/")).containsMatchIn(name) }.getOrDefault(true)
-        q.startsWith("!") -> !name.contains(q.removePrefix("!"), ignoreCase = true)
-        else -> name.contains(q, ignoreCase = true)
-    }
-}
+fun BrowserController.matchesSearch(name: String, query: String): Boolean =
+    com.u707t.panelfm.core.common.FileSearch.matches(name, query)
 
 /** MT 的「过滤」：按类型筛选当前目录（客户端过滤，立即生效） */
 fun BrowserController.setFilter(side: PaneSide, kind: String?) {
@@ -358,11 +350,11 @@ suspend fun BrowserController.searchTree(
     var stopped = false
     var askedAt = 0
 
-    // MT 搜索类型：文件名（包含 / 正则）
+    // MT 搜索类型：文件名（包含 / 通配符 / 正则，语法在 FileSearch）
     val nameOk: (FileMetadata) -> Boolean = when {
         nameQuery.isBlank() -> { _ -> true }
-        nameRegex -> { item -> runCatching { Regex(nameQuery).containsMatchIn(item.name) }.getOrDefault(false) }
-        else -> { item -> matchesSearch(item.name, nameQuery) }
+        nameRegex -> { item -> com.u707t.panelfm.core.common.FileSearch.matchesRegex(item.name, nameQuery) }
+        else -> { item -> com.u707t.panelfm.core.common.FileSearch.matches(item.name, nameQuery) }
     }
 
     fun sizeOk(item: FileMetadata): Boolean =
@@ -371,11 +363,8 @@ suspend fun BrowserController.searchTree(
     suspend fun contentOk(item: FileMetadata): Boolean {
         if (contentQuery.isBlank()) return true
         if (item.isDirectory || item.size < 0 || item.size > 2 * 1024 * 1024) return false
-        val kind = com.u707t.panelfm.core.common.MimeTypes.kindOf(item.extension)
-        if (kind != com.u707t.panelfm.core.common.MimeTypes.Kind.TEXT &&
-            kind != com.u707t.panelfm.core.common.MimeTypes.Kind.CODE &&
-            kind != com.u707t.panelfm.core.common.MimeTypes.Kind.OTHER
-        ) return false
+        // 已知二进制（图片 / 音视频 / 压缩包 / 数据库 / .so 等）不读，省得白读字节
+        if (!com.u707t.panelfm.core.common.FileSearch.worthContentScan(item.extension)) return false
         return runCatching {
             withContext(container.dispatchers.vfs) {
                 val reader = vfs.openRead(item.uri, 0, 512 * 1024)
@@ -406,6 +395,21 @@ suspend fun BrowserController.searchTree(
         }.getOrDefault(false)
     }
 
+    /**
+     * 结果快照：按「同名 > 前缀 > 包含」排序后交给界面（边搜边显示也是有序的）。
+     * 正则 / 空查询没有轻重之分 → 只按名称排。
+     */
+    fun snapshot(): List<FileMetadata> = if (nameRegex || nameQuery.isBlank()) {
+        out.sortedBy { it.name.lowercase() }
+    } else {
+        out.sortedWith(
+            compareBy(
+                { com.u707t.panelfm.core.common.FileSearch.rank(it.name, nameQuery) ?: 2 },
+                { it.name.lowercase() },
+            ),
+        )
+    }
+
     suspend fun walk(dir: VfsUri, depth: Int) {
         if (out.size >= limit || scanned >= scanCap || depth > 12 || stopped) return
         if (isCancelled()) { stopped = true; return }
@@ -425,12 +429,12 @@ suspend fun BrowserController.searchTree(
                     out.size >= confirmEvery && out.size > askedAt
                 ) {
                     askedAt = out.size
-                    onPartial?.invoke(out.toList())
+                    onPartial?.invoke(snapshot())
                     val go = runCatching { onAskContinue(out.size) }.getOrDefault(false)
                     if (!go) { stopped = true; return }
                 }
                 // 边搜边显示（MT 的「搜索结果(%d)」实时更新）
-                if (out.size % 20 == 0) onPartial?.invoke(out.toList())
+                if (out.size % 20 == 0) onPartial?.invoke(snapshot())
             }
         }
         if (recursive) {
@@ -441,9 +445,10 @@ suspend fun BrowserController.searchTree(
         }
     }
     walk(root, 0)
-    onPartial?.invoke(out.toList())
+    val finalItems = snapshot()
+    onPartial?.invoke(finalItems)
     return SearchOutcome(
-        items = out,
+        items = finalItems,
         stopped = stopped || scanned >= scanCap,
         scanned = scanned,
     )

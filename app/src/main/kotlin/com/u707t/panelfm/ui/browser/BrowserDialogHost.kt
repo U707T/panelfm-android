@@ -86,6 +86,7 @@ import com.u707t.panelfm.core.ui.PaneEdgeShadow
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.core.common.FileSearch
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.data.PrefsStore
@@ -215,8 +216,11 @@ internal fun BrowserDialogHost(
                 history = settings.searchHistory,
                 onSearch = { q, field, recursive, minSize, maxSize ->
                     val hasSizeFilter = minSize >= 0 || maxSize >= 0
+                    // MT 0x7f110602「正则表达式有误」：写错的正则不再静默（旧实现会全命中 / 全不匹配）
+                    val regexInvalid = field == SearchField.REGEX && FileSearch.regexError("/$q")
                     when {
-                        // 仅当前目录 + 无大小条件：等价于目录内过滤（沿用 /regex、!text 语法）
+                        regexInvalid -> controller.showStatus("正则表达式有误")
+                        // 仅当前目录 + 无大小条件：等价于目录内过滤（沿用 /regex、!text、* 通配语法）
                         !recursive && !hasSizeFilter && field == SearchField.NAME -> controller.setSearch(focusSide, q)
                         !recursive && !hasSizeFilter && field == SearchField.REGEX -> controller.setSearch(focusSide, "/$q")
                         else -> {
@@ -225,6 +229,7 @@ internal fun BrowserDialogHost(
                             searchResults = emptyList()
                             searchResultsOpen = true
                             searchResultsDismissed = false
+                            searchRootPath = focused.uri.displayPath
                             searchJob?.cancel()
                             searchJob = scope.launch {
                                 container.prefs.addSearchQuery(q)
@@ -286,6 +291,7 @@ internal fun BrowserDialogHost(
                 results = results,
                 searching = searching,
                 stopped = searchStopped,
+                rootPath = searchRootPath,
                 onStop = {
                     // MT 0x7f110686「停止搜索」
                     searchJob?.cancel()
@@ -302,6 +308,7 @@ internal fun BrowserDialogHost(
                     searchResultsOpen = false
                     searchResultsDismissed = false
                     searchStopped = false
+                    searchRootPath = null
                     controller.showStatus("已清除搜索")
                 },
                 onPick = { item ->

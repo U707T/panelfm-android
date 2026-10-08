@@ -20,7 +20,9 @@ class FileSearchTest {
         assertTrue(FileSearch.matches("a.LOG", "*.log"))
         assertFalse(FileSearch.matches("app.log.bak", "*.log"))
         assertTrue(FileSearch.matches("a1.txt", "a?.txt"))
-        assertFalse(FileSearch.matches("ab.txt", "a?.txt"))
+        // ? = 恰好一个字符：ab.txt 是「a + b + .txt」，命中；abc.txt 多一个字符，不命中
+        assertTrue(FileSearch.matches("ab.txt", "a?.txt"))
+        assertFalse(FileSearch.matches("abc.txt", "a?.txt"))
         assertTrue(FileSearch.matches("foo-bar.txt", "foo*bar*"))
     }
 
@@ -29,6 +31,11 @@ class FileSearchTest {
         assertTrue(FileSearch.matches("a*b", "a\\*b"))
         assertFalse(FileSearch.matches("axb", "a\\*b"))
         assertFalse(FileSearch.containsWildcard("a\\*b"))
+        // \? 同理：字面问号
+        assertTrue(FileSearch.matches("what?", "what\\?"))
+        assertFalse(FileSearch.matches("what1", "what\\?"))
+        // \\ = 字面反斜杠
+        assertTrue(FileSearch.matches("a\\b", "a\\\\b"))
     }
 
     @Test

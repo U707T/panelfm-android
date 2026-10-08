@@ -52,6 +52,8 @@ internal class BrowserDialogsState {
     var searchJob by mutableStateOf<Job?>(null)
     var refineInput by mutableStateOf(false)
     var searchAsk by mutableStateOf<Pair<Int, CompletableDeferred<Boolean>>?>(null)
+    /** 本次搜索的起点路径（结果行显示相对路径用） */
+    var searchRootPath by mutableStateOf<String?>(null)
 
     // 单窗口操作（长按「复制/移动 ->」）
     var singleWindowOp by mutableStateOf<TransferOp?>(null)

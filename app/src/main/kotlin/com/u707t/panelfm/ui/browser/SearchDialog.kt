@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.common.FileSearch
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.HistoryButton
@@ -204,12 +205,15 @@ fun MtSearchDialog(
  *  - **「停止搜索」**（`0x7f110686`）：搜索中可中断
  *  - **「二次搜索 / 在当前结果中搜索」**（`0x7f110628` / `0x7f110619`）：在结果里再筛
  *  - 结果过多被停止时提示「搜索结果数量过多，已停止搜索」（`0x7f110620`）
+ *  - 结果行显示**相对搜索起点**的路径（就在起点时显示「当前目录」）
  */
 @Composable
 fun MtSearchResultsDialog(
     results: List<FileMetadata>,
     searching: Boolean,
     stopped: Boolean = false,
+    /** 本次搜索的起点路径（显示相对路径用）；null = 显示完整父路径 */
+    rootPath: String? = null,
     onStop: () -> Unit = {},
     onRefine: () -> Unit = {},
     onClear: () -> Unit = {},
@@ -265,7 +269,11 @@ fun MtSearchResultsDialog(
                                     Column(Modifier.padding(start = 10.dp)) {
                                         Text(item.name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                         Text(
-                                            (item.uri.parent?.displayPath ?: "/") + "  ·  " + Fmt.size(item.size),
+                                            run {
+                                                val parent = item.uri.parent?.displayPath ?: "/"
+                                                val shown = rootPath?.let { FileSearch.relativeParent(it, parent) } ?: parent
+                                                "$shown  ·  ${Fmt.size(item.size)}"
+                                            },
                                             style = MaterialTheme.typography.labelSmall,
                                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                                             maxLines = 1,
