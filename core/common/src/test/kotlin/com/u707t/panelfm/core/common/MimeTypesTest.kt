@@ -54,6 +54,8 @@ class MimeTypesTest {
     @Test
     fun `新增图片别名与 MIME 齐全`() {
         assertEquals(MimeTypes.Kind.IMAGE, MimeTypes.kindOf("jfif"))
+        assertEquals(MimeTypes.Kind.IMAGE, MimeTypes.kindOf("svgz"))
+        assertEquals("image/svg+xml", MimeTypes.of("svgz"))
         assertEquals("image/jpeg", MimeTypes.of("jpe"))
         listOf("jfif", "jpe", "jpeg").forEach { assertNotNull(it, MimeTypes.of(it)) }
     }

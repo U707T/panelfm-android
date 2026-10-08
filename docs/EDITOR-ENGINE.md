@@ -16,7 +16,7 @@
 | `ui/editor/EditorDialogs.kt` | 语法 / 转到指定行 / 未保存三个对话框 |
 | `ui/editor/EditorSearchBar.kt` | 底部查找条（查找 / 替换两行 + 上个 / 下个 / 替换 / 全部 / ⋮），选项在 ⋮ 里 |
 | `ui/editor/EditorLanguages.kt` | sora 语言 / 主题注册表初始化、后缀 → scope 映射、配色创建、wordwrap / 注释前缀助手 |
-| `assets/textmate/**` | TextMate 语法（12 种语言）+ 语言配置 + 4 套主题（来源与许可见 `third_party/`） |
+| `assets/textmate/**` | TextMate 语法（22 种语言）+ 语言配置 + 4 套主题（来源与许可见 `third_party/`） |
 | `core/common/.../LineOps.kt` | 行操作纯函数（复制/删除/缩进/注释…），与编辑器引擎解耦，仍有单测 |
 
 引擎库：`io.github.rosemoe:editor` + `io.github.rosemoe:language-textmate`（LGPL-2.1）。
@@ -64,10 +64,15 @@
    `{ grammar, name, scopeName, languageConfiguration }`（scopeName 必须与语法文件里的一致；
    跨语法引用用 `embeddedLanguages`，如 html → javascript/css）；
 4. 在 `EditorLanguages.scopeOf()` 加后缀映射、`LABELS` 加显示名、`ORDER` 加进「语法」菜单顺序；
-5. 跑 `EditorLanguagesTest`（映射用例）+ 打开一个该类型文件实机看一眼。
+5. 跑 `EditorLanguagesTest`（映射用例）+ `TextMateAssetsTest`（**资产一致性**：languages.json ↔
+   实际文件、scopeName、严格 JSON、菜单与清单完全一致）+ 打开一个该类型文件实机看一眼。
 
 ## 4. 已知边界
 
+- 语法 / 语言配置里的正则由 sora 内置的 Oniguruma（Joni）执行：个别「JS 里合法」的写法
+  （可变长 look-behind、空字符类 `[]` 等）会编译失败 —— **分词阶段**失败会被库内部记录并跳过该规则，
+  但**加载阶段**（语言配置）的失败会连累**整个注册表**（所有语言一起没高亮）。新增 / 升级语言包后
+  必须跑 `TextMateGrammarLoadTest`（真加载 + 每种语言分词一行）；上一轮的 `go` 配置 `[]` 就是这样抓到的；
 - 语法高亮依赖库的 TextMate 实现；极端病态输入（超长单行等）仍可能慢，
   此时可把 `HL_MAX_CHARS` 调小；
 - 编辑器主题从 4 套内置主题里挑（浅色 quietlight / 深色 darcula），

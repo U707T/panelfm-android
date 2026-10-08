@@ -85,6 +85,87 @@
       "name": "css",
       "scopeName": "source.css",
       "languageConfiguration": "textmate/css/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/cpp/syntaxes/c.tmLanguage.json",
+      "name": "c",
+      "scopeName": "source.c",
+      "languageConfiguration": "textmate/cpp/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/cpp/syntaxes/cpp.tmLanguage.json",
+      "name": "cpp",
+      "scopeName": "source.cpp",
+      "languageConfiguration": "textmate/cpp/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/csharp/syntaxes/csharp.tmLanguage.json",
+      "name": "csharp",
+      "scopeName": "source.cs",
+      "languageConfiguration": "textmate/csharp/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/go/syntaxes/go.tmLanguage.json",
+      "name": "go",
+      "scopeName": "source.go",
+      "languageConfiguration": "textmate/go/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/rust/syntaxes/rust.tmLanguage.json",
+      "name": "rust",
+      "scopeName": "source.rust",
+      "languageConfiguration": "textmate/rust/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/php/syntaxes/php.tmLanguage.json",
+      "name": "php",
+      "scopeName": "source.php",
+      "languageConfiguration": "textmate/php/language-configuration.json",
+      "embeddedLanguages": {
+        "text.html.basic": "html",
+        "source.js": "javascript",
+        "source.css": "css",
+        "source.json": "json",
+        "text.xml": "xml"
+      }
+    },
+    {
+      "grammar": "textmate/ruby/syntaxes/ruby.tmLanguage.json",
+      "name": "ruby",
+      "scopeName": "source.ruby",
+      "languageConfiguration": "textmate/ruby/language-configuration.json",
+      "embeddedLanguages": {
+        "source.c": "c",
+        "source.cpp": "cpp",
+        "source.lua": "lua",
+        "source.shell": "shellscript",
+        "source.yaml": "yaml",
+        "source.css": "css",
+        "source.js": "javascript",
+        "text.html.basic": "html",
+        "text.xml": "xml"
+      }
+    },
+    {
+      "grammar": "textmate/lua/syntaxes/lua.tmLanguage.json",
+      "name": "lua",
+      "scopeName": "source.lua",
+      "languageConfiguration": "textmate/lua/language-configuration.json",
+      "embeddedLanguages": {
+        "source.c": "c"
+      }
+    },
+    {
+      "grammar": "textmate/bat/syntaxes/batchfile.tmLanguage.json",
+      "name": "bat",
+      "scopeName": "source.batchfile",
+      "languageConfiguration": "textmate/bat/language-configuration.json"
+    },
+    {
+      "grammar": "textmate/diff/syntaxes/diff.tmLanguage.json",
+      "name": "diff",
+      "scopeName": "source.diff",
+      "languageConfiguration": "textmate/diff/language-configuration.json"
     }
   ]
 }

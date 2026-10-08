@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 /**
  * sora-editor 的语法 / 主题注册（进程级单例，首次用编辑器时后台加载一次）。
  *
- * - 语法：`assets/textmate/languages.json` 登记 12 种语言（TextMate 语法，来源见
+ * - 语法：`assets/textmate/languages.json` 登记 22 种语言（TextMate 语法，来源见
  *   `third_party/THIRD-PARTY-NOTICES.md`）；
  * - 主题：只挑两套（浅色 `quietlight` / 深色 `darcula`），底色在创建配色时对齐应用背景，
  *   避免「编辑器一块底色、应用另一块底色」；
@@ -56,6 +56,16 @@ internal object EditorLanguages {
         return when (name.substringAfterLast('.', "")) {
             "kt", "kts" -> "source.kotlin"
             "java" -> "source.java"
+            "c", "h" -> "source.c"
+            "cc", "cpp", "cxx", "hpp", "hxx", "hh", "h++" -> "source.cpp"
+            "cs" -> "source.cs"
+            "go" -> "source.go"
+            "rs" -> "source.rust"
+            "php" -> "source.php"
+            "rb" -> "source.ruby"
+            "lua" -> "source.lua"
+            "bat", "cmd" -> "source.batchfile"
+            "diff", "patch" -> "source.diff"
             "js", "mjs", "cjs", "jsx" -> "source.js"
             "ts", "tsx", "mts", "cts" -> "source.ts"
             "json" -> "source.json"
@@ -80,24 +90,36 @@ internal object EditorLanguages {
     fun labelOf(scope: String?): String? = scope?.let { LABELS[it] }
 
     private val ORDER = listOf(
-        "source.kotlin", "source.java", "source.js", "source.ts",
+        "source.kotlin", "source.java", "source.c", "source.cpp", "source.cs", "source.go", "source.rust",
+        "source.js", "source.ts",
         "source.json", "text.xml", "text.html.basic", "source.css",
-        "source.python", "source.shell", "source.yaml", "text.html.markdown",
+        "source.python", "source.php", "source.ruby", "source.lua", "source.shell", "source.batchfile",
+        "source.yaml", "text.html.markdown", "source.diff",
     )
 
     private val LABELS = mapOf(
         "source.kotlin" to "Kotlin",
         "source.java" to "Java",
+        "source.c" to "C",
+        "source.cpp" to "C++",
+        "source.cs" to "C#",
+        "source.go" to "Go",
+        "source.rust" to "Rust",
         "source.js" to "JavaScript",
         "source.ts" to "TypeScript",
         "source.json" to "JSON",
         "text.xml" to "XML",
         "text.html.basic" to "HTML",
         "source.python" to "Python",
+        "source.php" to "PHP",
+        "source.ruby" to "Ruby",
+        "source.lua" to "Lua",
         "source.shell" to "Shell",
+        "source.batchfile" to "Batch",
         "source.yaml" to "YAML",
         "text.html.markdown" to "Markdown",
         "source.css" to "CSS",
+        "source.diff" to "Diff",
     )
 
     /**
@@ -139,8 +161,11 @@ internal fun defaultWordwrap(scope: String?): Boolean = scope == null || scope =
  * 纯 css 返回 null，scss / less 返回 `//`（2026-10-08 重审 §3 · 🔵7）。
  */
 internal fun commentPrefixOf(scope: String?, ext: String = ""): String? = when (scope) {
-    "source.kotlin", "source.java", "source.js", "source.ts" -> "//"
+    "source.kotlin", "source.java", "source.js", "source.ts",
+    "source.c", "source.cpp", "source.cs", "source.go", "source.rust", "source.php" -> "//"
     "source.css" -> if (ext == "scss" || ext == "less") "//" else null
-    "source.python", "source.shell", "source.yaml" -> "#"
+    "source.python", "source.shell", "source.yaml", "source.ruby" -> "#"
+    "source.lua" -> "--"
+    "source.batchfile" -> "REM "
     else -> null
 }

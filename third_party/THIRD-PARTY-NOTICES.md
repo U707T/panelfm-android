@@ -1,7 +1,7 @@
 # 第三方组件与许可（PanelFM）
 
 > 本文件记录仓库内**非自研代码 / 资源**的来源与许可证。发布的 APK 里同样包含这些组件。
-> 最后更新：v2.0.2（RAR 解压：junrar）。
+> 最后更新：v2.0.6（SVG 渲染：AndroidSVG；编辑器新增 10 种语法，共 22 种）。
 
 ## 1. sora-editor —— 文本编辑器引擎
 
@@ -26,6 +26,7 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 |---|---|
 | `kotlin/` `java/` `javascript/` `python/` `xml/` `html/` `markdown/` | 取自 sora-editor 示例工程 `app/src/main/assets/textmate/`（其上游为 VS Code 生态语法，MIT） |
 | `json/` `css/` `typescript/` `shellscript/` | 取自 https://github.com/microsoft/vscode （`extensions/<语言>`，MIT） |
+| `c/` `cpp/` `csharp/` `go/` `rust/` `php/` `ruby/` `lua/` `bat/` `diff/` | 取自 https://github.com/microsoft/vscode （`extensions/<语言>`，MIT）；`language-configuration.json` 已按本仓库要求清洗为**严格 JSON**（去注释 / 尾逗号） |
 | `yaml/` | 取自 https://github.com/redhat-developer/vscode-yaml （MIT） |
 | `darcula.json` `ayu-dark.json` `quietlight.json` `solarized_dark.json`（主题） | 取自 sora-editor 示例工程（对应上游 VS Code 主题：Darcula / Ayu / Quiet Light / Solarized，各自 MIT / Apache-2.0 许可） |
 
@@ -64,4 +65,17 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 
 **与许可一致的用法**：PanelFM 只把 junrar 用于**读取 / 解压** `.rar`；**不提供也不计划提供
 .rar 的创建**（压缩入口保持 zip / 7z / tar 系）。这也与格式现状一致 —— 没有任何开源实现能生成 .rar。
+
+## 5. AndroidSVG —— SVG / SVGZ 渲染（App 模块）
+
+| 项 | 值 |
+|---|---|
+| 来源 | https://github.com/BigBadaboom/androidsvg |
+| 版本 | `com.caverock:androidsvg-aar:1.4`（Maven Central；jar 约 200 KB，纯 Java、无原生依赖） |
+| 许可证 | **Apache-2.0**（全文见 `third_party/androidsvg/LICENSE-Apache-2.0.txt`） |
+| 使用范围 | 图片查看器里的 `.svg` / `.svgz`：渲染成位图（`ui/preview/SvgDecode.kt`）。只解析与绘制，不执行脚本、不联网 |
+
+> 说明：`BitmapFactory` 不支持 SVG —— 在此之前 `.svg` 分到图片类却打不开。选 AndroidSVG 而不是
+> WebView 方案，是为了复用现有的「缩放 / 翻页 / 双击放大」图片查看器，且启动更快、无 JS 引擎成本。
+
 

@@ -28,6 +28,9 @@ bcprov = "1.85"
 # sora-editor：Android 原生代码编辑器（增量高亮 / 搜索替换 / 虚拟化渲染）。
 # ⚠️ 该库为 LGPL-2.1（见 third_party/sora-editor/LICENSE-LGPL-2.1.txt）
 soraEditor = "0.24.6"
+# AndroidSVG：SVG / SVGZ 只读渲染（Apache-2.0，纯 Java、无原生依赖，jar 约 200KB）。
+# 用途：图片查看器里的 .svg / .svgz（BitmapFactory 不支持 SVG，见 SvgDecode.kt）
+androidsvg = "1.4"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -66,6 +69,7 @@ xz = { module = "org.tukaani:xz", version.ref = "xz" }
 # 文本编辑器引擎（LGPL-2.1）：editor 为核心控件，language-textmate 提供 TextMate 语法高亮
 sora-editor = { module = "io.github.rosemoe:editor", version.ref = "soraEditor" }
 sora-language-textmate = { module = "io.github.rosemoe:language-textmate", version.ref = "soraEditor" }
+androidsvg = { module = "com.caverock:androidsvg-aar", version.ref = "androidsvg" }
 
 junit = { module = "junit:junit", version = "4.13.2" }
 # 测试专用：真实 XmlPullParser 实现（Android 内置 KXmlParser 的上游同源代码），驱动解析层样例测试

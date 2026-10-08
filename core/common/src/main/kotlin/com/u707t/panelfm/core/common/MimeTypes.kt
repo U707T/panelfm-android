@@ -8,7 +8,7 @@ object MimeTypes {
         "jpg" to "image/jpeg", "jpeg" to "image/jpeg", "jpe" to "image/jpeg", "jfif" to "image/jpeg",
         "png" to "image/png", "gif" to "image/gif",
         "webp" to "image/webp", "bmp" to "image/bmp", "heic" to "image/heic", "heif" to "image/heif",
-        "svg" to "image/svg+xml", "ico" to "image/x-icon", "avif" to "image/avif",
+        "svg" to "image/svg+xml", "svgz" to "image/svg+xml", "ico" to "image/x-icon", "avif" to "image/avif",
         // ---- 音频（m4b/m4r 是 mp4 家族；amr/awb 为平台必带解码器）----
         "mp3" to "audio/mpeg", "m4a" to "audio/mp4", "m4b" to "audio/mp4", "m4r" to "audio/mp4",
         "aac" to "audio/aac", "flac" to "audio/flac",
@@ -79,7 +79,7 @@ object MimeTypes {
     enum class Kind { IMAGE, VIDEO, AUDIO, ARCHIVE, APK, TEXT, FONT, PDF, CODE, DOCUMENT, OTHER }
 
     fun kindOf(extension: String): Kind = when (extension.lowercase()) {
-        "jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "ico", "avif" -> Kind.IMAGE
+        "jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "svgz", "ico", "avif" -> Kind.IMAGE
         "mp4", "m4v", "mkv", "webm", "avi", "mov", "ts", "m2ts", "flv", "rmvb", "3gp", "3gpp", "f4v" -> Kind.VIDEO
         "mp3", "m4a", "m4b", "m4r", "aac", "flac", "ogg", "oga", "wav", "opus", "ape", "wma", "amr", "awb", "mka" -> Kind.AUDIO
         "zip", "7z", "rar", "tar", "gz", "xz", "bz2", "zst", "jar", "lzma", "z", "lz4", "cpio", "ar", "deb",
