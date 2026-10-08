@@ -2,7 +2,9 @@ package com.u707t.panelfm.ui.connections
 
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +13,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -22,8 +26,11 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
@@ -51,8 +58,8 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
     }
     // onFound 从并发协程回调：串行化「读-改-写」，避免多主机同屏命中时丢条目
     val foundLock = remember { Mutex() }
-    // 5244 = OpenList / Alist 默认 WebDAV，放在第一并作为默认端口
-    var port by remember { mutableStateOf(5244) }
+    // 默认端口 = 列表第一个（5244 = OpenList / Alist 默认 WebDAV）
+    var port by remember { mutableStateOf(lanScanQuickPorts.first()) }
     var scanning by remember { mutableStateOf(false) }
     var done by remember { mutableStateOf(0) }
     var total by remember { mutableStateOf(0) }
@@ -86,17 +93,22 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
         }
 
         Row(
-            Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 10.dp, end = 4.dp, top = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("端口：", style = MaterialTheme.typography.labelSmall)
-            listOf(5244, 22, 21, 445, 80, 443).forEach { p ->
-                TextButton(onClick = { port = p }) {
-                    Text(
-                        p.toString(),
-                        color = if (p == port) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+            // 端口胶囊：紧凑样式 + 横向可滚动（放不下可滑动）——「开始扫描」固定在行尾，任何屏宽都可见
+            Row(
+                Modifier
+                    .weight(1f)
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+            ) {
+                lanScanQuickPorts.forEach { p ->
+                    PortChip(port = p, selected = p == port) { port = p }
                 }
             }
             TextButton(
@@ -161,6 +173,29 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
             }
         }
     }
+}
+
+/** 扫描页的快捷端口列表：**5244（OpenList / Alist 的 WebDAV）在最前**，也是默认扫描端口。 */
+internal val lanScanQuickPorts = listOf(5244, 22, 21, 445, 80, 443)
+
+/**
+ * 端口小胶囊。
+ *
+ * 不用 TextButton：M3 的 TextButton 有 58dp 最小宽度，6 个端口 + 按钮一行放不下，
+ * 会把「开始扫描」挤出屏幕（v2.0.8 实机问题）。这里紧凑排布，放不下时整行还能横向滚动。
+ */
+@Composable
+private fun PortChip(port: Int, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        port.toString(),
+        style = MaterialTheme.typography.labelMedium,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .clip(RoundedCornerShape(MtSpec.CornerSmall))
+            .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+    )
 }
 
 /** 扫描端口 → 编辑器预选协议（仅作引导，用户进入后可改；5244/80/443 视作 WebDAV） */
