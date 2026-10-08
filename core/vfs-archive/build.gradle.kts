@@ -28,6 +28,9 @@ dependencies {
     implementation(libs.kotlinx.coroutines.android)
     implementation(libs.commons.compress)
     implementation(libs.xz)          // 7z / xz 支持
+    implementation(libs.junrar)      // RAR 解压（只读：RAR4 / RAR5 / RAR7、口令、分卷）
+    // junrar 经 slf4j 打日志：与 sftp/smb 模块同款，挂 no-op provider（不注入日志实现）
+    implementation(libs.slf4j.nop)
     // commons-compress 传递引入 commons-lang3 3.16.0（< 3.18.0 有非受控递归告警）；
     // 显式抬到修复版本，避免依赖树里被传递版本钉死。
     implementation(libs.commons.lang3)

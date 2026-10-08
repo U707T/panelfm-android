@@ -18,6 +18,10 @@ commonsCompress = "1.27.1"
 # 「长输入导致非受控递归」告警（GHSA）。显式抬到修复版本（与 bcprov 同一手法）。
 commonsLang3 = "3.21.0"
 xz = "1.12"
+# junrar：RAR 解压（RAR4/RAR5/RAR7、带口令、分卷）。⚠️ **只能读不能写** ——
+# .rar 是专有格式，没有任何开源实现能生成（UnRAR 许可证也禁止拿它做 RAR 兼容的压缩器）。
+# 纯 Java、无原生依赖；runtime 依赖 slf4j-api（项目已有 slf4j 2.0.20）。
+junrar = "8.1.1"
 media3 = "1.10.1"
 slf4j = "2.0.20"
 bcprov = "1.85"
@@ -54,6 +58,7 @@ bouncycastle = { module = "org.bouncycastle:bcprov-jdk18on", version.ref = "bcpr
 smbj = { module = "com.hierynomus:smbj", version.ref = "smbj" }
 commons-compress = { module = "org.apache.commons:commons-compress", version.ref = "commonsCompress" }
 commons-lang3 = { module = "org.apache.commons:commons-lang3", version.ref = "commonsLang3" }
+junrar = { module = "com.github.junrar:junrar", version.ref = "junrar" }
 media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
 media3-ui = { module = "androidx.media3:media3-ui", version.ref = "media3" }
 xz = { module = "org.tukaani:xz", version.ref = "xz" }

@@ -24,6 +24,9 @@
     var toolbar = document.getElementById('toolbar');
     var finished = false;
 
+    /** 单次 docx 渲染的最长等待（ms）：挂住时不再无限等，直接走兼容排版/纯文本兜底 */
+    var DOCX_RENDER_TIMEOUT_MS = 8000;
+
     function setStatus(text) {
         if (text) {
             statusEl.textContent = text;
@@ -67,26 +70,119 @@
 
     // ------------------------------------------------------------------ Word
 
-    /** 渲染结果里到底有没有东西（docx-preview 有时会"成功"但产出空壳） */
-    function docxLooksEmpty() {
-        if (!content.querySelector('section')) return true;
-        if (content.querySelector('img, table, svg, canvas')) return false;
-        return content.textContent.replace(/[\s\u2003\u00a0]+/g, '').length === 0;
+    /**
+     * 渲染结果体检（结构 + **几何**）。为什么要看几何：实机 bug（2026-10-08 毕业设计 docx 空白）
+     * 是页面被引擎压扁到几十像素、内容被 `overflow:hidden` 裁光 —— DOM 里"有 section、有文字"，
+     * 但 `getBoundingClientRect()` 全是零高/零宽。只查 DOM 内容会漏判（旧版只看 textContent + img 标签）。
+     */
+    function docxStats(root) {
+        var secs = root.querySelectorAll('section');
+        var heights = [];
+        for (var i = 0; i < secs.length && i < 5; i++) {
+            heights.push(Math.round(secs[i].getBoundingClientRect().height));
+        }
+        var visibleText = 0;
+        var nodes = root.querySelectorAll('span, p');
+        for (var j = 0; j < nodes.length; j++) {
+            var n = nodes[j];
+            if ((n.textContent || '').replace(/\s+/g, '').length === 0) continue;
+            var r = n.getBoundingClientRect();
+            if (r.width > 0 && r.height > 0) {
+                visibleText++;
+                if (visibleText >= 10) break;
+            }
+        }
+        return {
+            sections: secs.length,
+            pageHeights: heights,
+            maxPageHeight: heights.length ? Math.max.apply(Math, heights) : 0,
+            visibleText: visibleText,
+            images: root.querySelectorAll('img').length,
+        };
     }
 
-    /** 兜底：直接从 word/document.xml 抽文字（保证不是空白页） */
-    async function renderDocxTextFallback(buf, reason) {
+    /** 正常文档的一页 ≥ 800px（min-height 来自页面尺寸）；< 200px 说明被压扁，需要换排版重试 */
+    function docxLooksUsable(root) {
+        var s = docxStats(root);
+        if (s.sections > 0 && s.maxPageHeight < 200) return false;
+        if (s.visibleText === 0 && s.images === 0) return false;
+        return true;
+    }
+
+    /** 离屏渲染台：**挂在 body 上、参与布局、永不显示**。与可见区隔离，兜底/迟到结果都不打架 */
+    function docxStage() {
+        var st = document.getElementById('docx-stage');
+        if (!st) {
+            st = document.createElement('div');
+            st.id = 'docx-stage';
+            st.style.cssText = 'position:fixed;left:-10000px;top:0;width:100%;visibility:hidden;pointer-events:none;';
+            document.body.appendChild(st);
+        }
+        return st;
+    }
+
+    function removeNode(holder) {
+        if (holder && holder.parentNode) holder.parentNode.removeChild(holder);
+    }
+
+    /** 把一个渲染好的挂载点搬到可见区域（保序搬子节点，保留 <style> 与页面结构） */
+    function adoptDocxHolder(holder, compat) {
+        content.className = 'docx-host' + (compat ? ' compat' : '');
+        content.innerHTML = '';
+        while (holder.firstChild) content.appendChild(holder.firstChild);
+        removeNode(holder);
+    }
+
+    /** 在离屏台里渲染一次 docx（compat = 兼容排版），返回体检结果；超时返回 ok=false */
+    function renderDocxIntoHolder(buf, compat) {
+        return new Promise(function (resolve) {
+            var holder = document.createElement('div');
+            holder.className = 'docx-host' + (compat ? ' compat' : '');
+            docxStage().appendChild(holder);
+
+            var settled = false;
+            var renderPromise = window.docx.renderAsync(buf, holder, holder, DOCX_OPTIONS);
+            var timer = setTimeout(function () {
+                if (settled) return;
+                settled = true;
+                warn('docx 渲染超时（' + DOCX_RENDER_TIMEOUT_MS + 'ms，compat=' + compat + '）：先走下一步，迟到结果再接住');
+                resolve({ ok: false, timeout: true, holder: holder, late: renderPromise });
+            }, DOCX_RENDER_TIMEOUT_MS);
+
+            renderPromise.then(function () {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                var stats = docxStats(holder);
+                log('docx 渲染完成（compat=' + compat + '）：' + JSON.stringify(stats));
+                resolve({ ok: docxLooksUsable(holder), stats: stats, holder: holder });
+            }, function (e) {
+                if (settled) return;
+                settled = true;
+                clearTimeout(timer);
+                warn('docx-preview 渲染抛错（compat=' + compat + '）：' + describeError(e));
+                resolve({ ok: false, error: describeError(e), holder: holder });
+            });
+        });
+    }
+
+    /** 从 docx 字节里抽全文（纯文本兜底的数据来源） */
+    async function extractDocxText(buf) {
         var zip = await window.JSZip.loadAsync(buf);
         var entry = zip.file('word/document.xml');
         if (!entry) throw new Error('文档结构异常（缺少 word/document.xml）');
         var xml = await entry.async('string');
         var doc = new DOMParser().parseFromString(xml, 'application/xml');
         var paragraphs = Array.prototype.slice.call(doc.getElementsByTagNameNS('*', 'p'));
-        var text = paragraphs.map(function (p) {
+        return paragraphs.map(function (p) {
             return Array.prototype.slice.call(p.getElementsByTagNameNS('*', 't'))
                 .map(function (t) { return t.textContent || ''; })
                 .join('');
         }).join('\n');
+    }
+
+    /** 纯文本兜底（保证一定看得到内容） */
+    function showOnlyTextFallback(text, reason) {
         content.className = 'docx-host';
         content.innerHTML = '';
         var tip = document.createElement('div');
@@ -97,27 +193,54 @@
         pre.textContent = text.replace(/\n{3,}/g, '\n\n') || '（文档里没有可提取的文字）';
         content.appendChild(tip);
         content.appendChild(pre);
-        log('已使用纯文本兜底');
+        log('已使用纯文本兜底：' + reason);
     }
 
+    var DOCX_OPTIONS = {
+        className: 'docx',
+        inWrapper: true,
+        breakPages: true
+    };
+
+    /**
+     * docx 渲染三级链路（任何一级成功就收工，保证「不会是一页空白」）：
+     *  1. **标准排版**（docx-preview 默认）；
+     *  2. **兼容排版**：去掉 section 的 column-flex / overflow:hidden ——
+     *     部分 WebView 上「column flex + min-height + overflow:hidden」会把页面压扁到几十像素、
+     *     内容被裁光（实机 2026-10-08：毕业设计 docx 整页空白），普通块级流没有这个坑；
+     *  3. **纯文本兜底**：从 word/document.xml 抽段落文字。
+     * 每次渲染都放到离屏台（[docxStage]）里做，超时（[DOCX_RENDER_TIMEOUT_MS]）先走下一步；
+     * 迟到的结果如果可用，会再换进可见区域（弱机上「慢但能出图」的文档不被白等掉）。
+     */
     async function renderDocx(buf) {
         if (!window.docx || !window.docx.renderAsync) throw new Error('docx-preview 未加载');
-        content.className = 'docx-host';
-        try {
-            await window.docx.renderAsync(buf, content, null, {
-                className: 'docx',
-                inWrapper: true,
-                breakPages: true
-            });
-        } catch (e) {
-            warn('docx-preview 渲染抛错：' + describeError(e));
-            await renderDocxTextFallback(buf, describeError(e));
-            return;
+
+        var adopted = false;
+        function adoptLate(holder) {
+            if (adopted) { removeNode(holder); return; }
+            adopted = true;
+            adoptDocxHolder(holder, holder.className.indexOf('compat') >= 0);
+            log('迟到的渲染结果已换入可见区域');
         }
-        if (docxLooksEmpty()) {
-            warn('docx-preview 渲染结果为空');
-            await renderDocxTextFallback(buf, '渲染结果为空');
-        }
+
+        // 尝试 1：标准排版
+        var a = await renderDocxIntoHolder(buf, false);
+        if (a.ok) { adopted = true; adoptDocxHolder(a.holder, false); return; }
+        // 渲染迟到但可用 → 接住（无论后面走到哪一步，都比兜底好）
+        if (a.late) a.late.then(function () { if (docxLooksUsable(a.holder)) adoptLate(a.holder); else removeNode(a.holder); }, function () { removeNode(a.holder); });
+        else removeNode(a.holder);
+
+        // 尝试 2：兼容排版（原因见函数头）
+        warn('标准排版不可用' + (a.stats ? '（' + JSON.stringify(a.stats) + '）' : a.error ? '（' + a.error + '）' : '（超时）') + '，改用兼容排版重试…');
+        var b = await renderDocxIntoHolder(buf, true);
+        if (b.ok && !adopted) { adopted = true; adoptDocxHolder(b.holder, true); return; }
+        if (!b.ok) warn('兼容排版也不可用' + (b.stats ? '（' + JSON.stringify(b.stats) + '）' : b.error ? '（' + b.error + '）' : '（超时）'));
+        if (b.late) b.late.then(function () { if (docxLooksUsable(b.holder)) adoptLate(b.holder); else removeNode(b.holder); }, function () { removeNode(b.holder); });
+        else removeNode(b.holder);
+        if (adopted) return;
+
+        // 尝试 3：纯文本兜底
+        showOnlyTextFallback(await extractDocxText(buf), '标准/兼容排版都不可用');
     }
 
     // ------------------------------------------------------------------ 表格

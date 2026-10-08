@@ -82,6 +82,21 @@ html, body {
     box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18);
 }
 
+/* ---- Word 兼容排版（compat）----
+   docx-preview 的页面默认是「column flex + min-height + overflow:hidden」：
+   部分 WebView（实机 2026-10-08 上报）会把页面压扁到几十像素、内容被裁光 → 整页空白。
+   compat 模式全部改成普通块级流（本文件里的空行/缩进不影响行为，别再改回 flex）。 */
+#content.compat .docx-wrapper {
+    display: block !important;
+}
+#content.compat section.docx {
+    display: block !important;
+    overflow: visible !important;
+}
+#content.compat section.docx > article {
+    margin-bottom: 0 !important;
+}
+
 /* ---- 表格：紧凑边框，可横向滚动（顶部留出工作表标签） ---- */
 .xlsx-host {
     padding-top: 44px;

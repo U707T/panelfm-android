@@ -43,6 +43,13 @@
    - 资产路径要归一化：去掉空段与 `.`、遇到 `..` 拒绝（`AssetManager` 不认 `./` 这类路径）；
    - `/office/`、`/office/index.html` 都映射到 `index.html`（页面地址带 query，按 path 匹配）。
 6. **页面里引用资源用绝对路径**（`/office/vendor/xxx.js`），避免 `./` 段带来的路径歧义。
+7. **docx 渲染是三级链路**（v2.0.2 起）：标准排版 → **兼容排版**（去掉 section 的
+   `column-flex` / `overflow:hidden` —— 部分 WebView 上「column flex + min-height + overflow:hidden」
+   会把页面压扁到几十像素、内容被裁光，实机「毕业设计 docx 整页空白」即此形态）→ **纯文本兜底**。
+   每一级都先在**离屏渲染台**（`#docx-stage`，参与布局但不显示）里跑完体检
+   （页面高度 / 可见文字几何，`docxLooksUsable`），不可用才下探；单级超时 8s（`DOCX_RENDER_TIMEOUT_MS`），
+   超时先走下一级、迟到的可用结果再换进可见区域。链路与体检都在 `viewer.js`，
+   日志前缀 `[OfficePreview]`（Kotlin 侧转发到 logcat），再遇空白先看 logcat。
 
 ## 4. 怎么升级渲染库
 

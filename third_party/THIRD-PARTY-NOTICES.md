@@ -1,7 +1,7 @@
 # 第三方组件与许可（PanelFM）
 
 > 本文件记录仓库内**非自研代码 / 资源**的来源与许可证。发布的 APK 里同样包含这些组件。
-> 最后更新：v1.6.0（文本编辑器改用 sora-editor 引擎）。
+> 最后更新：v2.0.2（RAR 解压：junrar）。
 
 ## 1. sora-editor —— 文本编辑器引擎
 
@@ -51,4 +51,17 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 
 > 说明：曾评估 `pptx-preview`（体积接近），但其授权条款限定「源码不开放、不得改源码转自有项目」，
 > 不符合「开源依赖」的要求，故改用 Apache-2.0 的 `@aiden0z/pptx-renderer`。
+
+## 4. junrar —— RAR 解压（核心库 `core/vfs-archive`）
+
+| 项 | 值 |
+|---|---|
+| 来源 | https://github.com/junrar/junrar |
+| 版本 | `com.github.junrar:junrar:8.1.1`（Maven Central，纯 Java、无原生依赖） |
+| 许可证 | **UnRAR License**（宽松但有一条限制：**不得**用它开发 RAR（WinRAR）兼容的压缩器） |
+| 使用范围 | `ArchiveVfs`（`core/vfs-archive`）：`.rar` 的列目录 / 浏览 / 解压（RAR4 / RAR5 / RAR7、带口令、分卷），**只读** |
+| 传递依赖 | `org.slf4j:slf4j-api`（项目已有 2.0.20） |
+
+**与许可一致的用法**：PanelFM 只把 junrar 用于**读取 / 解压** `.rar`；**不提供也不计划提供
+.rar 的创建**（压缩入口保持 zip / 7z / tar 系）。这也与格式现状一致 —— 没有任何开源实现能生成 .rar。
 

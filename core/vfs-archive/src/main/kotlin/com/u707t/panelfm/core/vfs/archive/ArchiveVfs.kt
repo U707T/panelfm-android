@@ -16,6 +16,19 @@ import com.u707t.panelfm.core.vfs.VfsState
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsWriter
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
+import com.github.junrar.Archive
+import com.github.junrar.exception.CrcErrorException
+import com.github.junrar.exception.InitDeciphererFailedException
+import com.github.junrar.exception.MissingNextVolumeException
+import com.github.junrar.exception.MissingPreviousVolumeException
+import com.github.junrar.exception.NotRarArchiveException
+import com.github.junrar.exception.RarException
+import com.github.junrar.exception.UnsupportedDictionarySizeException
+import com.github.junrar.exception.UnsupportedRarEncryptedException
+import com.github.junrar.exception.UnsupportedRarMethodException
+import com.github.junrar.exception.UnsupportedRarVersionException
+import com.github.junrar.exception.WrongPasswordException
+import com.github.junrar.rarfile.FileHeader
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,13 +45,22 @@ import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
 import java.io.InputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
 
 /**
  * 压缩包只读挂载：`archive://zip/<encoded host uri>!/inner/path`
  *
- *  - 支持 zip / jar / 7z / tar / tar.gz / tgz / tar.bz2（顺序格式在读取时按需重扫）
+ *  - 支持 zip / jar / 7z / tar / tar.gz / tgz / tar.bz2 / **rar**（顺序格式在读取时按需重扫）
  *  - 挂载后就是普通 VFS：可以直接「复制到对面窗格」= 解压；可以进压缩包内的目录层层浏览
  *  - 只读（不提供写入/删除/重命名），不含任何 APK / DEX 逆向能力
+ *
+ * RAR 由 junrar 8.x 提供（RAR4 / RAR5 / RAR7、口令、分卷，全部**只读**）：
+ *  - **不能生成 .rar** —— 格式专有，没有任何开源实现能写（UnRAR 许可证也明确禁止拿它做压缩器），
+ *    压缩入口保持 zip / 7z / tar 系（见 [ArchiveCompressor]）；
+ *  - 头加密的 RAR5 在构造时就会抛口令异常；头加密的 RAR4 会「打开成功但零条目」，
+ *    靠 [isPasswordProtected] 识别（见 [buildIndex]）；
+ *  - 条目数据用 [RarEntryStream]（管道 + 工作线程）桥接，junrar 的解压异常会**原样上抛**。
  */
 class ArchiveVfs(
     val host: VfsUri,
@@ -50,12 +72,13 @@ class ArchiveVfs(
      * 压缩包口令（加密包必需）。
      *
      * 为什么放在构造器而不是 [connect]：`openEntryStream` 每次顺序读都要**重新打开**
-     * 7z/tar 容器（见该函数注释），口令必须随时可用。
+     * 7z/tar/rar 容器（见该函数注释），口令必须随时可用。
      *
      * 注意 commons-compress 1.27.1 的能力边界：
      *  - 7z：`SevenZFile` 支持 `setPassword`，**能**读加密内容；
      *  - ZIP：`ZipFile` **没有** password 参数（只有一个 `PasswordRequiredException`），
-     *    所以加密 ZIP 由 [ZipCryptoReader] 自行解密（见 [openEntryStream]）。
+     *    所以加密 ZIP 由 [ZipCryptoReader] 自行解密（见 [openEntryStream]）；
+     *  - RAR：junrar 的 `Archive` 直接接收口令（数据加密 / 头加密都能读）。
      */
     val password: String? = null,
 ) : VirtualFileSystem {
@@ -66,6 +89,7 @@ class ArchiveVfs(
         TAR("tar", "TAR"),
         TAR_GZ("targz", "tar.gz"),
         TAR_BZ2("tarbz2", "tar.bz2"),
+        RAR("rar", "RAR"),
         ;
 
         companion object {
@@ -74,6 +98,7 @@ class ArchiveVfs(
                 return when {
                     n.endsWith(".zip") || n.endsWith(".jar") || n.endsWith(".apk") || n.endsWith(".xpi") -> ZIP
                     n.endsWith(".7z") -> SEVEN_Z
+                    n.endsWith(".rar") -> RAR
                     n.endsWith(".tar.gz") || n.endsWith(".tgz") -> TAR_GZ
                     n.endsWith(".tar.bz2") || n.endsWith(".tbz2") -> TAR_BZ2
                     n.endsWith(".tar") -> TAR
@@ -238,6 +263,35 @@ class ArchiveVfs(
                     }
                 }
             }
+            ArchiveKind.RAR -> {
+                // 列条目不一定要口令（RAR 通常只加密数据、不加密文件名）；头加密见下方特判。
+                rarArchive().use { ra ->
+                    var e = ra.nextFileHeader()
+                    while (e != null) {
+                        val path = normalize(e.fileName, e.isDirectory)
+                        if (path != null) {
+                            index[path] = Entry(
+                                path = path,
+                                name = path.trimEnd('/').substringAfterLast('/'),
+                                size = if (e.isDirectory) -1L else e.fullUnpackSize,
+                                modified = e.mTime?.time ?: -1L,
+                                isDirectory = e.isDirectory,
+                                source = e,
+                            )
+                        }
+                        e = ra.nextFileHeader()
+                    }
+                    // 头加密的 RAR4：junrar 会「打开成功但一个条目都读不出来」（不抛异常）。
+                    // 用 isPasswordProtected 识别这种状态，走与 7z 相同的「输入口令」路径（第 5 批 🔴1 的接线复用）。
+                    // 注意：确认不了保护状态（老版本 / 异常）时**不**当加密处理，避免把正常的空包误判成加密。
+                    if (index.isEmpty() && runCatching { ra.isPasswordProtected }.getOrDefault(false)) {
+                        throw VfsException.Auth(
+                            if (password.isNullOrEmpty()) "该压缩包已加密，请输入口令"
+                            else "压缩包口令不正确或文件已损坏"
+                        )
+                    }
+                }
+            }
         }
         Logx.i("ArchiveVfs", "index ${host.name}: ${index.size} entries (${Fmt.size(localFile.length())})")
         rebuildDirPaths()
@@ -285,6 +339,117 @@ class ArchiveVfs(
         }
     }
 
+    /**
+     * 打开 RAR 容器（口令为空时走无参构造）。junrar 的典型异常在这里落成可执行文案：
+     *  - [WrongPasswordException]：头加密（RAR5）没口令 / 口令错；
+     *  - [NotRarArchiveException]：不是 RAR（扩展名骗人 / 文件损坏）；
+     *  - [UnsupportedRarVersionException] / [UnsupportedRarEncryptedException]：暂不支持的特性。
+     */
+    private fun rarArchive(): Archive {
+        return try {
+            if (password.isNullOrEmpty()) Archive(localFile) else Archive(localFile, password)
+        } catch (e: WrongPasswordException) {
+            throw VfsException.Auth(
+                if (password.isNullOrEmpty()) "该压缩包已加密，请输入口令"
+                else "压缩包口令不正确或文件已损坏"
+            )
+        } catch (e: NotRarArchiveException) {
+            throw VfsException.ProtocolError("不是有效的 RAR 文件（或文件已损坏）", e)
+        } catch (e: UnsupportedRarVersionException) {
+            throw VfsException.Unsupported("该 RAR 版本暂不支持：${e.message}")
+        } catch (e: UnsupportedRarEncryptedException) {
+            throw VfsException.Unsupported("该 RAR 的加密方式暂不支持：${e.message}")
+        } catch (e: java.io.FileNotFoundException) {
+            throw e
+        } catch (e: RarException) {
+            throw VfsException.ProtocolError("无法打开 RAR：${e.message}", e)
+        } catch (e: IOException) {
+            throw VfsException.ProtocolError("无法打开 RAR：${e.message}", e)
+        }
+    }
+
+    /** junrar 解压过程中的异常 → 可读的 [VfsException]（[RarEntryStream] 在读取端上抛）。 */
+    private fun mapRarError(t: Throwable): VfsException = when (t) {
+        is WrongPasswordException -> VfsException.Auth(
+            if (password.isNullOrEmpty()) "该压缩包已加密，请输入口令"
+            else "压缩包口令不正确或数据已损坏"
+        )
+        // RAR4 数据加密：没口令时 junrar 在解密码器初始化处抛这个（不是 WrongPassword）
+        is InitDeciphererFailedException -> VfsException.Auth(
+            if (password.isNullOrEmpty()) "该压缩包已加密，请输入口令"
+            else "压缩包口令不正确或数据已损坏"
+        )
+        is CrcErrorException -> VfsException.ProtocolError("RAR 数据校验失败（口令错误或数据已损坏）", t)
+        is UnsupportedRarMethodException -> VfsException.Unsupported("该 RAR 使用了暂不支持的方法：${t.message}")
+        is UnsupportedDictionarySizeException -> VfsException.Unsupported("RAR 字典超出防护上限：${t.message}")
+        is MissingNextVolumeException -> VfsException.Unsupported("这是分卷压缩包，缺少下一个分卷")
+        is MissingPreviousVolumeException -> VfsException.Unsupported("这是分卷压缩包，缺少前一个分卷")
+        is RarException -> VfsException.ProtocolError("RAR 解压失败：${t.message}", t)
+        else -> VfsException.ProtocolError("RAR 解压失败：${t.message}", t)
+    }
+
+    /**
+     * junrar 的提取是「推式」的（[Archive.extractFile] 要一个 OutputStream 一路写），
+     * 而 [openEntryStream] 是「拉式」的（一路 read）—— 用管道 + 工作线程桥接。
+     *
+     * ⚠️ 不能用 junrar 自带的 `Archive.getInputStream()`：它内部把异常整个吞掉
+     * （`catch (RarException ignored)`），口令错 / 数据坏会**静默截断成看似正常的 EOF**。
+     * 这里把工作线程的异常记下来，在读取端原样上抛（EOF 前也会再查一次）。
+     */
+    private class RarEntryStream(
+        private val archive: Archive,
+        private val header: FileHeader,
+        private val mapError: (Throwable) -> VfsException,
+    ) : InputStream() {
+
+        private val pipedIn = PipedInputStream(256 * 1024)
+        private val pipedOut = PipedOutputStream(pipedIn)
+
+        @Volatile
+        private var failure: Throwable? = null
+
+        private val worker = Thread({
+            try {
+                archive.extractFile(header, pipedOut)
+            } catch (t: Throwable) {
+                failure = t
+            } finally {
+                runCatching { pipedOut.close() }
+                runCatching { archive.close() }
+            }
+        }, "rar-entry").apply { isDaemon = true; start() }
+
+        private fun failIfAny() {
+            failure?.let { throw mapError(it) }
+        }
+
+        override fun read(): Int {
+            val one = ByteArray(1)
+            val n = read(one, 0, 1)
+            return if (n <= 0) -1 else one[0].toInt() and 0xFF
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            failIfAny()
+            val n = try {
+                pipedIn.read(b, off, len)
+            } catch (e: IOException) {
+                failIfAny()
+                throw e
+            }
+            if (n < 0) failIfAny() // EOF：可能是正常读完，也可能是工作线程已失败（异常别吞）
+            return n
+        }
+
+        override fun available(): Int = runCatching { pipedIn.available() }.getOrDefault(0)
+
+        override fun close() {
+            // 关闭读取端 → 工作线程的下一次写入抛 "Pipe closed" → 它退出并在 finally 里释放 Archive。
+            // （消费端提前取消时，最多多留一个阻塞在写上的守护线程到这次写入返回，不会泄漏文件句柄。）
+            runCatching { pipedIn.close() }
+        }
+    }
+
     // ------------------------------------------------------------------ 口令探测（第 5 批 🔴1）
 
     /** 口令探测结果：应用侧据此决定弹不弹「输入压缩包口令」。 */
@@ -319,7 +484,40 @@ class ArchiveVfs(
                     else -> PasswordCheck.WRONG
                 }
             }
+            ArchiveKind.RAR -> {
+                // 头加密在挂载时已拦截（见 buildIndex）；这里判「数据加密」。
+                // RAR4 的错口令没有早期信号（解密码器初始化永远成功，乱码只在条目读完做 CRC 时才暴露），
+                // RAR5 有 pswCheck 早期信号。所以：
+                //  - 没口令：读 1 字节即可（缺口令在解密器/KDF 初始化处就抛）；
+                //  - 有口令：把**最小的**加密条目整个读完来验签（上限定 64MB，超了就不验，
+                //    留给实际读取时报错，避免挂载时为了一个巨型条目去解几个 GB）。
+                val encrypted = index.values
+                    .filter { !it.isDirectory && it.size > 0 && (it.source as? FileHeader)?.isEncrypted == true }
+                    .minByOrNull { it.size }
+                    ?: return@withContext PasswordCheck.OK
+                if (password.isNullOrEmpty()) {
+                    val err = runCatching { openEntryStream(encrypted.path).use { it.read() } }.exceptionOrNull()
+                    return@withContext when {
+                        err == null -> PasswordCheck.OK
+                        err is VfsException.Auth -> PasswordCheck.NEEDED
+                        else -> PasswordCheck.NEEDED
+                    }
+                }
+                if (encrypted.size > RAR_VERIFY_MAX_BYTES) {
+                    Logx.i("ArchiveVfs", "RAR 口令跳过验签：最小加密条目 ${encrypted.name} 为 ${Fmt.size(encrypted.size)}")
+                    return@withContext PasswordCheck.OK
+                }
+                val err = runCatching { openEntryStream(encrypted.path).use { drain(it) } }.exceptionOrNull()
+                return@withContext if (err == null) PasswordCheck.OK else PasswordCheck.WRONG
+            }
             else -> PasswordCheck.OK
+        }
+    }
+
+    private fun drain(stream: InputStream) {
+        val buf = ByteArray(64 * 1024)
+        while (stream.read(buf, 0, buf.size) >= 0) {
+            // 读完为止（RAR4 的 CRC 校验发生在流的末尾）
         }
     }
 
@@ -559,6 +757,26 @@ class ArchiveVfs(
                 }
                 tar
             }
+            ArchiveKind.RAR -> {
+                // junrar 的 FileHeader 没有 equals（identity 比较），跨实例按名 + 大小重新匹配；
+                // 顺序扫描到目标条目由 Junrar 的 solid 逻辑负责（solid 包会从头重放）。
+                val ra = rarArchive()
+                val target = entry.source as FileHeader
+                var match: FileHeader? = null
+                var e = ra.nextFileHeader()
+                while (e != null) {
+                    if (e.fileName == target.fileName && e.fullUnpackSize == target.fullUnpackSize) {
+                        match = e
+                        break
+                    }
+                    e = ra.nextFileHeader()
+                }
+                if (match == null) {
+                    runCatching { ra.close() }
+                    throw VfsException.ProtocolError("RAR 条目在重新打开后找不到了：${entry.name}")
+                }
+                RarEntryStream(ra, match) { t -> mapRarError(t) }
+            }
         }
         if (skip > 0) {
             var skipped = 0L
@@ -607,6 +825,9 @@ class ArchiveVfs(
     }
 
     companion object {
+        /** RAR 口令验签上限：最小的加密条目超过它就跳过挂载期验签（留给实际读取时报错） */
+        private const val RAR_VERIFY_MAX_BYTES = 64L * 1024 * 1024
+
         /** `archive://zip/<encoded host>!/inner` → `inner` */
         fun parseInner(path: String): String {
             val idx = path.indexOf("!/")
