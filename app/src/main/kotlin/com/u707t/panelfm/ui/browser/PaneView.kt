@@ -4,8 +4,15 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.runtime.snapshotFlow
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
@@ -22,6 +29,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -40,7 +48,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
@@ -93,8 +104,10 @@ private val ROW_HEIGHT = MtSpec.RowHeight
  *  - **长按 400ms = 直接弹该项二级菜单**：不改选择、不进多选（MT 实机行为；v1.9.0 已推翻旧模型）
  *  - 单击 = 打开（目录）/ 预览（文件）；多选状态下单击 = 切换选中
  *  - 手势挂在**列表**上（一个指针节点）；行回收不影响进行中的手势 —— 见 [ListGestures]
- *  - **每窗格两枚 FAB**（复刻 MT A.2）：📋 粘贴（bottom|end 12dp）/ ✕ 关闭（bottom|end 74dp），
- *    50dp / 图标 20dp / 底色 `#FFFF0000`，**显隐由状态决定**（布局里 MT 都写 visible）
+ *  - **每窗格两枚浮动钮**（复刻 MT A.2 + 2026-10-08 改版）：
+ *    📋 粘贴（bottom|end 12dp，MT 规格 50dp / 图标 20dp / 底色 `#FFFF0000`）；
+ *    ✕ 退出多选（bottom|end 74dp，多选态才出现）—— 已改为 **40dp 中性悬浮钮**
+ *    （浅色白底深灰叉 / 深色深灰底浅灰叉 + 弹簧入场，不再用高饱和红圆）
  *  - **加载遮罩**：`#66222222` + 转圈 + 「取消」+ 10sp 百分比（MT `09020D/09020E`）
  *  - 任何触摸都会先把本窗格设为活动窗口（同一时间只有一个窗口激活）
  */
@@ -366,8 +379,9 @@ fun PaneView(
             }
 
             // ---- 每窗格 FAB（复刻 MT 0x7f0c0033 的 090166/09016A，附录 A.2）：
-            //   剪贴板（粘贴，bottom|end 12dp）/ 取消（✕，bottom|end 74dp；多选态才出现）
-            //   50dp / 图标 20dp / 底色 #FFFF0000 / elevation 3dp
+            //   剪贴板（粘贴，bottom|end 12dp，MT 规格 50dp 红色）；
+            //   退出多选（✕，bottom|end 74dp；见 [ExitSelectionButton] —— 2026-10-08 改版，
+            //   由 MT 复刻的 50dp 纯红 FAB 改为 40dp 中性悬浮钮）
             if (clipboardReady) {
                 MtFab(
                     icon = MtIcon.PASTE,
@@ -377,15 +391,13 @@ fun PaneView(
                         .padding(end = MtSpec.FabMargin, bottom = MtSpec.FabMargin),
                 ) { controller.pasteFromClipboard(side) }
             }
-            if (pane.hasSelection) {
-                MtFab(
-                    icon = MtIcon.CLOSE,
-                    contentDescription = "退出多选",
-                    modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = MtSpec.FabMargin, bottom = MtSpec.FabStackStep),
-                ) { controller.clearSelection(side) }
-            }
+            ExitSelectionButton(
+                visible = pane.hasSelection,
+                onClick = { controller.clearSelection(side) },
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = MtSpec.FabMargin, bottom = MtSpec.FabStackStep),
+            )
 
             // ---- MT 加载遮罩（复刻 0x7f0c0033 的 09020D/09020E）：
             //   #66222222 半透明黑 + 转圈 + 「取消」按钮 + 10sp 百分比文字；
@@ -438,6 +450,71 @@ fun PaneView(
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/**
+ * 退出多选的轻量悬浮钮（2026-10-08 用户反馈改版，替代 MT 复刻的 50dp 纯红 FAB）：
+ *
+ *  - 视觉：40dp 中性圆钮 —— 浅色主题白底 + 深灰叉，深色主题 #303030 底 + 浅灰叉；
+ *    叉自绘 Canvas（圆头细线），比 Material 实心字形更轻，3dp 阴影保持悬浮感；
+ *  - 动效：进入多选时弹簧缩放 + 淡入，退出时快速缩小淡出（出现/消失都不「跳」）；
+ *  - 位置沿用原 FAB 锚点（bottom|end 74dp，与粘贴 FAB 间隙 12dp），触控目标 40dp。
+ */
+@Composable
+private fun ExitSelectionButton(
+    visible: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val dark = LocalPanelDarkTheme.current
+    val container = if (dark) Color(0xFF303030) else Color.White
+    val cross = if (dark) Color(0xFFE0E0E0) else Color(0xFF3C3C3C)
+    AnimatedVisibility(
+        visible = visible,
+        enter = fadeIn(tween(durationMillis = 140)) + scaleIn(
+            initialScale = 0.72f,
+            animationSpec = spring(dampingRatio = 0.55f, stiffness = 1200f),
+        ),
+        exit = fadeOut(tween(durationMillis = 140)) + scaleOut(
+            targetScale = 0.8f,
+            animationSpec = tween(durationMillis = 140),
+        ),
+        modifier = modifier,
+    ) {
+        Box(
+            Modifier
+                .size(40.dp)
+                .shadow(elevation = 3.dp, shape = CircleShape)
+                .clip(CircleShape)
+                .background(container)
+                .clickable(onClick = onClick)
+                .semantics {
+                    contentDescription = "退出多选"
+                    role = Role.Button
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Canvas(Modifier.size(15.dp)) {
+                val w = size.width
+                val inset = w * 0.06f
+                val stroke = w * 0.11f
+                drawLine(
+                    color = cross,
+                    start = Offset(inset, inset),
+                    end = Offset(w - inset, w - inset),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round,
+                )
+                drawLine(
+                    color = cross,
+                    start = Offset(w - inset, inset),
+                    end = Offset(inset, w - inset),
+                    strokeWidth = stroke,
+                    cap = StrokeCap.Round,
+                )
             }
         }
     }

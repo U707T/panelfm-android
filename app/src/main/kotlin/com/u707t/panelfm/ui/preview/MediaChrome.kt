@@ -5,10 +5,24 @@ package com.u707t.panelfm.ui.preview
 //  - PlayerSlider：进度条（三层轨道 + 拖动/点按双检测器）
 //  - MediaTopBar / MediaBottomBar：悬浮顶栏 / 底栏（参数化，无页面状态所有权）
 //  - MediaMiniProgress：控制层收起时的迷你进度浮层
+//  - SpeedBoostIndicator：长按 2 倍速指示（顶部居中；弹簧入场 + 三箭头流光动效）
 //  - MediaErrorPanel：播放失败面板（重试 / 外部打开）
 // ================================================================================================
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -16,12 +30,15 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -34,6 +51,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.media3.ui.AspectRatioFrameLayout
@@ -50,7 +71,9 @@ import androidx.compose.material3.TextButton
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.ui.MtSpec
+import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.sin
 
 /**
  * 播放进度条（照 IRIS）。
@@ -418,6 +441,84 @@ internal fun MediaMiniProgress(
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(start = 16.dp, top = 6.dp, bottom = 4.dp),
             )
+        }
+    }
+}
+
+/**
+ * 长按倍速指示（顶部居中）——合并此前重复的两处提示（HUD「2x」与「▶▶▶ 2.0X」静态胶囊）。
+ *
+ * 动效（2026-10-08 用户反馈改版）：
+ *  - 入场：快速淡入 + 弹簧缩放（轻微回弹）；退场：淡出缩小 —— 出现/消失都不「跳」；
+ *  - 内容：三枚箭头以正弦包络**次第点亮**（相位各错 18%），形成自左向右的「速度流光」。
+ *
+ * 只读 [active]，不消费触摸（挂在 Box 顶层，不影响手势层与控件点击）。
+ */
+@Composable
+internal fun SpeedBoostIndicator(
+    active: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    AnimatedVisibility(
+        visible = active,
+        enter = fadeIn(tween(durationMillis = 120)) +
+            scaleIn(
+                initialScale = 0.7f,
+                animationSpec = spring(dampingRatio = 0.5f, stiffness = 1500f),
+            ),
+        exit = fadeOut(tween(durationMillis = 150)) +
+            scaleOut(targetScale = 0.85f, animationSpec = tween(durationMillis = 150)),
+        modifier = modifier,
+    ) {
+        Row(
+            Modifier
+                .clip(RoundedCornerShape(percent = 50))
+                .background(Color.Black.copy(alpha = 0.55f))
+                .padding(start = 14.dp, end = 18.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            SpeedChevrons()
+            Spacer(Modifier.width(9.dp))
+            Text(
+                "2.0X",
+                color = Color.White,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+    }
+}
+
+/**
+ * 三枚「＞」箭头的流光：正弦包络 0 → 1 → 0 铺满一个 1000ms 周期，
+ * 相邻箭头错开 18% 相位 → 亮斑依次扫过（绘制走 Canvas + 圆头线帽，不依赖字体字形）。
+ */
+@Composable
+private fun SpeedChevrons(modifier: Modifier = Modifier) {
+    val transition = rememberInfiniteTransition(label = "speedChevrons")
+    val phase by transition.animateFloat(
+        initialValue = 0f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 1000, easing = LinearEasing),
+            repeatMode = RepeatMode.Restart,
+        ),
+        label = "phase",
+    )
+    Canvas(modifier.size(width = 30.dp, height = 16.dp)) {
+        val stroke = size.height * 0.15f
+        val cell = size.width / 3f
+        val style = Stroke(width = stroke, cap = StrokeCap.Round, join = StrokeJoin.Round)
+        repeat(3) { i ->
+            val u = (phase - i * 0.18f + 1f) % 1f
+            val alpha = 0.28f + 0.72f * sin(PI.toFloat() * u)
+            val x = cell * i + stroke / 2f
+            val chevron = Path().apply {
+                moveTo(x, size.height * 0.16f)
+                lineTo(cell * i + cell * 0.70f, size.height / 2f)
+                lineTo(x, size.height * 0.84f)
+            }
+            drawPath(chevron, Color.White.copy(alpha = alpha), style = style)
         }
     }
 }

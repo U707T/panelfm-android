@@ -117,11 +117,12 @@ internal fun rememberMediaPlayerGestures(hooks: MediaGestureHooks): Modifier {
                 }
                 // 长按 = 2 倍速（松手恢复）。只对「画面区域」生效：
                 // 长按控制条上的按钮不该触发倍速。
+                // ⚠️ 这里**不再**写 HUD（旧实现另发一条「2x」提示，与专门的倍速指示重复）——
+                //    提示统一由 MediaChrome.kt 的 SpeedBoostIndicator 动效承担。
                 if (!hooks.isLocked() && !isInsideControls(hooks, offset.x, offset.y, size.width, size.height)) {
                     boostJob.value = hooks.scope.launch {
                         delay(viewConfiguration.longPressTimeoutMillis)
                         hooks.setSpeedBoost(true)
-                        hooks.setHud("2x")
                     }
                 }
                 tryAwaitRelease()

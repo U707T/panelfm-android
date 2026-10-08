@@ -508,19 +508,13 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             )
         }
 
-        // ---- 倍速提示（▶▶▶ 2.0X）
-        if (ui.speedBoost) {
-            Box(
-                Modifier
-                    .align(Alignment.TopCenter)
-                    .padding(top = 96.dp)
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(Color.Black.copy(alpha = 0.6f))
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                Text("▶▶▶  2.0X", color = Color.White, style = MaterialTheme.typography.titleMedium)
-            }
-        }
+        // ---- 长按倍速指示（顶部居中；唯一入口，替代旧的「HUD 2x」+「▶▶▶ 2.0X」双提示）
+        SpeedBoostIndicator(
+            active = ui.speedBoost,
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 96.dp),
+        )
 
         // ---- HUD 提示
         ui.hud?.let {
