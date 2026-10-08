@@ -5,7 +5,7 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1–9 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
+> 修复：**第 1–10 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
 
 ---
 
@@ -1191,4 +1191,79 @@
 
 ---
 
-（后续批次在本文档追加 §10、§11 …）
+## §10 模块审查：core/data（2026-10-08 · 第 10 批）
+
+> 结论一句话：数据层小而克制——失败语义、防御性解析、加法式迁移都有明确注释与先修在案；
+> 本批抓到 1 个**静默功能失效**（路径历史的 UPSERT 在 API 26–29 设备上语法错误，「最近使用」永远为空）
+> 与 3 个 🔵（secret_ref 占位列值、零消费 API、两张从未读写的表）。无阻断级问题。
+> 范围：`core/data/` 8 文件 / 928 行 —— PrefsStore 347 / PanelDb 170 / SecretStore 90 / ConnectionDao 90 /
+> BookmarkDao 86 / ResumeDao 71 / PreviewPrefDao 43 / HostKeyDao 42（+测试 2 文件 / 6 用例）。等级：**🟡 维持**。
+> 方法：8 文件全量通读 + 交叉取证（调用面 grep：recordVisit/recentPaths、secretRef、has/all/forget、
+> loadSecret 的两处调用上下文；SQLite 版本门槛逐条排查；替换写法用 Python sqlite 预演语义）。
+> **基线核对**：HEAD `3372d83`（第 9 批文档收口）；工作树干净。
+
+### 🟡 建议修复（应该修）
+
+**1. 路径历史用 UPSERT 写库：API 26–29 的设备上语法错误，「最近使用」永远为空**
+- 位置：`BookmarkDao.kt:52-58`（`ON CONFLICT(uri) DO UPDATE ...`；调用点 `BrowserControllerNav.kt:106`）。
+- 问题：UPSERT 语法需要 **SQLite ≥ 3.24**（2018-06）；API 26–29 的设备系统 SQLite 是 3.18–3.22（平台基线），执行即 SQLiteException。调用方恰好有 `runCatching` 兜底——所以**不崩**，代价是全设备静默：侧边栏「最近使用」永远为空、书签建议无从谈起。这是一类最隐蔽的 bug：错误被合理地吞掉，功能被合理地当作「还没数据」。
+- 为什么：minSdk=26 是项目自己的承诺；开发机（新系统）永远复现不了，老设备用户（含作者备用机）拿到的是「功能不存在」而无任何线索。
+- 修复：改为 `update → affected==0 才 insert（CONFLICT_IGNORE）→ 更新路径再累加 hits`，语义与 UPSERT 等价；替换写法已在 Python sqlite 预演验证。
+
+### 🔵 可选优化
+
+**2. `insert()` 写出的 `secret_ref` 列值长期失实（占位 "conn-0"）**
+- 位置：`ConnectionDao.kt:26-30`（insert）、`:57`（`secretRef ?: secretRef(id)`，insert 时 id=0）、`:48`（真实口径 = `"conn-<id>"`）。
+- 问题：建行时还没有 id，列里落的是占位值；所有真实读写（SecretStore / delete / AppContainer）都走**计算值** `conn-<id>`，列值从未被读过——现状无害，但属潜在陷阱（未来任何「读列当 ref 用」的代码都会踩空）。
+- 修复：insert 拿到 id 后回填 `secret_ref = conn-<id>`（两行）。
+
+**3. 零消费 API：`SecretStore.has()` / `HostKeyDao.all()`**
+- 位置：`SecretStore.kt:68-69`、`HostKeyDao.kt:34-41`。
+- 问题：全仓（含测试）零引用——预留但从未接线的查询面。
+- 修复：删除（与 v1.10.1 删 `forgetScroll` 同标准；如做「指纹管理」UI 再接，成本极低）。`HostKeyStore.forget` 按接口成员保留（测试替身实现中）。
+
+**4. 两张从未读写的表（记录在案，未改）**
+- 位置：`PanelDb.kt:100-112`（`tab_session`）/ `:85-99`（`task_record`）。
+- 问题：建库起（v1）从未有读写方；「策划文档 §11」的预留在现实里没有落地。空表成本≈0，但会让「表结构 = 系统真相」的阅读者误判（例如以为标签页确实会跨重启恢复）。
+- 修复思路：要么接线（标签页 / 任务历史持久化），要么在下次强制迁移时移除。本批不动：DROP TABLE 属破坏性迁移，收益 < 风险。
+
+**5. （跨模块记录）`ConnectionEditScreen` 组合期同步读 DB / Keystore**
+- 位置：`ConnectionEditScreen.kt:82`（`connectionDao.all()`）、`:85`（`loadSecret` → Keystore 解密 + SQLite）。
+- 问题：两处都在 `remember{}`（组合 = 主线程）里做同步存储 IO；首帧可能因 Keystore 初始化多花几十毫秒。归属 connections 模块，且正解 = 表单状态全面异步化——与第 7 批 🟡6「ConnForm 渐进重构」是同一件事。
+- 处理：本批只记录，建议随 ConnForm 第 2/3 步一并处理（不在数据层做绕过式修补）。
+
+### 🟢 做得好的地方
+
+- **`SecretStore` 失败语义闭环**：`put` 布尔返回被 UI 两处正确消费（第 7 批在案）；`get` 任何异常（密文损坏 / Keystore 重置）返回 null 且注释写清「调用方在组合期读取，绝不能抛」。
+- **`PanelDb` 加法式迁移**：v2/v3/v4 只补表 / 列 / 索引、幂等（`IF NOT EXISTS` + `runCatching`），不动用户数据；v4 索引（`idx_resume_source_dest`）连「为什么」都写在注释里。
+- **DAO 防御性解析**：书签非法 URI 退化为根目录、续传坏行返回 null（注释：断点表由断电/杀进程写入，坏记录不罕见）——「一条坏数据不能打崩全链路」的语义被两处一致执行。
+- **`PrefsStore` 键兼容层**：`browse_mode` 缺失时回退 `single_column`（不静默改掉老用户的选择）；`folderSorts` / `inputHistory` 把多值压进单键编码，`parseLangOverride` 的空扩展名 case 有测试（§3 前修）。
+- **口令清理链闭环**：`ConnectionDao.delete` 连同 `secret` 行一并删除（与 UI「口令也会一并清除」的承诺一致）。
+
+### 安全（轻量两项抽查）
+
+- 无硬编码凭据（本批文件扫描零命中；`SecretStore` 只存密文）。
+- 外部输入：全部走参数化 SQL（`arrayOf` 绑定），无拼接注入面；`recordVisit` 的 uri 来自内部 VfsUri。无新面。
+
+### 下一批建议
+
+- 下一模块：**core/common**（🟡）——15 文件 / 1,170 行（+测试 889）：`Fmt` / `MtListSubtitle` / `DiffIgnore`·`TextDiffEngine` / `ScrollMemory` / `MimeTypes` / `Logx`（本批已动一行）等小工具集。重点：格式化边界（尺寸 / 时间 / 速率）、TextDiffEngine 的截断语义、被全项目共用的工具的行为一致性。说「继续」即开审。
+
+> 备注：本批行号为 `3372d83` 基线；修复落地于 `6df5c9f`（4 文件，+44/−17）。
+
+### 修复记录（第 10 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🟡1 | ✅ | `recordVisit` 去 UPSERT：update → 不存在才 insert → 命中路径累加 hits（API 26–29 的 SQLite 3.18–3.22 可用；替换写法经 Python sqlite 预演）。「最近使用」在全部支持的系统版本上恢复工作。 |
+| 🔵2 | ✅ | `ConnectionDao.insert` 建行后回填 `secret_ref = conn-<id>`（消除占位值陷阱）。 |
+| 🔵3 | ✅ | 删除零消费 `SecretStore.has` / `HostKeyDao.all`（`HostKeyStore.forget` 按接口成员保留）。 |
+| 🔵4 | ◐ | 死表 `tab_session` / `task_record`：**记录在案未删**——DROP 属破坏性迁移，收益 < 风险；接线或下次强制迁移时处理。 |
+| 🔵5 | ◐ | `ConnectionEditScreen` 组合期同步读 DB/Keystore：**跨模块记录**，随第 7 批 🟡6 的 ConnForm 渐进重构异步化，不在数据层打补丁。 |
+
+> 验证：`core:data` 6 用例 + `app` 158 用例全绿；全仓回归随后以 `--rerun` 全量重跑（见第 11 批前记录）。本批无新增测试——SQL 级行为无法用 JVM 单测覆盖（android.database 为桩），替换逻辑用 Python sqlite 预演 + 编译验证，如实记录。
+> 修复提交：`6df5c9f`（4 文件，+44/−17）。
+
+---
+
+（后续批次在本文档追加 §11、§12 …）
