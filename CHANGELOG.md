@@ -9,6 +9,32 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.0.4 — docx 空白第三轮：诊断数据落地 + 视口自修复（重写 viewport / body 滚动兜底）
+
+> 一句话：实机诊断数据（v2.0.3 的 ⓘ）把问题钉死了 —— **排版渲染本身完全正常**
+> （3 页 × 1123px、文字几何可见、WebView 150），但**滚动容器 `#content` 只剩 ~44px 高**，
+> 页面被整段裁掉（两张截图逐像素核对 = 「12px 内边距 + 32px 页面」，分毫不差）。
+> 即：WebView 的概览缩放 / 初始视口把「绝对定位全屏容器」算坏了。本轮加**视口体检 + 两级自修复**：
+> ① 渲染后打 DIAG 数据；② 容器异常 → 重写 meta viewport 请求引擎重应用；③ 仍异常 → 切 body 滚动。
+
+### 变更清单
+
+| # | 项 | 说明 |
+|---|---|---|
+| F25a | **视口体检（DIAG）** | 渲染完成后打 `DIAG[tag]`：innerWidth/Height、visualViewport（含 scale）、`#content` 高度 / position / scrollHeight、首页尺寸、两处命中测试（`elementFromPoint`）。现场数据支持从 ⓘ 一键复制回传 |
+| F25b | **自修复一：重写 meta viewport** | `#content` 高度 < 200px 时重写 `<meta name=viewport>`（值不变）—— Chromium / WebView 会重新应用初始视口，专治概览缩放的早期测量错误 |
+| F25c | **自修复二：body 滚动模式** | 重写后仍异常 → `html.body-scroll`：`#content` 回普通流、页面本体滚动 —— 去掉「绝对定位全屏容器」这个被引擎算坏的依赖（任何引擎都不会算错的结构） |
+| F25d | viewer 版本 → **2.0.4** | 启动日志 `viewer 2.0.4` + v2.0.3 的 no-store 缓存头，可直接确认脚本已更新 |
+
+### 验证
+
+- 沙箱真 Chromium：正常路径只出 `DIAG[after-render]`（content=915px，不触发修复）；
+  注入「容器 44px 高」的故障形态后修复链路完整触发（体检 → 重写 viewport → body 滚动，每步留 DIAG）；
+- 全仓单测 **443 例全绿**；`assembleDebug` / `lintDebug` 通过；
+- **实机预期**：打开 docx 后约 0.5~1 秒内自修复（页面出现内容）；无论成败，请再点 ⓘ →
+  「复制诊断信息」贴回 —— 重点看 `content=…px` 以及有没有 `DIAG[after-meta-repair]` /
+  `DIAG[after-body-scroll]` 两行。
+
 ## v2.0.3 — docx 空白二轮排查：拦截响应禁缓存 + 预览诊断入口 + 纯文本开关
 
 > 一句话：v2.0.2 的三级渲染链路在实机上「没看到任何变化」（用户确认装的是 2.0.2、页面无任何提示条）——
