@@ -683,9 +683,8 @@ fun MtCompressDialog(
     }
 
     val supportsPassword = format.supportsPassword
-    val levelApplies = format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR &&
-        format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR_GZ &&
-        format != com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.TAR_BZ2
+    // tar 系（tar / tar.gz / tar.bz2 / tar.xz）没有「压缩级别」概念
+    val levelApplies = !format.label.startsWith("tar")
 
     AlertDialog(
         onDismissRequest = onDismiss,

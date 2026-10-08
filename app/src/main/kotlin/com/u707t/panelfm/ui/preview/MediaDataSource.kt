@@ -109,14 +109,16 @@ fun mediaItemFor(vfsUri: VfsUri, localPath: String? = null): MediaItem {
 fun mimeTypeForName(name: String): String? =
     when (name.substringAfterLast('.', "").lowercase()) {
         "mp4", "m4v" -> "video/mp4"
-        "m4a" -> "audio/mp4"
+        "m4a", "m4b", "m4r" -> "audio/mp4"
         "mkv" -> "video/x-matroska"
+        "mka" -> "audio/x-matroska"
         "webm" -> "video/webm"
         "ts", "m2ts" -> "video/mp2t"
-        "3gp" -> "video/3gpp"
+        "3gp", "3gpp" -> "video/3gpp"
         "mov" -> "video/quicktime"
         "avi" -> "video/x-msvideo"
         "flv" -> "video/x-flv"
+        "f4v" -> "video/x-f4v"
         "wmv" -> "video/x-ms-wmv"
         "mp3" -> "audio/mpeg"
         "aac" -> "audio/aac"
@@ -124,6 +126,8 @@ fun mimeTypeForName(name: String): String? =
         "wav" -> "audio/wav"
         "ogg", "oga" -> "audio/ogg"
         "opus" -> "audio/opus"
+        "amr" -> "audio/amr"
+        "awb" -> "audio/amr-wb"
         "m3u8" -> "application/x-mpegURL"
         "mpd" -> "application/dash+xml"
         else -> null

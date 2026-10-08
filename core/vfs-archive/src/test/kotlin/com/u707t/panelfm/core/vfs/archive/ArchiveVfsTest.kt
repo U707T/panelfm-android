@@ -16,10 +16,20 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.test.runTest
+import org.apache.commons.compress.archivers.ar.ArArchiveEntry
+import org.apache.commons.compress.archivers.ar.ArArchiveOutputStream
+import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry
+import org.apache.commons.compress.archivers.cpio.CpioArchiveOutputStream
+import org.apache.commons.compress.archivers.cpio.CpioConstants
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
+import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorOutputStream
+import org.apache.commons.compress.compressors.lzma.LZMACompressorOutputStream
+import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -340,6 +350,198 @@ class ArchiveVfsTest {
     }
 
     /** 极简内存 VFS：只实现压缩测试所需的能力 */
+    // ---------------------------------------------------------------- 新增格式（tar.xz / 单文件流 / cpio / ar）
+
+    @Test
+    fun `后缀识别覆盖新增格式且复合后缀优先`() {
+        val kind = { n: String -> ArchiveVfs.ArchiveKind.ofFileName(n) }
+        assertEquals(ArchiveVfs.ArchiveKind.TAR_XZ, kind("a.tar.xz"))
+        assertEquals(ArchiveVfs.ArchiveKind.TAR_XZ, kind("a.txz"))
+        assertEquals(ArchiveVfs.ArchiveKind.TAR_GZ, kind("a.tar.gz"))
+        assertEquals(ArchiveVfs.ArchiveKind.TAR_BZ2, kind("a.tar.bz2"))
+        assertEquals(ArchiveVfs.ArchiveKind.GZIP, kind("a.txt.gz"))
+        assertEquals(ArchiveVfs.ArchiveKind.XZ, kind("a.txt.xz"))
+        assertEquals(ArchiveVfs.ArchiveKind.BZIP2, kind("a.txt.bz2"))
+        assertEquals(ArchiveVfs.ArchiveKind.LZMA, kind("a.txt.lzma"))
+        assertEquals(ArchiveVfs.ArchiveKind.UNIX_COMPRESS, kind("a.txt.Z"))
+        assertEquals(ArchiveVfs.ArchiveKind.LZ4, kind("a.txt.lz4"))
+        assertEquals(ArchiveVfs.ArchiveKind.CPIO, kind("boot.cpio"))
+        assertEquals(ArchiveVfs.ArchiveKind.AR, kind("pkg.deb"))
+        assertEquals(ArchiveVfs.ArchiveKind.ZIP, kind("book.epub"))
+        assertEquals(ArchiveVfs.ArchiveKind.ZIP, kind("app.apks"))
+        // 文档预览优先：OOXML 不进压缩包浏览
+        assertNull(kind("a.docx"))
+        assertNull(kind("a.txt"))
+    }
+
+    @Test
+    fun `tar xz 挂载与读取`() = runTest {
+        val dir = Files.createTempDirectory("arc-tarxz").toFile()
+        val file = File(dir, "test.tar.xz")
+        TarArchiveOutputStream(XZCompressorOutputStream(file.outputStream())).use { tos ->
+            val content = "tar xz content".toByteArray()
+            tos.putArchiveEntry(TarArchiveEntry("x.txt").apply { size = content.size.toLong() })
+            tos.write(content)
+            tos.closeArchiveEntry()
+        }
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ofFileName(file.name)!!, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        assertEquals(14L, vfs.stat(VfsUri.of("archive", "tarxz", base + "x.txt")).size)
+        assertEquals("tar xz content", readAll(vfs, VfsUri.of("archive", "tarxz", base + "x.txt")))
+    }
+
+    @Test
+    fun `创建 tar xz 压缩包并回读`() = runTest {
+        val mem = MemoryVfs()
+        mem.put("/src/a.txt", "hello xz".toByteArray())
+        val locator = object : VfsLocator {
+            override fun find(uri: VfsUri): VirtualFileSystem? = if (uri.authority == "one") mem else null
+        }
+        val dest = VfsUri.of("mem", "one", "/out.tar.xz")
+        ArchiveCompressor(locator).compress(
+            listOf(VfsUri.of("mem", "one", "/src")),
+            dest,
+            ArchiveCompressor.Format.TAR_XZ,
+        )
+        val file = File.createTempFile("out", ".tar.xz").apply { writeBytes(mem.content("/out.tar.xz")) }
+        val vfs = ArchiveVfs(dest, ArchiveVfs.ArchiveKind.TAR_XZ, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(dest.toString()) + "!/"
+        assertTrue(vfs.list(VfsUri.of("archive", "tarxz", base)).any { it.name == "src" })
+        val inner = vfs.list(VfsUri.of("archive", "tarxz", base + "src"))
+        assertTrue(inner.any { it.name == "a.txt" && it.size == 8L })
+    }
+
+    @Test
+    fun `单文件 gz 虚拟为一个条目且可读出`() = runTest {
+        val dir = Files.createTempDirectory("arc-gz").toFile()
+        val file = File(dir, "note.txt.gz")
+        GzipCompressorOutputStream(file.outputStream()).use { it.write("hello single gz".toByteArray()) }
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.GZIP, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        val root = vfs.list(VfsUri.of("archive", "gzip", base))
+        assertEquals("note.txt", root.single().name)
+        assertTrue("单流条目不是目录", !root.single().isDirectory)
+        assertTrue("大小未知（-1）而不是猜一个错数字", root.single().size < 0)
+        val uri = VfsUri.of("archive", "gzip", base + "note.txt")
+        assertNull("大小未知时 reader.size 应为 null", vfs.openRead(uri).size)
+        assertEquals("hello single gz", readAll(vfs, uri))
+    }
+
+    @Test
+    fun `单文件压缩流均可读取（xz bz2 lzma lz4）`() = runTest {
+        data class Case(
+            val fileName: String,
+            val kind: ArchiveVfs.ArchiveKind,
+            val wrap: (java.io.OutputStream) -> java.io.OutputStream,
+        )
+        val cases = listOf(
+            Case("a.txt.xz", ArchiveVfs.ArchiveKind.XZ) { o -> XZCompressorOutputStream(o) },
+            Case("a.txt.bz2", ArchiveVfs.ArchiveKind.BZIP2) { o -> BZip2CompressorOutputStream(o) },
+            Case("a.txt.lzma", ArchiveVfs.ArchiveKind.LZMA) { o -> LZMACompressorOutputStream(o) },
+            Case("a.txt.lz4", ArchiveVfs.ArchiveKind.LZ4) { o -> FramedLZ4CompressorOutputStream(o) },
+        )
+        cases.forEach { case ->
+            val dir = Files.createTempDirectory("arc-single").toFile()
+            val file = File(dir, case.fileName)
+            case.wrap(file.outputStream()).use { it.write("payload ${case.fileName}".toByteArray()) }
+            val host = VfsUri.of("local", "emulated", "/${file.name}")
+            val vfs = ArchiveVfs(host, case.kind, file, env())
+            vfs.connect()
+            val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+            assertEquals("${case.fileName} 应解出原名", "a.txt", vfs.list(VfsUri.of("archive", case.kind.id, base)).single().name)
+            assertEquals(
+                "payload ${case.fileName}",
+                readAll(vfs, VfsUri.of("archive", case.kind.id, base + "a.txt")),
+            )
+            vfs.close()
+        }
+    }
+
+    /**
+     * `.Z`（Unix compress）：commons-compress 只有解压侧，没有写侧 —— 用固定样本。
+     * 样本按 compress 格式编码（block mode、9 位 LSB 打包），并已用 gzip 的 uncompress
+     * 与 commons-compress 双向交叉验证（见提交说明）。
+     */
+    @Test
+    fun `单文件 Z（compress）固定样本读取`() = runTest {
+        val hex = "1f9d9068cab061f306c498376de0c82933670e08326fe880d002820e4389010716cc4810"
+        val bytes = ByteArray(hex.length / 2) { i ->
+            ((Character.digit(hex[i * 2], 16) shl 4) + Character.digit(hex[i * 2 + 1], 16)).toByte()
+        }
+        val dir = Files.createTempDirectory("arc-z").toFile()
+        val file = File(dir, "hello.txt.Z").apply { writeBytes(bytes) }
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.UNIX_COMPRESS, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        assertEquals("hello.txt", vfs.list(VfsUri.of("archive", "z", base)).single().name)
+        assertEquals("hello compress dot Z test hello hello", readAll(vfs, VfsUri.of("archive", "z", base + "hello.txt")))
+    }
+
+    @Test
+    fun `cpio 挂载与读取`() = runTest {
+        val dir = Files.createTempDirectory("arc-cpio").toFile()
+        val file = File(dir, "init.cpio")
+        CpioArchiveOutputStream(file.outputStream()).use { cos ->
+            val content = "cpio content".toByteArray()
+            val entry = CpioArchiveEntry(CpioConstants.FORMAT_NEW, "boot/ramdisk.txt").apply {
+                size = content.size.toLong()
+            }
+            cos.putArchiveEntry(entry)
+            cos.write(content)
+            cos.closeArchiveEntry()
+        }
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.CPIO, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        assertTrue(vfs.list(VfsUri.of("archive", "cpio", base)).any { it.name == "boot" && it.isDirectory })
+        val inner = vfs.list(VfsUri.of("archive", "cpio", base + "boot"))
+        assertTrue(inner.any { it.name == "ramdisk.txt" && it.size == 12L })
+        assertEquals("cpio content", readAll(vfs, VfsUri.of("archive", "cpio", base + "boot/ramdisk.txt")))
+    }
+
+    @Test
+    fun `ar 挂载与读取（deb 外壳）`() = runTest {
+        val dir = Files.createTempDirectory("arc-ar").toFile()
+        val file = File(dir, "pkg.deb")
+        ArArchiveOutputStream(file.outputStream()).use { aos ->
+            val content = "ar content".toByteArray()
+            aos.putArchiveEntry(ArArchiveEntry("data.txt", content.size.toLong()))
+            aos.write(content)
+            aos.closeArchiveEntry()
+        }
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.AR, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+        val root = vfs.list(VfsUri.of("archive", "ar", base))
+        assertTrue(root.any { it.name == "data.txt" && it.size == 10L })
+        assertEquals("ar content", readAll(vfs, VfsUri.of("archive", "ar", base + "data.txt")))
+    }
+
+    /** 顺序读出条目的全部内容（UTF-8） */
+    private suspend fun readAll(vfs: ArchiveVfs, uri: VfsUri): String {
+        val reader = vfs.openRead(uri)
+        val out = ByteArrayOutputStream()
+        val buf = ByteArray(512)
+        try {
+            while (true) {
+                val n = reader.read(buf, 0, buf.size)
+                if (n < 0) break
+                out.write(buf, 0, n)
+            }
+        } finally {
+            runCatching { reader.close() }
+        }
+        return out.toString(Charsets.UTF_8.name())
+    }
+
     private class MemoryVfs : VirtualFileSystem {
         override val id = "mem"
         override val scheme = "mem"

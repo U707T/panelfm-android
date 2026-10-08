@@ -36,11 +36,19 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.PasswordRequiredException
+import org.apache.commons.compress.archivers.ar.ArArchiveEntry
+import org.apache.commons.compress.archivers.ar.ArArchiveInputStream
+import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry
+import org.apache.commons.compress.archivers.cpio.CpioArchiveInputStream
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.archivers.zip.ZipFile
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import org.apache.commons.compress.compressors.lz4.FramedLZ4CompressorInputStream
+import org.apache.commons.compress.compressors.lzma.LZMACompressorInputStream
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
+import org.apache.commons.compress.compressors.z.ZCompressorInputStream
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.IOException
@@ -51,7 +59,11 @@ import java.io.PipedOutputStream
 /**
  * 压缩包只读挂载：`archive://zip/<encoded host uri>!/inner/path`
  *
- *  - 支持 zip / jar / 7z / tar / tar.gz / tgz / tar.bz2 / **rar**（顺序格式在读取时按需重扫）
+ *  - 支持 zip / jar / 7z / tar / tar.gz / tgz / tar.bz2 / tar.xz / **rar**（顺序格式在读取时按需重扫）
+ *  - zip 家族（epub / whl / nupkg / vsix / crx / kmz / xapk / apks / apkm）可直接按压缩包浏览
+ *  - 裸归档：cpio / ar（.deb 的壳就是 ar，进去后可再打开 data.tar.xz）
+ *  - **单文件压缩流**（gz / xz / bz2 / lzma / Z / lz4）：虚拟为「一个条目」，名字 = 去掉压缩后缀的
+ *    原名；解出后可直接复制走（大小未知，列表不显示体积）
  *  - 挂载后就是普通 VFS：可以直接「复制到对面窗格」= 解压；可以进压缩包内的目录层层浏览
  *  - 只读（不提供写入/删除/重命名），不含任何 APK / DEX 逆向能力
  *
@@ -89,19 +101,48 @@ class ArchiveVfs(
         TAR("tar", "TAR"),
         TAR_GZ("targz", "tar.gz"),
         TAR_BZ2("tarbz2", "tar.bz2"),
+        TAR_XZ("tarxz", "tar.xz"),
         RAR("rar", "RAR"),
+        CPIO("cpio", "CPIO"),
+        AR("ar", "AR"),
+        // 单文件压缩流：内容是一个流，不是条目集合（索引里会合成一个条目）
+        GZIP("gzip", "GZIP"),
+        XZ("xz", "XZ"),
+        BZIP2("bzip2", "bzip2"),
+        LZMA("lzma", "LZMA"),
+        UNIX_COMPRESS("z", "Z"),
+        LZ4("lz4", "LZ4"),
         ;
+
+        /** 单文件压缩流（内容整体压缩，无内部条目结构） */
+        val isSingleStream: Boolean
+            get() = this == GZIP || this == XZ || this == BZIP2 || this == LZMA ||
+                this == UNIX_COMPRESS || this == LZ4
 
         companion object {
             fun ofFileName(name: String): ArchiveKind? {
                 val n = name.lowercase()
                 return when {
-                    n.endsWith(".zip") || n.endsWith(".jar") || n.endsWith(".apk") || n.endsWith(".xpi") -> ZIP
+                    n.endsWith(".zip") || n.endsWith(".jar") || n.endsWith(".apk") || n.endsWith(".xpi") ||
+                        n.endsWith(".epub") || n.endsWith(".whl") || n.endsWith(".nupkg") ||
+                        n.endsWith(".vsix") || n.endsWith(".crx") || n.endsWith(".kmz") ||
+                        n.endsWith(".xapk") || n.endsWith(".apks") || n.endsWith(".apkm") -> ZIP
                     n.endsWith(".7z") -> SEVEN_Z
                     n.endsWith(".rar") -> RAR
+                    // tar 系（复合后缀必须排在单流后缀前面）
                     n.endsWith(".tar.gz") || n.endsWith(".tgz") -> TAR_GZ
                     n.endsWith(".tar.bz2") || n.endsWith(".tbz2") -> TAR_BZ2
+                    n.endsWith(".tar.xz") || n.endsWith(".txz") -> TAR_XZ
                     n.endsWith(".tar") -> TAR
+                    n.endsWith(".cpio") -> CPIO
+                    n.endsWith(".ar") || n.endsWith(".deb") -> AR
+                    // 单文件压缩流
+                    n.endsWith(".gz") -> GZIP
+                    n.endsWith(".bz2") -> BZIP2
+                    n.endsWith(".xz") -> XZ
+                    n.endsWith(".lzma") -> LZMA
+                    n.endsWith(".lz4") -> LZ4
+                    n.endsWith(".z") -> UNIX_COMPRESS
                     else -> null
                 }
             }
@@ -244,7 +285,7 @@ class ArchiveVfs(
                     e = sz.nextEntry
                 }
             }
-            ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2 -> {
+            ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2, ArchiveKind.TAR_XZ -> {
                 openTar().use { tar ->
                     var e = tar.nextEntry
                     while (e != null) {
@@ -260,6 +301,48 @@ class ArchiveVfs(
                             )
                         }
                         e = tar.nextEntry
+                    }
+                }
+            }
+            ArchiveKind.CPIO -> {
+                BufferedInputStream(localFile.inputStream(), 64 * 1024).use { raw ->
+                    CpioArchiveInputStream(raw).use { cpio ->
+                        var e = cpio.nextEntry
+                        while (e != null) {
+                            val path = normalize(e.name, e.isDirectory)
+                            if (path != null) {
+                                index[path] = Entry(
+                                    path = path,
+                                    name = path.trimEnd('/').substringAfterLast('/'),
+                                    size = if (e.isDirectory) -1L else e.size,
+                                    modified = e.lastModifiedDate?.time ?: -1L,
+                                    isDirectory = e.isDirectory,
+                                    source = e,
+                                )
+                            }
+                            e = cpio.nextEntry
+                        }
+                    }
+                }
+            }
+            ArchiveKind.AR -> {
+                BufferedInputStream(localFile.inputStream(), 64 * 1024).use { raw ->
+                    ArArchiveInputStream(raw).use { ar ->
+                        var e = ar.nextEntry
+                        while (e != null) {
+                            val path = normalize(e.name, e.isDirectory)
+                            if (path != null) {
+                                index[path] = Entry(
+                                    path = path,
+                                    name = path.trimEnd('/').substringAfterLast('/'),
+                                    size = if (e.isDirectory) -1L else e.size,
+                                    modified = e.lastModifiedDate?.time ?: -1L,
+                                    isDirectory = e.isDirectory,
+                                    source = e,
+                                )
+                            }
+                            e = ar.nextEntry
+                        }
                     }
                 }
             }
@@ -292,9 +375,43 @@ class ArchiveVfs(
                     }
                 }
             }
+            else -> {
+                // 单文件压缩流：内容整体就是一个文件，无条目结构 —— 合成一个条目，
+                // 名字 = 去掉压缩后缀的原名（file.txt.gz → file.txt），解出即可直接复制走。
+                check(kind.isSingleStream) { "未处理的压缩类型：$kind" }
+                val name = normalize(singleStreamName(host.name), isDir = false) ?: "data"
+                index[name] = Entry(
+                    path = name,
+                    name = name,
+                    size = -1L, // 解压后大小未知（gz 的 ISIZE 只对单成员 < 4 GiB 可靠，宁缺勿错）
+                    modified = localFile.lastModified(),
+                    isDirectory = false,
+                    source = name,
+                )
+            }
         }
         Logx.i("ArchiveVfs", "index ${host.name}: ${index.size} entries (${Fmt.size(localFile.length())})")
         rebuildDirPaths()
+    }
+
+    /** 单文件压缩流的解出名字：file.txt.gz → file.txt（没有可剥后缀则原样返回） */
+    private fun singleStreamName(rawName: String): String {
+        val suffix = when (kind) {
+            ArchiveKind.GZIP -> ".gz"
+            ArchiveKind.XZ -> ".xz"
+            ArchiveKind.BZIP2 -> ".bz2"
+            ArchiveKind.LZMA -> ".lzma"
+            ArchiveKind.UNIX_COMPRESS -> ".z"
+            ArchiveKind.LZ4 -> ".lz4"
+            else -> ""
+        }
+        if (suffix.isEmpty()) return rawName
+        val lower = rawName.lowercase()
+        return if (lower.endsWith(suffix) && rawName.length > suffix.length) {
+            rawName.dropLast(suffix.length)
+        } else {
+            rawName
+        }
     }
 
     private fun normalize(raw: String, isDir: Boolean): String? {
@@ -335,6 +452,7 @@ class ArchiveVfs(
         return when (kind) {
             ArchiveKind.TAR_GZ -> TarArchiveInputStream(GzipCompressorInputStream(raw))
             ArchiveKind.TAR_BZ2 -> TarArchiveInputStream(BZip2CompressorInputStream(raw))
+            ArchiveKind.TAR_XZ -> TarArchiveInputStream(XZCompressorInputStream(raw))
             else -> TarArchiveInputStream(raw)
         }
     }
@@ -632,7 +750,7 @@ class ArchiveVfs(
         private var crc: java.util.zip.CRC32? = null
         private var crcExpected: Long = -1L
 
-        override val size: Long? get() = index[path]?.size
+        override val size: Long? get() = index[path]?.size?.takeIf { it >= 0 }
 
         override val supportsSeek: Boolean get() = kind == ArchiveKind.ZIP
         override val position: Long get() = pos
@@ -749,13 +867,64 @@ class ArchiveVfs(
                 }
                 SevenZInputStream(sz, password)
             }
-            ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2 -> {
+            ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2, ArchiveKind.TAR_XZ -> {
                 val tar = openTar()
                 var e = tar.nextEntry
                 while (e != null && e.name != (entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry).name) {
                     e = tar.nextEntry
                 }
                 tar
+            }
+            ArchiveKind.CPIO -> {
+                val cpio = CpioArchiveInputStream(BufferedInputStream(localFile.inputStream(), 64 * 1024))
+                val target = entry.source as CpioArchiveEntry
+                var match: CpioArchiveEntry? = null
+                var e = cpio.nextEntry
+                while (e != null) {
+                    if (e.name == target.name && e.size == target.size) {
+                        match = e
+                        break
+                    }
+                    e = cpio.nextEntry
+                }
+                if (match == null) {
+                    runCatching { cpio.close() }
+                    throw VfsException.ProtocolError("CPIO 条目在重新打开后找不到了：${entry.name}")
+                }
+                cpio
+            }
+            ArchiveKind.AR -> {
+                val ar = ArArchiveInputStream(BufferedInputStream(localFile.inputStream(), 64 * 1024))
+                val target = entry.source as ArArchiveEntry
+                var match: ArArchiveEntry? = null
+                var e = ar.nextEntry
+                while (e != null) {
+                    if (e.name == target.name && e.size == target.size) {
+                        match = e
+                        break
+                    }
+                    e = ar.nextEntry
+                }
+                if (match == null) {
+                    runCatching { ar.close() }
+                    throw VfsException.ProtocolError("AR 条目在重新打开后找不到了：${entry.name}")
+                }
+                ar
+            }
+            ArchiveKind.GZIP, ArchiveKind.XZ, ArchiveKind.BZIP2, ArchiveKind.LZMA,
+            ArchiveKind.UNIX_COMPRESS, ArchiveKind.LZ4,
+            -> {
+                check(kind.isSingleStream) { "未处理的压缩类型：$kind" }
+                val rawIn = BufferedInputStream(localFile.inputStream(), 64 * 1024)
+                when (kind) {
+                    ArchiveKind.GZIP -> GzipCompressorInputStream(rawIn)
+                    ArchiveKind.XZ -> XZCompressorInputStream(rawIn)
+                    ArchiveKind.BZIP2 -> BZip2CompressorInputStream(rawIn)
+                    ArchiveKind.LZMA -> LZMACompressorInputStream(rawIn)
+                    ArchiveKind.UNIX_COMPRESS -> ZCompressorInputStream(rawIn)
+                    ArchiveKind.LZ4 -> FramedLZ4CompressorInputStream(rawIn)
+                    else -> error("unreachable")
+                }
             }
             ArchiveKind.RAR -> {
                 // junrar 的 FileHeader 没有 equals（identity 比较），跨实例按名 + 大小重新匹配；
@@ -780,10 +949,18 @@ class ArchiveVfs(
         }
         if (skip > 0) {
             var skipped = 0L
+            val scratch = ByteArray(64 * 1024)
             while (skipped < skip) {
                 val s = raw.skip(skip - skipped)
-                if (s <= 0) break
-                skipped += s
+                if (s > 0) {
+                    skipped += s
+                    continue
+                }
+                // 部分解压流（gzip / xz / bz2 …）的 skip 不保证推进：退化为读掉
+                val want = minOf(scratch.size.toLong(), skip - skipped).toInt()
+                val n = raw.read(scratch, 0, want)
+                if (n <= 0) break
+                skipped += n
             }
         }
         return raw

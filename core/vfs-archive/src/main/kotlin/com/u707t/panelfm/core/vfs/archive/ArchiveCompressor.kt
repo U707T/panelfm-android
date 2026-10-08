@@ -19,6 +19,7 @@ import org.apache.commons.compress.archivers.zip.ZipArchiveEntry
 import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorOutputStream
+import org.apache.commons.compress.compressors.xz.XZCompressorOutputStream
 import java.io.File
 import java.io.OutputStream
 
@@ -28,13 +29,14 @@ import java.io.OutputStream
  */
 class ArchiveCompressor(private val locator: VfsLocator) {
 
-    /** MT 支持的创建格式：zip / 7z / tar / tar.gz / tar.bz2 */
+    /** MT 支持的创建格式：zip / 7z / tar / tar.gz / tar.bz2 / tar.xz */
     enum class Format(val id: String, val label: String, val ext: String) {
         ZIP("zip", "ZIP", "zip"),
         SEVEN_Z("7z", "7z", "7z"),
         TAR("tar", "TAR", "tar"),
         TAR_GZ("targz", "tar.gz", "tar.gz"),
         TAR_BZ2("tarbz2", "tar.bz2", "tar.bz2"),
+        TAR_XZ("tarxz", "tar.xz", "tar.xz"),
         ;
 
         /** 是否支持加密（zip 传统加密 / 7z AES-256） */
@@ -103,6 +105,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                     Format.TAR_GZ -> TarArchiveOutputStream(GzipCompressorOutputStream(raw))
                         .apply { setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX) }
                     Format.TAR_BZ2 -> TarArchiveOutputStream(BZip2CompressorOutputStream(raw))
+                        .apply { setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX) }
+                    Format.TAR_XZ -> TarArchiveOutputStream(XZCompressorOutputStream(raw))
                         .apply { setLongFileMode(TarArchiveOutputStream.LONGFILE_POSIX) }
                     Format.SEVEN_Z -> error("unreachable")
                 }

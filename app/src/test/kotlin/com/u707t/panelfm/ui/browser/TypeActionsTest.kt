@@ -36,6 +36,10 @@ class TypeActionsTest {
         // 7z / rar / tar.gz 同属压缩包
         assertEquals(ids("zip"), ids("7z"))
         assertEquals(ids("zip"), ids("rar"))
+        // 新增：单文件压缩流 / tar 系复合后缀（tgz/txz）/ 裸归档 / zip 家族（epub 等）
+        listOf("gz", "xz", "txz", "tgz", "tbz2", "bz2", "lzma", "lz4", "cpio", "deb", "epub", "apks").forEach { ext ->
+            assertEquals("$ext 应与 zip 同菜单", ids("zip"), ids(ext))
+        }
     }
 
     @Test
@@ -74,7 +78,11 @@ class TypeActionsTest {
 
     @Test
     fun `Office 文档给文档预览入口`() {
-        listOf("doc", "docx", "xls", "xlsx", "ppt", "pptx").forEach { ext ->
+        listOf(
+            "doc", "docx", "docm", "dotx",
+            "xls", "xlsx", "xlsm", "ods", "fods",
+            "ppt", "pptx", "pptm", "ppsx",
+        ).forEach { ext ->
             val out = ids(ext)
             assertEquals("$ext 应有文档预览", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
             assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
@@ -85,7 +93,10 @@ class TypeActionsTest {
 
     @Test
     fun `媒体与文本给出内置查看`() {
-        listOf("jpg", "png", "mp4", "mkv", "mp3", "flac", "ttf", "pdf", "txt", "kt").forEach { ext ->
+        listOf(
+            "jpg", "png", "jfif", "mp4", "mkv", "3gpp", "mp3", "flac", "amr", "m4b", "oga",
+            "ttf", "pdf", "txt", "kt", "c", "go", "srt",
+        ).forEach { ext ->
             val out = ids(ext)
             assertEquals("$ext 应有内置查看", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
             assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())

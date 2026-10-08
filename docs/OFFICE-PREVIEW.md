@@ -6,9 +6,10 @@
 
 | 后缀 | 内置预览 | 引擎 |
 |---|---|---|
-| `.docx` | ✅ | docx-preview（分页、表格、图片、基础版式） |
-| `.xlsx` / `.xls` | ✅ | SheetJS CE（多工作表用顶部标签切换） |
-| `.pptx` | ✅ | @aiden0z/pptx-renderer（文字/形状/图片/表格/图表/SmartArt） |
+| `.docx`（含 `.docm` / `.dotx` / `.dotm`） | ✅ | docx-preview（分页、表格、图片、基础版式；宏不执行） |
+| `.xlsx` / `.xls`（含 `.xlsm` / `.xltx` / `.xltm`） | ✅ | SheetJS CE（多工作表用顶部标签切换） |
+| `.ods` / `.fods` | ✅ | 同走 SheetJS（OpenDocument 表格；bundled 0.18.5 实测可解析） |
+| `.pptx`（含 `.pptm` / `.ppsx` / `.potx` / `.potm`） | ✅ | @aiden0z/pptx-renderer（文字/形状/图片/表格/图表/SmartArt） |
 | `.doc` / `.ppt` | ❌ 给说明页 | 旧二进制格式，前端生态没有渲染器（引导「打开方式…」） |
 | 带密码的文档 | ❌ | 解析失败 → 页面内报错 |
 
