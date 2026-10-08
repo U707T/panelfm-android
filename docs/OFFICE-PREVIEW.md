@@ -56,6 +56,12 @@
    （页面高度 / 可见文字几何，`docxLooksUsable`），不可用才下探；单级超时 8s（`DOCX_RENDER_TIMEOUT_MS`），
    超时先走下一级、迟到的可用结果再换进可见区域。链路与体检都在 `viewer.js`，
    日志前缀 `[OfficePreview]`（Kotlin 侧转发到 logcat），再遇空白先看 logcat。
+10. **视口体检 / 自修复**（v2.0.4 起）：渲染完成后 `checkAndRepairViewport()` 打一行
+   `DIAG[…]`（innerWidth、visualViewport 含 scale、`#content` 高度、命中测试）。
+   实机第三轮故障形态：**渲染完全正常但 `#content` 只剩 ~44px 高**（概览缩放的早期测量把
+   绝对定位全屏容器算坏），页面被整段裁掉 —— 此时先**重写 meta viewport** 请求引擎重新应用，
+   仍异常则切 `html.body-scroll`（`#content` 回归普通流、页面本体滚动）。不触发条件很保守
+   （只认「容器高度 < 200px」，不受用户双指缩放影响）。
 
 ## 4. 怎么升级渲染库
 

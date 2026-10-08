@@ -142,3 +142,21 @@ html, body {
     background: #fff;
     color: #222;
 }
+
+/* ---- 视口兜底：body 滚动模式（v2.0.4）----
+   某些 WebView 会把「绝对定位的全屏滚动容器」算成怪高度（实机：只剩 ~44px，
+   整页只剩顶部一条白条）。这一模式下 #content 回到普通流、由页面本体滚动 ——
+   任何引擎都不会算错的结构；由 viewer.js 的 checkAndRepairViewport() 在异常时切换。 */
+html.body-scroll,
+html.body-scroll body {
+    height: auto;
+}
+
+html.body-scroll #content {
+    position: static;
+    overflow: visible;
+}
+
+html.body-scroll #status {
+    position: fixed;
+}

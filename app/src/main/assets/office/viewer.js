@@ -26,7 +26,7 @@
     var finished = false;
 
     /** 粘合层版本（跟着 App 版本走；诊断时一眼看出页面脚本是不是旧缓存） */
-    var VIEWER_VERSION = '2.0.3';
+    var VIEWER_VERSION = '2.0.4';
 
     /** 单次 docx 渲染的最长等待（ms）：挂住时不再无限等，直接走兼容排版/纯文本兜底 */
     var DOCX_RENDER_TIMEOUT_MS = 8000;
@@ -117,8 +117,7 @@
     }
 
     /** 离屏渲染台：**挂在 body 上、参与布局、永不显示**。与可见区隔离，兜底/迟到结果都不打架 */
-    function docxStage() {
-        var st = document.getElementById('docx-stage');
+    function docxStage() {        var st = document.getElementById('docx-stage');
         if (!st) {
             st = document.createElement('div');
             st.id = 'docx-stage';
@@ -210,6 +209,87 @@
         inWrapper: true,
         breakPages: true
     };
+
+    // ------------------------------------------------------------------ 视口体检 / 自修复（v2.0.4）
+    //
+    // 实机（WebView 150 / Android 10）：docx 渲染完成、几何数据全部正常
+    // （pageHeights 1123、visibleText 10），但用户只看到顶部一条 ≈32px 的白条。
+    // 逐像素核对 = 「12px 内边距 + 32px 页面」= 滚动容器 #content 只剩 ~44px 高 ——
+    // 布局视口被 WebView 的概览缩放（loadWithOverviewMode 在内容异步渲染前就做了测量）
+    // 算坏了。这里三步：① 渲染后打 DIAG 体检；② 容器高度/缩放异常 → 重写 meta viewport
+    // （Chromium 系会重新应用视口）；③ 仍异常 → 切 body 滚动（去掉绝对定位全屏容器）。
+
+    /** DIAG 一行：视口 / 容器 / 页面 / 命中测试 —— 现场可复制回传 */
+    function diagLine(tag) {
+        try {
+            var c = document.getElementById('content');
+            var cr = c.getBoundingClientRect();
+            var vv = window.visualViewport || {};
+            function hit(x, y) {
+                var el = document.elementFromPoint(x, y);
+                if (!el) return 'null';
+                var r = el.getBoundingClientRect();
+                return el.tagName.toLowerCase() +
+                    (el.className ? '.' + String(el.className).trim().split(/\s+/).join('.') : '') +
+                    '@' + Math.round(r.x) + ',' + Math.round(r.y) +
+                    ' ' + Math.round(r.width) + 'x' + Math.round(r.height);
+            }
+            var sec = document.querySelector('section');
+            var sr = sec ? sec.getBoundingClientRect() : null;
+            log('DIAG[' + tag + '] ' + JSON.stringify({
+                inner: window.innerWidth + 'x' + window.innerHeight,
+                visual: vv.width ? Math.round(vv.width) + 'x' + Math.round(vv.height) + ' scale=' + vv.scale : 'n/a',
+                content: Math.round(cr.height) + 'px pos=' + getComputedStyle(c).position + ' scroll=' + c.scrollHeight,
+                section: sr ? Math.round(sr.width) + 'x' + Math.round(sr.height) : null,
+                hit: [hit(30, 80), hit(Math.round(window.innerWidth / 2), Math.round(window.innerHeight / 2))],
+            }));
+        } catch (e) {
+            warn('DIAG 失败：' + describeError(e));
+        }
+    }
+
+    /** 去掉绝对定位的全屏滚动容器，改由页面本体滚动（结构最简单、最不容易被引擎算坏） */
+    function switchToBodyScroll() {
+        document.documentElement.classList.add('body-scroll');
+        log('已切换 body 滚动模式（去绝对定位容器）');
+    }
+
+    /** 重写 meta viewport（值不变）触发 Chromium/WebView 重新应用视口 */
+    function repairViewport() {
+        var meta = document.querySelector('meta[name=viewport]');
+        if (!meta || !meta.parentNode) return false;
+        var parent = meta.parentNode;
+        parent.removeChild(meta);
+        void document.documentElement.offsetHeight; // 强制重排
+        parent.appendChild(meta);
+        log('已重写 meta viewport（请求引擎重应用视口）');
+        return true;
+    }
+
+    /** 渲染完成后调用：体检 → 异常就自修复（每步都留 DIAG，便于回传定位） */
+    function checkAndRepairViewport() {
+        diagLine('after-render');
+        var c = document.getElementById('content');
+        var h = c.getBoundingClientRect().height;
+        var vv = window.visualViewport || {};
+        // 只在「滚动容器高度异常」时升级修复：实机故障形态就是它只剩几十像素。
+        // （不拿 zoom scale 当触发条件 —— 用户正双指缩放时 scale 本来就可能很小。）
+        if (h >= 200 || window.innerHeight <= 200) return;
+        warn('视口异常：content=' + Math.round(h) + 'px scale=' + (vv.scale || 'n/a') + ' → 尝试修复');
+        if (repairViewport()) {
+            setTimeout(function () {
+                diagLine('after-meta-repair');
+                var h2 = c.getBoundingClientRect().height;
+                if (h2 < 200 && window.innerHeight > 200) {
+                    switchToBodyScroll();
+                    setTimeout(function () { diagLine('after-body-scroll'); }, 400);
+                }
+            }, 700);
+        } else {
+            switchToBodyScroll();
+            setTimeout(function () { diagLine('after-body-scroll'); }, 400);
+        }
+    }
 
     /**
      * docx 渲染三级链路（任何一级成功就收工，保证「不会是一页空白」）：
@@ -325,6 +405,8 @@
             finished = true;
             setStatus(null);
             log('预览完成');
+            // 渲染完成后再体检一次视口（实机「页面正常但只有一条白条」就是这里发现的）
+            setTimeout(checkAndRepairViewport, 500);
         } catch (e) {
             finished = true;
             warn('预览失败：' + describeError(e));
