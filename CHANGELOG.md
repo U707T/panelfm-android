@@ -9,6 +9,21 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.0.5 — 新格式一批：Office 变体与 ODS、tar.xz 与单文件压缩流、cpio/ar、媒体与代码扩表
+
+> 一句话：新格式全部只改后缀映射或复用现有依赖（**无新第三方库**）。
+
+- **Office**：`docm/dotx/dotm`、`xlsm/xltx/xltm`、`pptm/ppsx/potx/potm` 复用现有三渲染器（宏不执行）；
+  新增 **`ods`/`fods`**（走 SheetJS，实测 bundled 0.18.5 可解析）。
+- **压缩包**：新增 **`tar.xz`/`txz`**（读 + 创建）；**单文件 `gz/xz/bz2/lzma/Z/lz4`** 解出原名、
+  可直接复制走；**`cpio` / `ar`（.deb 外壳）** 可浏览；`epub/whl/nupkg/vsix/crx/kmz/xapk/apks/apkm`
+  按 zip 浏览。`tgz/tbz2/txz` 图标与长按菜单归位。
+- **后缀扩表**：媒体 `amr/awb/m4b/m4r/oga/mka/3gpp/f4v/m2ts`；代码 `c/h/cpp/cs/go/rs/rb/php/lua/toml/ps1/bat/diff…`；
+  文本 `srt/ass/vtt/lrc`；图片 `jfif/jpe`。
+
+验证：全仓单测 **443 → 459 例全绿**；`assembleDebug` / `lintDebug` 通过。
+待实机抽验：① `.ods` / `.docm` 预览；② `.tar.xz` 与 `.gz` 的打开 / 解压。
+
 ## v2.0.4 — docx 空白第三轮：诊断数据落地 + 视口自修复（重写 viewport / body 滚动兜底）
 
 > 一句话：实机诊断数据（v2.0.3 的 ⓘ）把问题钉死了 —— **排版渲染本身完全正常**
