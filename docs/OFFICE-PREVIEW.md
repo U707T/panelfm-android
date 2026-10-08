@@ -43,7 +43,13 @@
    - 资产路径要归一化：去掉空段与 `.`、遇到 `..` 拒绝（`AssetManager` 不认 `./` 这类路径）；
    - `/office/`、`/office/index.html` 都映射到 `index.html`（页面地址带 query，按 path 匹配）。
 6. **页面里引用资源用绝对路径**（`/office/vendor/xxx.js`），避免 `./` 段带来的路径歧义。
-7. **docx 渲染是三级链路**（v2.0.2 起）：标准排版 → **兼容排版**（去掉 section 的
+7. **拦截响应必须禁缓存**（v2.0.3 起）：全部 `WebResourceResponse` 带
+   `Cache-Control: no-store`，预览页 URL 追加 `&v=<versionName>` —— 页面 / 脚本 URL 恒定，
+   不设缓存头时 WebView 可能一直喂旧版 `viewer.js`（表现：升级后行为完全没变、新版逻辑没执行）。
+8. **预览诊断入口**（v2.0.3 起）：预览页右上角 ⓘ = 应用 / WebView 版本 + 系统 UA + 渲染模式 +
+   页面控制台全文，「复制诊断信息」可一键回传；`?mode=text`（诊断窗内「纯文本预览」）跳过
+   排版渲染直接抽文字，任何引擎都能读 —— 现场排查 docx 类问题先看这三样。
+9. **docx 渲染是三级链路**（v2.0.2 起）：标准排版 → **兼容排版**（去掉 section 的
    `column-flex` / `overflow:hidden` —— 部分 WebView 上「column flex + min-height + overflow:hidden」
    会把页面压扁到几十像素、内容被裁光，实机「毕业设计 docx 整页空白」即此形态）→ **纯文本兜底**。
    每一级都先在**离屏渲染台**（`#docx-stage`，参与布局但不显示）里跑完体检

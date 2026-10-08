@@ -19,13 +19,20 @@
 
     var params = new URLSearchParams(location.search);
     var kind = params.get('kind') || '';
+    var mode = params.get('mode') || '';
     var statusEl = document.getElementById('status');
     var content = document.getElementById('content');
     var toolbar = document.getElementById('toolbar');
     var finished = false;
 
+    /** 粘合层版本（跟着 App 版本走；诊断时一眼看出页面脚本是不是旧缓存） */
+    var VIEWER_VERSION = '2.0.3';
+
     /** 单次 docx 渲染的最长等待（ms）：挂住时不再无限等，直接走兼容排版/纯文本兜底 */
     var DOCX_RENDER_TIMEOUT_MS = 8000;
+
+    log('viewer ' + VIEWER_VERSION + ' | UA: ' + navigator.userAgent +
+        ' | vp=' + window.innerWidth + 'x' + window.innerHeight + ' dpr=' + window.devicePixelRatio);
 
     function setStatus(text) {
         if (text) {
@@ -181,13 +188,15 @@
         }).join('\n');
     }
 
-    /** 纯文本兜底（保证一定看得到内容） */
-    function showOnlyTextFallback(text, reason) {
+    /** 纯文本兜底（保证一定看得到内容）；[manual] = 用户从诊断弹窗手动切的「纯文本预览」 */
+    function showOnlyTextFallback(text, reason, manual) {
         content.className = 'docx-host';
         content.innerHTML = '';
         var tip = document.createElement('div');
         tip.className = 'fallback-tip';
-        tip.textContent = '排版渲染不可用（' + reason + '），已切换为纯文本预览';
+        tip.textContent = manual
+            ? '已按「纯文本预览」显示（右上角 ⓘ 里可切回排版预览）'
+            : '排版渲染不可用（' + reason + '），已切换为纯文本预览';
         var pre = document.createElement('pre');
         pre.className = 'fallback-text';
         pre.textContent = text.replace(/\n{3,}/g, '\n\n') || '（文档里没有可提取的文字）';
@@ -296,8 +305,14 @@
             setStatus('正在读取文件…');
             var buf = await fetchBytes();
             if (kind === 'docx') {
-                setStatus('正在渲染 Word 文档…');
-                await renderDocx(buf);
+                if (mode === 'text') {
+                    // 诊断弹窗里手动切的「纯文本预览」：跳过排版渲染，直接抽文字
+                    setStatus('正在提取文字…');
+                    showOnlyTextFallback(await extractDocxText(buf), '手动选择纯文本', true);
+                } else {
+                    setStatus('正在渲染 Word 文档…');
+                    await renderDocx(buf);
+                }
             } else if (kind === 'xlsx') {
                 setStatus('正在渲染表格…');
                 await renderXlsx(buf);
