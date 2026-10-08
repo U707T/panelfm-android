@@ -36,8 +36,9 @@ class TypeActionsTest {
         // 7z / rar / tar.gz 同属压缩包
         assertEquals(ids("zip"), ids("7z"))
         assertEquals(ids("zip"), ids("rar"))
-        // 新增：单文件压缩流 / tar 系复合后缀（tgz/txz）/ 裸归档 / zip 家族（epub 等）
-        listOf("gz", "xz", "txz", "tgz", "tbz2", "bz2", "lzma", "lz4", "cpio", "deb", "epub", "apks").forEach { ext ->
+        // 新增：单文件压缩流 / tar 系复合后缀（tgz/txz）/ 裸归档 / zip 家族（apks 等）
+        // 注意：epub 额外有「阅读电子书」，不在本断言里（见下一条用例）
+        listOf("gz", "xz", "txz", "tgz", "tbz2", "bz2", "lzma", "lz4", "cpio", "deb", "apks").forEach { ext ->
             assertEquals("$ext 应与 zip 同菜单", ids("zip"), ids(ext))
         }
     }
@@ -49,6 +50,17 @@ class TypeActionsTest {
         assertFalse(out.contains(TypeActions.ACTION_EXTRACT_OWN_FOLDER))
         assertFalse(out.contains(TypeActions.ACTION_EXTRACT_PICK))
         assertTrue(out.contains(TypeActions.ACTION_BROWSE_ARCHIVE))
+    }
+
+    @Test
+    fun `epub 额外给阅读入口`() {
+        val out = ids("epub")
+        assertTrue("epub 应有阅读电子书", out.contains(TypeActions.ACTION_READ_EPUB))
+        assertTrue("epub 仍可当压缩包浏览", out.contains(TypeActions.ACTION_BROWSE_ARCHIVE))
+        assertEquals("epub 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
+        // 普通压缩包不给阅读入口
+        assertFalse(ids("zip").contains(TypeActions.ACTION_READ_EPUB))
+        assertEquals("阅读电子书", TypeActions.labelOf(TypeActions.ACTION_READ_EPUB, TypeActions.kindOf("epub")))
     }
 
     @Test
@@ -118,6 +130,32 @@ class TypeActionsTest {
             assertEquals("$ext 应有编辑文本", true, out.contains(TypeActions.ACTION_EDIT_TEXT))
             assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
         }
+    }
+
+    @Test
+    fun `Markdown 与 CSV 给渲染预览入口`() {
+        listOf("md", "markdown", "csv").forEach { ext ->
+            val out = ids(ext)
+            assertEquals("$ext 应有渲染预览", true, out.contains(TypeActions.ACTION_RENDER))
+            assertEquals("$ext 仍应有文本查看", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
+            assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
+        }
+        // 普通文本不给渲染预览
+        assertFalse(ids("txt").contains(TypeActions.ACTION_RENDER))
+        assertFalse(ids("json").contains(TypeActions.ACTION_RENDER))
+        assertEquals("渲染预览", TypeActions.labelOf(TypeActions.ACTION_RENDER, TypeActions.kindOf("md")))
+    }
+
+    @Test
+    fun `SQLite 数据库给只读浏览入口`() {
+        listOf("db", "sqlite", "sqlite3").forEach { ext ->
+            val out = ids(ext)
+            assertEquals("$ext 应有 SQLite 浏览", true, out.contains(TypeActions.ACTION_SQLITE_BROWSE))
+            assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
+        }
+        // 其它「未识别」类型不给（避免多一个没用的入口）
+        assertFalse(ids("xyz").contains(TypeActions.ACTION_SQLITE_BROWSE))
+        assertEquals("SQLite 浏览", TypeActions.labelOf(TypeActions.ACTION_SQLITE_BROWSE, TypeActions.kindOf("db")))
     }
 
     @Test

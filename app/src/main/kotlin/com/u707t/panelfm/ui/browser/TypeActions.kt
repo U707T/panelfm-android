@@ -1,6 +1,8 @@
 package com.u707t.panelfm.ui.browser
 
 import com.u707t.panelfm.core.common.MimeTypes
+import com.u707t.panelfm.core.common.RenderFormats
+import com.u707t.panelfm.core.common.SqliteFormats
 
 /**
  * 按文件类型决定的**二级菜单项**（MT 的长按菜单会随选中项类型变化）。
@@ -27,6 +29,15 @@ object TypeActions {
     const val ACTION_OPEN_INTERNAL = "open_internal"
     /** 直接用内置编辑器打开（文本 / 代码 / 未识别类型都可手动选） */
     const val ACTION_EDIT_TEXT = "edit_text"
+
+    /** Markdown / CSV 的渲染预览（marked / SheetJS） */
+    const val ACTION_RENDER = "render_preview"
+
+    /** SQLite 数据库只读浏览 */
+    const val ACTION_SQLITE_BROWSE = "sqlite_browse"
+
+    /** .epub 电子书阅读 */
+    const val ACTION_READ_EPUB = "read_epub"
     const val ACTION_OPEN_WITH = "open_with"
 
     fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
@@ -75,6 +86,8 @@ object TypeActions {
                         add(ACTION_EXTRACT_OWN_FOLDER)
                         add(ACTION_EXTRACT_PICK)
                     }
+                    // .epub：既可以当压缩包浏览 / 解压，也可以直接阅读
+                    if (extension.lowercase() == "epub") add(ACTION_READ_EPUB)
                     add(ACTION_BROWSE_ARCHIVE)
                 }
                 MimeTypes.Kind.APK -> {
@@ -86,11 +99,14 @@ object TypeActions {
                 MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> {
                     add(ACTION_OPEN_INTERNAL)
                     add(ACTION_EDIT_TEXT)
+                    // Markdown / CSV：可以渲染成页面（marked / SheetJS）
+                    if (RenderFormats.isRenderable(extension)) add(ACTION_RENDER)
                 }
-                // 未识别：按「通用」处理 —— 文本查看 / 编辑文本 / 打开方式（手动选择打开方式）
+                // 未识别：按「通用」处理 —— 文本查看 / 编辑文本 /（数据库则给）SQLite 浏览 / 打开方式
                 MimeTypes.Kind.OTHER -> {
                     add(ACTION_OPEN_INTERNAL)
                     add(ACTION_EDIT_TEXT)
+                    if (SqliteFormats.isSqlite(extension)) add(ACTION_SQLITE_BROWSE)
                 }
                 else -> if (hasBuiltinViewer(kind)) add(ACTION_OPEN_INTERNAL)
             }
@@ -109,6 +125,9 @@ object TypeActions {
         ACTION_EXTRACT_APK_ICON -> "提取图标"
         ACTION_OPEN_INTERNAL -> viewerLabel(kind) ?: "查看文本"
         ACTION_EDIT_TEXT -> "编辑文本"
+        ACTION_RENDER -> "渲染预览"
+        ACTION_SQLITE_BROWSE -> "SQLite 浏览"
+        ACTION_READ_EPUB -> "阅读电子书"
         else -> "打开方式…"
     }
 }

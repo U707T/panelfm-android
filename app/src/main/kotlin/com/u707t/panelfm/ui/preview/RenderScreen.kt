@@ -1,11 +1,7 @@
 package com.u707t.panelfm.ui.preview
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -14,14 +10,12 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.common.OfficeFormats
+import com.u707t.panelfm.core.common.RenderFormats
+import com.u707t.panelfm.core.common.TextEncodings
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.MtIcon
@@ -33,24 +27,23 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
 /**
- * Office 文档只读预览（WebView + 前端渲染库，见 `docs/OFFICE-PREVIEW.md`）。
+ * Markdown / CSV 的「渲染预览」（与 Office 预览共用 WebView 页面，kind = markdown / csv）。
  *
- *  - 渲染：`assets/office/`（docx-preview / SheetJS / @aiden0z/pptx-renderer，均为宽松许可）；
- *  - WebView 的装配与拦截规则抽在 [PreviewWebView]（与 Markdown / CSV 预览共用同一套页面）；
- *  - 只读：不开 DOM storage、不要 JS 桥、拦截一切跳转；文件超过 [OFFICE_MAX_BYTES] 直接给提示；
- *  - 旧二进制格式（.doc / .ppt）前端生态没有渲染器：这里不进 WebView，直接给说明 + 引导「打开方式…」。
+ *  - **编码**：文件字节先按 [TextEncodings] 识别（UTF-8 / GBK / Big5…）再统一转 UTF-8 喂给页面 ——
+ *    否则 GBK 编码的 md / csv 中文会乱码（页面侧只按 UTF-8 解）；
+ *  - 只读、不联网：拦截规则与 Office 预览完全一致（见 [PreviewWebView]）；
+ *  - Markdown 由 marked 渲染 + DOMPurify 清洗（md 是不可信输入）；CSV 由 SheetJS 按表格渲染。
  */
-private const val OFFICE_MAX_BYTES = 16L * 1024 * 1024
+private const val RENDER_MAX_BYTES = 16L * 1024 * 1024
 
 @Composable
-fun OfficeScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit) {
-    val kind = OfficeFormats.viewerKindOf(item.extension)
+fun RenderScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit) {
+    val kind = RenderFormats.viewerKindOf(item.extension)
     val context = LocalContext.current
     var bytes by remember(item.uri) { mutableStateOf<ByteArray?>(null) }
+    var encoding by remember(item.uri) { mutableStateOf("") }
     var error by remember(item.uri) { mutableStateOf<String?>(null) }
     var pageError by remember(item.uri) { mutableStateOf<String?>(null) }
-    // 诊断（v2.0.3 加）：页面控制台日志 + 「强制纯文本预览」开关。
-    // 之前「docx 空白」这类问题只能靠 logcat，用户拿不到；现在右上角 ⓘ 直接看/复制全部线索。
     var showDiag by remember(item.uri) { mutableStateOf(false) }
     var forceText by remember(item.uri) { mutableStateOf(false) }
     val logs = remember(item.uri) { mutableStateListOf<String>() }
@@ -58,15 +51,21 @@ fun OfficeScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
     LaunchedEffect(item.uri) {
         if (kind.isEmpty()) return@LaunchedEffect
         runCatching {
-            withContext(Dispatchers.IO) { readPreviewBytes(container, item, OFFICE_MAX_BYTES) }
-        }.onSuccess { bytes = it }
-            .onFailure { error = it.message ?: "读取文档失败" }
+            withContext(Dispatchers.IO) {
+                val raw = readPreviewBytes(container, item, RENDER_MAX_BYTES)
+                val decoded = TextEncodings.decode(raw)
+                decoded.charset to decoded.text.toByteArray(Charsets.UTF_8)
+            }
+        }.onSuccess { (charset, utf8) ->
+            encoding = charset
+            bytes = utf8
+        }.onFailure { error = it.message ?: "读取文件失败" }
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
             title = item.name,
-            subtitle = if (kind.isEmpty()) null else "${Fmt.size(item.size)} · 只读预览",
+            subtitle = if (kind.isEmpty()) null else "${Fmt.size(item.size)} · $encoding · 只读预览",
             onBack = onBack,
             actions = {
                 if (kind.isNotEmpty()) {
@@ -79,11 +78,10 @@ fun OfficeScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
             },
         )
         when {
-            kind.isEmpty() -> UnsupportedDocument(item)
+            kind.isEmpty() -> ErrorState("该格式不支持渲染预览（仅 Markdown / CSV）")
             error != null -> ErrorState(error!!)
             pageError != null -> ErrorState(pageError!!)
-            bytes == null -> LoadingState("正在读取文档…")
-            // key(forceText)：切换「纯文本 / 排版」预览时重建 WebView（重新加载带 mode 参数的页面）
+            bytes == null -> LoadingState("正在读取文件…")
             else -> key(forceText) {
                 PreviewWebView(
                     kind = kind,
@@ -112,31 +110,6 @@ fun OfficeScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
                 showDiag = false
             },
             onDismiss = { showDiag = false },
-        )
-    }
-}
-
-/** 旧二进制格式（.doc / .ppt）的说明页（不是报错，是「没有渲染器」的明确告知）。 */
-@Composable
-private fun UnsupportedDocument(item: FileMetadata) {
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = 28.dp),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            item.name,
-            style = MaterialTheme.typography.titleSmall,
-            textAlign = TextAlign.Center,
-        )
-        Text(
-            OfficeFormats.unsupportedMessage(item.extension),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.padding(top = 12.dp),
         )
     }
 }

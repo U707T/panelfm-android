@@ -1,7 +1,7 @@
 # 第三方组件与许可（PanelFM）
 
 > 本文件记录仓库内**非自研代码 / 资源**的来源与许可证。发布的 APK 里同样包含这些组件。
-> 最后更新：v2.0.6（SVG 渲染：AndroidSVG；编辑器新增 10 种语法，共 22 种）。
+> 最后更新：v2.0.7（Markdown/CSV 预览：marked + DOMPurify）。
 
 ## 1. sora-editor —— 文本编辑器引擎
 
@@ -43,7 +43,9 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 | `vendor/docx-preview.min.js` | [docx-preview](https://github.com/VolodymyrBaydalka/docxjs) | 0.4.1 | Apache-2.0 | 76 KB |
 | `vendor/xlsx.full.min.js` | [SheetJS CE](https://git.sheetjs.com/SheetJS/sheetjs) | 0.18.5（npm 最后一个 CE 版） | Apache-2.0 | 864 KB |
 | `vendor/pptx-renderer.es.js` | [@aiden0z/pptx-renderer](https://github.com/aiden0z/pptx-renderer)（浏览器版，自带 JSZip + ECharts） | 1.3.0 | Apache-2.0 | 1.8 MB |
-| `index.html` / `viewer.js` / `viewer.css` | PanelFM 自写（粘合与样式） | — | 本仓库 | ~7 KB |
+| `vendor/marked.min.js` | [marked](https://github.com/markedjs/marked)（Markdown 解析） | 12.0.2 | MIT | 35 KB |
+| `vendor/purify.min.js` | [DOMPurify](https://github.com/cure53/DOMPurify)（Markdown 渲染后的 HTML 清洗） | 3.1.6 | Apache-2.0 **或** MPL-2.0 | 21 KB |
+| `index.html` / `viewer.js` / `viewer.css` | PanelFM 自写（粘合与样式） | — | 本仓库 | ~9 KB |
 
 许可证全文见本目录（`LICENSE-*.txt` / `LICENSE-jszip-MIT.markdown`）。
 

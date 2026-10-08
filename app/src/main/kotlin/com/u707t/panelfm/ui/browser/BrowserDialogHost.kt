@@ -515,6 +515,9 @@ internal fun BrowserDialogHost(
                 options = listOf(
                     OpenWithOption(PreviewMode.TEXT, available = kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER),
                     OpenWithOption(PreviewMode.EDITOR, available = kind != MimeTypes.Kind.IMAGE && kind != MimeTypes.Kind.AUDIO && kind != MimeTypes.Kind.VIDEO),
+                    OpenWithOption(PreviewMode.RENDER, available = com.u707t.panelfm.core.common.RenderFormats.isRenderable(item.extension)),
+                    OpenWithOption(PreviewMode.SQLITE, available = com.u707t.panelfm.core.common.SqliteFormats.isSqlite(item.extension)),
+                    OpenWithOption(PreviewMode.EPUB, available = item.extension.equals("epub", ignoreCase = true)),
                     OpenWithOption(PreviewMode.IMAGE, available = kind == MimeTypes.Kind.IMAGE),
                     OpenWithOption(PreviewMode.MEDIA, available = kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO),
                     OpenWithOption(

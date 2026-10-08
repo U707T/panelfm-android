@@ -42,7 +42,7 @@ class MimeTypesTest {
         listOf("c", "h", "cpp", "hpp", "cs", "go", "rs", "rb", "php", "lua", "toml", "kts", "ps1", "bat", "diff").forEach {
             assertEquals("$it 应为 CODE", MimeTypes.Kind.CODE, MimeTypes.kindOf(it))
         }
-        listOf("srt", "ass", "vtt", "lrc").forEach {
+        listOf("srt", "ass", "vtt", "lrc", "markdown").forEach {
             assertEquals("$it 应为 TEXT", MimeTypes.Kind.TEXT, MimeTypes.kindOf(it))
         }
         // 老格式分类不变（回归）

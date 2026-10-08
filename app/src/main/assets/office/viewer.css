@@ -160,3 +160,51 @@ html.body-scroll #content {
 html.body-scroll #status {
     position: fixed;
 }
+
+/* ---- Markdown（.md 渲染预览，v2.0.7）：浅色主题下的极简排版 ---- */
+.md-host {
+    padding: 12px 14px 28px;
+    font-size: 15px;
+    line-height: 1.7;
+    color: #222;
+    word-break: break-word;
+}
+
+.md-host h1, .md-host h2, .md-host h3, .md-host h4, .md-host h5, .md-host h6 {
+    margin: 18px 0 8px;
+    line-height: 1.35;
+}
+
+.md-host h1 { font-size: 22px; padding-bottom: 6px; border-bottom: 1px solid #e2e2e2; }
+.md-host h2 { font-size: 19px; padding-bottom: 4px; border-bottom: 1px solid #ececec; }
+.md-host h3 { font-size: 17px; }
+.md-host p { margin: 8px 0; }
+.md-host ul, .md-host ol { margin: 8px 0; padding-left: 22px; }
+.md-host li { margin: 2px 0; }
+.md-host blockquote {
+    margin: 8px 0;
+    padding: 2px 12px;
+    color: #666;
+    border-left: 3px solid #d5d5d5;
+}
+.md-host code {
+    padding: 1px 4px;
+    font-size: 0.92em;
+    background: #f0f0f0;
+    border-radius: 4px;
+}
+.md-host pre {
+    margin: 10px 0;
+    padding: 10px 12px;
+    background: #f6f6f6;
+    border: 1px solid #ececec;
+    border-radius: 8px;
+    overflow-x: auto;
+}
+.md-host pre code { padding: 0; background: none; }
+.md-host table { border-collapse: collapse; margin: 10px 0; }
+.md-host th, .md-host td { padding: 4px 10px; border: 1px solid #ddd; }
+.md-host th { background: #fafafa; }
+.md-host hr { border: none; border-top: 1px solid #e5e5e5; margin: 16px 0; }
+.md-host img { max-width: 100%; height: auto; }
+.md-host .md-link { color: #576b95; word-break: break-all; }

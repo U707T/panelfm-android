@@ -26,7 +26,7 @@
     var finished = false;
 
     /** 粘合层版本（跟着 App 版本走；诊断时一眼看出页面脚本是不是旧缓存） */
-    var VIEWER_VERSION = '2.0.4';
+    var VIEWER_VERSION = '2.0.7';
 
     /** 单次 docx 渲染的最长等待（ms）：挂住时不再无限等，直接走兼容排版/纯文本兜底 */
     var DOCX_RENDER_TIMEOUT_MS = 8000;
@@ -337,6 +337,11 @@
     async function renderXlsx(buf) {
         if (!window.XLSX) throw new Error('SheetJS 未加载');
         var wb = window.XLSX.read(new Uint8Array(buf), { type: 'array' });
+        renderWorkbook(wb);
+    }
+
+    /** 工作表渲染（xlsx 与 csv 共用）：多表用顶部标签切换 */
+    function renderWorkbook(wb) {
         var names = wb.SheetNames || [];
         if (!names.length) throw new Error('工作簿里没有工作表');
 
@@ -363,6 +368,33 @@
         });
         show(0);
         if (!content.querySelector('table')) throw new Error('工作表内容为空');
+    }
+
+    // ------------------------------------------------------------------ Markdown / CSV（v2.0.7）
+
+    async function renderMarkdown(text) {
+        if (!window.marked) throw new Error('marked 未加载');
+        if (!window.DOMPurify) throw new Error('DOMPurify 未加载');
+        // md 是不可信输入：marked 不做清洗，必须 sanitize 之后才允许进 DOM
+        var html = window.DOMPurify.sanitize(window.marked.parse(text, { gfm: true }), {
+            USE_PROFILES: { html: true }
+        });
+        content.className = 'md-host';
+        content.innerHTML = html;
+        // 预览页不出网：链接点了也打不开，降级成「文字（URL）」，别给用户错觉
+        Array.prototype.forEach.call(content.querySelectorAll('a'), function (a) {
+            var span = document.createElement('span');
+            span.className = 'md-link';
+            span.textContent = (a.textContent || '') + '（' + a.getAttribute('href') + '）';
+            a.parentNode.replaceChild(span, a);
+        });
+        log('Markdown 渲染完成');
+    }
+
+    async function renderCsv(text) {
+        if (!window.XLSX) throw new Error('SheetJS 未加载');
+        renderWorkbook(window.XLSX.read(text, { type: 'string' }));
+        log('CSV 表格渲染完成');
     }
 
     // ------------------------------------------------------------------ 幻灯片
@@ -396,6 +428,19 @@
             } else if (kind === 'xlsx') {
                 setStatus('正在渲染表格…');
                 await renderXlsx(buf);
+            } else if (kind === 'markdown' || kind === 'csv') {
+                // Kotlin 侧已按识别出的编码（UTF-8 / GBK / Big5 …）统一转成 UTF-8
+                var text = new TextDecoder('utf-8').decode(buf);
+                if (mode === 'text') {
+                    // 诊断弹窗里手动切的「纯文本预览」：直接看原文
+                    showOnlyTextFallback(text, '手动选择纯文本', true);
+                } else if (kind === 'markdown') {
+                    setStatus('正在渲染 Markdown…');
+                    await renderMarkdown(text);
+                } else {
+                    setStatus('正在渲染表格…');
+                    await renderCsv(text);
+                }
             } else if (kind === 'pptx') {
                 setStatus('正在渲染演示文稿…');
                 await renderPptx(buf);

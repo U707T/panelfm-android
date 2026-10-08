@@ -60,6 +60,8 @@ import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
+import com.u707t.panelfm.core.common.RenderFormats
+import com.u707t.panelfm.core.common.SqliteFormats
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
@@ -120,17 +122,19 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
         if (editing) r = PreviewMode.EDITOR
         if (r == PreviewMode.AUTO) {
             val kind = MimeTypes.kindOf(item.extension)
-            r = when (kind) {
-                MimeTypes.Kind.IMAGE -> PreviewMode.IMAGE
-                MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO -> PreviewMode.MEDIA
-                MimeTypes.Kind.FONT -> PreviewMode.FONT
+            r = when {
+                // 未识别但确实是数据库 → SQLite 浏览（别把二进制当文本预览显示一屏乱码）
+                kind == MimeTypes.Kind.OTHER && SqliteFormats.isSqlite(item.extension) -> PreviewMode.SQLITE
+                kind == MimeTypes.Kind.IMAGE -> PreviewMode.IMAGE
+                kind == MimeTypes.Kind.AUDIO || kind == MimeTypes.Kind.VIDEO -> PreviewMode.MEDIA
+                kind == MimeTypes.Kind.FONT -> PreviewMode.FONT
                 // MT 的 PDF 走内置查看器；PanelFM 用系统 PdfRenderer（只读，非逆向）
-                MimeTypes.Kind.PDF -> PreviewMode.PDF
+                kind == MimeTypes.Kind.PDF -> PreviewMode.PDF
                 // APK：只读信息（PackageManager 解析），不做 dex/arsc 编辑
-                MimeTypes.Kind.APK -> PreviewMode.APK_INFO
-                MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> PreviewMode.TEXT
+                kind == MimeTypes.Kind.APK -> PreviewMode.APK_INFO
+                kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE -> PreviewMode.TEXT
                 // Office 文档（docx/xlsx/pptx；旧 .doc/.ppt 进页面后给说明）：只读文档预览
-                MimeTypes.Kind.DOCUMENT -> PreviewMode.OFFICE
+                kind == MimeTypes.Kind.DOCUMENT -> PreviewMode.OFFICE
                 // 未识别格式：一律文本预览（最多读前 1 MB，界面会标注「已截断」）
                 else -> PreviewMode.TEXT
             }
@@ -162,6 +166,18 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
             }
             PreviewMode.OFFICE -> {
                 OfficeScreen(container, item, onBack = onBack)
+                return
+            }
+            PreviewMode.RENDER -> {
+                RenderScreen(container, item, onBack = onBack)
+                return
+            }
+            PreviewMode.SQLITE -> {
+                SqliteScreen(container, item, onBack = onBack)
+                return
+            }
+            PreviewMode.EPUB -> {
+                EpubScreen(container, item, onBack = onBack)
                 return
             }
             else -> Unit
@@ -200,6 +216,20 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                         DropdownMenuItem(
                             text = { Text("文档预览", color = if (!editing && resolved == PreviewMode.OFFICE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
                             onClick = { effective = PreviewMode.OFFICE; editing = false; modeMenu = false },
+                        )
+                    }
+                    // Markdown / CSV：渲染预览（marked / SheetJS；默认仍是文本查看器，可在这里或「打开方式」里切）
+                    if (item != null && RenderFormats.isRenderable(item.extension)) {
+                        DropdownMenuItem(
+                            text = { Text("渲染预览", color = if (!editing && resolved == PreviewMode.RENDER) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.RENDER; editing = false; modeMenu = false },
+                        )
+                    }
+                    // SQLite 数据库：只读浏览
+                    if (item != null && SqliteFormats.isSqlite(item.extension)) {
+                        DropdownMenuItem(
+                            text = { Text("SQLite 浏览", color = if (!editing && resolved == PreviewMode.SQLITE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.SQLITE; editing = false; modeMenu = false },
                         )
                     }
                     if (kind == MimeTypes.Kind.FONT) {

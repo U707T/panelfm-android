@@ -98,4 +98,46 @@ class TextEncodingsTest {
         val bytes = TextEncodings.encode("第一段\n第二段", "UTF-16LE").bytes
         assertEquals("第一段\n第二段", TextEncodings.decodeWith("UTF-16LE", bytes))
     }
+
+    // ---- 中文编码启发式（Big5）+ UTF-32（v2.0.7 新增）
+
+    @Test
+    fun `big5 识别（繁体）`() {
+        val text = "繁體中文測試，這是第二行。"
+        val decoded = TextEncodings.decode(text.toByteArray(charset("Big5")))
+        assertEquals("Big5", decoded.charset)
+        assertEquals(text, decoded.text)
+    }
+
+    @Test
+    fun `gbk 长文本不会被误判为 Big5`() {
+        val text = "这是一个比较长的简体中文段落，用来确认编码识别不会把 GBK 误判成 Big5；" +
+            "里面包含常见字：时间、国家、会议、学习、对话、进来、实现、结果，以及标点。"
+        val decoded = TextEncodings.decode(text.toByteArray(charset("GBK")))
+        assertEquals("GBK", decoded.charset)
+        assertEquals(text, decoded.text)
+    }
+
+    @Test
+    fun `utf-32 往返与识别（LE 与 BE）`() {
+        val text = "hello 世界\n第二行"
+        listOf("UTF-32LE", "UTF-32BE").forEach { name ->
+            val out = TextEncodings.encode(text, name)
+            assertEquals(name, out.charset)
+            val back = TextEncodings.decode(out.bytes)
+            assertEquals(name, back.charset)
+            assertEquals(text, back.text)
+            assertEquals(text, TextEncodings.decodeWith(name, out.bytes))
+        }
+    }
+
+    @Test
+    fun `新增中文编码的保存往返（不可表示时回退 UTF-8）`() {
+        // 可表示：往返一致
+        assertEquals("Big5", TextEncodings.encode("繁體中文測試", "Big5").charset)
+        // 不可表示（emoji 在 Big5 里没有）：回退 UTF-8 并如实上报
+        val out = TextEncodings.encode("中文😀", "Big5")
+        assertEquals("UTF-8", out.charset)
+        assertEquals("中文😀", TextEncodings.decode(out.bytes).text)
+    }
 }

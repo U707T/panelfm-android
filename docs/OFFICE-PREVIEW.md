@@ -1,6 +1,6 @@
-# Office 文档预览（WebView + 前端渲染库）· 架构与维护说明
+# 文档预览（WebView + 前端渲染库）· 架构与维护说明
 
-> 版本：v1.8.0 起。**只读预览**，不做编辑、不联网、不写回原文件。
+> 版本：v1.8.0 起（Office）；**v2.0.7 起同一页面也服务 Markdown / CSV**。只读预览，不做编辑、不联网、不写回原文件。
 
 ## 1. 能看什么 / 不能看什么
 
@@ -10,6 +10,8 @@
 | `.xlsx` / `.xls`（含 `.xlsm` / `.xltx` / `.xltm`） | ✅ | SheetJS CE（多工作表用顶部标签切换） |
 | `.ods` / `.fods` | ✅ | 同走 SheetJS（OpenDocument 表格；bundled 0.18.5 实测可解析） |
 | `.pptx`（含 `.pptm` / `.ppsx` / `.potx` / `.potm`） | ✅ | @aiden0z/pptx-renderer（文字/形状/图片/表格/图表/SmartArt） |
+| `.md` / `.markdown` | ✅ | marked（GFM）+ DOMPurify 清洗（见 §5） |
+| `.csv` | ✅ | SheetJS（按表格渲染） |
 | `.doc` / `.ppt` | ❌ 给说明页 | 旧二进制格式，前端生态没有渲染器（引导「打开方式…」） |
 | 带密码的文档 | ❌ | 解析失败 → 页面内报错 |
 
@@ -66,8 +68,8 @@
 
 ## 4. 怎么升级渲染库
 
-1. 从 npm 取 tarball（`docx-preview`、`xlsx`、`@aiden0z/pptx-renderer`、`jszip`），
-   把 `dist/` 里的产物拷进 `assets/office/vendor/`（保持文件名，`viewer.js` 里写死了路径）；
+1. 从 npm 取 tarball（`docx-preview`、`xlsx`、`@aiden0z/pptx-renderer`、`jszip`、`marked`、`dompurify`），
+   把 `dist/` 里的产物拷进 `assets/office/vendor/`（保持文件名，`viewer.js` / `index.html` 里写死了路径）；
 2. `pptx-renderer.es.js` 用的是 **浏览器 ESM 版**（自带 JSZip + ECharts），别换成 `.es.js`/`.cjs` 主入口；
 3. 更新 `third_party/THIRD-PARTY-NOTICES.md` 的版本表；
 4. 真机抽验（无单测可覆盖 WebView 渲染）：
@@ -76,3 +78,18 @@
    - pptx：翻页（list 滚动 / slide 模式）、含图表的页不崩；
    - `.doc` / `.ppt`：出现说明页而不是报错；
    - 断网状态下预览依旧可用（确认没有出网请求）。
+
+## 5. Markdown / CSV（v2.0.7 起）
+
+同一个页面服务 `kind=markdown` / `kind=csv`（入口：预览页菜单「渲染预览」/「打开方式…」，
+默认打开方式仍是文本查看器 —— 用户可把 `.md` 的默认改成渲染预览）：
+
+- **编码统一在 Kotlin 侧**（`RenderScreen.kt`）：文件字节先过 `TextEncodings.decode()`（UTF-8 / GBK /
+  Big5…）再转 UTF-8 喂给页面 —— 页面只按 UTF-8 解，中文 GBK 的 md/csv 不乱码；
+- **Markdown**：`marked`（MIT）解析 GFM → `DOMPurify`（Apache-2.0 / MPL-2.0，3.1.6）清洗后进 DOM。
+  ⚠️ **md 是不可信输入**：marked 不做清洗，漏掉 `sanitize` 就等于给预览页开了个 HTML 注入口。
+  链接会被降级成「文字（URL）」——预览页不出网，点了也打不开；
+- **CSV**：复用 SheetJS（`XLSX.read(text, {type:'string'})` → `sheet_to_html`），与 xlsx 共用标签栏；
+- `mode=text`（诊断弹窗「纯文本预览」）对两者都有效：直接显示原文；
+- 真 Chromium 冒烟（沙箱）：`markdown`（含内嵌 `<script>`，确认被 DOMPurify 清掉）、`csv`（中文单元格）、
+  以及 `xlsx` 路径回归（用 `.ods` 样本）全部通过；`viewer 2.0.7` 日志可见。

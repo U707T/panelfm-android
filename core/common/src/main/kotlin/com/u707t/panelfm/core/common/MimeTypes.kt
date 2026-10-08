@@ -21,7 +21,7 @@ object MimeTypes {
         "flv" to "video/x-flv", "rmvb" to "video/vnd.rn-realvideo",
         "3gp" to "video/3gpp", "3gpp" to "video/3gpp", "f4v" to "video/x-f4v",
         // ---- 文本 / 代码 ----
-        "txt" to "text/plain", "log" to "text/plain", "md" to "text/markdown", "json" to "application/json",
+        "txt" to "text/plain", "log" to "text/plain", "md" to "text/markdown", "markdown" to "text/markdown", "json" to "application/json",
         "xml" to "application/xml", "html" to "text/html", "htm" to "text/html", "css" to "text/css",
         "js" to "text/javascript", "mjs" to "text/javascript", "cjs" to "text/javascript",
         "kt" to "text/x-kotlin", "kts" to "text/x-kotlin", "java" to "text/x-java", "py" to "text/x-python",
@@ -70,7 +70,8 @@ object MimeTypes {
         "potm" to "application/vnd.ms-powerpoint.template.macroEnabled.12",
         // ---- 字体 / 其它 ----
         "ttf" to "font/ttf", "otf" to "font/otf", "ttc" to "font/collection", "woff" to "font/woff",
-        "woff2" to "font/woff2", "db" to "application/x-sqlite3", "so" to "application/x-sharedlib",
+        "woff2" to "font/woff2", "db" to "application/x-sqlite3", "sqlite" to "application/x-sqlite3",
+        "sqlite3" to "application/x-sqlite3", "so" to "application/x-sharedlib",
         "bin" to "application/octet-stream", "iso" to "application/x-iso9660-image",
     )
 
@@ -99,7 +100,7 @@ object MimeTypes {
         "sh", "ps1", "bat", "cmd", "json", "xml", "yml", "yaml", "html", "htm", "css", "scss", "less",
         "sql", "toml", "gradle", "plist", "diff", "patch", "vue", "svelte",
         -> Kind.CODE
-        "txt", "log", "md", "ini", "conf", "properties", "csv", "srt", "ass", "vtt", "lrc" -> Kind.TEXT
+        "txt", "log", "md", "markdown", "ini", "conf", "properties", "csv", "srt", "ass", "vtt", "lrc" -> Kind.TEXT
         else -> Kind.OTHER
     }
 }

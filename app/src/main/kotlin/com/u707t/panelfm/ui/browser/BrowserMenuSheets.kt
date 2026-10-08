@@ -312,6 +312,9 @@ internal fun BrowserActionSheets(
                                     TypeActions.ACTION_EXTRACT_APK_ICON -> MtIcon.IMAGE
                                     TypeActions.ACTION_OPEN_INTERNAL -> MtIcon.EYE
                                     TypeActions.ACTION_EDIT_TEXT -> MtIcon.EDIT
+                                    TypeActions.ACTION_RENDER -> MtIcon.DESC
+                                    TypeActions.ACTION_SQLITE_BROWSE -> MtIcon.LAYERS
+                                    TypeActions.ACTION_READ_EPUB -> MtIcon.DESC
                                     else -> MtIcon.CHECK
                                 }
                                 add(MtAction(id, TypeActions.labelOf(id, kind), icon, section = section))
@@ -384,6 +387,9 @@ internal fun BrowserActionSheets(
                         }
                         TypeActions.ACTION_OPEN_INTERNAL -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
                         TypeActions.ACTION_EDIT_TEXT -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.EDITOR)
+                        TypeActions.ACTION_RENDER -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.RENDER)
+                        TypeActions.ACTION_SQLITE_BROWSE -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.SQLITE)
+                        TypeActions.ACTION_READ_EPUB -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.EPUB)
                         TypeActions.ACTION_OPEN_WITH -> openWithFor = item
                     }
                 },
