@@ -78,4 +78,20 @@ class EditorFileIoTest {
         val bytes = byteArrayOf(0xFF.toByte(), 0xFE.toByte()) + text.toByteArray(Charsets.UTF_16LE)
         assertPartition(text, bytes, "UTF-16LE")
     }
+
+    @Test
+    fun `UTF-32LE：按 4 字节码元对齐，不产生错位`() {
+        val text = buildString {
+            repeat(200) { i -> append("行").append(i).append("数据\n") }
+        }
+        assertPartition(text, TextEncodings.encode(text, "UTF-32LE").bytes, "UTF-32LE")
+    }
+
+    @Test
+    fun `UTF-32BE：按 4 字节码元对齐，不产生错位`() {
+        val text = buildString {
+            repeat(200) { i -> append("行").append(i).append("数据\n") }
+        }
+        assertPartition(text, TextEncodings.encode(text, "UTF-32BE").bytes, "UTF-32BE")
+    }
 }

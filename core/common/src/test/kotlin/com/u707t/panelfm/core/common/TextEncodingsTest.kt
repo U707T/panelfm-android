@@ -140,4 +140,43 @@ class TextEncodingsTest {
         assertEquals("UTF-8", out.charset)
         assertEquals("中文😀", TextEncodings.decode(out.bytes).text)
     }
+
+    // ---- v2.0.10 回归：GBK/Big5 字节碰撞误判 + UTF-32 分段 ----
+
+    @Test
+    fun `gbk 短文本（字节碰撞字）不会被误判为 Big5`() {
+        // 这些字的 GBK 字节按 Big5 解出恰好是繁体特征字（地==華、拜==問、瓜==圖…），
+        // 旧「特征字计数」会把它们误判成 Big5 显示乱码（v2.0.7 回归）。
+        val cases = listOf(
+            "地面的地砖", "地铁站地址", "本地的地址", "目的地地址", "当地的地铁",
+            "快递地址在地图上", "地址和地点", "拜拜", "地瓜", "拉丁丁", "祝贺祝贺",
+        )
+        for (text in cases) {
+            val decoded = TextEncodings.decode(text.toByteArray(charset("GBK")))
+            assertEquals("应保持 GBK：$text", "GBK", decoded.charset)
+            assertEquals("内容不应变化：$text", text, decoded.text)
+        }
+    }
+
+    @Test
+    fun `big5 常见繁体短语识别（评分法）`() {
+        for (text in listOf("檔案下載完成", "儲存成功", "開啟檔案", "資料夾")) {
+            val decoded = TextEncodings.decode(text.toByteArray(charset("Big5")))
+            assertEquals("应识别为 Big5：$text", "Big5", decoded.charset)
+            assertEquals(text, decoded.text)
+        }
+    }
+
+    @Test
+    fun `utf-32 非首页分段（无 BOM）不丢首字符`() {
+        val text = "AB中文\n第二行"
+        for (name in listOf("UTF-32LE", "UTF-32BE")) {
+            val withBom = TextEncodings.encode(text, name).bytes
+            assertEquals(
+                "$name 无 BOM 分段解码应保留首字符",
+                text,
+                TextEncodings.decodeWith(name, withBom.copyOfRange(4, withBom.size)),
+            )
+        }
+    }
 }

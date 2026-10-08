@@ -67,7 +67,8 @@ internal fun pageWindow(
 
 /**
  * 在 [from, limit) 内找「换行之后」的下标；找不到返回 -1。
- * UTF-16 按 2 字节码元识别（`0A 00` / `00 0A`），避免单字节误判与奇偏移错位。
+ * UTF-16 按 2 字节码元、UTF-32 按 4 字节码元识别（`0A 00 [00 00]` / `00 [00 00] 0A`）——
+ * 单字节扫描会切进字符中间，UTF-32 后续整段解码错位（变 U+FFFD）。
  */
 internal fun lineBoundaryAfter(buf: ByteArray, limit: Int, charset: String, from: Int): Int {
     val lim = minOf(limit, buf.size)
@@ -85,6 +86,26 @@ internal fun lineBoundaryAfter(buf: ByteArray, limit: Int, charset: String, from
             while (i + 1 < lim) {
                 if (buf[i] == 0.toByte() && buf[i + 1] == 0x0A.toByte()) return i + 2
                 i += 2
+            }
+            -1
+        }
+        "UTF-32LE" -> {
+            var i = from
+            while (i + 3 < lim) {
+                if (buf[i] == 0x0A.toByte() && buf[i + 1] == 0.toByte() &&
+                    buf[i + 2] == 0.toByte() && buf[i + 3] == 0.toByte()
+                ) return i + 4
+                i += 4
+            }
+            -1
+        }
+        "UTF-32BE" -> {
+            var i = from
+            while (i + 3 < lim) {
+                if (buf[i] == 0.toByte() && buf[i + 1] == 0.toByte() &&
+                    buf[i + 2] == 0.toByte() && buf[i + 3] == 0x0A.toByte()
+                ) return i + 4
+                i += 4
             }
             -1
         }
