@@ -9,6 +9,24 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.0.7 — Markdown/CSV 渲染预览 + SQLite 浏览 + EPUB 阅读 + 中文编码（Big5 / UTF-32）
+
+> 一句话：四项「只读」能力一次到位；新增依赖只有两个前端库（marked：MIT；DOMPurify：Apache-2.0 / MPL-2.0）。
+
+- **渲染预览**：`.md` / `.markdown`（marked + DOMPurify 清洗）与 `.csv`（SheetJS 表格）走 Office 同一套
+  WebView 页；编码在 Kotlin 侧统一（GBK / Big5 的 md、csv 不乱码）。**默认打开方式仍是文本查看器**，
+  可从预览页菜单或「打开方式…」切换。
+- **SQLite 浏览**：`.db/.sqlite/.sqlite3` 只读打开（本地直开；远程 / 包内先复制到缓存）；表列表（含行数）
+  + 前 200 行 + 单元格全文；表名拼 SQL 前一律加引号。
+- **EPUB 阅读**：`.epub` 长按「阅读电子书」（也可设为默认打开方式）：container → OPF → spine 解析、
+  NCX / nav 目录、上一章 / 下一章；页面 **关 JS**、外链拦下、不联网；书内路径解析拒绝越界。
+- **中文编码识别**：新增 **Big5**（繁体）与 **UTF-32**（LE/BE，手写编解码，含保存往返）；
+  GBK 仍是默认口径（不做日文 / 韩文识别）。
+- 沙箱真 Chromium 冒烟：markdown（内嵌 `<script>` 已被 DOMPurify 清掉）/ csv（中文单元格）/ xlsx 回归全过。
+
+验证：全仓单测 **469 → 488 例全绿**；`assembleDebug` / `lintDebug` 通过。
+待实机抽验：① md / csv 渲染预览；② `.db` 打开与表浏览；③ `.epub` 阅读（翻章 / 目录）。
+
 ## v2.0.6 — SVG/SVGZ 预览修复 + 编辑器新增 10 种语法（共 22 种）
 
 > 一句话：① `.svg` 此前「登记为图片却打不开」（BitmapFactory 不支持 SVG），现用 AndroidSVG 补上；
