@@ -65,8 +65,7 @@ class SecretStore(private val db: PanelDb) {
         db.writableDatabase.delete("secret", "ref = ?", arrayOf(ref))
     }
 
-    fun has(ref: String): Boolean =
-        db.readableDatabase.query("secret", arrayOf("ref"), "ref = ?", arrayOf(ref), null, null, null).use { it.count > 0 }
+    // （旧有 has(ref) / HostKeyDao.all() 零消费，已删——如需「指纹管理」等 UI 再接，成本极低；第 10 批 🔵3）
 
     private fun masterKey(): SecretKey {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }

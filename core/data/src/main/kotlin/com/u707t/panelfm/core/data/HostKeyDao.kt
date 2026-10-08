@@ -30,13 +30,4 @@ class HostKeyDao(private val db: PanelDb) : HostKeyStore {
     override fun forget(host: String, port: Int) {
         db.writableDatabase.delete("known_host", "host = ? AND port = ?", arrayOf(host, port.toString()))
     }
-
-    fun all(): List<Triple<String, Int, String>> {
-        val out = ArrayList<Triple<String, Int, String>>()
-        db.readableDatabase.query("known_host", arrayOf("host", "port", "fingerprint_sha256"), null, null, null, null, "added_at DESC")
-            .use { c ->
-                while (c.moveToNext()) out.add(Triple(c.getString(0), c.getInt(1), c.getString(2)))
-            }
-        return out
-    }
 }

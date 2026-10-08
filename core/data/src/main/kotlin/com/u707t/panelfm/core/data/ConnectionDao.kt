@@ -26,7 +26,17 @@ class ConnectionDao(private val db: PanelDb) {
     fun insert(config: ConnectionConfig): Long {
         val values = config.toValues(includeCreatedAt = true)
         values.remove("id")
-        return db.writableDatabase.insert("connection", null, values)
+        val id = db.writableDatabase.insert("connection", null, values)
+        if (id > 0) {
+            // 建行时还没有 id（toValues 只能写占位 "conn-0"）；回填规范 ref，与 SecretStore / delete 的
+            // 计算口径 "conn-<id>" 保持一致 —— 避免列里长期躺着永不正确的值（第 10 批 🔵2）。
+            db.writableDatabase.update(
+                "connection",
+                ContentValues().apply { put("secret_ref", secretRef(id)) },
+                "id = ?", arrayOf(id.toString()),
+            )
+        }
+        return id
     }
 
     fun update(config: ConnectionConfig) {

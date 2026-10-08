@@ -2,6 +2,7 @@ package com.u707t.panelfm.core.data
 
 import android.content.ContentValues
 import android.database.Cursor
+import android.database.sqlite.SQLiteDatabase
 import com.u707t.panelfm.core.vfs.VfsUri
 
 data class Bookmark(val id: Long, val connectionId: Long?, val uri: VfsUri, val name: String, val createdAt: Long)
@@ -48,13 +49,39 @@ class BookmarkDao(private val db: PanelDb) {
         }
     }
 
-    /** 路径历史：记录访问过的目录（用于「最近使用」与书签建议） */
+    /**
+     * 路径历史：记录访问过的目录（用于「最近使用」与书签建议）。
+     *
+     * 不用 UPSERT（`ON CONFLICT ... DO UPDATE` 需要 SQLite ≥ 3.24；API 26–29 的设备只有
+     * 3.18–3.22，旧写法在这些设备上直接语法错误——调用方虽有 runCatching 兜底不崩，
+     * 但「最近使用」会永远为空。第 10 批 🟡1：改为 update → 不存在才 insert。
+     */
     fun recordVisit(uri: VfsUri, connectionId: Long?) {
-        db.writableDatabase.execSQL(
-            "INSERT INTO path_history(uri, connection_id, visited_at, hits) VALUES(?,?,?,1) " +
-                "ON CONFLICT(uri) DO UPDATE SET visited_at = excluded.visited_at, hits = hits + 1",
-            arrayOf<Any?>(uri.toString(), connectionId, System.currentTimeMillis()),
+        val uriStr = uri.toString()
+        val now = System.currentTimeMillis()
+        val dbw = db.writableDatabase
+        val updated = dbw.update(
+            "path_history",
+            ContentValues().apply {
+                put("visited_at", now)
+                put("connection_id", connectionId)
+            },
+            "uri = ?", arrayOf(uriStr),
         )
+        if (updated == 0) {
+            dbw.insertWithOnConflict(
+                "path_history", null,
+                ContentValues().apply {
+                    put("uri", uriStr)
+                    put("connection_id", connectionId)
+                    put("visited_at", now)
+                    put("hits", 1)
+                },
+                SQLiteDatabase.CONFLICT_IGNORE,
+            )
+        } else {
+            dbw.execSQL("UPDATE path_history SET hits = hits + 1 WHERE uri = ?", arrayOf<Any?>(uriStr))
+        }
     }
 
     fun recentPaths(limit: Int = 40): List<VfsUri> {
