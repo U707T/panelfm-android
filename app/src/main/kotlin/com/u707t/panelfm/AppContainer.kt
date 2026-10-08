@@ -264,11 +264,19 @@ class AppContainer(val app: Application) {
             ?: withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(config.id)) }
         val lease = registry.acquire(config, secret)
         val vfs = lease.use()
+        // 第 8 批 🔵3：先连接、成功后才登记。旧实现在 connect() 之前就把租约登记进 heldLeases ——
+        // 连接失败后该会话仍被当作「App 正在引用」持有（refs≥1，空闲回收器永不回收），
+        // mounted 也指向一个从未连接成功的实例；账实不符。
+        try {
+            vfs.connect()
+        } catch (t: Throwable) {
+            runCatching { lease.close() }
+            throw t
+        }
         // 关键：应用要一直持有租约，否则 5 分钟空闲回收会把正在浏览的会话关掉
         heldLeases.put(config.sessionKey, lease)?.let { runCatching { it.close() } }
         mounted[config.sessionKey] = vfs
         mounted["${config.scheme}://${config.host}:${config.port}"] = vfs
-        vfs.connect()
         withContext(Dispatchers.IO) { connectionDao.touch(config.id) }
         return vfs
     }

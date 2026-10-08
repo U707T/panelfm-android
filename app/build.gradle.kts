@@ -48,6 +48,10 @@ android {
         versionName = "1.10.1"
     }
 
+    // 单元测试里 call android.util.Log / org.json 桩不抛「not mocked」；
+    // org.json 另用真实实现覆盖（见 dependencies 的 libs.json）——回收站索引测试需要。
+    testOptions { unitTests { isReturnDefaultValues = true } }
+
     signingConfigs {
         if (hasReleaseKey) {
             create("release") {
@@ -152,5 +156,6 @@ dependencies {
     implementation(libs.compose.material.icons.core)
 
     testImplementation(libs.junit)
+    testImplementation(libs.json)
     testImplementation(libs.kotlinx.coroutines.test)
 }

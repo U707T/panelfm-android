@@ -31,6 +31,13 @@ class RemoteHttpServer(private val locator: VfsLocator) {
 
     val running: Boolean get() = serverSocket?.isClosed == false
 
+    /** 最近一次成功启动的访问地址（未运行时为空串）——供 UI 从服务真实状态初始化 */
+    val url: String get() = currentUrl
+
+    /** 当前正在对外服务的根目录（未运行时为 null）——RemoteScreen 展示「正在服务哪个目录」 */
+    var servedRoot: VfsUri? = null
+        private set
+
     /** 启动服务，返回可访问的 URL；失败返回 null */
     fun start(root: VfsUri): String? {
         if (running) return currentUrl
@@ -43,6 +50,7 @@ class RemoteHttpServer(private val locator: VfsLocator) {
             }
             val ip = lanAddress() ?: "127.0.0.1"
             currentUrl = "http://$ip:${socket.localPort}/"
+            servedRoot = root
             Logx.i("RemoteHttp", "serving $root at $currentUrl")
             currentUrl
         }.getOrElse {
@@ -57,6 +65,7 @@ class RemoteHttpServer(private val locator: VfsLocator) {
         runCatching { serverSocket?.close() }
         serverSocket = null
         currentUrl = ""
+        servedRoot = null
     }
 
     private fun serve(socket: ServerSocket, root: VfsUri) {
@@ -90,10 +99,21 @@ class RemoteHttpServer(private val locator: VfsLocator) {
         val parts = requestLine.split(' ')
         if (parts.size < 2) return
         val rawPath = parts[1].substringBefore('?')
-        // 读掉请求头
-        while (true) {
+        // 读掉请求头（第 8 批加固：行数上限，防止恶意客户端无限发头打爆读取循环）
+        var headerLines = 0
+        var headersDone = false
+        while (headerLines < MAX_HEADER_LINES) {
             val line = reader.readLine() ?: break
-            if (line.isEmpty()) break
+            if (line.isEmpty()) {
+                headersDone = true
+                break
+            }
+            headerLines++
+        }
+        if (!headersDone) {
+            val out = BufferedOutputStream(client.getOutputStream())
+            respond(out, 400, "text/plain; charset=utf-8", "请求头过大".toByteArray())
+            return
         }
         val path = decodeRemotePath(rawPath)
         // 安全：规整路径并拒绝任何向上穿越（..），避免通过 HTTP 访问到「服务根」之外的文件
@@ -206,6 +226,9 @@ class RemoteHttpServer(private val locator: VfsLocator) {
 
         /** 请求头读取 / 响应写入的 socket 超时 */
         const val READ_TIMEOUT_MS = 30_000
+
+        /** 单请求最大请求头行数（正常浏览器 < 30；超过视为恶意/异常） */
+        const val MAX_HEADER_LINES = 100
     }
 }
 

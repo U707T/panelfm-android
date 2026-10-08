@@ -6,6 +6,7 @@ import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVfs
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -35,6 +36,14 @@ class TrashService(
 
     private val dir: File get() = File(appDirs.trashDir).apply { mkdirs() }
     private val indexFile: File get() = File(dir, "index.json")
+
+    /**
+     * 索引读-改-写互斥（第 8 批 🟡1）：
+     * `moveToTrash / restore / purge / purgeAll` 都是「读索引 → 改文件/条目 → 写索引」的三段式，
+     * 旧实现没有跨段互斥，两个并行操作（例如大文件移入回收站的同时在回收站里清空）
+     * 各按旧快照回写，后写的会覆盖先写的 —— 索引丢条目 = 文件在盘上却在回收站列表里消失。
+     */
+    private val indexMutex = kotlinx.coroutines.sync.Mutex()
 
     @Synchronized
     fun list(): List<Entry> {
@@ -95,82 +104,84 @@ class TrashService(
 
     /** 把本地文件移入回收站；返回成功数量（非本地 URI 会被忽略） */
     suspend fun moveToTrash(uris: List<VfsUri>): Int = withContext(Dispatchers.IO) {
-        val entries = list().toMutableList()
-        val pending = ArrayList<Entry>()      // 本轮新增
-        val movedPairs = ArrayList<Pair<File, File>>()   // (源, 回收站内位置) 用于失败回滚
+        indexMutex.withLock {
+            val entries = list().toMutableList()
+            val pending = ArrayList<Entry>()      // 本轮新增
+            val movedPairs = ArrayList<Pair<File, File>>()   // (源, 回收站内位置) 用于失败回滚
 
-        uris.forEach { uri ->
-            if (uri.scheme != "local") return@forEach
-            val src = File(localVfs.absolutePath(uri))
-            if (!src.exists()) return@forEach
-            // 同名多选时用递增后缀，避免同一毫秒内互相覆盖（trashName 曾是纯时间戳 + 原名）
-            var trashName = "${System.currentTimeMillis()}-${src.name}"
-            var seq = 1
-            while (File(dir, trashName).exists() && seq < 1000) {
-                trashName = "${System.currentTimeMillis()}-$seq-${src.name}"
-                seq++
+            uris.forEach { uri ->
+                if (uri.scheme != "local") return@forEach
+                val src = File(localVfs.absolutePath(uri))
+                if (!src.exists()) return@forEach
+                // 同名多选时用递增后缀，避免同一毫秒内互相覆盖（trashName 曾是纯时间戳 + 原名）
+                var trashName = "${System.currentTimeMillis()}-${src.name}"
+                var seq = 1
+                while (File(dir, trashName).exists() && seq < 1000) {
+                    trashName = "${System.currentTimeMillis()}-$seq-${src.name}"
+                    seq++
+                }
+                val dest = File(dir, trashName)
+                val moved = moveFile(src, dest)
+                if (moved) {
+                    pending += Entry(
+                        id = trashName,
+                        name = src.name,
+                        originalPath = localVfs.absolutePath(uri),
+                        trashName = trashName,
+                        size = runCatching { dest.length() }.getOrDefault(0L),
+                        deletedAt = System.currentTimeMillis(),
+                        isDirectory = dest.isDirectory,
+                    )
+                    movedPairs += src to dest
+                }
             }
-            val dest = File(dir, trashName)
-            val moved = runCatching { src.renameTo(dest) }.getOrDefault(false) ||
-                runCatching {
-                    src.copyRecursively(dest, overwrite = true)
-                    if (!src.deleteRecursively()) error("删除原文件失败")
-                    true
-                }.getOrDefault(false)
-            if (moved) {
-                pending += Entry(
-                    id = trashName,
-                    name = src.name,
-                    originalPath = localVfs.absolutePath(uri),
-                    trashName = trashName,
-                    size = runCatching { dest.length() }.getOrDefault(0L),
-                    deletedAt = System.currentTimeMillis(),
-                    isDirectory = dest.isDirectory,
-                )
-                movedPairs += src to dest
-            }
-        }
-        if (pending.isEmpty()) return@withContext 0
+            if (pending.isEmpty()) return@withLock 0
 
-        // 一次性写索引（旧实现每个文件写一次 = O(n²) IO）。
-        // 写失败必须把已移动的文件**全部放回原处**：否则文件既不在原目录、也不在索引里，
-        // 用户看到的是「删掉了但回收站里没有」= 事实上的静默丢数据。
-        return@withContext if (save(entries + pending)) {
-            pending.size
-        } else {
-            movedPairs.asReversed().forEach { (src, dest) ->
-                runCatching { dest.renameTo(src) }
+            // 一次性写索引（旧实现每个文件写一次 = O(n²) IO）。
+            // 写失败必须把已移动的文件**全部放回原处**：否则文件既不在原目录、也不在索引里，
+            // 用户看到的是「删掉了但回收站里没有」= 事实上的静默丢数据。
+            if (save(entries + pending)) {
+                pending.size
+            } else {
+                // 回滚用 moveFile：只试 renameTo 时，跨卷（外部存储 → 内部回收站）回滚必失败，
+                // 恰好是它最该起作用的场景 —— 必须带复制兜底。
+                movedPairs.asReversed().forEach { (src, dest) -> moveFile(dest, src) }
+                Logx.e("TrashService", "index save failed, rolled back ${movedPairs.size} item(s)")
+                0
             }
-            Logx.e("TrashService", "index save failed, rolled back ${movedPairs.size} item(s)")
-            0
         }
     }
 
-    suspend fun restore(entry: Entry): Boolean = withContext(Dispatchers.IO) {
-        val src = File(dir, entry.trashName)
-        if (!src.exists()) return@withContext false
-        var dest = File(entry.originalPath)
-        dest.parentFile?.mkdirs()
-        // 原位置已有同名文件时**不要覆盖**（旧实现会先删掉再还原，等于静默销毁用户数据）；
-        // 改为还原成「name (1).ext」保留两者
-        if (dest.exists()) dest = uniqueSibling(dest)
-        val ok = runCatching { src.renameTo(dest) }.getOrDefault(false) ||
+    /**
+     * 同卷 rename / 跨卷复制+删除的通用移动（第 8 批 🟡1：正反向共用，
+     * 旧实现的回滚路径只有 renameTo，跨卷时静默失败）。
+     */
+    private fun moveFile(from: File, to: File): Boolean =
+        runCatching { from.renameTo(to) }.getOrDefault(false) ||
             runCatching {
-                src.copyRecursively(dest, overwrite = true)
-                src.deleteRecursively()
+                from.copyRecursively(to, overwrite = true)
+                if (!from.deleteRecursively()) error("删除源失败")
                 true
             }.getOrDefault(false)
-        if (!ok) return@withContext false
-        val remaining = list().filterNot { it.id == entry.id }
-        if (save(remaining)) return@withContext true
-        // 索引落盘失败：把已还原的文件放回回收站，避免出现「文件已离开但索引仍指向旧位置」。
-        val rolledBack = dest.renameTo(src) || runCatching {
-            dest.copyRecursively(src, overwrite = true)
-            if (!dest.deleteRecursively()) error("回滚删除失败")
-            true
-        }.getOrDefault(false)
-        if (!rolledBack) Logx.e("TrashService", "restore index failed and rollback failed: ${entry.name}")
-        false
+
+    suspend fun restore(entry: Entry): Boolean = withContext(Dispatchers.IO) {
+        indexMutex.withLock {
+            val src = File(dir, entry.trashName)
+            if (!src.exists()) return@withLock false
+            var dest = File(entry.originalPath)
+            dest.parentFile?.mkdirs()
+            // 原位置已有同名文件时**不要覆盖**（旧实现会先删掉再还原，等于静默销毁用户数据）；
+            // 改为还原成「name (1).ext」保留两者
+            if (dest.exists()) dest = uniqueSibling(dest)
+            val ok = moveFile(src, dest)
+            if (!ok) return@withLock false
+            val remaining = list().filterNot { it.id == entry.id }
+            if (save(remaining)) return@withLock true
+            // 索引落盘失败：把已还原的文件放回回收站，避免出现「文件已离开但索引仍指向旧位置」。
+            val rolledBack = moveFile(dest, src)
+            if (!rolledBack) Logx.e("TrashService", "restore index failed and rollback failed: ${entry.name}")
+            false
+        }
     }
 
     /** 为还原生成一个不冲突的兄弟文件名（name (1).ext） */
@@ -190,17 +201,21 @@ class TrashService(
     }
 
     suspend fun purge(entry: Entry) = withContext(Dispatchers.IO) {
-        val deleted = runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
-        if (deleted && !save(list().filterNot { it.id == entry.id })) {
-            Logx.w("TrashService", "purge index update failed: ${entry.name}")
+        indexMutex.withLock {
+            val deleted = runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
+            if (deleted && !save(list().filterNot { it.id == entry.id })) {
+                Logx.w("TrashService", "purge index update failed: ${entry.name}")
+            }
         }
     }
 
     suspend fun purgeAll() = withContext(Dispatchers.IO) {
-        val remaining = list().filterNot { entry ->
-            runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
+        indexMutex.withLock {
+            val remaining = list().filterNot { entry ->
+                runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
+            }
+            if (!save(remaining)) Logx.w("TrashService", "purgeAll index update failed")
         }
-        if (!save(remaining)) Logx.w("TrashService", "purgeAll index update failed")
     }
 
     fun describe(entry: Entry): String = "${entry.name} · ${Fmt.size(entry.size)}"

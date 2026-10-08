@@ -65,6 +65,8 @@ sora-language-textmate = { module = "io.github.rosemoe:language-textmate", versi
 junit = { module = "junit:junit", version = "4.13.2" }
 # 测试专用：真实 XmlPullParser 实现（Android 内置 KXmlParser 的上游同源代码），驱动解析层样例测试
 kxml2 = { module = "net.sf.kxml:kxml2", version = "2.3.0" }
+# 测试专用：真实 org.json 实现（覆盖 android.jar 桩）——回收站索引（JSON 文件）的 JVM 单测需要
+json = { module = "org.json:json", version = "20180813" }
 kotlinx-coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
 okhttp-mockwebserver = { module = "com.squareup.okhttp3:mockwebserver", version.ref = "okhttp" }
 

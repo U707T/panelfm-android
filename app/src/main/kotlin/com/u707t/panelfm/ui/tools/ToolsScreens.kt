@@ -295,9 +295,18 @@ private suspend fun exportApk(
 fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
-    var running by remember { mutableStateOf(false) }
-    var url by remember { mutableStateOf("") }
-    var log by remember { mutableStateOf("") }
+    // 第 8 批 🔵4：状态从服务真实值初始化 —— 服务不随本页销毁（启动后切走再回来），
+    // 旧实现每次进页都显示「启动服务」+空 URL，与「服务仍在跑」的事实脱节。
+    val remote = container.remote
+    var running by remember { mutableStateOf(remote.running) }
+    var url by remember { mutableStateOf(remote.url) }
+    var log by remember {
+        mutableStateOf(
+            if (remote.running) {
+                "服务运行中：${remote.url}（目录：${remote.servedRoot?.displayPath ?: "?"}）"
+            } else ""
+        )
+    }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(title = "远程管理", onBack = onBack)
@@ -316,15 +325,17 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
         ) {
             TextButton(onClick = {
                 if (running) {
-                    container.remote.stop()
+                    remote.stop()
                     running = false
                     url = ""
+                    log = "已停止"
                 } else {
                     scope.launch {
-                        val started = container.remote.start(container.browser.state.value.focusedPane.uri)
+                        val started = remote.start(container.browser.state.value.focusedPane.uri)
                         running = started != null
                         url = started ?: ""
-                        log = if (started == null) "启动失败（端口被占用？）" else "已启动：$started"
+                        log = if (started == null) "启动失败（端口被占用？）"
+                        else "已启动：$started（目录：${remote.servedRoot?.displayPath ?: "?"}）"
                     }
                 }
             }) { Text(if (running) "停止服务" else "启动服务") }
