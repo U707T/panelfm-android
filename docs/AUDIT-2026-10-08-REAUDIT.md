@@ -5,7 +5,7 @@
 >
 > 基线：`main` @ `c69a4dd`（v1.10.1）。
 > 方法：只读代码 + 全仓 grep 取证（所有结论给 文件:行号）；未跑真机。
-> 修复：**第 1–7 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
+> 修复：**第 1–8 批已修复收口**（见各批末尾「修复记录」）；其余批次待审计后继续。
 
 ---
 
@@ -1031,4 +1031,82 @@
 
 ---
 
-（后续批次在本文档追加 §8、§9 …）
+## §8 模块审查：app 壳层（2026-10-08 · 第 8 批）
+
+> 结论一句话：装配与生命周期主体扎实——租约 / 前台服务 / 对外 HTTP 三条边都有实测级保障，未发现阻断级问题；
+> 本批收口 2 个 🟡（回收站索引的回滚缺口与并行写、release 日志过滤空转）与 2 个 🔵（连接失败仍登记「持有中」、
+> 远程管理页面状态与服务真实状态脱节），另记录 1 个有意留待的结构观察（压缩包挂载回收）。
+> 范围：`app/src/main/kotlin/com/u707t/panelfm/` 根（AppContainer 440 / MainActivity 59 / SessionLocator 31 /
+> LocalNetwork 30 / PanelApp 27）+ `ui/AppRoot.kt` 321 + `service/TransferService.kt` 165 +
+> `tools/`（RemoteHttpServer 242 / TrashService 207）＝ 9 文件 / 1,522 行。等级：**🟡 维持**。
+> 方法：9 文件全量通读 + 交叉取证（VfsRegistry 租约语义 / ConnectionEditScreen 保存链 / HomeScreen 连接链 /
+> LocalVfs.absolutePath / 四协议 connect() 重试语义 / PrefsStore / TransferEngine.taskEvents / ArchiveVfs 句柄 /
+> app 构建与 Manifest）；未跑真机。
+> **基线核对**：HEAD `0a923a0`（第 6 批文档收口）；开工时工作树干净，零交叉。
+
+### 🟡 建议修复（应该修）
+
+**1. 回收站：跨卷回滚缺口 + 索引读-改-写无串行——「删了但回收站里没有」的两个漏网**
+- 位置：`TrashService.kt:114-119`（移入：renameTo 失败即复制+删源）、`:141-143`（回滚只试 `dest.renameTo(src)`）、`:97-146 / :149-174 / :192-204`（四个操作的「读索引→改→写」序列）。
+- 问题：① 进入复制路径的常见原因恰是**跨卷**（/storage/emulated 与 /data 不同挂载点），而回滚只试 `renameTo` —— 索引写失败需要回滚时，回滚本身必失败：文件滞留回收站、无索引条目 = 用户视角「删掉了但回收站没有」。② `list()` 只保证单次读原子；`moveToTrash / restore / purge / purgeAll` 各自「读-改-写」无跨段互斥——两个并行操作（大文件移入回收站的同时在回收站里清空）按旧快照互相覆盖索引：丢条目、文件成孤儿。
+- 为什么：这两处正是该服务注释自己承诺要防的「静默丢数据」形态。触发概率不高（依赖写失败 / 并行操作），但一旦发生**用户无法自助恢复**（孤儿文件不在列表里，肉眼不可见）。
+- 修复：正/反向移动统一为 `moveFile(from, to)`（renameTo || 复制+删源）；四个操作以 `Mutex` 串行化整段读改写；补首套单测（移入 / 回滚 / 还原重名不覆盖 / purge）。
+
+**2. release 日志过滤「空转」：`enabled=DEBUG` 把 WARN+ 一起关掉，且 `w()` 不看 minLevel**
+- 位置：`PanelApp.kt:16-17`、`Logx.kt:12`。
+- 问题：`Logx.enabled = BuildConfig.DEBUG` → release 连 WARN / ERROR 一起静默，注释宣称的「release 只保留 WARN 以上」从未生效；同时 `Logx.w()` 只查 `enabled` 不查 `minLevel` —— 四个等级里三个查、一个不查，过滤器语义不一致。
+- 为什么：发布版出事时 logcat 里什么都没有，诊断只剩「复现猜」；而作者要的是「WARN 以上留痕」。
+- 修复：过滤统一交给 `minLevel`（release = WARN），`enabled` 保持「可整体静默」的开关语义；`Logx.w` 补 `minLevel <= WARN`。
+
+### 🔵 可选优化
+
+**3. 连接失败仍登记为「持有中」：`heldLeases` / `mounted` 在 connect 之前写入**
+- 位置：`AppContainer.kt:263-274`。
+- 问题：`vfs.connect()` 失败后，该会话仍被登记为「App 正在引用」（refs≥1 → 空闲回收器**永不回收**），`mounted` 也指向一个从未连接成功的实例；兜底查找拿到的是它。重试虽因协议层惰性重连可用，但状态账实不符。
+- 修复：connect 成功后再登记；失败释放租约、原样抛出。
+
+**4. 远程管理：页面状态与「服务真实状态」脱节**
+- 位置：`ToolsScreens.kt:295-300`（local `running`/`url`）、`RemoteHttpServer.kt:32/54/94`。
+- 问题：服务不随页面销毁（启动后切走再回来，服务仍在跑），页面每次进入却从 `false` 初始化：明明在跑却显示「启动服务」、URL 空白；也不显示「正在服务哪个目录」。
+- 修复：状态从 `container.remote` 真实值初始化；暴露 `url` / `servedRoot` 并在页面展示；顺带给请求头读取加行数上限（防无限发头）。
+
+**5. 压缩包挂载只增不减（记录在案，未改）**
+- 位置：`AppContainer.kt:109 / :341-427`（`archives` 缓存；仅口令更换 / 手动刷新时 `forgetArchive`）。
+- 问题：同一会话打开过的每个压缩包都常驻（ZipFile 句柄 + 中央目录内存）；没有上限或 LRU。
+- 修复思路：在 60s 空闲回收循环里按「上限 + 最久未用」淘汰。未在本批动手：淘汰判断需要「窗格是否仍在该包内」的引用信息（跨 BrowserController 状态），留待专门批次。
+
+### 🟢 做得好的地方
+
+- **租约模型（refs / pinned / closeIdle + 60s 兜底）**：会话生命周期三段式，`heldLeases` 的「浏览中的连接不被回收」注释与实现一致——本批的两个 🔵 都是这个模型边角上的收口，模型本身是对的。
+- **`RemoteHttpServer` 路径防线**：`decodeRemotePath`（`+` 不做表单解码）+ `normalizeRemotePath`（拒绝任何越根）+ 7 例测试；HTML / 头注入（转义 / CRLF 剥离 / 引号过滤）逐项落实。
+- **`TransferService` 前台化边角**：`startForegroundSafe` 失败即 `stopSelf`（不吃 5 秒硬约束的崩溃）、通知点击回 App、`START_STICKY` 重启后无任务自动收场——三条坏路径都不装死。
+- **`TrashService` 既有防线**：索引原子写（tmp + ATOMIC_MOVE）、还原重名不覆盖（(1) 后缀）、批量写一次索引——本批 🟡1 是把同一标准补到回滚与并发上。
+- **壳层权限链**：storage → local-net → notification 三段引导 + `LocalNetwork` 抽象 + API 37 分支；第 7 批扫描页接线后权限故事闭环。
+
+### 安全（轻量两项抽查）
+
+- 无硬编码凭据：壳层源码零命中（全仓 `ghp_` / `AKIA` / 私钥头扫描仅测试向量与注释）；口令只走 `SecretStore`。
+- 外部输入：远程管理是壳层唯一外部面——路径规整有 7 例测试（v1.10.1 收口），本批补请求头行数上限（100 行）。一句话提及：`lanAddress()` 取「第一个非回环 IPv4」，移动数据网优先时 URL 可能指向不可达网卡（低风险，按约定不展开）。
+
+### 下一批建议
+
+- 下一模块：**app/ui 周边页**（🟡）——`ui/home/HomeScreen.kt` 534 + `ui/settings/SettingsScreen.kt` 371 + `ui/tools/ToolsScreens.kt` 354 + `ui/tools/DiffScreens.kt` 337 + `ui/tasks/TasksScreen.kt` 275 + `ui/bookmarks/BookmarksScreen.kt` 183（6 文件 / 2,054 行）。重点：各设置开关的「UI ↔ 消费方」一致性（第 7 批同款对照法）、Home 的连接 / 存储两条入口状态、任务页与引擎的取消 / 冲突语义、书签的 URI 生命周期。说「继续」即开审。
+
+> 备注：本批行号为 `0a923a0` 基线；修复落地于 `1a2e613`（9 文件，+274/−89；含测试基建：app 模块 `returnDefaultValues` + 真实 org.json）。
+
+### 修复记录（第 8 批 · 2026-10-08）
+
+| # | 状态 | 说明 |
+|---|------|------|
+| 🟡1 | ✅ | `moveFile` 正反向共用（跨卷复制兜底——回滚不再只在「需要它时」失败）；四个操作的索引读-改-写以 Mutex 串行化；补 `TrashServiceTest` 4 例（回收站首套回归：移入 / 回滚 / 还原重名 / purge）。 |
+| 🟡2 | ✅ | `Logx.w` 补 `minLevel` 检查（四等级同语义）；PanelApp 过滤统一交给 `minLevel`（release = WARN+）——「只保留 WARN 以上」从注释变成行为。 |
+| 🔵3 | ✅ | `openConnection`：connect 成功后才登记 `heldLeases` / `mounted`；失败释放租约并原样抛出（不再出现「从未连上却被持有」的会话）。 |
+| 🔵4 | ✅ | RemoteScreen 状态从服务真实值初始化；`RemoteHttpServer` 暴露 `url` / `servedRoot`（页面显示「正在服务哪个目录」）；请求头行数上限 100。 |
+| 🔵5 | ◐ | 压缩包挂载回收：**记录在案未动**——淘汰需「窗格引用」判断（跨层），留待专门批次；现状成本（句柄 + 内存）可接受。 |
+
+> 验证：全仓单测 **430 用例全绿**（app 158 = 上批 154 + 本批新增 4；core 12 模块回归全绿）；`compileDebugKotlin` 随测试任务通过。
+> 修复提交：`1a2e613`（9 文件，+274/−89）。
+
+---
+
+（后续批次在本文档追加 §9、§10 …）
