@@ -92,10 +92,13 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
 
     var ignore by remember { mutableStateOf(DiffIgnore.NONE) }
     var caseSensitive by remember { mutableStateOf(true) }
-    var wideEnough by remember { mutableStateOf(true) }
     var viewMode by remember { mutableStateOf(DiffViewMode.AUTO) }
     var menu by remember { mutableStateOf<DiffMenu?>(null) }
     var hunkIndex by remember { mutableStateOf(-1) }
+    /** 两侧文本读取完成（区分「还没读」与「读到了、但两边都是空文件」——否则空文件对比永远停在「正在对比…」） */
+    var ready by remember { mutableStateOf(false) }
+    /** 任一侧文件超过 2MB 读取上限（行截断有 `truncated` 警告，字节截断此前是静默的） */
+    var byteCapped by remember { mutableStateOf(false) }
 
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -103,26 +106,30 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
     // MT 的「自动切换」：宽屏（≥ 600dp）双列，窄屏单列
     val autoWide = configuration.screenWidthDp >= 600
     val effectiveMode = if (viewMode == DiffViewMode.AUTO) DiffViewMode.autoFor(autoWide) else viewMode
-    wideEnough = effectiveMode == DiffViewMode.SIDE_BY_SIDE
+    // 纯派生值（旧实现把它写成 mutableState 并在组合期赋值 —— Compose 反模式，且毫无必要）
+    val wideEnough = effectiveMode == DiffViewMode.SIDE_BY_SIDE
 
     // 读取两侧文本（只读一次，切换忽略档位时本地重算，不重新读网络）
     LaunchedEffect(left, right) {
+        ready = false
         try {
             val pair = withContext(Dispatchers.IO) {
                 val leftVfs = container.locator.find(left) ?: throw IllegalStateException("左侧会话不可用")
                 val rightVfs = container.locator.find(right) ?: throw IllegalStateException("右侧会话不可用")
                 readAll(leftVfs, left) to readAll(rightVfs, right)
             }
-            rawLeft = com.u707t.panelfm.core.common.TextEncodings.decode(pair.first).text
-            rawRight = com.u707t.panelfm.core.common.TextEncodings.decode(pair.second).text
+            byteCapped = pair.first.second || pair.second.second
+            rawLeft = com.u707t.panelfm.core.common.TextEncodings.decode(pair.first.first).text
+            rawRight = com.u707t.panelfm.core.common.TextEncodings.decode(pair.second.first).text
+            ready = true
         } catch (e: Exception) {
             error = e.message
         }
     }
 
     // 档位变化 → 重算（后台线程）
-    LaunchedEffect(rawLeft, rawRight, ignore, caseSensitive) {
-        if (rawLeft.isEmpty() && rawRight.isEmpty()) return@LaunchedEffect
+    LaunchedEffect(rawLeft, rawRight, ignore, caseSensitive, ready) {
+        if (!ready) return@LaunchedEffect
         result = withContext(Dispatchers.Default) {
             TextDiffEngine.diff(rawLeft, rawRight, ignore = ignore, caseSensitive = caseSensitive)
         }
@@ -223,6 +230,7 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
                         if (!caseSensitive) append("不区分大小写")
                     }
                     if (current.truncated) append("\n⚠ 文件较大，已截断到 20000 行后对比")
+                    if (byteCapped) append("\n⚠ 任一侧文件超过 2MB，仅读取前 2MB 参与对比")
                 }
             },
             style = MaterialTheme.typography.labelSmall,
@@ -312,13 +320,18 @@ private fun DiffRow(line: DiffLine, wideEnough: Boolean) {
     }
 }
 
+/**
+ * 读取 [max] 字节上限的文本；返回 (字节, 是否触顶截断)。
+ * 触顶后多做一次试探读：还有数据 = 文件超过上限（此前是静默截断，>2MB 的文件会给出不完整的对比结论）。
+ */
 private fun readAll(
     vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
     uri: VfsUri,
     max: Long = 2L * 1024 * 1024,
-): ByteArray {
+): Pair<ByteArray, Boolean> {
     val reader = vfs.openRead(uri)
     val out = java.io.ByteArrayOutputStream()
+    var truncated = false
     try {
         val buf = ByteArray(64 * 1024)
         var total = 0L
@@ -328,10 +341,13 @@ private fun readAll(
             out.write(buf, 0, n)
             total += n
         }
+        if (total >= max) {
+            truncated = kotlinx.coroutines.runBlocking { reader.read(buf, 0, 1) } >= 0
+        }
     } finally {
         runCatching { reader.close() }
     }
-    return out.toByteArray()
+    return out.toByteArray() to truncated
 }
 
 

@@ -100,13 +100,10 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("默认显示隐藏文件", settings.showHidden) {
             scope.launch { container.prefs.setShowHidden(it) }
         }
-        SettingSwitch("默认单列显示（手机窄屏）", settings.useSingleColumn) {
-            scope.launch {
-                container.prefs.setSingleColumn(it)
-                // 同步到运行期的浏览模式（否则要重启才生效）
-                container.browser.setBrowseMode(if (it) BrowseMode.SINGLE else BrowseMode.DUAL)
-            }
-        }
+        // 「默认单列显示」旧开关已移除（第 9 批 🔵3）：它是 browse_mode 迁移前的兼容入口，
+        // 与下方「界面 → 浏览模式（自动 / 单列 / 双列）」控制同一份数据且二者语义打架
+        // （旧开关的「手机窄屏」措辞并不存在：它写的是绝对 SINGLE，而不是按屏宽自适应）。
+        // 需要单列：用「浏览模式 → 单列」；需要窄屏自适应：用「自动切换」。
         SettingSwitch("记忆上次的双列路径", settings.rememberLastPath) {
             scope.launch { container.prefs.setRememberLastPath(it) }
         }

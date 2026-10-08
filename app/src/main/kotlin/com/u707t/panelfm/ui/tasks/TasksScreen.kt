@@ -13,12 +13,16 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -55,6 +59,8 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
     val ordered = tasks.sortedForDisplay()
     val activeCount = ordered.count { it.state.isActive }
     val finishedCount = ordered.count { it.state.isFinished }
+    val failedCount = ordered.count { it.state is TaskState.Failed }
+    var confirmClear by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
@@ -75,7 +81,11 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                 enabled = ordered.any { it.state is TaskState.Paused },
             ) { Text("继续") }
             TextButton(
-                onClick = { container.engine.clearFinished() },
+                onClick = {
+                    // 第 9 批 🔵5：列表里有失败任务时先确认——「失败必须留痕」是引擎侧的设计
+                    //（失败不自动收走），一键抹掉与它矛盾；无误删风险时才直接清。
+                    if (failedCount > 0) confirmClear = true else container.engine.clearFinished()
+                },
                 enabled = finishedCount > 0,
             ) { Text("清空") }
         }
@@ -104,6 +114,21 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                 }
             }
         }
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            title = { Text("清空任务列表？") },
+            text = { Text("其中 $failedCount 个失败任务也会被一并移除，错误信息不再保留。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmClear = false
+                    container.engine.clearFinished()
+                }) { Text("清空") }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("取消") } },
+        )
     }
 }
 

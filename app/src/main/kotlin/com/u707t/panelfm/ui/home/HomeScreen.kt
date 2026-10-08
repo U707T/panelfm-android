@@ -482,7 +482,12 @@ private fun HomeConnectionRow(
         title = config.name.ifBlank { config.host },
         subtitle = buildString {
             append(config.type.label).append("  ")
-            append(if (config.type.scheme == "dav") "http://" else "")
+            // WebDAV 的二级协议字样跟随 secure 选项（旧实现恒显 http://，443/HTTPS 连接显示错误）
+            append(
+                if (config.type.scheme == "dav") {
+                    if (config.option("secure")?.toBoolean() ?: (config.port == 443)) "https://" else "http://"
+                } else ""
+            )
             append(config.host).append(":").append(config.port)
             if (config.basePath.isNotBlank() && config.basePath != "/") append(config.basePath)
         },
