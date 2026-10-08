@@ -9,6 +9,49 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.0.2 — docx 空白修复（三级渲染链路）+ RAR 解压支持（+10 例回归）
+
+> 一句话：① 用户实机上报的「毕业设计 docx 打开整页空白」已定位并修复 —— 部分 WebView 会把
+> docx-preview 的页面（`column flex + min-height + overflow:hidden`）压扁到几十像素、内容被裁光，
+> 旧版只查 DOM 文本 / 图片标签，判定「不空」就什么都不做；现在渲染走**标准排版 → 兼容排版 →
+> 纯文本兜底**三级链路（几何体检 + 超时保护），任何设备上都不会再是一页空白。
+> ② 新增 **RAR 解压支持**（junrar 8.1.1：RAR4 / RAR5 / RAR7、口令、分卷、固实包，**只读** ——
+> .rar 是专有格式，没有任何开源实现能生成，压缩入口保持 zip / 7z / tar）。
+> 全仓单测 **433 → 443 例全绿**。
+
+### 修复清单
+
+| # | 现象 | 根因 | 修法 |
+|---|---|---|---|
+| F22 | docx 预览**整页空白**（实机截图：灰底 + 顶部一条被压扁的白条 = 塌掉的第一页） | 设备 WebView 把 docx-preview 生成的 `section.docx`（`display:flex; flex-flow:column; min-height:841.95pt; overflow:hidden`）算成几十像素高 → 页面内容被 `overflow:hidden` 整段裁掉。DOM 里「有 section、有文字、有图片」，旧版按 DOM 内容判定「不空」→ 不兜底、不报错，用户只看到空白 | `viewer.js` 改为**三级链路**：标准排版 → **兼容排版**（`viewer.css` 的 `#content.compat`：section 改 `display:block` + `overflow:visible`，去掉 column-flex 组合）→ **纯文本兜底**。每一级先进入**离屏渲染台**（参与布局但不显示）做**几何体检**（`docxLooksUsable`：页面高度 ≥ 200px、可见文字 / 图片几何非零），不可用才下探；单级超时 8s（挂住不再无限等），迟到但可用的结果会自动换进可见区域；每级日志带 `[OfficePreview]` 前缀进 logcat |
+| F23 | **不支持 .rar**（打开 / 解压都进不去，菜单也不给入口） | 读侧只接了 zip / 7z / tar 系 | `core/vfs-archive` 接入 **junrar 8.1.1**（纯 Java、UnRAR License、只读）：`.rar` 列目录 / 层层浏览 / 解压；RAR4·RAR5 数据加密与头加密接入现有「输入压缩包口令」三态流程；固实包乱序读；恶意路径条目（`..` 穿越）继续被 `normalize()` 拒绝；**RAR4 头加密的「打开成功但零条目」被显式识别为需要口令**（不再静默空包）；junrar 的解压异常经自研管道流**原样上抛**（不用 `Archive.getInputStream()` —— 它会把异常吞成看似正常的 EOF） |
+
+### 回归测试（本次 +10）
+
+- `core/vfs-archive/.../RarVfsTest.kt`（**10 例**）：RAR4 / RAR5 列目录与读取、RAR5 真压缩数据完整解出
+  （两次读取一致）、固实包乱序读、RAR4 / RAR5 口令三态（NEEDED / WRONG / OK）、RAR4 / RAR5 头加密
+  （无口令 → `Auth`，不再静默空包）、路径穿越条目被拒、非 RAR 文件给出可读错误。
+  样本（几十~几百字节，来源与口令清单见 `core/vfs-archive/src/test/resources/rar/README.md`）。
+- docx 侧无 JVM 单测（渲染依赖真引擎）：修复提交里附了**本地复现记录** —— 用真 Chromium
+  （Playwright，与 WebView 同内核）跑通 4 个场景：标准渲染 / 强制兼容排版 / 全失败→纯文本 /
+  超时→兜底→迟到换入；并先用 jsdom 复现出「此 docx 在旧引擎上会塌页」的形态。
+  复核方法见 `docs/OFFICE-PREVIEW.md` §3 第 7 条。
+
+### 验证
+
+- 全仓单测 **443 例全绿**（core:vfs-archive 56：本次 +10）；
+- `:app:assembleDebug`、`lintDebug`(Error 0) 本地通过；
+- 文档同步：`docs/OFFICE-PREVIEW.md`（三级链路）、`third_party/THIRD-PARTY-NOTICES.md`
+  （新增 junrar：UnRAR License、只读用途、与「不提供 .rar 创建」的许可一致性说明）；
+- **待实机复核**：① 那份毕业设计 docx 打开应能看到内容（若走了兼容 / 文本链路，页面顶部有提示条，
+  请把提示文案与 logcat 里 `[OfficePreview]` 的行一起反馈）；② `.rar` 打开 / 解压（含输入口令、分卷包）；
+  ③ 「长按 .rar → 解压到当前目录 / 单独文件夹」全流程。
+
+### 依赖变化
+
+- 新增 `com.github.junrar:junrar:8.1.1`（UnRAR License，**只读**；不得用于开发 RAR 兼容压缩器 —— 与用途一致）；
+  传递 `org.slf4j:slf4j-api`（项目已有 2.0.20），模块内挂 `slf4j-nop`（与 sftp / smb 同款）。
+
 ## v2.0.1 — 滑动手势修复：不再「必须滑 2 次」/「第二滑整段无响应」（+3 例接线层回归）
 
 > 一句话：修掉用户实机上报的滑动手势 bug —— **滑动选中一项后直接滑第二项没反应（「必须滑 2 次」）、
