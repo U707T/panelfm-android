@@ -44,8 +44,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 75
-        versionName = "2.0.5"
+        versionCode = 76
+        versionName = "2.0.6"
     }
 
     // 单元测试里 call android.util.Log / org.json 桩不抛「not mocked」；
@@ -147,6 +147,9 @@ dependencies {
     // 文本编辑器引擎（LGPL-2.1，替代自研 BasicTextField 编辑器）
     implementation(libs.sora.editor)
     implementation(libs.sora.language.textmate)
+
+    // SVG / SVGZ 渲染（Apache-2.0；BitmapFactory 不支持 SVG）
+    implementation(libs.androidsvg)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)
