@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -144,6 +145,13 @@ fun DualPaneScreen(
     val scope = rememberCoroutineScope()
 
     val ds = remember { BrowserDialogsState() }
+    // 不支持的类型单击 → 控制器请求弹出该项二级菜单（而不是直接进文本查看/编辑器）
+    val openMenu by controller.openMenuRequest.collectAsState()
+    LaunchedEffect(openMenu) {
+        val item = openMenu ?: return@LaunchedEffect
+        controller.consumeOpenMenuRequest()
+        ds.rowAction = item
+    }
     /** 双列区域的总宽度（分隔条拖动换算用；旧实现用分隔条自身宽度 10dp → 拖不动） */
     var panesWidthPx by remember { mutableStateOf(0f) }
 
@@ -363,7 +371,9 @@ fun DualPaneScreen(
                         PaneEdgeShadow(
                             active = ui.focused == PaneSide.RIGHT,
                             isLeftPane = false,
-                            modifier = Modifier.align(Alignment.CenterStart),
+                            modifier = Modifier
+                                .align(Alignment.CenterStart)
+                                .offset(x = -MtSpec.RightPaneShadowNudge),
                         )
                     }
                 }

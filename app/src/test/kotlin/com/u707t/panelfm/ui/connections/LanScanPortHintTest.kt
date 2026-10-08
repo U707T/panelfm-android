@@ -10,6 +10,7 @@ class LanScanPortHintTest {
 
     @Test
     fun `常见端口映射到对应协议`() {
+        assertEquals(ConnectionType.WEBDAV, connectionTypeForScanPort(5244))
         assertEquals(ConnectionType.SFTP, connectionTypeForScanPort(22))
         assertEquals(ConnectionType.FTP, connectionTypeForScanPort(21))
         assertEquals(ConnectionType.SMB, connectionTypeForScanPort(445))

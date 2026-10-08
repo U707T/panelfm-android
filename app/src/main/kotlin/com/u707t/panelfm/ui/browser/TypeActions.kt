@@ -42,6 +42,18 @@ object TypeActions {
 
     fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
 
+    /**
+     * 单击时没有内置查看器、也不该直接丢进文本查看 / 编辑器的类型。
+     *
+     * 未识别（[MimeTypes.Kind.OTHER]）且不是 SQLite：默认弹该项**二级菜单**
+     * （查看文本 / 编辑文本 / 打开方式…），由用户选，而不是一打开就是文本编辑器。
+     * 用户若给这个后缀设过默认打开方式，调用方应先尊重那个设置。
+     */
+    fun preferMenuOnOpen(extension: String): Boolean {
+        if (SqliteFormats.isSqlite(extension)) return false
+        return kindOf(extension) == MimeTypes.Kind.OTHER
+    }
+
     fun isApk(kind: MimeTypes.Kind): Boolean = kind == MimeTypes.Kind.APK
 
     /** 可直接用内置查看器打开（图片 / 音频 / 视频 / 字体 / PDF / 文本 / 代码 / Office 文档） */

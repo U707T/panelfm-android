@@ -51,7 +51,8 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
     }
     // onFound 从并发协程回调：串行化「读-改-写」，避免多主机同屏命中时丢条目
     val foundLock = remember { Mutex() }
-    var port by remember { mutableStateOf(22) }
+    // 5244 = OpenList / Alist 默认 WebDAV，放在第一并作为默认端口
+    var port by remember { mutableStateOf(5244) }
     var scanning by remember { mutableStateOf(false) }
     var done by remember { mutableStateOf(0) }
     var total by remember { mutableStateOf(0) }
@@ -90,7 +91,7 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
             horizontalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             Text("端口：", style = MaterialTheme.typography.labelSmall)
-            listOf(22, 21, 445, 80, 443).forEach { p ->
+            listOf(5244, 22, 21, 445, 80, 443).forEach { p ->
                 TextButton(onClick = { port = p }) {
                     Text(
                         p.toString(),
@@ -162,11 +163,11 @@ fun LanScanScreen(container: AppContainer, onBack: () -> Unit, onPick: (String, 
     }
 }
 
-/** 扫描端口 → 编辑器预选协议（仅作引导，用户进入后可改；80/443 视作 WebDAV） */
+/** 扫描端口 → 编辑器预选协议（仅作引导，用户进入后可改；5244/80/443 视作 WebDAV） */
 internal fun connectionTypeForScanPort(port: Int): ConnectionType? = when (port) {
+    5244, 80, 443 -> ConnectionType.WEBDAV
     22 -> ConnectionType.SFTP
     21 -> ConnectionType.FTP
     445 -> ConnectionType.SMB
-    80, 443 -> ConnectionType.WEBDAV
     else -> null
 }

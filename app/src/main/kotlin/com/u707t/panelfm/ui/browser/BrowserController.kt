@@ -53,6 +53,13 @@ class BrowserController(internal val container: AppContainer) {
     internal val _previewRequest = MutableStateFlow<com.u707t.panelfm.ui.preview.PreviewRequest?>(null)
     val previewRequest: StateFlow<com.u707t.panelfm.ui.preview.PreviewRequest?> = _previewRequest
 
+    /**
+     * 单击了「没有内置查看器」的文件：请界面弹出该项的二级菜单，
+     * 而不是直接丢进文本查看 / 编辑器。由 [DualPaneScreen] 消费。
+     */
+    internal val _openMenuRequest = MutableStateFlow<com.u707t.panelfm.core.vfs.FileMetadata?>(null)
+    val openMenuRequest: StateFlow<com.u707t.panelfm.core.vfs.FileMetadata?> = _openMenuRequest
+
     /** 文件对比请求（左/右两个文件） */
     internal val _diffRequest = MutableStateFlow<Pair<VfsUri, VfsUri>?>(null)
     val diffRequest: StateFlow<Pair<VfsUri, VfsUri>?> = _diffRequest
@@ -324,6 +331,8 @@ class BrowserController(internal val container: AppContainer) {
     }
 
     fun dismissPreviewRequest() { _previewRequest.value = null }
+
+    fun consumeOpenMenuRequest() { _openMenuRequest.value = null }
 
     fun showStatus(message: String) {
         _statusQueue.update { (it + message).takeLast(8) }

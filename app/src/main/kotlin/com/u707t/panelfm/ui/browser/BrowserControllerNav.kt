@@ -227,10 +227,14 @@ fun BrowserController.openItem(side: PaneSide, item: FileMetadata) {
             else -> {
                 val isArchive = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind
                     .ofFileName(item.name) != null
-                if (isArchive) {
-                    openArchiveInPane(side, item)
-                } else {
-                    _previewRequest.value = com.u707t.panelfm.ui.preview.PreviewRequest(
+                when {
+                    isArchive -> openArchiveInPane(side, item)
+                    // 未识别类型：弹二级菜单（查看文本 / 编辑文本 / 打开方式），不直接进文本编辑器
+                    TypeActions.preferMenuOnOpen(item.extension) -> {
+                        focus(side)
+                        _openMenuRequest.value = item
+                    }
+                    else -> _previewRequest.value = com.u707t.panelfm.ui.preview.PreviewRequest(
                         item.uri, com.u707t.panelfm.ui.preview.PreviewMode.AUTO,
                     )
                 }

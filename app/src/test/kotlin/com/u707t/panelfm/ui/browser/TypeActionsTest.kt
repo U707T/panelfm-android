@@ -123,6 +123,21 @@ class TypeActionsTest {
     }
 
     @Test
+    fun `未识别类型单击默认走二级菜单`() {
+        assertTrue(TypeActions.preferMenuOnOpen("xyz"))
+        assertTrue(TypeActions.preferMenuOnOpen("bin"))
+        assertTrue(TypeActions.preferMenuOnOpen("so"))
+        assertTrue("没有后缀也算未识别", TypeActions.preferMenuOnOpen(""))
+        // 有内置查看器 / 数据库的不拦
+        assertFalse(TypeActions.preferMenuOnOpen("txt"))
+        assertFalse(TypeActions.preferMenuOnOpen("png"))
+        assertFalse(TypeActions.preferMenuOnOpen("apk"))
+        assertFalse(TypeActions.preferMenuOnOpen("zip"))
+        assertFalse(TypeActions.preferMenuOnOpen("db"))
+        assertFalse(TypeActions.preferMenuOnOpen("docx"))
+    }
+
+    @Test
     fun `文本与代码给查看与编辑文本`() {
         listOf("txt", "log", "md", "kt", "json").forEach { ext ->
             val out = ids(ext)
