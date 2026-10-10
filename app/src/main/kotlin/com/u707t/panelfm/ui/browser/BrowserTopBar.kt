@@ -3,25 +3,28 @@ package com.u707t.panelfm.ui.browser
 import android.app.Activity
 import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -84,7 +87,6 @@ import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.PaneEdgeShadow
 import com.u707t.panelfm.core.ui.VDividerPx
-import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
@@ -137,7 +139,10 @@ internal fun BrowserTopBar(
         Column(
             Modifier
                 .fillMaxWidth()
-                .background(topBarBg),
+                .background(topBarBg)
+                // 全面屏（v2.0.14）：顶栏底色**向上铺满状态栏区域**（浅色主题下最顶不再留白条）。
+                // 顶部 inset 由这里消费 —— DualPaneScreen 根 padding 已把 Top 方向排除。
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Top)),
         ) {
             // ---- 顶栏主体（复刻 MT `0x7f0c0033` 的 `09046B` + 自定义 View `09038A`）
             //   MT 截图实测：**☰、路径/统计（居中）、⋮ 全在同一块里** ——

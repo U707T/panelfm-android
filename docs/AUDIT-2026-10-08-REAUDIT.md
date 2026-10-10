@@ -1322,4 +1322,54 @@
 
 ---
 
-（后续批次在本文档追加 §12、§13 …）
+## §12 新增功能审计：v2.0.14 长按体验统一 / 全面屏顶栏修复（2026-10-10）
+
+> 与前批一致，本批审的是**本轮新写的代码**（长按 400ms 静止计时路径 + 全 App 长按震动口径 + 全面屏顶栏底色铺满 + 本页状态栏图标）。
+> 方法：改动全量逐行自查 + 编译 / 单测 / lint 全量验证 + **依赖字节码取证**（从本地 Gradle 缓存反汇编实际依赖产物：
+> foundation 1.11.4 的 `ClickableKt` / `CombinedClickableNode`；material3 1.4.0 的 `DrawerDefaults` / `DrawerSheet`）。
+> 无真机手测（如实记录，待实机项见 CHANGELOG `v2.0.14`）。
+> 范围：`ui/browser/PaneGestures.kt`（静止计时路径）· `core/ui/MtViewConfiguration.kt`（新）+ `MainActivity.kt`（根部覆盖）·
+> `core/ui/MtWidgets.kt`（`mtCombinedClickable` / `MtBottomIconButton`）· `core/ui/Components.kt` · `ui/browser/{DualPaneScreen,BrowserTopBar,BrowserActionBars,Dialogs}.kt` ·
+> `ui/preview/OpenWith.kt` · 接线回归 `RowGestureWiringTest` + `MtViewConfigurationTest`（新）。
+
+### 🔴 阻断性问题（必须修）
+
+无 —— 审计周期内发现的两处问题（🟡1 / 🟡2）**发现即修**，随本轮发版落地。
+
+### 🟡 建议修复（应该修）
+
+#### 1. 「内置 + 手动」双重震动：`combinedClickable` 自带的长按震动被叠了一次（✅ 已修复）
+- 位置：`core/ui/MtWidgets.kt:384`（`mtCombinedClickable` 内的 `combinedClickable(...)` 构造处）。
+- 问题：foundation 1.11.4 的 `combinedClickable` **自带长按震动**——公开重载带 `hapticFeedbackEnabled` 参数（字节码实测：`combinedClickable-f5TDLPQ$default` 将其置 `iconst_1`，**默认开**），`CombinedClickableNode` 按该开关在长按触发时调 `performHapticFeedback(LongPress)`；包装又补了一次手动震动 → 走 `mtCombinedClickable` 的面（列表行 / 底栏图标 / 操作菜单 / 打开方式 / 抽屉连接行等）长按**连震两下**，与 `detectTapGestures` 路径（无内置、单次）也不一致。
+- 修复：构造处显式 `hapticFeedbackEnabled = false`，震动统一由包装的手动调用发出（单一震动源；KDoc 写明缘由与取证结论）。
+
+#### 2. 浅色主题 + 抽屉打开：状态栏图标固定浅色贴浅色抽屉面板（✅ 已修复）
+- 位置：`ui/browser/DualPaneScreen.kt:175-182`（状态栏图标效果；原实现为 `DisposableEffect(appDark)` 恒设浅色图标）。
+- 问题：固定浅色是修顶栏白条的必要动作，但**抽屉打开时**状态栏下方是抽屉面板：material3 1.4.0 的 `ModalDrawerSheet` 默认底色 = `surfaceContainerLow`（字节码实测；浅色主题下近白）→ 白图标贴白面板，时间 / 图标不可见。
+- 为什么：这是修复引入的「新偏斜」——修复前全局「跟随主题」在这一态反而是对的（深图标贴白面板）；不带出去。
+- 修复：图标随「状态栏正下方此刻的面板底色」派生：`isAppearanceLightStatusBars = !appDark && drawerOpen`（浅色主题 + 抽屉打开 → 深色；其余恒浅色），以 `targetValue` 随开合切换。
+
+### 🔵 可选优化（可以修）
+
+- **拆分残留死导入清理（✅ 顺手清理）**：8 文件 21 行（`combinedClickable` ×8 / `detectTapGestures` ×6 / `safeAreaPadding` ×7；涉及 `DualPaneScreen` 与 `Browser{TopBar,BottomBar,ActionBars,SortDialogs,FileActions,MenuSheets,DialogHost}`）。每行删前以「该符号全文出现次数 = 1（仅导入行）」核实 + 编译验证；来源 = 早前大文件拆分时整块复制的导入区。
+- **其余零散死导入（记录在案，未动）**：抽查仍有（如 `BrowserTopBar.kt` 的 `semantics.onLongClick` 等）；不逐项手拔，建议下次统一跑一遍 IDE / ktlint 清理。
+- **状态栏图标切换时序（记录在案，待实机）**：抽屉开合过渡按目标值切换，理论存在极短混合态；实机可感知再调（可换 `isOpen` 或按动画进度）。
+
+### 🟢 做得好的地方
+
+- **静止长按与事件路径共用同一判定机 / 回调**：计时推进只把「最后位移 + 保持按下」补喂给 `MtRowGesture`（不复制长按逻辑），单次派发由相位机（MENU 吞后续事件）保证；计时等待用 `withTimeoutOrNull(awaitPointerEvent)`，与 foundation 的 `awaitLongPressOrCancellation` 同一机制（已对照字节码），不是自造轮子。
+- **测试注入点设计**：`detectRowGesture` 的 `awaitNext` 参数把 restricted 挂起块里不可控的真实计时变成确定性注入；新用例复刻实机语义（「只有按下、无后续事件」也须弹菜单），直指被修 bug。
+- **ViewConfiguration 单点覆盖**：400ms 只在根部覆盖一处（`MtViewConfiguration` 全量委托、只改 `longPressTimeoutMillis`；单测覆盖委托面），不散落各组件。
+- **修复依据可追溯**：顶栏色值 / 图标策略 / 抽屉底色（M3 token）都写明来源；`BrowserTopBar`（消费 Top inset）与 `DualPaneScreen` 根 padding（排除 Top）的「一消费一排除」配对在注释里互相指认。
+
+### 回归与验证（2026-10-10）
+
+- `test`：全仓 **520 例全绿**（84 个测试类；517 → v2.0.13 +1 → 本轮 +2：静止长按回归 1 + `MtViewConfiguration` 1）。
+- `assembleDebug` / `lintDebug`：通过；编译仅两条既有警告（`BrowserBottomBar` 的 `!!`、clipboard deprecation，均非本轮引入）。
+- 结构核对：根 padding 与顶栏 inset 互补不重复；抽屉内容安全区由 material3 `DrawerSheet` 统一消费（字节码核对：应用层 `safeAreaPadding` 不会叠加出双内边距）；`mtCombinedClickable` 全部调用面单次震动；状态栏图标与全局规则的交互已核对（能触发根部重组的状态变化恒为本页效果的键，切换后仍落到正确值）。
+
+> 备注：本批基线 = HEAD `0828482` + 工作区改动（v2.0.14 批次，未提交、未打 tag）；两处修复 + 死导入清理随本轮改动落地。待实机抽验项：浅色 / 深色主题各进一次主界面（最顶应为纯顶栏色、无白条）；浅色主题开 / 关抽屉各看一次状态栏图标；列表长按与滑动（400ms 即弹 + 单次微震）。
+
+---
+
+（后续批次在本文档追加 §13、§14 …）

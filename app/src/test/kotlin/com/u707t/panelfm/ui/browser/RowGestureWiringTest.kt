@@ -149,6 +149,47 @@ class RowGestureWiringTest {
         assertFalse("空白处点按不能消费事件（`..` 行 / 其它 clickable 要自己收到）", blankUp.isConsumed)
         assertEquals(listOf("a"), swipes)
     }
+
+    // ------------------------------------------------------------------ 静止长按（计时路径，v2.0.14）
+
+    /**
+     * 实机 bug（v2.0.14 修复）：手指按住后**完全静止**时没有任何 MOVE 事件，旧实现只在
+     * 「事件到达」时推进判定机 —— 长按要等下一个事件（实机上往往就是抬手）才弹菜单，
+     * 观感是「偶尔要松手才弹 / 触发很慢」。
+     *
+     * 本用例的脚本**只有按下、没有第二个事件**：注入的假等待在"脚本已空"时返回 null
+     * （= 计时到点仍无事件），驱动生产的静止长按分支；随后手势层继续等事件、脚本耗尽
+     * 正常收场。断言菜单已派发 —— 语义 = 「不依赖任何后续事件，尤其不依赖抬手」。
+     *
+     * 说明：为什么不直接跑真实计时 —— 受限挂起块（restricted）的上下文为空，测试环境里
+     * `withTimeoutOrNull` 的计时不可控；生产的默认等待 [awaitEventOrLongPressTimeout]
+     * 与 foundation 自身的长按超时是同一机制，由实机验证。
+     */
+    @Test
+    fun `静止长按：无任何后续事件，计时到点必须弹菜单（不许等松手）`() = runTest {
+        val longPressed = mutableListOf<String>()
+        val script = ArrayDeque(
+            listOf(
+                event(change(1L, 0f, 100f, pressed = true, previousPressed = false, t = 0)),
+            )
+        )
+        val scope = FakePointerScope(script)
+
+        runTouchStream(
+            scope,
+            gesturesOf(listOf(item("a")), longPressed = longPressed),
+            // 假等待：脚本里没有事件 = “计时到点仍无事件” → null（确定性驱动静止长按分支）
+            awaitNext = { _ ->
+                if (script.isEmpty()) null else awaitPointerEvent(PointerEventPass.Initial)
+            },
+        )
+
+        assertEquals(
+            "手指静止时计时到点必须弹菜单（旧实现要等下一个事件 / 松手）",
+            listOf("a"),
+            longPressed,
+        )
+    }
 }
 
 // --------------------------------------------------------------------------- 测试基础设施
@@ -218,7 +259,12 @@ private class FakePointerScope(private val script: ArrayDeque<PointerEvent>) : P
  * 脚本用完时手势层回到「等下一次触摸」（抛 [ScriptExhausted]）—— 正常收场；
  * 用例的失败信号一律来自「本该派发的回调没派发」的断言。
  */
-private suspend fun runTouchStream(scope: FakePointerScope, gestures: ListGestures) {
+private suspend fun runTouchStream(
+    scope: FakePointerScope,
+    gestures: ListGestures,
+    /** 「等事件或长按计时到点」的等待实现（测试注入点；默认 = 生产真实计时等待） */
+    awaitNext: (suspend AwaitPointerEventScope.(Long) -> PointerEvent?)? = null,
+) {
     val machine = MtRowGesture(
         touchSlopDp = 8f,
         longPressSlopDp = 12f,
@@ -227,7 +273,7 @@ private suspend fun runTouchStream(scope: FakePointerScope, gestures: ListGestur
     )
     try {
         scope.awaitEachGesture {
-            detectRowGesture(machine, { gestures }, NoHaptic)
+            detectRowGesture(machine, { gestures }, NoHaptic, awaitNext = awaitNext)
         }
     } catch (_: ScriptExhausted) {
         // 事件流空了：手势层在等下一次触摸 —— 收场

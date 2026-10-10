@@ -35,6 +35,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -366,6 +368,38 @@ fun MtActionButton(
 }
 
 /**
+ * `combinedClickable` 的 MT 口径版：长按触发时**先震一下**（MT 的长按反馈），
+ * 点击 / 波纹 / 无障碍语义与 `combinedClickable` 完全一致。
+ *
+ * 长按超时不在参数里 —— 全 App 统一由根部 [MtViewConfiguration] 覆盖为
+ * [MtGesture.LongPressMs]（400ms，MT 口径），见其 KDoc。
+ *
+ * ⚠️ foundation 1.11 的 `combinedClickable` 自带长按震动（`hapticFeedbackEnabled`，默认开，
+ * 见 `CombinedClickableNode`）—— 构造处显式传 `false` 关掉内置，震动统一由本包装的手动调用
+ * 发出：避免「内置 + 手动」双重震动，也与 detectTapGestures / 列表手势层的手动口径一致。
+ */
+@Composable
+fun Modifier.mtCombinedClickable(
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)? = null,
+): Modifier {
+    val haptic = LocalHapticFeedback.current
+    return combinedClickable(
+        enabled = enabled,
+        onClick = onClick,
+        // 关闭 combinedClickable 内置长按震动（默认开），否则与下方手动震动叠加成双重震动。
+        hapticFeedbackEnabled = false,
+        onLongClick = onLongClick?.let { action ->
+            {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                action()
+            }
+        },
+    )
+}
+
+/**
  * 底栏图标按钮（复刻 `0x7f0c0033` 的 `09007F` 工具栏）：
  * 整高点击区（底栏 64dp）+ 24dp 线性图标；支持「长按 = 第二功能」（MT 的 `0x7f1106e4` 范式）。
  */
@@ -385,7 +419,7 @@ fun MtBottomIconButton(
         .background(if (highlighted) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f) else Color.Transparent)
     val modifier = if (onLongClick != null) {
         base
-            .combinedClickable(
+            .mtCombinedClickable(
                 enabled = enabled,
                 onClick = onClick,
                 onLongClick = onLongClick,

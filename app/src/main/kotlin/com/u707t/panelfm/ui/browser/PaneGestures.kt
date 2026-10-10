@@ -6,10 +6,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.hapticfeedback.HapticFeedback
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.AwaitPointerEventScope
+import androidx.compose.ui.input.pointer.PointerEvent
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtRowGesture
 import com.u707t.panelfm.core.vfs.FileMetadata
+import kotlinx.coroutines.withTimeoutOrNull
 
 // ---------------------------------------------------------------------------
 // 文件列表的触摸手势层（复刻 MT：手势挂在**列表**上，行本身不处理触摸）
@@ -19,6 +22,15 @@ import com.u707t.panelfm.core.vfs.FileMetadata
 // 本层自身的**触摸生命周期**（抬手必须退出循环）也有回归测试：
 // app/src/test 的 RowGestureWiringTest（假作用域驱动真实 awaitEachGesture）。
 // ---------------------------------------------------------------------------
+
+/**
+ * 「等下一个事件，或到长按计时点」：到点仍无事件时返回 null（调用方据此推进静止长按）。
+ *
+ * ⚠️ 只能用于 [detectRowGesture] 的循环内部（restricted 挂起块）——生产环境与 foundation
+ * 自身的 `detectTapGestures` / `combinedClickable` 走同一套机制（真实时钟）。
+ */
+internal suspend fun AwaitPointerEventScope.awaitEventOrLongPressTimeout(remainingMs: Long): PointerEvent? =
+    withTimeoutOrNull(remainingMs) { awaitPointerEvent(PointerEventPass.Initial) }
 
 /**
  * 行手势回调集合（用 [androidx.compose.runtime.rememberUpdatedState] 包裹后交给 `pointerInput`，
@@ -89,6 +101,14 @@ internal suspend fun AwaitPointerEventScope.detectRowGesture(
     machine: MtRowGesture,
     gestures: () -> ListGestures,
     haptic: HapticFeedback,
+    /**
+     * 「等事件或长按计时到点」的等待实现（**测试注入点**）。
+     *
+     * 生产默认 = [awaitEventOrLongPressTimeout]（真实计时）；接线测试注入确定性的假实现，
+     * 以便在没有真实时钟的条件下驱动「静止长按」分支 —— 受限挂起块（restricted）的
+     * 上下文为空，测试环境里 `withTimeoutOrNull` 的计时不可控。
+     */
+    awaitNext: (suspend AwaitPointerEventScope.(remainingMs: Long) -> PointerEvent?)? = null,
 ) {
     // Initial pass（父节点先收到）：触发后立刻消费事件，
     // 内层 scrollable / clickable 看不到这次触摸的其余部分。
@@ -98,19 +118,50 @@ internal suspend fun AwaitPointerEventScope.detectRowGesture(
     if (!g.enabled()) return
 
     machine.begin(downIndex = g.indexAtY(down.position.y))
+    // 静止长按的**计时推进**（v2.0.14）：判定机只在「事件到达」时被 update()，而手指完全静止时
+    // 没有任何事件 —— 旧实现要等下一个事件（实机上往往就是抬手）才判长按，观感就是
+    // 「长按偶尔要等松手 / 触发很慢」。这里在 PRESS 阶段给等待套一个「剩余时间」超时：
+    // 到时仍无事件 → 用「最后位移 + 保持按下」把判定机推进到阈值（等价一次静止采样）。
+    var lastDx = 0f
+    var lastDy = 0f
+    var lastElapsedMs = 0L
+    val waitForEvent: suspend AwaitPointerEventScope.(Long) -> PointerEvent? =
+        awaitNext ?: { remaining -> awaitEventOrLongPressTimeout(remaining) }
     try {
         while (true) {
-            val event = awaitPointerEvent(PointerEventPass.Initial)
+            val armTimer = machine.phase == MtRowGesture.Phase.PRESS && machine.downIndex >= 0
+            val event = if (armTimer) {
+                waitForEvent((MtGesture.LongPressMs - lastElapsedMs).coerceAtLeast(1L))
+            } else {
+                awaitPointerEvent(PointerEventPass.Initial)
+            }
+            if (event == null) {
+                // 静止长按到点：立即派发菜单（与事件路径同一套回调 / 震动，不等松手）
+                val decision = machine.update(
+                    dx = lastDx,
+                    dy = lastDy,
+                    elapsedMs = MtGesture.LongPressMs,
+                    pressed = true,
+                )
+                if (decision == MtRowGesture.Decision.LongPressMenu) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    g.itemAt(machine.downIndex)?.let { item -> g.onLongPressRow(item) }
+                }
+                // 触发后判定机已在 MENU 相位：armTimer 失效，后续只会「等抬手」收尾
+                continue
+            }
             // 跟踪的这个指针不在了（多点触控让位 / 系统取消）：本次触摸结束
             val change = event.changes.firstOrNull { it.id == down.id } ?: break
-            val dxPx = change.position.x - down.position.x
+            lastDx = (change.position.x - down.position.x) / density
+            lastDy = (change.position.y - down.position.y) / density
+            lastElapsedMs = (change.uptimeMillis - down.uptimeMillis).coerceAtLeast(0L)
             // 判定前先记阶段：MENU / SWIPED 期间的事件（**含抬手那一下**）全部吞掉，
             // 避免重复触发。注意 update() 会立刻把阶段改成 DONE，判定完再读就晚了。
             val phaseBefore = machine.phase
             val decision = machine.update(
-                dx = dxPx / density,
-                dy = (change.position.y - down.position.y) / density,
-                elapsedMs = change.uptimeMillis - down.uptimeMillis,
+                dx = lastDx,
+                dy = lastDy,
+                elapsedMs = lastElapsedMs,
                 pressed = change.pressed,
             )
             if (phaseBefore == MtRowGesture.Phase.MENU || phaseBefore == MtRowGesture.Phase.SWIPED) {

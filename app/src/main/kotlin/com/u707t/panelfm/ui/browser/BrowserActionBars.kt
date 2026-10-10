@@ -3,7 +3,6 @@ package com.u707t.panelfm.ui.browser
 import android.app.Activity
 import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -47,6 +46,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -84,7 +85,6 @@ import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.PaneEdgeShadow
 import com.u707t.panelfm.core.ui.VDividerPx
-import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
@@ -200,6 +200,8 @@ internal fun TopActionItems(
 internal fun BottomTextCommand(label: String, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val tapAction = onClick
     val longAction = onLongClick
+    // v2.0.14：长按触发补震动（MT 的长按反馈）；长按超时由根部 ViewConfiguration 统一为 400ms
+    val haptic = LocalHapticFeedback.current
     Box(
         Modifier
             .clip(RoundedCornerShape(8.dp))
@@ -208,7 +210,10 @@ internal fun BottomTextCommand(label: String, onLongClick: (() -> Unit)? = null,
                     Modifier
                         .pointerInput(Unit) {
                             detectTapGestures(
-                                onLongPress = { longAction() },
+                                onLongPress = {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    longAction()
+                                },
                                 onTap = { tapAction() },
                             )
                         }

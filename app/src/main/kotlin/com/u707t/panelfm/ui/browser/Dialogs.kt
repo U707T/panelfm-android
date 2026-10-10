@@ -2,7 +2,7 @@ package com.u707t.panelfm.ui.browser
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
+import com.u707t.panelfm.core.ui.mtCombinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -496,7 +496,7 @@ private fun MtActionCell(
     Row(
         modifier
             .padding(vertical = 6.dp)
-            .combinedClickable(
+            .mtCombinedClickable(
                 enabled = action.enabled,
                 onClick = { onAction(action.id) },
                 onLongClick = { if (action.singleWindow) onLongAction(action.id) },

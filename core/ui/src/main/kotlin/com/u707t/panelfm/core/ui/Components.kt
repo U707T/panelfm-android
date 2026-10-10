@@ -2,7 +2,6 @@ package com.u707t.panelfm.core.ui
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -193,7 +192,7 @@ fun MtListRow(
         Modifier
             .fillMaxWidth()
             // MT 列表行（0x7f0c00e4 语义）：左右 16dp、上下 8dp；图标与文字间距 8dp
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .mtCombinedClickable(onClick = onClick, onLongClick = onLongClick)
             .padding(horizontal = 16.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {

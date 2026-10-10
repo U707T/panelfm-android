@@ -5,11 +5,15 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.core.view.WindowCompat
 import com.u707t.panelfm.core.data.ThemeMode
+import com.u707t.panelfm.core.ui.MtViewConfiguration
 import com.u707t.panelfm.core.ui.PanelTheme
 import com.u707t.panelfm.core.ui.fontScaleFactor
 import com.u707t.panelfm.ui.AppRoot
@@ -52,7 +56,17 @@ class MainActivity : ComponentActivity() {
                 dynamicColor = settings.dynamicColor,
                 fontScale = fontScaleFactor(settings.fontScaleLevel),
             ) {
-                AppRoot(container)
+                // 长按口径统一（v2.0.14）：400ms（MT 口径）+ 全 App 同拍。
+                // combinedClickable / detectTapGestures 都从 LocalViewConfiguration 读取长按超时，
+                // 一处覆盖即生效（详见 MtViewConfiguration KDoc）。
+                val baseViewConfiguration = LocalViewConfiguration.current
+                CompositionLocalProvider(
+                    LocalViewConfiguration provides remember(baseViewConfiguration) {
+                        MtViewConfiguration(baseViewConfiguration)
+                    },
+                ) {
+                    AppRoot(container)
+                }
             }
         }
     }

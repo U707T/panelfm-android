@@ -3,7 +3,6 @@ package com.u707t.panelfm.ui.browser
 import android.app.Activity
 import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -14,14 +13,19 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
@@ -39,6 +43,7 @@ import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -70,6 +75,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.Spacer
 import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.DividerSideShadow
@@ -159,6 +165,21 @@ fun DualPaneScreen(
 
     // ---------------- 侧边栏（MT：≡ 打开抽屉）
     val drawerState = rememberDrawerState(DrawerValue.Closed)
+
+    // 全面屏（v2.0.14）：本页顶栏在两种主题下都是深色（MT 规格）、且底色已向上铺满状态栏区域 ——
+    // 状态栏图标随「此刻状态栏正下方」的面板底色走：
+    //  - 常态 = 深色顶栏 → 浅色图标；
+    //  - 抽屉打开 = 浅色面板（M3 默认 surfaceContainerLow，浅色主题下近白）→ 切深色图标，
+    //    否则白图标贴白面板不可见；深色主题下两态都深，恒浅色。
+    // 离开本页恢复「跟随主题」的全局规则（MainActivity 的设定）。
+    val appDark = LocalPanelDarkTheme.current
+    val drawerOpen = drawerState.targetValue == DrawerValue.Open
+    DisposableEffect(appDark, drawerOpen) {
+        val window = (context as? android.app.Activity)?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
+        controller?.isAppearanceLightStatusBars = !appDark && drawerOpen
+        onDispose { controller?.isAppearanceLightStatusBars = !appDark }
+    }
     val volumes = remember { LocalVolumes.volumes(context) }
     var spaces by remember { mutableStateOf<Map<String, SpaceInfo>>(emptyMap()) }
     var connecting by remember { mutableStateOf<Long?>(null) }
@@ -296,7 +317,16 @@ fun DualPaneScreen(
             }
         },
     ) {
-        Column(Modifier.fillMaxSize().safeAreaPadding()) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                // 全面屏（v2.0.14）：**顶部不在这里内缩** —— 状态栏区域交给顶栏自己（顶栏底色向上
+                // 铺满到屏幕顶端，见 BrowserTopBar）；其余三边照旧。否则浅色主题下最顶会留一条
+                // 窗口白底（下面是深色顶栏 → 明显断层）。
+                .windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+                ),
+        ) {
             BrowserTopBar(container, controller, ui, ds, onOpenDrawer = { scope.launch { drawerState.open() } })
 
             // MT：顶栏底部分割线 1px（0903F8）
