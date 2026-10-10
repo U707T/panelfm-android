@@ -1,5 +1,7 @@
 package com.u707t.panelfm.core.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -28,6 +30,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
@@ -96,6 +99,10 @@ fun VDividerPx(color: Color = MtDividerColor, modifier: Modifier = Modifier) {
  *  - 右窗格的**左边缘**：`#67000000 → #00000000`（自右向左淡出，centerX=0.3）
  *
  * MT 只在**活动窗格**一侧亮阴影；配合顶栏高亮表达焦点，不整体调透明度。
+ *
+ * ⚠️ v2.0.12 起双窗格不再使用本函数：它画在**窗格边缘**，与 10dp 分隔条触摸区之间
+ * 留有空隙，实机观感"阴影悬在窗格里、与中心线割裂"（右列还要额外左移 4dp 才不压文件名）。
+ * 中缝改用 [DividerSideShadow]（贴 1px 中线、整块画在触摸区内部）。本函数保留供其它场景参考。
  */
 @Composable
 fun PaneEdgeShadow(
@@ -121,6 +128,51 @@ fun PaneEdgeShadow(
             .fillMaxHeight()
             .background(brush),
     )
+}
+
+/**
+ * 双窗格中缝「贴线」阴影（v2.0.12 起取代 [PaneEdgeShadow] 用于中缝）。
+ *
+ * 阴影锚定在 1px 中线的**活动窗格一侧**，紧贴中线向外（往窗格方向）逐步淡出；
+ * 整块落在 10dp 分隔条触摸区内部 —— 不遮任何文件行内容，且与中心线连为一体
+ * （旧版"阴影悬空、割裂"由此消除；旧版右列的 -4dp 微调补丁也随之删除）。
+ *
+ *  - 左窗格活动：影子在中线**左侧**（中线处最深 → 向左淡出）
+ *  - 右窗格活动：镜像（中线处最深 → 向右淡出）
+ *
+ * 切换焦点时两侧做 120ms 交叉淡化（旧版瞬间跳边，实机"跳一下"）。
+ * 用法：放进 10dp 分隔条 Box 里、压在 [VDividerPx] 下面。
+ */
+@Composable
+fun DividerSideShadow(
+    /** true = 左窗格活动（影子贴中线左侧）；false = 右窗格活动（贴右侧） */
+    leftActive: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val spec = tween<Float>(durationMillis = 120)
+    val leftAlpha by animateFloatAsState(if (leftActive) 1f else 0f, spec, label = "dividerShadowLeft")
+    val rightAlpha by animateFloatAsState(if (leftActive) 0f else 1f, spec, label = "dividerShadowRight")
+    val dark = Color(0x67000000)
+    Box(modifier.fillMaxWidth().fillMaxHeight()) {
+        // 左半区：透明 → 中线处最深
+        Box(
+            Modifier
+                .align(Alignment.CenterStart)
+                .width(MtSpec.DividerShadowWidth)
+                .fillMaxHeight()
+                .alpha(leftAlpha)
+                .background(Brush.horizontalGradient(colors = listOf(Color.Transparent, dark))),
+        )
+        // 右半区：中线处最深 → 透明
+        Box(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .width(MtSpec.DividerShadowWidth)
+                .fillMaxHeight()
+                .alpha(rightAlpha)
+                .background(Brush.horizontalGradient(colors = listOf(dark, Color.Transparent))),
+        )
+    }
 }
 
 /** 顶栏 / 底栏的横向渐变（`0x7f0801da` 顶部横条 `#60000000→透明`，`0x7f0801dd` 底部 `#50000000→透明`） */

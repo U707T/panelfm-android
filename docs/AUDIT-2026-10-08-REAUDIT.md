@@ -1266,4 +1266,60 @@
 
 ---
 
-（后续批次在本文档追加 §11、§12 …）
+## §11 新增功能审计：v2.0.12 工具箱双件套 / 中缝阴影 / 抽屉进度条（2026-10-10）
+
+> 与前 10 批「存量代码审查」不同，本批审的是**本轮新写的代码**（网络工具箱 + 字符串工具箱 + 中缝阴影重做 + 抽屉进度条 + 应用长按菜单）。
+> 方法：改动全量逐行自查 + 编译 / 单测 / lint 全量验证；无真机手测（如实记录，待实机项见 CHANGELOG `v2.0.12`）。
+> 范围：`ui/tools/NetToolboxScreen.kt`（+`NetToolboxKit`）· `ui/tools/TextToolboxScreen.kt`（+`TextToolboxKit`）·
+> `core/ui/MtWidgets.kt`+`MtSpec.kt`（`DividerSideShadow`）· `ui/browser/{DualPaneScreen,SideDrawer}.kt` ·
+> `ui/home/HomeScreen.kt` · `ui/AppRoot.kt` · `ui/tools/ToolsScreens.kt`（Apps 长按菜单）· `core/data/PrefsStore.kt`（Ping 历史键）。
+
+### 🔴 阻断性问题（必须修）
+
+无 —— 审计周期内发现的唯一高危项列在 🟡1（发现即修）。
+
+### 🟡 建议修复（应该修）
+
+#### 1. HTTP 响应体无上限读入内存（✅ 已修复）
+- 位置：`NetToolboxScreen.kt:448`（旧实现 `resp.body.bytes()`）。
+- 问题：一次性读全量响应体；几百 MB 响应或 chunked 无限流会 OOM。
+- 修复：`peekBody(8MB)` 截断读取（不消费原流）+ `contentLength` 判定，截断时状态行标注「已截断(8MB)」（`:362` `MAX_BODY_BYTES`、`:453-461`）；正文 256KB / HEX 16KB 两级显示上限保持。
+
+#### 2. Ping 参数过滤用 `Char.isDigit()`（✅ 已修复）
+- 位置：`NetToolboxScreen.kt:349`（PingNumField）。
+- 问题：`isDigit()` 对全角「４」等非 ASCII 数字为 true → `toIntOrNull()` 静默回退默认值（4/64/4），用户以为已生效。
+- 修复：改 `it in '0'..'9'` ASCII 过滤。
+
+#### 3. 字符串摘要走主线程（记录在案，暂不修）
+- 位置：`TextToolboxScreen.kt` chips 的 `TextToolboxKit.md5/sha1/sha256` 调用。
+- 问题：贴入 MB 级文本时主线程几十 ms 卡顿（不崩溃、不丢状态）。
+- 处置：保持同步（典型输入为短文本）；若未来出现真实抱怨再下沉 `Dispatchers.Default`。
+
+#### 4. `hexDecode` 全局剥离 `0x` 的宽容语义（记录在案，接受）
+- 位置：`TextToolboxScreen.kt` `TextToolboxKit.hexDecode`。
+- 说明：为容忍 `0x41 0x42` 类粘贴格式而全局剥离 `0x`；畸形输入（如 `D0x0`）会被解释成 `D0`。属宽容解码取舍，KDoc 已注明；失败态（奇长度 / 非法字符）仍返回 null 不静默。
+
+### 🔵 可选优化（可以修）
+
+- `TextToolboxScreen` 的 `container` 参数当前未使用（预留「结果存文件」）；与 `LanScanScreen` 同例，保留不改。
+- 两个工具箱页的 `LocalClipboardManager` 为 deprecation 警告（与 `PreviewWeb.kt:237` / `RemoteScreen` 相同）——等全仓统一迁移 `LocalClipboard` 时一并处理，不做单点修改。
+- `DividerSideShadow` 深色主题下黑色渐变可见度弱（与 MT 原阴影同源问题）；如实机觉得不足再调（一行改色）。
+
+### 🟢 做得好的地方
+
+- 新增纯逻辑全部带单测：`TextToolboxKit` 8 例（含 MD5 / SHA-1 / SHA-256 已知向量）、`NetToolboxKit` +1 例（hexDump 格式与截断），全仓 **502 → 517 例**。
+- 无线程风险：Ping 进程与 HTTP `Call` 均随页面销毁清理（`DisposableEffect`）；IO 全在 `Dispatchers.IO`，Compose 状态只在 Main 写回；`CancellationException` 不吞。
+- 复用既有基建而非新造：Ping 历史并入 `HistoryTextField` / `addInputHistory`（`PrefsStore.kt:163` 新增键，纯增量、DataStore 无迁移）；抽屉进度条复用 `MtListRow.extraBelow`（不占常驻行高）。
+- 阴影重做可回退、有据可依：保持 MT「单侧焦」语义（一行可切换对称双影）；旧 `PaneEdgeShadow` 保留 + KDoc 注明停用原因。
+
+### 回归与验证（2026-10-10）
+
+- `test`：全仓 **517 例全绿**（502 基线 + 本轮 15 例）。
+- `assembleDebug` / `lintDebug` / `compileDebugKotlin`：全部通过；新文件无新增警告（除既有的 clipboard deprecation）。
+- 结构核对：SideDrawer 内容可滚动（新增 2 行入口无溢出）；`AppRoot` 新回调链路与旧屏无交叉；`DividerSideShadow` 只挂在 10dp 分隔条 Box 内（触控事件不受影响，子节点无 pointerInput）。
+
+> 备注：本批为本轮工作区基线（未提交、未打 tag）；两处修复随本轮改动落地。待实机抽验项见 CHANGELOG `v2.0.12` 段。
+
+---
+
+（后续批次在本文档追加 §12、§13 …）

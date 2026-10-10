@@ -39,7 +39,9 @@ import com.u707t.panelfm.ui.settings.SettingsScreen
 import com.u707t.panelfm.ui.tasks.TasksScreen
 import com.u707t.panelfm.ui.tools.TextDiffScreen
 import com.u707t.panelfm.ui.tools.AppsScreen
+import com.u707t.panelfm.ui.tools.NetToolboxScreen
 import com.u707t.panelfm.ui.tools.RemoteScreen
+import com.u707t.panelfm.ui.tools.TextToolboxScreen
 import com.u707t.panelfm.ui.tools.TrashScreen
 
 /** 简单屏幕栈（不引入 navigation-compose：单人项目减少依赖，行为完全可控）。 */
@@ -52,6 +54,10 @@ sealed interface Screen {
     data object Settings : Screen
     data object Bookmarks : Screen
     data object LanScan : Screen
+    /** 网络工具箱（Ping / HTTP，v2.0.12，借鉴 NP管理器「网络工具」） */
+    data object NetToolbox : Screen
+    /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12，借鉴 NP管理器「工具箱」） */
+    data object TextToolbox : Screen
     data object Trash : Screen
     data object Apps : Screen
     data object Remote : Screen
@@ -242,6 +248,8 @@ fun AppRoot(container: AppContainer) {
                 onOpenSettings = { push(Screen.Settings) },
                 onOpenBookmarks = { push(Screen.Bookmarks) },
                 onOpenLanScan = { push(Screen.LanScan) },
+                onOpenNetToolbox = { push(Screen.NetToolbox) },
+                onOpenTextToolbox = { push(Screen.TextToolbox) },
                 onOpenTrash = { push(Screen.Trash) },
                 onOpenApps = { push(Screen.Apps) },
                 onOpenRemote = { push(Screen.Remote) },
@@ -270,6 +278,8 @@ fun AppRoot(container: AppContainer) {
                 onOpenSettings = { push(Screen.Settings) },
                 onOpenBookmarks = { push(Screen.Bookmarks) },
                 onScanLan = { push(Screen.LanScan) },
+                onOpenNetToolbox = { push(Screen.NetToolbox) },
+                onOpenTextToolbox = { push(Screen.TextToolbox) },
                 onAddConnection = { push(Screen.ConnectionEdit(null)) },
                 onEditConnection = { id -> push(Screen.ConnectionEdit(id)) },
                 onOpenTrash = { push(Screen.Trash) },
@@ -288,6 +298,8 @@ fun AppRoot(container: AppContainer) {
             Screen.Trash -> TrashScreen(container = container, onBack = pop)
             Screen.Apps -> AppsScreen(container = container, onBack = pop)
             Screen.Remote -> RemoteScreen(container = container, onBack = pop)
+            Screen.NetToolbox -> NetToolboxScreen(container = container, onBack = pop)
+            Screen.TextToolbox -> TextToolboxScreen(container = container, onBack = pop)
             Screen.LanScan -> LanScanScreen(
                 container = container,
                 onBack = pop,

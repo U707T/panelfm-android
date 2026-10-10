@@ -1,7 +1,11 @@
 package com.u707t.panelfm.ui.tools
 
+import android.content.Intent
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
+import android.net.Uri
+import android.provider.Settings
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -31,6 +35,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.safeAreaPadding
@@ -160,6 +165,8 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
     var status by remember { mutableStateOf<String?>(null) }
     /** U7b：同一时间只导出一个，防连点并发写同一目录 */
     var exporting by remember { mutableStateOf(false) }
+    /** v2.0.12（借鉴 NP `menu_app_more`）：长按应用行弹出的操作菜单（启动 / 应用详情 / 卸载） */
+    var menuApp by remember { mutableStateOf<ApplicationInfo?>(null) }
     // F16：打开即聚焦搜索框
     val searchFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
@@ -234,9 +241,52 @@ fun AppsScreen(container: AppContainer, onBack: () -> Unit) {
                             }
                         }
                     },
+                    onLongClick = { menuApp = info },
                     trailing = { Text("导出", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary) },
                 )
             }
+        }
+        // v2.0.12（借鉴 NP 的 `menu_app_more`）：长按应用行 → 启动 / 应用详情 / 卸载
+        menuApp?.let { info ->
+            val label = runCatching { pm.getApplicationLabel(info).toString() }.getOrDefault(info.packageName)
+            AlertDialog(
+                onDismissRequest = { menuApp = null },
+                title = { Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                text = {
+                    Column {
+                        listOf(
+                            "启动" to {
+                                val launch = pm.getLaunchIntentForPackage(info.packageName)
+                                if (launch != null) context.startActivity(launch)
+                                else status = "该应用没有启动入口"
+                            },
+                            "应用详情" to {
+                                context.startActivity(
+                                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${info.packageName}"))
+                                )
+                            },
+                            "卸载" to {
+                                context.startActivity(Intent(Intent.ACTION_DELETE, Uri.parse("package:${info.packageName}")))
+                            },
+                        ).forEach { (name, action) ->
+                            Text(
+                                name,
+                                style = MaterialTheme.typography.bodyMedium,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        menuApp = null
+                                        runCatching { action() }.onFailure {
+                                            status = "操作失败：${it.message ?: it.javaClass.simpleName}"
+                                        }
+                                    }
+                                    .padding(vertical = 12.dp),
+                            )
+                        }
+                    }
+                },
+                confirmButton = { TextButton(onClick = { menuApp = null }) { Text("关闭") } },
+            )
         }
     }
 }

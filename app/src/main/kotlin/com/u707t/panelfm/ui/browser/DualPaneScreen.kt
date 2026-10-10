@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +72,7 @@ import androidx.core.content.FileProvider
 import androidx.core.graphics.drawable.toBitmap
 import androidx.compose.foundation.layout.Spacer
 import com.u707t.panelfm.core.ui.DividerPx
+import com.u707t.panelfm.core.ui.DividerSideShadow
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtActionButton
@@ -81,9 +81,7 @@ import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
-import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
-import com.u707t.panelfm.core.ui.PaneEdgeShadow
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
@@ -129,6 +127,10 @@ fun DualPaneScreen(
     onOpenSettings: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenLanScan: () -> Unit,
+    /** 网络工具箱（Ping / HTTP，v2.0.12） */
+    onOpenNetToolbox: () -> Unit,
+    /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12） */
+    onOpenTextToolbox: () -> Unit,
     onOpenTrash: () -> Unit,
     onOpenApps: () -> Unit,
     onOpenRemote: () -> Unit,
@@ -277,6 +279,8 @@ fun DualPaneScreen(
                     onOpenBookmarks = { closeDrawer(); onOpenBookmarks() },
                     onOpenTasks = { closeDrawer(); onOpenTasks() },
                     onOpenLanScan = { closeDrawer(); onOpenLanScan() },
+                    onOpenNetToolbox = { closeDrawer(); onOpenNetToolbox() },
+                    onOpenTextToolbox = { closeDrawer(); onOpenTextToolbox() },
                     onAddConnection = { type -> closeDrawer(); onAddConnection(type) },
                     onOpenSettings = { closeDrawer(); onOpenSettings() },
                         showStatus = { controller.showStatus(it) },
@@ -305,9 +309,9 @@ fun DualPaneScreen(
                 val showLeft = !single || ui.focused == PaneSide.LEFT
                 val showRight = !single || ui.focused == PaneSide.RIGHT
                 if (showLeft) {
-                    // 复刻 MT 0x7f0c0033：**阴影只亮在活动窗格一侧**
-                    //  - 左窗格活动 → shadow_left（0903A1）亮，画在左窗格右缘
-                    //  - 右窗格活动 → shadow_right（0903A4）亮，画在右窗格左缘
+                    // 中缝阴影 v2.0.12：不再画在窗格边缘（旧版与 10dp 分隔条触摸区之间有空隙，
+                    // 实机"阴影悬空、与中心线割裂"），改为贴 1px 中线、画在触摸区内部
+                    // → 见下方分隔条里的 DividerSideShadow
                     Box(Modifier.weight(ui.splitRatio)) {
                         PaneView(
                             container = container,
@@ -319,11 +323,6 @@ fun DualPaneScreen(
                             controller = controller,
                             modifier = Modifier.fillMaxSize(),
                             onRowAction = { ds.rowAction = it },
-                        )
-                        PaneEdgeShadow(
-                            active = ui.focused == PaneSide.LEFT,
-                            isLeftPane = true,
-                            modifier = Modifier.align(Alignment.CenterEnd),
                         )
                     }
                 }
@@ -353,6 +352,9 @@ fun DualPaneScreen(
                             .semantics { contentDescription = "左右窗口分隔条（拖动调整比例，双击恢复等分）" },
                         contentAlignment = Alignment.Center,
                     ) {
+                        // 中缝贴线阴影：锚定 1px 中线、在**活动窗格一侧**；
+                        // 整块画在 10dp 触摸区内部（不遮内容），切换焦点时交叉淡化
+                        DividerSideShadow(leftActive = ui.focused == PaneSide.LEFT)
                         VDividerPx()
                     }
                 }
@@ -367,13 +369,6 @@ fun DualPaneScreen(
                             controller = controller,
                             modifier = Modifier.fillMaxSize(),
                             onRowAction = { ds.rowAction = it },
-                        )
-                        PaneEdgeShadow(
-                            active = ui.focused == PaneSide.RIGHT,
-                            isLeftPane = false,
-                            modifier = Modifier
-                                .align(Alignment.CenterStart)
-                                .offset(x = -MtSpec.RightPaneShadowNudge),
                         )
                     }
                 }

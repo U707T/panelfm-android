@@ -158,6 +158,9 @@ class PrefsStore(private val context: Context) {
         const val RENAME_REPLACE = "rename_multi_replace"
         const val EDITOR_FIND = "editor_find"
         const val EDITOR_REPLACE = "editor_replace"
+
+        /** 网络工具箱 Ping 的目标历史（v2.0.12；NP 的 PingActivity 用 Spinner 存历史，这里并入统一输入历史） */
+        const val NET_PING_HOST = "net_ping_host"
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
@@ -294,6 +297,13 @@ class PrefsStore(private val context: Context) {
         if (q.isEmpty()) return@edit
         val old = (prefs[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() }
         prefs[Keys.searchHistory] = (listOf(q) + old.filterNot { it == q }).take(10).joinToString("\n")
+    }
+
+    /** 清空某个 recordKey 的历史（网络工具箱 Ping 的「清空历史」入口用） */
+    suspend fun clearInputHistory(key: String) = context.panelDataStore.edit { prefs ->
+        prefs[Keys.inputHistory] = (prefs[Keys.inputHistory] ?: emptySet())
+            .filterNot { it.startsWith("$key|") }
+            .toSet()
     }
 
     suspend fun saveLastPaths(left: String?, right: String?) = context.panelDataStore.edit { prefs ->

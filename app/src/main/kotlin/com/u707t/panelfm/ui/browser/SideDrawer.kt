@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -15,6 +16,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +45,7 @@ import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.transfer.isActive
+import com.u707t.panelfm.core.transfer.overallProgress
 import com.u707t.panelfm.core.ui.HSeparator
 import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtFolderGlyph
@@ -89,6 +92,10 @@ fun MtSideDrawer(
     onOpenBookmarks: () -> Unit,
     onOpenTasks: () -> Unit,
     onOpenLanScan: () -> Unit,
+    /** 网络工具箱（Ping / HTTP，v2.0.12） */
+    onOpenNetToolbox: () -> Unit,
+    /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12） */
+    onOpenTextToolbox: () -> Unit,
     onAddConnection: (ConnectionType) -> Unit,
     onOpenSettings: () -> Unit,
     showStatus: (String) -> Unit,
@@ -381,12 +388,25 @@ fun MtSideDrawer(
                 DrawerTool("文本编辑器", MtIcon.CODE, onOpenEditor)
                 DrawerTool("远程管理", MtIcon.DNS, onOpenRemote)
                 DrawerTool("书签", MtIcon.BOOKMARK, onOpenBookmarks)
-                DrawerTool("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP, onOpenTasks)
+                // v2.0.12：进行中的任务把总体进度内嵌在条目里（借鉴 NP「抽屉条目进度条」）
+                val activeProgress = tasks.filter { it.state.isActive }
+                    .map { it.overallProgress() }
+                    .takeIf { it.isNotEmpty() }
+                    ?.average()
+                    ?.toFloat()
+                DrawerTool(
+                    "传输任务" + if (active > 0) "（$active 进行中）" else "",
+                    MtIcon.GET_APP,
+                    onOpenTasks,
+                    progress = activeProgress,
+                )
                 DrawerTool("局域网扫描", MtIcon.EXPLORE, onOpenLanScan)
-                DrawerTool("更多工具", if (expandMore) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN) { expandMore = !expandMore }
+                DrawerTool("网络工具箱", MtIcon.WEB, onOpenNetToolbox)
+                DrawerTool("字符串工具箱", MtIcon.TEXT_SIZE, onOpenTextToolbox)
+                DrawerTool("更多工具", if (expandMore) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN, onClick = { expandMore = !expandMore })
                 if (expandMore) {
                     DrawerTool("设置", MtIcon.SETTINGS, onOpenSettings)
-                    DrawerTool("关于 PanelFM", MtIcon.INFO) { showAbout = true }
+                    DrawerTool("关于 PanelFM", MtIcon.INFO, onClick = { showAbout = true })
                 }
 
             }
@@ -453,7 +473,7 @@ fun MtSideDrawer(
 }
 
 @Composable
-private fun DrawerTool(title: String, icon: MtIcon, onClick: () -> Unit) {
+private fun DrawerTool(title: String, icon: MtIcon, onClick: () -> Unit, progress: Float? = null) {
     MtListRow(
         title = title,
         titleSize = 14.sp,
@@ -464,6 +484,19 @@ private fun DrawerTool(title: String, icon: MtIcon, onClick: () -> Unit) {
             }
         },
         onClick = onClick,
+        // 后台任务进度条（v2.0.12）：抽拉抽屉即见；不做常驻、不占行高（仅在有条目时多出 3dp）
+        extraBelow = if (progress != null) {
+            {
+                LinearProgressIndicator(
+                    progress = { progress.coerceIn(0f, 1f) },
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp)
+                        .height(3.dp)
+                        .clip(RoundedCornerShape(2.dp)),
+                )
+            }
+        } else null,
     )
 }
 
