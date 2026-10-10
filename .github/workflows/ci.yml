@@ -172,17 +172,13 @@ jobs:
           case "$VERSION" in
             *-rc*) FLAGS="--prerelease" ;;
           esac
-          # Release 备注 = 通用说明 + **CHANGELOG.md 里本版本的完整段落**（“具体修复了什么”写到 release）
+          # Release 备注 = 只放 **CHANGELOG.md 里本版本的段落**（“新增/修复”要点；不带通用说明两行）
           NOTES_FILE="release_notes.md"
           {
-            echo "自动构建：Android 原生 Kotlin 版 PanelFM（双列文件管理器）。仅文件管理与预览，不含任何逆向功能。"
-            echo ""
-            echo "安装包分 ABI（arm64-v8a / armeabi-v7a / x86_64）；.so 已通过 16KB 页大小兼容检查（Android 15+）。"
             if [ -n "$FLAGS" ]; then
-              echo ""
               echo "> 预发布 RC：版本号含 -rc 后缀"
+              echo ""
             fi
-            echo ""
             # 提取本版本段落：从 `## v$VERSION` 到下一个 `## ` 标题前
             awk -v ver="## v$VERSION" '
               index($0, ver) == 1 { f=1; next }
