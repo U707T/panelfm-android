@@ -78,6 +78,20 @@ class NetToolboxKitTest {
     }
 
     @Test
+    fun presetsHaveSaneDefaults() {
+        // 「默认选中」= 取预设列表第一个（输入框初值，见 NetToolboxScreen）；本测试锁定该约定
+        assertEquals("223.5.5.5", NetToolboxKit.PingPresets.first())
+        assertEquals("https://www.baidu.com", NetToolboxKit.HttpPresets.first())
+        // HTTP 预设都带协议头，normalizeUrl 不得做任何改动（点 chip 后可直接发送）
+        NetToolboxKit.HttpPresets.forEach {
+            assertEquals(it, NetToolboxKit.normalizeUrl(it))
+        }
+        // 预设间不得重复
+        assertEquals(NetToolboxKit.PingPresets.size, NetToolboxKit.PingPresets.toSet().size)
+        assertEquals(NetToolboxKit.HttpPresets.size, NetToolboxKit.HttpPresets.toSet().size)
+    }
+
+    @Test
     fun decodeBodyPlainAndTruncated() {
         assertEquals("你好", NetToolboxKit.decodeBody("你好".toByteArray(Charsets.UTF_8)))
         val big = ByteArray(10) { 'A'.code.toByte() }

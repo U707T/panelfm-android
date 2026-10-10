@@ -250,6 +250,13 @@ fun DualPaneScreen(
     }
     ModalNavigationDrawer(
         drawerState = drawerState,
+        // v2.0.13 修复：库（material3 1.4）的抽屉拖拽手势是**全屏区域**生效的 ——
+        // 列表上任何一次右滑（滑动选中 / 右滑出菜单）都会先把它当成「拉开抽屉」，
+        // 拉出约十几 dp 后被行手势按 24dp 阈值抢断、回弹 —— 实机表现就是
+        // 「每次右滑，屏幕最左缘一条竖影抽动」。
+        // MT 语义下横向滑动全部属于行手势（滑动选中），抽屉只手按 ☰ 打开；
+        // 关闭库手势后：☰ 打开 / 遮罩点击、返回键、条目点击关闭。
+        gesturesEnabled = false,
         drawerContent = {
             ModalDrawerSheet(Modifier.fillMaxWidth(0.84f)) {
                 // 抽屉内容顶部加安全区（状态栏），否则「PanelFM」标题会顶到状态栏下面

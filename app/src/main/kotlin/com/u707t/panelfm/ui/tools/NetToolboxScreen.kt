@@ -5,6 +5,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -68,6 +69,7 @@ import java.util.concurrent.TimeUnit
 //  - v2.0.12 补丁（对齐 NP 的细节）：响应体 TEXT/HEX 双视图（HEX 为标准 dump 格式）、
 //    独立 Size 徽标（绿色，NP_GREEN #5CBB7A）、Ping 目标历史（复用统一输入历史 `HistoryTextField`，
 //    NP 用的是 Spinner，这里并入已有机制）。
+//  - v2.0.13：Ping / HTTP 各加一行「常用」预设（默认选中第一个：223.5.5.5 / 百度），进去就能直接跑。
 //  - 暂缺（NP 有、需要时再按解析文档 §7 补）：抓包文件（request.hcy / .netnp）导入、
 //    Key-Value / Binary 请求体、图片 / WebView 响应预览。
 // ================================================================================================
@@ -77,6 +79,30 @@ object NetToolboxKit {
 
     /** HTTP 方法全集（对齐 NP「网络工具」的 net_method 数组）。 */
     val HttpMethods = listOf("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS")
+
+    /**
+     * Ping 常用目标预设（v2.0.13）：**默认选中第一个**（输入框初值 = `first()`，进页即可点开始）。
+     * 选型：国内三家公共 DNS + 114 + Google + 百度。
+     */
+    val PingPresets = listOf(
+        "223.5.5.5",       // 阿里公共 DNS
+        "223.6.6.6",       // 阿里公共 DNS（备用）
+        "119.29.29.29",    // 腾讯 DNSPod
+        "114.114.114.114", // 114 DNS
+        "8.8.8.8",         // Google DNS
+        "www.baidu.com",
+    )
+
+    /**
+     * HTTP 常用网址预设（v2.0.13）：**默认选中第一个**（百度——最稳的连通性样本）。
+     * 都带协议头，直接可发；`normalizeUrl` 不会改动它们。
+     */
+    val HttpPresets = listOf(
+        "https://www.baidu.com",
+        "https://www.qq.com",
+        "https://cn.bing.com",
+        "https://api.github.com",
+    )
 
     /** 无协议自动补 http://（本地调试最常见是 http；与连接表单的输入习惯一致）。 */
     fun normalizeUrl(raw: String): String {
@@ -225,7 +251,8 @@ private fun PingPane(container: AppContainer) {
     val scope = rememberCoroutineScope()
     val settings by container.settings.collectAsState()
     val pingHistory = settings.inputHistory[PrefsStore.RecordKeys.NET_PING_HOST].orEmpty()
-    var host by remember { mutableStateOf("") }
+    // 默认选中：常用目标第一个（223.5.5.5，阿里 DNS）——进页直接点「开始」即可
+    var host by remember { mutableStateOf(NetToolboxKit.PingPresets.first()) }
     var count by remember { mutableStateOf("4") }
     var size by remember { mutableStateOf("64") }
     var timeout by remember { mutableStateOf("4") }
@@ -299,6 +326,18 @@ private fun PingPane(container: AppContainer) {
                 scope.launch { container.prefs.clearInputHistory(PrefsStore.RecordKeys.NET_PING_HOST) }
             },
         )
+        // 常用目标（v2.0.13）：点 chip 填入；输入框与预设一致时对应 chip 高亮（默认第一个已选中）
+        FlowRow(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            NetToolboxKit.PingPresets.forEach { p ->
+                PresetChip(p, selected = host == p) { host = p }
+            }
+        }
         Row(
             Modifier
                 .fillMaxWidth()
@@ -364,6 +403,25 @@ private const val MAX_BODY_BYTES = 8L * 1024 * 1024
 /** 响应体视图（对齐 NP「网络工具」的 TEXT / HEX / RAW 三选，这里先做 TEXT / HEX）。 */
 private enum class BodyView { TEXT, HEX }
 
+/** 预设 chip（Ping 目标 / HTTP 网址）：选中态高亮；点击填入输入框。 */
+@Composable
+private fun PresetChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+        modifier = Modifier
+            .clip(RoundedCornerShape(MtSpec.CornerSmall))
+            .background(
+                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)
+                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+            )
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+    )
+}
+
 /** 响应体视图小切换钮（TEXT / HEX）。 */
 @Composable
 private fun BodyViewChip(label: String, selected: Boolean, onClick: () -> Unit) {
@@ -386,9 +444,10 @@ private data class HttpOutcome(val status: String, val headers: String, val body
 private fun HttpPane() {
     val scope = rememberCoroutineScope()
     val clipboard = LocalClipboardManager.current
-    var url by remember { mutableStateOf("") }
     var method by remember { mutableStateOf("GET") }
     var methodMenu by remember { mutableStateOf(false) }
+    // 默认选中：常用网址第一个（百度）——进页直接点「发送」即可
+    var url by remember { mutableStateOf(NetToolboxKit.HttpPresets.first()) }
     var headers by remember { mutableStateOf("") }
     var body by remember { mutableStateOf("") }
     var sending by remember { mutableStateOf(false) }
@@ -515,6 +574,18 @@ private fun HttpPane() {
                 singleLine = true,
                 modifier = Modifier.weight(1f),
             )
+        }
+        // 常用网址（v2.0.13）：点 chip 填入；与预设一致时高亮（默认第一个已选中）
+        FlowRow(
+            Modifier
+                .fillMaxWidth()
+                .padding(top = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            NetToolboxKit.HttpPresets.forEach { p ->
+                PresetChip(p, selected = url == p) { url = p }
+            }
         }
         OutlinedTextField(
             value = headers,
