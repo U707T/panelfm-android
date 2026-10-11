@@ -1,16 +1,11 @@
 package com.u707t.panelfm.ui.editor
 
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
 
@@ -41,6 +36,7 @@ internal fun EditorMenu(
     ) {
         val sub = openSubmenu?.let { title -> sections.firstOrNull { it.title == title && it.submenu } }
         if (sub == null) {
+            // 一级：常用项平铺 + 各分组入口（一级不再有分组小标题，标题都在二级菜单里）
             sections.forEach { section ->
                 if (section.submenu) {
                     MtMenuRow(
@@ -49,7 +45,6 @@ internal fun EditorMenu(
                         trailing = MtIcon.CHEVRON_R,
                     ) { openSubmenu = section.title }
                 } else {
-                    if (section.title.isNotEmpty()) SectionLabel(section.title)
                     section.entries.forEach { entry ->
                         MenuEntryRow(entry) {
                             // 关菜单时把二级菜单状态一并归零：下次打开回到一级
@@ -83,21 +78,14 @@ private fun MenuEntryRow(entry: EditorMenuEntry, onClick: () -> Unit) {
     )
 }
 
-/** 分组小标题（MT 菜单里的「视图 / 行操作」同款；只在一级菜单出现）。 */
-@Composable
-private fun SectionLabel(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(start = 12.dp, top = 6.dp),
-    )
-}
-
 /** 二级菜单入口的图标（NP 没有图标位，这里按语义给）。 */
 private fun submenuIcon(title: String): MtIcon = when (title) {
+    "编辑" -> MtIcon.EDIT
+    "跳转" -> MtIcon.LOCATE
+    "视图" -> MtIcon.EYE
     "编码" -> MtIcon.SYNC
     "设置" -> MtIcon.SETTINGS
+    "代码整理" -> MtIcon.CODE
     else -> MtIcon.MENU
 }
 

@@ -84,20 +84,34 @@ private fun entry(
 ) = EditorMenuEntry(action, label, enabled, checked)
 
 /**
- * 编辑器菜单全量（顺序与分组对齐 NP `edit_menu.xml`）：
- * 文件 → 编辑 → 查找 → 跳转 → 视图 → 编码 ▶ → 设置 ▶ → 代码整理 → 退出。
+ * 编辑器菜单全量（v2.0.18 起「**常用项置顶 + 其余全部收起为二级菜单**」）：
+ *
+ * ```
+ * 查找 / 替换 / 保存 / 重新加载      ← 最常用，一级平铺
+ * 编辑 ▶  跳转 ▶  视图 ▶  编码 ▶  设置 ▶  代码整理 ▶
+ * 退出编辑器
+ * ```
+ *
+ * 为什么收起：「编辑」12 项 + 「跳转」5 项 + 「视图」4 项 + … 一级铺开有近 40 行，
+ * 手机上要滚半天才找得到「退出」；频率低的组收进二级菜单（NP 的「编码 / 设置」本来就是这样）。
+ * 撤销 / 重做另外还在顶栏有常驻图标（这里保留在「编辑 ▶」里，按 MT 的口径）。
  */
 internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection> {
     return listOf(
+        // ---- 常用：平铺在最上面（查找 / 替换是编辑文本时用得最多的一组）
         EditorMenuSection(
-            title = "文件",
+            title = "",
             entries = listOf(
+                entry(EditorMenuAction.FIND, "查找"),
+                entry(EditorMenuAction.REPLACE, "查找 / 替换"),
                 entry(EditorMenuAction.SAVE, "保存"),
                 entry(EditorMenuAction.RELOAD, "重新加载"),
             ),
         ),
+        // ---- 以下全部是二级菜单（默认收起）
         EditorMenuSection(
             title = "编辑",
+            submenu = true,
             entries = listOf(
                 entry(EditorMenuAction.UNDO, "撤销"),
                 entry(EditorMenuAction.REDO, "重做"),
@@ -118,14 +132,8 @@ internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection>
             ),
         ),
         EditorMenuSection(
-            title = "查找",
-            entries = listOf(
-                entry(EditorMenuAction.FIND, "查找"),
-                entry(EditorMenuAction.REPLACE, "查找 / 替换"),
-            ),
-        ),
-        EditorMenuSection(
             title = "跳转",
+            submenu = true,
             entries = listOf(
                 entry(EditorMenuAction.GOTO_LINE, "跳转至指定行…"),
                 entry(EditorMenuAction.GOTO_LINE_START, "跳转至行首"),
@@ -136,6 +144,7 @@ internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection>
         ),
         EditorMenuSection(
             title = "视图",
+            submenu = true,
             entries = buildList {
                 add(
                     entry(
@@ -184,6 +193,7 @@ internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection>
         ),
         EditorMenuSection(
             title = "代码整理",
+            submenu = true,
             entries = listOf(
                 entry(EditorMenuAction.FORMAT, "格式化代码", enabled = input.canFormat),
                 entry(EditorMenuAction.COMPRESS, "压缩代码（去空白）"),

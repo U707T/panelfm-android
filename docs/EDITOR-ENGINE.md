@@ -20,7 +20,7 @@
 | `ui/editor/EditorFindController.kt` | 查找 / 替换控制器：查找条状态 + sora `EditorSearcher` 交互（延帧读结果 / lastQuery / suppress） |
 | `ui/editor/EditorChrome.kt` | 顶栏（撤销 / 重做 / 查找 / 保存 / ⋮） |
 | `ui/editor/EditorMenuModel.kt` | **菜单纯模型**：动作枚举 / 分组 / 条目状态（启用、勾选、标签）→ 供 `EditorMenu` 渲染，规则全部可单测 |
-| `ui/editor/EditorMenu.kt` | ⋮ 菜单渲染（NP 分组：文件 → 编辑 → 查找 → 跳转 → 视图 → 编码 ▶ → 设置 ▶ → 代码整理 → 退出；二级菜单在同一个浮层内换页） |
+| `ui/editor/EditorMenu.kt` | ⋮ 菜单渲染：**常用项平铺（查找 / 查找·替换 / 保存 / 重新加载）+ 其余分组收起为二级菜单**（编辑 ▶ / 跳转 ▶ / 视图 ▶ / 编码 ▶ / 设置 ▶ / 代码整理 ▶ / 退出）；二级菜单在同一个浮层内换页 |
 | `ui/editor/EditorCharsets.kt` | 「文件编码」两个对话框的编码表（与 `TextEncodings` 一一对应，测试锁一致） |
 | `ui/editor/EditorDialogs.kt` | 对话框：语法 / 编码 / 配色 / 字号（共用一个一行式选项对话框）+ 转到指定行 / 未保存 / 通用确认 |
 | `ui/editor/EditorSearchBar.kt` | 底部查找条（查找 / 替换两行 + 上个 / 下个 / 替换 / 全部 / ⋮），焦点可落在「查找」或「替换」行 |
@@ -92,8 +92,10 @@
    另有 `HL_MAX_CHARS`（640k 字符）自动退化为纯文本高亮的老规则，用于超长单行之类的病态输入。
 7. **菜单只描述状态，不做事**（v2.0.15）：`editorMenuSections(EditorMenuInput)` 产出
    「分组 + 条目 + 启用 / 勾选 / 标签」，`EditorMenu` 只负责画与点，动作在 `EditorScreen.onMenuAction`
-   里分发。只读（分段浏览）下禁用一切会改正文的项；「复制行」只写剪贴板（保持可用）；
-   「切换注释」按语言置灰；「格式化」「校验语法」只对 JSON / XML 可点。
+   里分发。**v2.0.18 起一级只留常用项**（查找 / 查找·替换 / 保存 / 重新加载）与分组入口
+   （编辑 / 跳转 / 视图 / 编码 / 设置 / 代码整理）—— 旧版一级铺开近 40 行，手机上要滚半天；
+   语言能力相关（切换注释 / 格式化 / 校验语法）与编码读写都在各自的二级菜单里。
+   「查找」把焦点落在查找行、「查找 / 替换」落在替换行。
 8. **保存编码闭环**：写回走 `TextEncodings.encode` —— `UTF-8 (BOM)` / `UTF-16` / `UTF-32` 重建 BOM
    （这些格式只靠 BOM 被识别，丢 BOM 会乱码）；GBK / Big5 / ISO-8859-1 做往返校验，有字符表示不了时
    回退 UTF-8 并在状态栏注明「转存自 …」。读 / 写 / 识别共用同一张编码表，

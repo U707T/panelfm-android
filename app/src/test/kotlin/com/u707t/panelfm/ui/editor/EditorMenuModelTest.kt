@@ -55,18 +55,30 @@ class EditorMenuModelTest {
         entries(input)[action] ?: error("菜单里没有 $action")
 
     @Test
-    fun `分组顺序与 NP 一致`() {
-        val titles = editorMenuSections(input()).map { it.title }
+    fun `分组顺序：常用项平铺在最上，其余全部是二级菜单`() {
+        val sections = editorMenuSections(input())
+        // 一级平铺的只有两组：最上面的常用项与最下面的「退出」
+        val flat = sections.filter { !it.submenu }
+        assertEquals(listOf("", ""), flat.map { it.title })
         assertEquals(
-            listOf("文件", "编辑", "查找", "跳转", "视图", "编码", "设置", "代码整理", ""),
-            titles,
+            listOf("查找", "查找 / 替换", "保存", "重新加载"),
+            flat.first().entries.map { it.label },
+        )
+        assertEquals(listOf("退出编辑器"), flat.last().entries.map { it.label })
+        // 中间全是二级菜单，且顺序按使用频率排
+        assertEquals(
+            listOf("编辑", "跳转", "视图", "编码", "设置", "代码整理"),
+            sections.filter { it.submenu }.map { it.title },
         )
     }
 
     @Test
-    fun `编码与设置是二级菜单，其余平铺`() {
-        val submenus = editorMenuSections(input()).filter { it.submenu }.map { it.title }
-        assertEquals(listOf("编码", "设置"), submenus)
+    fun `一级菜单总行数克制（不超过 15 行）`() {
+        // 手机上 ⋮ 菜单要能一眼看完：常用 4 项 + 6 个分组入口 + 退出 = 11 行
+        val sections = editorMenuSections(input())
+        val rootRows = sections.count { it.submenu } + sections.filter { !it.submenu }.sumOf { it.entries.size }
+        assertEquals(11, rootRows)
+        assertTrue("一级菜单不该超过 15 行（当前 $rootRows）", rootRows <= 15)
     }
 
     @Test
