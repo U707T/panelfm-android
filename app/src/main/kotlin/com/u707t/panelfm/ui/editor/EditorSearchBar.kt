@@ -38,6 +38,9 @@ internal data class EditorSearchOptionsState(
     val wholeWord: Boolean,
 )
 
+/** 打开查找条时把焦点落在哪一行（NP：菜单里「搜索」一项；本项目分「查找」与「查找 / 替换」两项）。 */
+internal enum class EditorSearchFocus { FIND, REPLACE }
+
 /** MT 风格底部查找条：输入区在上，操作区固定为「上个 / 下个 / 替换 / 全部 / ⋮」。 */
 @Composable
 internal fun EditorSearchBar(
@@ -58,10 +61,17 @@ internal fun EditorSearchBar(
     onNext: () -> Unit,
     onReplace: () -> Unit,
     onReplaceAll: () -> Unit,
+    focusTarget: EditorSearchFocus = EditorSearchFocus.FIND,
 ) {
     val findFocusRequester = remember { FocusRequester() }
-    LaunchedEffect(Unit) {
-        findFocusRequester.requestFocus()
+    val replaceFocusRequester = remember { FocusRequester() }
+    LaunchedEffect(focusTarget) {
+        runCatching {
+            when (focusTarget) {
+                EditorSearchFocus.FIND -> findFocusRequester.requestFocus()
+                EditorSearchFocus.REPLACE -> replaceFocusRequester.requestFocus()
+            }
+        }
     }
     Column(
         Modifier
@@ -106,6 +116,7 @@ internal fun EditorSearchBar(
                 history = replaceHistory,
                 historyEnabled = true,
                 enabled = true,
+                focusRequester = replaceFocusRequester,
                 modifier = Modifier.weight(1f),
             )
         }

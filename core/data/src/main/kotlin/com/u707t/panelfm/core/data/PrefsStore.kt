@@ -101,6 +101,21 @@ data class AppSettings(
      * 没有条目的扩展名 = 自动识别（按后缀）。
      */
     val editorLangOverrides: Map<String, String> = emptyMap(),
+    /**
+     * 编辑器偏好（v2.0.15 · 对齐 NP管理器 编辑器「设置」子菜单）：
+     *  - [editorWordwrap] `null` = 按语言默认（Markdown / 纯文本 / 未识别默认开）；
+     *  - [editorTheme] `""` = 跟随应用浅深色，`light` / `dark` = 固定主题配色（NP 的「颜色风格」）；
+     *  - 其余是开关项：显示空白符号 / 等宽字体 / 符号输入栏 / 缩进参考线 / 放大镜 / 流畅模式。
+     */
+    val editorWordwrap: Boolean? = null,
+    val editorFontSize: Int = 14,
+    val editorShowWhitespace: Boolean = false,
+    val editorMonospace: Boolean = true,
+    val editorSymbolBar: Boolean = false,
+    val editorIndentGuide: Boolean = true,
+    val editorMagnifier: Boolean = true,
+    val editorFluentMode: Boolean = false,
+    val editorTheme: String = "",
 )
 
 private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
@@ -144,6 +159,17 @@ class PrefsStore(private val context: Context) {
         val tapRangeSelect = booleanPreferencesKey("tap_range_select")
         // 编辑器「语法」手动选择（ext|scope 行；scope 空串 = 纯文本）
         val editorLangOverrides = androidx.datastore.preferences.core.stringSetPreferencesKey("editor_lang_overrides")
+        // 编辑器偏好（v2.0.15）：自动换行（on/off，缺省 = 按语言默认）· 字号 · 空白符号 · 等宽 · 符号栏 ·
+        // 缩进参考线 · 放大镜 · 流畅模式 · 配色（"" = 跟随应用 / light / dark）
+        val editorWordwrap = stringPreferencesKey("editor_wordwrap")
+        val editorFontSize = intPreferencesKey("editor_font_size")
+        val editorShowWhitespace = booleanPreferencesKey("editor_show_whitespace")
+        val editorMonospace = booleanPreferencesKey("editor_monospace")
+        val editorSymbolBar = booleanPreferencesKey("editor_symbol_bar")
+        val editorIndentGuide = booleanPreferencesKey("editor_indent_guide")
+        val editorMagnifier = booleanPreferencesKey("editor_magnifier")
+        val editorFluentMode = booleanPreferencesKey("editor_fluent_mode")
+        val editorTheme = stringPreferencesKey("editor_theme")
         // MT 对齐（v1.0）：输入框历史（recordKey → 历史值）
         val inputHistory = androidx.datastore.preferences.core.stringSetPreferencesKey("input_history")
         // 「上次打开的文件」：格式 "<mode>|<uri>|<epochMillis>"；用于意外退出/直接退出后自动回到那里
@@ -207,6 +233,16 @@ class PrefsStore(private val context: Context) {
             editorLangOverrides = (p[Keys.editorLangOverrides] ?: emptySet())
                 .mapNotNull { line -> parseLangOverride(line) }
                 .toMap(),
+            // 编辑器偏好：缺省 → 「未设置」，由界面按语言默认（见 EDITOR-ENGINE.md）
+            editorWordwrap = parseEditorWordwrap(p[Keys.editorWordwrap]),
+            editorFontSize = (p[Keys.editorFontSize] ?: 14).coerceIn(10, 28),
+            editorShowWhitespace = p[Keys.editorShowWhitespace] ?: false,
+            editorMonospace = p[Keys.editorMonospace] ?: true,
+            editorSymbolBar = p[Keys.editorSymbolBar] ?: false,
+            editorIndentGuide = p[Keys.editorIndentGuide] ?: true,
+            editorMagnifier = p[Keys.editorMagnifier] ?: true,
+            editorFluentMode = p[Keys.editorFluentMode] ?: false,
+            editorTheme = sanitizeEditorTheme(p[Keys.editorTheme]),
             inputHistory = (p[Keys.inputHistory] ?: emptySet())
                 .mapNotNull { line ->
                     val idx = line.indexOf('|')
@@ -272,6 +308,33 @@ class PrefsStore(private val context: Context) {
         val cleaned = (prefs[Keys.editorLangOverrides] ?: emptySet()).filterNot { it.startsWith("$ext|") }
         prefs[Keys.editorLangOverrides] =
             if (scope == null) cleaned.toSet() else (cleaned + "$ext|$scope").toSet()
+    }
+
+    // ---------------------------------------------------------------- 编辑器偏好（v2.0.15）
+
+    /** 编辑器「自动换行」：`null` = 清除记忆，回到「按语言默认」。 */
+    suspend fun setEditorWordwrap(on: Boolean?) = context.panelDataStore.edit { prefs ->
+        val encoded = encodeEditorWordwrap(on)
+        if (encoded == null) prefs.remove(Keys.editorWordwrap) else prefs[Keys.editorWordwrap] = encoded
+    }
+
+    suspend fun setEditorFontSize(size: Int) = context.panelDataStore.edit { it[Keys.editorFontSize] = size.coerceIn(10, 28) }
+
+    suspend fun setEditorShowWhitespace(on: Boolean) = context.panelDataStore.edit { it[Keys.editorShowWhitespace] = on }
+
+    suspend fun setEditorMonospace(on: Boolean) = context.panelDataStore.edit { it[Keys.editorMonospace] = on }
+
+    suspend fun setEditorSymbolBar(on: Boolean) = context.panelDataStore.edit { it[Keys.editorSymbolBar] = on }
+
+    suspend fun setEditorIndentGuide(on: Boolean) = context.panelDataStore.edit { it[Keys.editorIndentGuide] = on }
+
+    suspend fun setEditorMagnifier(on: Boolean) = context.panelDataStore.edit { it[Keys.editorMagnifier] = on }
+
+    suspend fun setEditorFluentMode(on: Boolean) = context.panelDataStore.edit { it[Keys.editorFluentMode] = on }
+
+    /** 编辑器配色：`""` = 跟随应用浅深色，`light` / `dark` = 固定主题。 */
+    suspend fun setEditorTheme(theme: String) = context.panelDataStore.edit {
+        it[Keys.editorTheme] = sanitizeEditorTheme(theme)
     }
 
     /**
@@ -378,3 +441,23 @@ internal fun parseLangOverride(line: String): Pair<String, String>? {
     if (idx < 0) return null
     return line.substring(0, idx) to line.substring(idx + 1)
 }
+
+/**
+ * 编辑器「自动换行」三态（v2.0.15）：
+ * `"on"` / `"off"` 是用户显式设置，缺省（老数据 / 清空记忆）返回 `null` = 按语言默认。
+ */
+internal fun parseEditorWordwrap(raw: String?): Boolean? = when (raw) {
+    "on" -> true
+    "off" -> false
+    else -> null
+}
+
+/** [parseEditorWordwrap] 的逆；`null` = 不带值（调用方负责删除键）。 */
+internal fun encodeEditorWordwrap(on: Boolean?): String? = when (on) {
+    null -> null
+    true -> "on"
+    false -> "off"
+}
+
+/** 编辑器配色白名单：只认 `light` / `dark`，其余（空串 / 未知值 / 脏数据）= 跟随应用。 */
+internal fun sanitizeEditorTheme(raw: String?): String = if (raw == "light" || raw == "dark") raw else ""

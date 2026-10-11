@@ -1,0 +1,191 @@
+package com.u707t.panelfm.ui.editor
+
+/*
+ * 编辑器 ⋮ 菜单的**纯模型**（v2.0.15 · 对齐 NP管理器 `edit_menu.xml` 的分组）。
+ *
+ * 为什么把菜单挪出 UI：菜单项「该不该出现 / 该不该可点」的规则越加越多
+ * （只读分段、语言是否支持注释 / 格式化 / 校验、若干视图开关的勾选态…），
+ * 写在 Composable 里就没法回归测试。这里只产出「分组 + 条目 + 状态」，
+ * 交互（点谁、开关什么）由 `EditorMenu.kt` 负责，点下去干什么由 `EditorScreen` 负责。
+ */
+
+/** 字体大小档位（NP `font_size`；默认 [DEFAULT_FONT_SIZE] = 旧版顶栏 A- / A+ 的初值）。 */
+internal val FONT_SIZES: List<Int> = listOf(10, 12, 14, 16, 18, 20, 24, 28)
+internal const val DEFAULT_FONT_SIZE = 14
+
+/** 菜单动作（= 一次点击的语义；UI 侧映射到具体回调）。 */
+internal enum class EditorMenuAction {
+    SAVE, RELOAD, EXIT,
+    UNDO, REDO,
+    COPY_LINE, CUT_LINE, DELETE_LINE, CLEAR_LINE, DUPLICATE_LINE,
+    TO_UPPER, TO_LOWER, INDENT, UNINDENT, TOGGLE_COMMENT,
+    FIND, REPLACE,
+
+    /** NP `menu_edit_goto_line` / `jump2header` / `jump2end` */
+    GOTO_LINE, GOTO_LINE_START, GOTO_LINE_END, GOTO_FILE_START, GOTO_FILE_END,
+
+    /** NP `menu_language` / `menu_colors_style` / `menu_text_wordwrap` / `menu_fluent_mode` */
+    LANGUAGE, THEME, WORDWRAP, FLUENT_MODE,
+
+    /** NP `menu_file_charset` → `load_reset_charset` / `save_reset_charset` */
+    CHARSET_RELOAD, CHARSET_SAVE,
+
+    /** NP「设置」子菜单：`font_size` / `blank_symbol` / `font_monospace` / `symbol_input` / `reference_line` / `magnifier` */
+    FONT_SIZE, WHITESPACE, MONOSPACE, SYMBOL_BAR, INDENT_GUIDE, MAGNIFIER,
+
+    /** 代码整理：格式化 / 压缩（去空白）/ 校验语法（NP `menu_xml_valid_check`） */
+    FORMAT, COMPRESS, VALIDATE,
+}
+
+internal data class EditorMenuEntry(
+    val action: EditorMenuAction,
+    val label: String,
+    val enabled: Boolean = true,
+    /** `null` = 不是勾选项 */
+    val checked: Boolean? = null,
+)
+
+internal data class EditorMenuSection(
+    val title: String,
+    val entries: List<EditorMenuEntry>,
+    /**
+     * true = 二级菜单：一级只显示一行「标题 ▸」，点进去换成子菜单内容
+     * （NP 的「文件编码」「设置」都是子菜单；跳转项在 NP 里是一级平铺，这里同）。
+     */
+    val submenu: Boolean = false,
+)
+
+/** 菜单需要的全部输入（都来自 `EditorScreen` 的状态 / 设置）。 */
+internal data class EditorMenuInput(
+    /** 只读（大文件分段浏览）时禁用一切会改正文的项 */
+    val readOnly: Boolean,
+    val canFormat: Boolean,
+    val canValidate: Boolean,
+    val canToggleComment: Boolean,
+    val wordwrap: Boolean,
+    val fluentMode: Boolean,
+    val showWhitespace: Boolean,
+    val monospace: Boolean,
+    val symbolBar: Boolean,
+    val indentGuide: Boolean,
+    val magnifier: Boolean,
+    val fontSize: Int,
+    val languageLabel: String,
+    val languageManual: Boolean,
+    val themeLabel: String,
+)
+
+private fun entry(
+    action: EditorMenuAction,
+    label: String,
+    enabled: Boolean = true,
+    checked: Boolean? = null,
+) = EditorMenuEntry(action, label, enabled, checked)
+
+/**
+ * 编辑器菜单全量（顺序与分组对齐 NP `edit_menu.xml`）：
+ * 文件 → 编辑 → 查找 → 跳转 → 视图 → 编码 ▶ → 设置 ▶ → 代码整理 → 退出。
+ */
+internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection> {
+    val editable = !input.readOnly
+    return listOf(
+        EditorMenuSection(
+            title = "文件",
+            entries = listOf(
+                entry(EditorMenuAction.SAVE, "保存", enabled = editable),
+                entry(EditorMenuAction.RELOAD, "重新加载"),
+            ),
+        ),
+        EditorMenuSection(
+            title = "编辑",
+            entries = listOf(
+                entry(EditorMenuAction.UNDO, "撤销", enabled = editable),
+                entry(EditorMenuAction.REDO, "重做", enabled = editable),
+                // 复制行只写剪贴板，只读分段下保留可用（与 MT 一致）
+                entry(EditorMenuAction.COPY_LINE, "复制行"),
+                entry(EditorMenuAction.CUT_LINE, "剪切行", enabled = editable),
+                entry(EditorMenuAction.DELETE_LINE, "删除行", enabled = editable),
+                entry(EditorMenuAction.CLEAR_LINE, "清空行", enabled = editable),
+                entry(EditorMenuAction.DUPLICATE_LINE, "重复行", enabled = editable),
+                entry(EditorMenuAction.TO_UPPER, "转为大写", enabled = editable),
+                entry(EditorMenuAction.TO_LOWER, "转为小写", enabled = editable),
+                entry(EditorMenuAction.INDENT, "增加缩进", enabled = editable),
+                entry(EditorMenuAction.UNINDENT, "减小缩进", enabled = editable),
+                entry(
+                    EditorMenuAction.TOGGLE_COMMENT,
+                    "切换注释" + if (input.canToggleComment) "" else "（当前语言不支持）",
+                    enabled = input.canToggleComment && editable,
+                ),
+            ),
+        ),
+        EditorMenuSection(
+            title = "查找",
+            entries = listOf(
+                entry(EditorMenuAction.FIND, "查找"),
+                entry(EditorMenuAction.REPLACE, "查找 / 替换"),
+            ),
+        ),
+        EditorMenuSection(
+            title = "跳转",
+            entries = listOf(
+                entry(EditorMenuAction.GOTO_LINE, "跳转至指定行…"),
+                entry(EditorMenuAction.GOTO_LINE_START, "跳转至行首"),
+                entry(EditorMenuAction.GOTO_LINE_END, "跳转至行尾"),
+                entry(EditorMenuAction.GOTO_FILE_START, "跳转至文件开头"),
+                entry(EditorMenuAction.GOTO_FILE_END, "跳转至文件结尾"),
+            ),
+        ),
+        EditorMenuSection(
+            title = "视图",
+            entries = listOf(
+                entry(
+                    EditorMenuAction.LANGUAGE,
+                    "语法：${input.languageLabel}（${if (input.languageManual) "手动" else "自动"}）",
+                ),
+                entry(EditorMenuAction.THEME, "配色风格：${input.themeLabel}"),
+                entry(EditorMenuAction.WORDWRAP, "自动换行", checked = input.wordwrap),
+                entry(
+                    EditorMenuAction.FLUENT_MODE,
+                    "流畅模式" + if (input.fluentMode) "（已关闭语法高亮）" else "",
+                    checked = input.fluentMode,
+                ),
+            ),
+        ),
+        EditorMenuSection(
+            title = "编码",
+            submenu = true,
+            entries = listOf(
+                entry(EditorMenuAction.CHARSET_RELOAD, "指定编码重新加载…"),
+                entry(EditorMenuAction.CHARSET_SAVE, "指定保存的编码…", enabled = editable),
+            ),
+        ),
+        EditorMenuSection(
+            title = "设置",
+            submenu = true,
+            entries = listOf(
+                entry(EditorMenuAction.FONT_SIZE, "字体大小：${input.fontSize}"),
+                entry(EditorMenuAction.WHITESPACE, "显示空白符号", checked = input.showWhitespace),
+                entry(EditorMenuAction.MONOSPACE, "等宽字体", checked = input.monospace),
+                entry(EditorMenuAction.SYMBOL_BAR, "符号输入栏", checked = input.symbolBar),
+                entry(EditorMenuAction.INDENT_GUIDE, "缩进参考线", checked = input.indentGuide),
+                entry(EditorMenuAction.MAGNIFIER, "放大镜", checked = input.magnifier),
+            ),
+        ),
+        EditorMenuSection(
+            title = "代码整理",
+            entries = listOf(
+                entry(EditorMenuAction.FORMAT, "格式化代码", enabled = input.canFormat && editable),
+                entry(EditorMenuAction.COMPRESS, "压缩代码（去空白）", enabled = editable),
+                entry(
+                    EditorMenuAction.VALIDATE,
+                    "校验语法",
+                    enabled = input.canValidate,
+                ),
+            ),
+        ),
+        EditorMenuSection(
+            title = "",
+            entries = listOf(entry(EditorMenuAction.EXIT, "退出编辑器")),
+        ),
+    )
+}

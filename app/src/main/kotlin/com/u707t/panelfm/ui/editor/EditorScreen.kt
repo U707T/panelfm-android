@@ -28,7 +28,6 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.CodeFormatter
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.LineOps
-import com.u707t.panelfm.core.common.TextEncodings
 import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
@@ -40,6 +39,7 @@ import com.u707t.panelfm.ui.browser.refreshAll
 import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.event.PublishSearchResultEvent
 import io.github.rosemoe.sora.widget.CodeEditor
+import io.github.rosemoe.sora.widget.component.Magnifier
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,16 +47,18 @@ import kotlinx.coroutines.withContext
 /**
  * 文本编辑器（页面壳）。
  *
- * **v1.6.0 起换用 sora-editor 引擎**（LGPL-2.1，见 `third_party/`）：
- *  - 渲染 / 输入 / 大文本滚动由 sora 的虚拟化编辑器负责（自研 BasicTextField 版
- *    在几十万字符时整篇排版，是「点一下卡一下」的根因）；
- *  - 语法高亮 = TextMate 语法（增量着色），语法与主题见 [EditorLanguages]；
+ * **v1.6.0 起换用 sora-editor 引擎**（LGPL-2.1，见 `third_party/`）；
+ * **v2.0.15 起菜单 / 功能对齐 NP管理器编辑器**（`edit_menu.xml`、`layout_edit_search.xml`、
+ * `activity_edit.xml`、`fe_layout_*.xml`），见 `docs/EDITOR-ENGINE.md`：
+ *  - 渲染 / 输入 / 大文本滚动由 sora 的虚拟化编辑器负责；
+ *  - 语法高亮 = TextMate 语法（22 种），配色可跟随应用或固定浅 / 深主题；
  *  - 查找 / 替换 = `EditorSearcher`，状态与交互收在 [EditorFindController]；
- *  - 大文件（> 2 MB）只读分段浏览（每段 512 KB、页与页严格相接），
- *    分页 / 保存 / 备份见 `EditorFileIo.kt`；
- *  - 顶栏与分页条见 `EditorChrome.kt`，菜单见 `EditorMenu.kt`，对话框见 `EditorDialogs.kt`。
+ *  - 大文件（> 2 MB）只读分段浏览（每段 512 KB、页与页严格相接），分页 / 保存 / 备份 /
+ *    重新加载 / 「指定编码」读写见 `EditorFileIo.kt`；
+ *  - 菜单内容由 [editorMenuSections] 纯模型产出，顶栏见 `EditorChrome.kt`，
+ *    对话框见 `EditorDialogs.kt`，符号输入栏见 `EditorSymbolBar.kt`。
  *
- * 本文件只做页面装配：状态 / 读取装载 / 行操作入口 / 编辑器视图 / 对话框编排。
+ * 本文件只做页面装配：状态 / 读取装载 / 动作分发 / 编辑器视图 / 对话框编排。
  */
 @Composable
 fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
@@ -64,10 +66,22 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val dark = LocalPanelDarkTheme.current
+    val settings = container.settings.collectAsState().value
+
     // 编辑器配色（在组合里取好再传进 AndroidView.update —— update 不是 @Composable，读不了 MaterialTheme）
     val editorBackground = MaterialTheme.colorScheme.background.toArgb()
     val editorGutterText = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val editorCurrentLine = MaterialTheme.colorScheme.surfaceVariant.toArgb()
+
+    // ---- 编辑器偏好（NP「设置」子菜单；落在 PrefsStore，跨文件 / 跨会话保留）
+    val fontSize = settings.editorFontSize
+    val showWhitespace = settings.editorShowWhitespace
+    val monospace = settings.editorMonospace
+    val symbolBar = settings.editorSymbolBar
+    val indentGuide = settings.editorIndentGuide
+    val magnifier = settings.editorMagnifier
+    val fluentMode = settings.editorFluentMode
+    val editorTheme = settings.editorTheme
 
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
     var charset by remember { mutableStateOf("UTF-8") }
@@ -75,7 +89,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf<String?>(null) }
     var readOnly by remember { mutableStateOf(false) }
-    var fontSize by remember { mutableIntStateOf(14) }
     var dirty by remember { mutableStateOf(false) }
     var originalMode by remember { mutableStateOf<Int?>(null) }
     var scopeName by remember { mutableStateOf<String?>(null) }
@@ -87,9 +100,22 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var autoScope by remember { mutableStateOf<String?>(null) }
     var currentExt by remember { mutableStateOf("") }
     var wordwrap by remember { mutableStateOf(false) }
+    var canUndo by remember { mutableStateOf(false) }
+    var canRedo by remember { mutableStateOf(false) }
+
+    // 对话框 / 确认框
     var confirmDiscard by remember { mutableStateOf(false) }
     var gotoLineDialog by remember { mutableStateOf(false) }
     var gotoLineText by remember { mutableStateOf("") }
+    var charsetReloadDialog by remember { mutableStateOf(false) }
+    var charsetSaveDialog by remember { mutableStateOf(false) }
+    var themeDialog by remember { mutableStateOf(false) }
+    var fontSizeDialog by remember { mutableStateOf(false) }
+    var confirmReload by remember { mutableStateOf(false) }
+    var confirmOverwrite by remember { mutableStateOf(false) }
+    var pendingSaveCharset by remember { mutableStateOf<String?>(null) }
+    var pendingSaveDone by remember { mutableStateOf<() -> Unit>({}) }
+    var pendingReloadCharset by remember { mutableStateOf<String?>(null) }
 
     // 大文件只读分段浏览
     var paged by remember { mutableStateOf(false) }
@@ -104,8 +130,14 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var textVersion by remember { mutableIntStateOf(0) }
     val appliedVersion = remember { intArrayOf(-1) }
     val appliedLanguage = remember { arrayOf<Any?>(NoLanguage) }
-    val appliedDark = remember { arrayOfNulls<Boolean>(1) }
+    val appliedSchemeKey = remember { arrayOfNulls<String>(1) }
     val appliedWordwrap = remember { arrayOfNulls<Boolean>(1) }
+    val appliedWhitespace = remember { arrayOfNulls<Boolean>(1) }
+    val appliedMonospace = remember { arrayOfNulls<Boolean>(1) }
+    val appliedIndentGuide = remember { arrayOfNulls<Boolean>(1) }
+    val appliedMagnifier = remember { arrayOfNulls<Boolean>(1) }
+    val appliedFluent = remember { arrayOfNulls<Boolean>(1) }
+    val appliedFontSize = remember { intArrayOf(-1) }
 
     // 查找 / 替换：状态与 sora searcher 的交互全部收在控制器里
     val find = remember {
@@ -115,22 +147,35 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             isReadOnly = { readOnly },
         )
     }
+    var findFocus by remember { mutableStateOf(EditorSearchFocus.FIND) }
 
     val highlightActive = charCount <= HL_MAX_CHARS
     val commentPrefix = commentPrefixOf(scopeName, currentExt)
+    val validateKind = EditorValidate.kindOf(scopeName)
     val formatName = when (scopeName) {
         "source.json" -> "json"
         "text.xml" -> "xml"
         else -> null
     }
     val canFormat = formatName != null && CodeFormatter.supports(formatName)
+    // 流畅模式：关掉语法高亮（大文本下最贵的一环）；字数超上限也自动退化为纯文本
+    val effectiveScope = if (fluentMode || !highlightActive) null else scopeName
 
-    /** 让编辑器整体换一份文本（初次装载 / 翻段）。 */
+    /** 让编辑器整体换一份文本（初次装载 / 翻段 / 重新加载）。 */
     fun pushText(text: String) {
         textVersion += 1
         applyText = textVersion to text
         charCount = text.length
         lineTotal = text.count { it == '\n' } + 1
+        // setText 会清空撤销栈：可用态在这里同步（不能在 AndroidView.update 里写状态）
+        canUndo = false
+        canRedo = false
+    }
+
+    /** 撤销 / 重做按钮的可用态（编辑器事件与各动作后都要同步）。 */
+    fun syncUndoState(ed: CodeEditor?) {
+        canUndo = ed?.canUndo() == true
+        canRedo = ed?.canRedo() == true
     }
 
     /** 「语法」选择：null = 自动识别；空串 = 纯文本；其余 = scope。按扩展名记忆。 */
@@ -145,7 +190,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             scopeName = target.ifEmpty { null }
             scope.launch { container.prefs.setEditorLangOverride(currentExt, target) }
         }
-        wordwrap = defaultWordwrap(scopeName)
+        // 用户没显式设过「自动换行」时，换语言就跟着语言默认走（Markdown / 纯文本默认开）
+        if (settings.editorWordwrap == null) wordwrap = defaultWordwrap(scopeName)
     }
 
     /** 离开编辑器：未保存时弹「保存 / 放弃 / 取消」，避免手势返回静默丢修改 */
@@ -178,21 +224,96 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         val lastLine = ed.lineCount - 1
         ed.text.replace(0, 0, lastLine, ed.text.getColumnCount(lastLine), out)
         ed.setSelection(cursorLine.coerceIn(0, (ed.lineCount - 1).coerceAtLeast(0)), 0, true)
+        syncUndoState(ed)
         status = label
     }
 
-    /** 保存：正常保存与「保存并返回」共用同一条路径（成功都刷新目录）。 */
-    fun saveAnd(onSaved: () -> Unit = {}) {
-        val ed = editorHolder[0] ?: return
+    /** 光标移到某行行首 / 行尾（NP `jump2header` / `jump2end`）；行号越界自动夹取。 */
+    fun moveCaret(ed: CodeEditor, line: Int, toLineEnd: Boolean) {
+        val target = line.coerceIn(0, (ed.lineCount - 1).coerceAtLeast(0))
+        val column = if (toLineEnd) ed.text.getColumnCount(target) else 0
+        ed.setSelection(target, column, true)
+    }
+
+    /** 实际写盘（[useCharset] = 显式编码；正常保存传当前 charset）。 */
+    fun performSave(ed: CodeEditor, useCharset: String, onSaved: () -> Unit = {}) {
         scope.launch {
-            saveText(container, uri, ed.text.toString(), charset, originalMode, { msg -> status = msg }) { ok ->
-                if (ok) {
-                    dirty = false
-                    container.browser.refreshAll()
-                    onSaved()
-                }
+            val outcome = saveText(container, uri, ed.text.toString(), useCharset, originalMode)
+            status = saveStatusText(outcome, useCharset)
+            if (outcome.ok) {
+                charset = outcome.charset
+                dirty = false
+                // 刷新元数据：它是「文件是否被外部改动」的判定基准
+                meta = statQuietly(container, uri) ?: meta
+                container.browser.refreshAll()
+                onSaved()
             }
         }
+    }
+
+    /**
+     * 保存入口：先看磁盘上的文件是否被外部改动过（NP `save_inzip_tips` 同款提示），
+     * 改过就弹确认（避免静默覆盖别人的改动），没改过直接写。
+     */
+    fun requestSave(useCharset: String? = null, onSaved: () -> Unit = {}) {
+        val ed = editorHolder[0] ?: return
+        scope.launch {
+            val before = meta
+            val now = statQuietly(container, uri)
+            if (before != null && fileChangedSince(before, now)) {
+                pendingSaveCharset = useCharset
+                pendingSaveDone = onSaved
+                confirmOverwrite = true
+                return@launch
+            }
+            performSave(ed, useCharset ?: charset, onSaved)
+        }
+    }
+
+    /**
+     * 重新加载：整篇重读（[charsetOverride] 非空 = NP「指定编码重新加载」，空 = 自动识别）。
+     * 大文件仍然进只读分段浏览（第 0 段）。
+     */
+    fun reload(charsetOverride: String?) {
+        val override = charsetOverride?.takeIf { it.isNotEmpty() }
+        scope.launch {
+            try {
+                val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
+                val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
+                meta = info
+                originalMode = info.permissions
+                if (info.size > MAX_EDIT_SIZE) {
+                    readOnly = true
+                    paged = true
+                    pageCount = ((info.size + PAGE_SIZE - 1) / PAGE_SIZE).toInt().coerceAtLeast(1)
+                    val slice = loadPage(vfs, uri, 0, info.size, charset = override)
+                    charset = slice.charset
+                    page = 0
+                    pageRange = slice.start to slice.end
+                    pushText(slice.text)
+                } else {
+                    readOnly = false
+                    paged = false
+                    val decoded = readWholeText(vfs, uri, override)
+                    charset = decoded.charset
+                    pushText(decoded.text)
+                }
+                dirty = false
+                status = "已重新加载（$charset）"
+            } catch (e: Exception) {
+                status = "重新加载失败：${e.message ?: "会话不可用"}"
+            }
+        }
+    }
+
+    /** 重新加载入口：有未保存修改时先确认（NP `reload`；修改会被丢弃）。 */
+    fun requestReload(charsetOverride: String?) {
+        if (dirty && !readOnly) {
+            pendingReloadCharset = charsetOverride
+            confirmReload = true
+            return
+        }
+        reload(charsetOverride)
     }
 
     /** 「复制行」：只写剪贴板，不改正文（只读分段下同样可用）。 */
@@ -213,6 +334,138 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         applyWholeTextOp(ed, "剪切行") { t, i -> LineOps.cutLine(t, i).first }
         if (!payload.isNullOrEmpty()) {
             runCatching { clipboard.setText(AnnotatedString(payload)) }
+        }
+    }
+
+    /** 符号输入栏：`⇥` 走编辑器的缩进（与键盘 Tab 一致），其余按文本插入。 */
+    fun insertSymbol(value: String) {
+        val ed = editorHolder[0] ?: return
+        if (value == "\t") ed.indentOrCommitTab() else ed.insertText(value, 1)
+    }
+
+    /** 菜单动作分发（内容见 [editorMenuSections]）。 */
+    fun onMenuAction(action: EditorMenuAction) {
+        val ed = editorHolder[0]
+        when (action) {
+            EditorMenuAction.SAVE -> requestSave()
+            EditorMenuAction.RELOAD -> requestReload(null)
+            EditorMenuAction.EXIT -> attemptLeave()
+            EditorMenuAction.UNDO -> {
+                ed?.undo()
+                syncUndoState(ed)
+            }
+            EditorMenuAction.REDO -> {
+                ed?.redo()
+                syncUndoState(ed)
+            }
+            EditorMenuAction.COPY_LINE -> copyCurrentLine()
+            EditorMenuAction.CUT_LINE -> cutCurrentLine()
+            EditorMenuAction.DELETE_LINE ->
+                ed?.let { applyWholeTextOp(it, "删除行") { t, i -> LineOps.deleteLine(t, i) } }
+            EditorMenuAction.CLEAR_LINE ->
+                ed?.let { applyWholeTextOp(it, "清空行") { t, i -> LineOps.clearLine(t, i) } }
+            EditorMenuAction.DUPLICATE_LINE ->
+                ed?.let { applyWholeTextOp(it, "重复行") { t, i -> LineOps.duplicateLine(t, i) } }
+            EditorMenuAction.TO_UPPER ->
+                ed?.let { applyWholeTextOp(it, "转为大写") { t, _ -> LineOps.toUpperCase(t) } }
+            EditorMenuAction.TO_LOWER ->
+                ed?.let { applyWholeTextOp(it, "转为小写") { t, _ -> LineOps.toLowerCase(t) } }
+            EditorMenuAction.INDENT ->
+                ed?.let { applyWholeTextOp(it, "增加缩进") { t, _ -> LineOps.indent(t) } }
+            EditorMenuAction.UNINDENT ->
+                ed?.let { applyWholeTextOp(it, "减小缩进") { t, _ -> LineOps.unindent(t) } }
+            EditorMenuAction.TOGGLE_COMMENT -> {
+                val prefix = commentPrefix
+                when {
+                    prefix == null -> status = "当前语言不支持切换注释"
+                    ed != null -> applyWholeTextOp(ed, "切换注释") { t, _ -> LineOps.toggleComment(t, prefix) }
+                }
+            }
+            EditorMenuAction.FIND -> {
+                find.showFind = true
+                findFocus = EditorSearchFocus.FIND
+            }
+            EditorMenuAction.REPLACE -> {
+                find.showFind = true
+                findFocus = EditorSearchFocus.REPLACE
+            }
+            EditorMenuAction.GOTO_LINE -> {
+                gotoLineText = ((ed?.cursor?.leftLine ?: 0) + 1).toString()
+                gotoLineDialog = true
+            }
+            EditorMenuAction.GOTO_LINE_START -> ed?.let {
+                moveCaret(it, it.cursor.leftLine, toLineEnd = false)
+                status = "已跳到行首"
+            }
+            EditorMenuAction.GOTO_LINE_END -> ed?.let {
+                moveCaret(it, it.cursor.leftLine, toLineEnd = true)
+                status = "已跳到行尾"
+            }
+            EditorMenuAction.GOTO_FILE_START -> ed?.let {
+                moveCaret(it, 0, toLineEnd = false)
+                status = "已跳到文件开头"
+            }
+            EditorMenuAction.GOTO_FILE_END -> ed?.let {
+                moveCaret(it, it.lineCount - 1, toLineEnd = true)
+                status = "已跳到文件结尾"
+            }
+            EditorMenuAction.LANGUAGE -> languageDialog = true
+            EditorMenuAction.THEME -> themeDialog = true
+            EditorMenuAction.WORDWRAP -> {
+                wordwrap = !wordwrap
+                scope.launch { container.prefs.setEditorWordwrap(wordwrap) }
+                status = "自动换行：${if (wordwrap) "开" else "关"}"
+            }
+            EditorMenuAction.FLUENT_MODE -> {
+                val next = !fluentMode
+                scope.launch { container.prefs.setEditorFluentMode(next) }
+                status = if (next) "已开启流畅模式（关闭语法高亮，大文本更流畅）" else "已关闭流畅模式"
+            }
+            EditorMenuAction.CHARSET_RELOAD -> charsetReloadDialog = true
+            EditorMenuAction.CHARSET_SAVE -> charsetSaveDialog = true
+            EditorMenuAction.FONT_SIZE -> fontSizeDialog = true
+            EditorMenuAction.WHITESPACE -> scope.launch {
+                container.prefs.setEditorShowWhitespace(!showWhitespace)
+                status = "显示空白符号：${if (!showWhitespace) "开" else "关"}"
+            }
+            EditorMenuAction.MONOSPACE -> scope.launch {
+                container.prefs.setEditorMonospace(!monospace)
+                status = "等宽字体：${if (!monospace) "开" else "关"}"
+            }
+            EditorMenuAction.SYMBOL_BAR -> scope.launch {
+                container.prefs.setEditorSymbolBar(!symbolBar)
+                status = "符号输入栏：${if (!symbolBar) "开" else "关"}"
+            }
+            EditorMenuAction.INDENT_GUIDE -> scope.launch {
+                container.prefs.setEditorIndentGuide(!indentGuide)
+                status = "缩进参考线：${if (!indentGuide) "开" else "关"}"
+            }
+            EditorMenuAction.MAGNIFIER -> scope.launch {
+                container.prefs.setEditorMagnifier(!magnifier)
+                status = "放大镜：${if (!magnifier) "开" else "关"}"
+            }
+            EditorMenuAction.FORMAT -> if (ed != null && formatName != null) {
+                val formatted = CodeFormatter.format(ed.text.toString(), formatName)
+                if (formatted == null) {
+                    status = "格式化失败：内容不是有效的 ${formatName.uppercase()}"
+                } else {
+                    applyWholeTextOp(ed, "已格式化代码") { _, _ -> formatted }
+                }
+            }
+            EditorMenuAction.COMPRESS -> ed?.let {
+                applyWholeTextOp(it, "压缩代码（去行尾空白 / 首尾空行）") { t, _ -> LineOps.trimTrailingWhitespace(t) }
+            }
+            EditorMenuAction.VALIDATE -> {
+                val kind = validateKind
+                val text = ed?.text?.toString()
+                if (kind == null) {
+                    status = "当前语言不支持校验（仅 JSON / XML）"
+                } else if (text != null) {
+                    val problem = EditorValidate.validate(text, kind)
+                    status = problem?.let { "校验失败（${EditorValidate.labelOf(kind)}）：$it" }
+                        ?: "校验通过：${EditorValidate.labelOf(kind)} 语法正确"
+                }
+            }
         }
     }
 
@@ -241,7 +494,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             val override = container.settings.value.editorLangOverrides[currentExt]
             manualLanguage = override != null
             scopeName = override ?: auto
-            wordwrap = defaultWordwrap(override ?: auto)
+            // 「自动换行」：用户显式设过就以用户为准，否则按语言默认
+            wordwrap = settings.editorWordwrap ?: defaultWordwrap(override ?: auto)
             if (info.size > MAX_EDIT_SIZE) {
                 readOnly = true
                 paged = true
@@ -252,8 +506,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 pageRange = slice.start to slice.end
                 pushText(slice.text)
             } else {
-                val bytes = readAtMost(vfs, uri, MAX_EDIT_SIZE)
-                val decoded = TextEncodings.decode(bytes)
+                val decoded = readWholeText(vfs, uri, null)
                 charset = decoded.charset
                 pushText(decoded.text)
             }
@@ -286,60 +539,48 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         }
     }
 
-    val editorSettings = container.settings.collectAsState().value
+    val editorSettings = settings
     val findHistory = editorSettings.inputHistory[PrefsStore.RecordKeys.EDITOR_FIND].orEmpty()
     val replaceHistory = editorSettings.inputHistory[PrefsStore.RecordKeys.EDITOR_REPLACE].orEmpty()
+
+    val menuInput = EditorMenuInput(
+        readOnly = readOnly,
+        canFormat = canFormat,
+        canValidate = validateKind != null,
+        canToggleComment = commentPrefix != null,
+        wordwrap = wordwrap,
+        fluentMode = fluentMode,
+        showWhitespace = showWhitespace,
+        monospace = monospace,
+        symbolBar = symbolBar,
+        indentGuide = indentGuide,
+        magnifier = magnifier,
+        fontSize = fontSize,
+        languageLabel = EditorLanguages.labelOf(scopeName) ?: "纯文本",
+        languageManual = manualLanguage,
+        themeLabel = EditorLanguages.themeLabel(editorTheme),
+    )
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         EditorTopBar(
             title = (meta?.name ?: uri.name) + if (dirty) " *" else "",
             onBack = { attemptLeave() },
+            canUndo = canUndo && !readOnly,
+            canRedo = canRedo && !readOnly,
             canSave = !readOnly && dirty,
-            onSave = { saveAnd() },
-            onFontSizeDelta = { delta -> fontSize = (fontSize + delta).coerceIn(10, 28) },
-            onToggleFind = { if (find.showFind) find.close(editorHolder[0]) else find.showFind = true },
-            languageLabel = EditorLanguages.labelOf(scopeName) ?: "纯文本",
-            languageManual = manualLanguage,
-            canToggleComment = commentPrefix != null,
-            canFormat = canFormat,
-            wordwrap = wordwrap,
-            readOnly = readOnly,
-            onLanguage = { languageDialog = true },
-            onToggleWordwrap = { wordwrap = !wordwrap },
-            onUndo = { editorHolder[0]?.undo() },
-            onRedo = { editorHolder[0]?.redo() },
-            onCopyLine = { copyCurrentLine() },
-            onCutLine = { cutCurrentLine() },
-            onLineOp = { label, op -> editorHolder[0]?.let { applyWholeTextOp(it, label, op) } },
-            onToggleComment = {
-                val ed = editorHolder[0]
-                val prefix = commentPrefix
-                if (prefix == null) {
-                    status = "当前语言不支持切换注释"
-                } else if (ed != null) {
-                    applyWholeTextOp(ed, "切换注释") { t, _ -> LineOps.toggleComment(t, prefix) }
+            menuInput = menuInput,
+            onUndo = { editorHolder[0]?.let { it.undo(); syncUndoState(it) } },
+            onRedo = { editorHolder[0]?.let { it.redo(); syncUndoState(it) } },
+            onSave = { requestSave() },
+            onToggleFind = {
+                if (find.showFind) {
+                    find.close(editorHolder[0])
+                } else {
+                    findFocus = EditorSearchFocus.FIND
+                    find.showFind = true
                 }
             },
-            onCompress = {
-                editorHolder[0]?.let {
-                    applyWholeTextOp(it, "压缩代码（去行尾空白 / 首尾空行）") { t, _ -> LineOps.trimTrailingWhitespace(t) }
-                }
-            },
-            onFormat = {
-                val ed = editorHolder[0]
-                if (ed != null && formatName != null) {
-                    val formatted = CodeFormatter.format(ed.text.toString(), formatName)
-                    if (formatted == null) {
-                        status = "格式化失败：内容不是有效的 ${formatName.uppercase()}"
-                    } else {
-                        applyWholeTextOp(ed, "已格式化代码") { _, _ -> formatted }
-                    }
-                }
-            },
-            onGotoLine = {
-                gotoLineText = ((editorHolder[0]?.cursor?.leftLine ?: 0) + 1).toString()
-                gotoLineDialog = true
-            },
+            onMenuAction = { onMenuAction(it) },
         )
 
         // ---- 大文件分段浏览控制条
@@ -387,12 +628,13 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                                 setTextSize(fontSize.toFloat())
                                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
                                 isEditable = false
-                                // 编辑即「已修改」；整体换文本（装载/翻段）不算
+                                // 编辑即「已修改」；整体换文本（装载/翻段/重载）不算（撤销栈由 pushText 重置）
                                 subscribeEvent(ContentChangeEvent::class.java) { event, _ ->
                                     if (event.action != ContentChangeEvent.ACTION_SET_NEW_TEXT) {
                                         dirty = true
                                         charCount = text.length
                                         lineTotal = this.lineCount
+                                        syncUndoState(this)
                                     }
                                 }
                                 // 搜索结果就绪（主线程派发；再延后一帧，保证 lastResults 已生效）
@@ -404,32 +646,62 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                         },
                         update = { ed ->
                             if (languagesReady) {
-                                val effective = if (highlightActive) scopeName else null
-                                if (appliedLanguage[0] == NoLanguage || appliedLanguage[0] != effective) {
-                                    appliedLanguage[0] = effective
-                                    EditorLanguages.applyLanguage(ed, effective)
+                                if (appliedLanguage[0] == NoLanguage || appliedLanguage[0] != effectiveScope) {
+                                    appliedLanguage[0] = effectiveScope
+                                    EditorLanguages.applyLanguage(ed, effectiveScope)
                                 }
-                                if (appliedDark[0] != dark) {
-                                    appliedDark[0] = dark
+                                val schemeKey = "$dark|$editorTheme"
+                                if (appliedSchemeKey[0] != schemeKey) {
+                                    appliedSchemeKey[0] = schemeKey
                                     ed.colorScheme = EditorLanguages.createColorScheme(
                                         dark = dark,
                                         background = editorBackground,
                                         gutterText = editorGutterText,
                                         currentLine = editorCurrentLine,
+                                        theme = editorTheme,
                                     )
                                 }
                             }
-                            ed.setTextSize(fontSize.toFloat())
+                            if (appliedFontSize[0] != fontSize) {
+                                appliedFontSize[0] = fontSize
+                                ed.setTextSize(fontSize.toFloat())
+                            }
                             ed.isEditable = !readOnly
                             if (appliedWordwrap[0] != wordwrap) {
                                 appliedWordwrap[0] = wordwrap
                                 ed.setWordwrap(wordwrap)
+                            }
+                            // 显示空白符号（NP `blank_symbol`）：空格 / Tab / 空行都画出来
+                            if (appliedWhitespace[0] != showWhitespace) {
+                                appliedWhitespace[0] = showWhitespace
+                                ed.setNonPrintablePaintingFlags(if (showWhitespace) WHITESPACE_FLAGS else 0)
+                            }
+                            if (appliedMonospace[0] != monospace) {
+                                appliedMonospace[0] = monospace
+                                ed.setTypefaceText(if (monospace) Typeface.MONOSPACE else Typeface.DEFAULT)
+                            }
+                            // 缩进参考线（NP `reference_line`）：当前代码块的竖线 + 块高亮
+                            if (appliedIndentGuide[0] != indentGuide) {
+                                appliedIndentGuide[0] = indentGuide
+                                ed.setHighlightCurrentBlock(indentGuide)
+                                ed.props.drawSideBlockLine = indentGuide
+                            }
+                            if (appliedMagnifier[0] != magnifier) {
+                                appliedMagnifier[0] = magnifier
+                                runCatching { ed.getComponent(Magnifier::class.java).isEnabled = magnifier }
+                            }
+                            // 流畅模式：当前行 / 括号高亮一并关掉
+                            if (appliedFluent[0] != fluentMode) {
+                                appliedFluent[0] = fluentMode
+                                ed.setHighlightCurrentLine(!fluentMode)
+                                ed.setHighlightBracketPair(!fluentMode)
                             }
                             applyText?.let { (version, text) ->
                                 if (appliedVersion[0] != version) {
                                     appliedVersion[0] = version
                                     ed.setText(text)
                                     ed.setSelection(0, 0, true)
+                                    // 撤销 / 重做按钮态由 ContentChangeEvent 回调同步（这里不写 Compose 状态）
                                 }
                             }
                         },
@@ -439,6 +711,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                         buildString {
                             append("$lineTotal 行 · $charCount 字符 · $charset")
                             append(" · " + (EditorLanguages.labelOf(scopeName) ?: "纯文本"))
+                            if (fluentMode) append(" · 流畅模式")
                             if (paged) append(" · 分段 ${page + 1}/$pageCount")
                             meta?.size?.let { append(" · ${Fmt.size(it)}") }
                         },
@@ -469,6 +742,17 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 onNext = { editorHolder[0]?.let { find.jump(it, backward = false) } },
                 onReplace = { editorHolder[0]?.let { find.replaceCurrent(it) } },
                 onReplaceAll = { editorHolder[0]?.let { find.replaceAll(it) } },
+                focusTarget = findFocus,
+            )
+        }
+
+        // ---- 符号输入栏（NP `symbol_input`；底部一条，可横滑）
+        if (symbolBar) {
+            EditorSymbolBar(
+                enabled = !readOnly,
+                textColor = MaterialTheme.colorScheme.onSurface,
+                background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                onSymbol = { insertSymbol(it) },
             )
         }
     }
@@ -480,6 +764,63 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             manual = manualLanguage,
             onPick = { chooseLanguage(it) },
             onDismiss = { languageDialog = false },
+        )
+    }
+
+    if (themeDialog) {
+        EditorOptionDialog(
+            title = "配色风格",
+            subtitle = "「跟随应用」的底色与行号栏对齐应用配色；固定主题使用主题自带配色。",
+            options = EditorLanguages.THEME_OPTIONS,
+            selected = editorTheme,
+            onPick = { value ->
+                themeDialog = false
+                scope.launch { container.prefs.setEditorTheme(value) }
+                status = "配色风格：${EditorLanguages.themeLabel(value)}"
+            },
+            onDismiss = { themeDialog = false },
+        )
+    }
+
+    if (fontSizeDialog) {
+        EditorOptionDialog(
+            title = "字体大小",
+            subtitle = "当前 $fontSize",
+            options = FONT_SIZES.map { it.toString() to if (it == DEFAULT_FONT_SIZE) "$it（默认）" else "$it" },
+            selected = fontSize.toString(),
+            onPick = { value ->
+                fontSizeDialog = false
+                value.toIntOrNull()?.let { size -> scope.launch { container.prefs.setEditorFontSize(size) } }
+            },
+            onDismiss = { fontSizeDialog = false },
+        )
+    }
+
+    if (charsetReloadDialog) {
+        EditorOptionDialog(
+            title = "指定编码重新加载",
+            subtitle = "当前识别为 $charset；选错编码会显示为乱码，可再换一个。",
+            options = EditorCharsets.reloadOptions(),
+            selected = charset,
+            onPick = { value ->
+                charsetReloadDialog = false
+                requestReload(value)
+            },
+            onDismiss = { charsetReloadDialog = false },
+        )
+    }
+
+    if (charsetSaveDialog) {
+        EditorOptionDialog(
+            title = "指定保存的编码",
+            subtitle = "写回时按所选编码编码；无法表示的字符会转存 UTF-8 并在状态栏注明。",
+            options = EditorCharsets.saveOptions(),
+            selected = charset,
+            onPick = { value ->
+                charsetSaveDialog = false
+                requestSave(useCharset = value)
+            },
+            onDismiss = { charsetSaveDialog = false },
         )
     }
 
@@ -497,9 +838,42 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     if (confirmDiscard) {
         EditorDiscardDialog(
             fileName = meta?.name ?: uri.name,
-            onSaveAndLeave = { confirmDiscard = false; saveAnd { onBack() } },
+            onSaveAndLeave = { confirmDiscard = false; requestSave { onBack() } },
             onDiscard = { confirmDiscard = false; onBack() },
             onDismiss = { confirmDiscard = false },
+        )
+    }
+
+    if (confirmReload) {
+        EditorConfirmDialog(
+            title = "重新加载",
+            message = "「${meta?.name ?: uri.name}」有未保存的修改，重新加载会丢弃这些修改。",
+            confirmLabel = "丢弃并重新加载",
+            onConfirm = {
+                confirmReload = false
+                reload(pendingReloadCharset)
+            },
+            onDismiss = { confirmReload = false },
+        )
+    }
+
+    if (confirmOverwrite) {
+        EditorConfirmDialog(
+            title = "文件已被外部修改",
+            message = "「${meta?.name ?: uri.name}」在编辑器打开后被其他程序修改过，继续保存会覆盖那些改动。",
+            confirmLabel = "覆盖保存",
+            onConfirm = {
+                confirmOverwrite = false
+                val ed = editorHolder[0]
+                val done = pendingSaveDone
+                pendingSaveDone = {}
+                if (ed != null) performSave(ed, pendingSaveCharset ?: charset, done)
+            },
+            onDismiss = {
+                confirmOverwrite = false
+                pendingSaveDone = {}
+                status = "已取消保存"
+            },
         )
     }
 }
@@ -510,3 +884,13 @@ private fun lineTextOf(ed: CodeEditor?): String? =
 
 /** 「尚未设置过语言」的哨兵（用来区分「没设置」与「设置成纯文本」）。 */
 private val NoLanguage = Any()
+
+/**
+ * 「显示空白符号」的绘制标志：行首 / 行内 / 行尾空白 + 空行内的空白。
+ * 不打开 `FLAG_DRAW_LINE_SEPARATOR`（换行符）与 `FLAG_DRAW_TAB_SAME_AS_SPACE`：
+ * Tab 保留 sora 默认的箭头式画法（与 MT / NP 观感一致）。
+ */
+private const val WHITESPACE_FLAGS = CodeEditor.FLAG_DRAW_WHITESPACE_LEADING or
+    CodeEditor.FLAG_DRAW_WHITESPACE_INNER or
+    CodeEditor.FLAG_DRAW_WHITESPACE_TRAILING or
+    CodeEditor.FLAG_DRAW_WHITESPACE_FOR_EMPTY_LINE

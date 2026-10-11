@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -22,7 +21,11 @@ import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 
 /**
- * 编辑器顶栏：返回 / 标题 / A- A+ / 查找 / 保存 / ⋮ 菜单。
+ * 编辑器顶栏：返回 / 标题 / 撤销 / 重做 / 查找 / 保存 / ⋮ 菜单。
+ *
+ * v2.0.15 起对齐 NP 编辑器顶栏（`edit_menu.xml` 的 always 项：撤销 / 重做）——
+ * 撤销 / 重做从 ⋮ 菜单提到顶栏；字号（A- / A+）收进 ⋮ →「设置」→「字体大小」，
+ * 避免 6 个按钮把标题挤没（NP 同：字号在设置子菜单里）。
  *
  * 菜单展开状态内聚在这里；动作回调均为「纯动作」——关菜单由 [EditorMenu] 负责。
  */
@@ -30,30 +33,48 @@ import com.u707t.panelfm.core.ui.MtScreenTopBar
 internal fun EditorTopBar(
     title: String,
     onBack: () -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
     canSave: Boolean,
-    onSave: () -> Unit,
-    onFontSizeDelta: (Int) -> Unit,
-    onToggleFind: () -> Unit,
-    languageLabel: String,
-    languageManual: Boolean,
-    canToggleComment: Boolean,
-    canFormat: Boolean,
-    wordwrap: Boolean,
-    readOnly: Boolean,
-    onLanguage: () -> Unit,
-    onToggleWordwrap: () -> Unit,
+    menuInput: EditorMenuInput,
     onUndo: () -> Unit,
     onRedo: () -> Unit,
-    onCopyLine: () -> Unit,
-    onCutLine: () -> Unit,
-    onLineOp: (String, (String, Int) -> String) -> Unit,
-    onToggleComment: () -> Unit,
-    onCompress: () -> Unit,
-    onFormat: () -> Unit,
-    onGotoLine: () -> Unit,
+    onSave: () -> Unit,
+    onToggleFind: () -> Unit,
+    onMenuAction: (EditorMenuAction) -> Unit,
 ) {
     var showMenu by remember { mutableStateOf(false) }
     MtScreenTopBar(title = title, onBack = onBack) {
+        MtIconButton(
+            icon = MtIcon.UNDO,
+            contentDescription = "撤销",
+            buttonSize = 40.dp,
+            enabled = canUndo,
+            tint = if (canUndo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            onClick = onUndo,
+        )
+        MtIconButton(
+            icon = MtIcon.REDO,
+            contentDescription = "重做",
+            buttonSize = 40.dp,
+            enabled = canRedo,
+            tint = if (canRedo) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+            onClick = onRedo,
+        )
+        MtIconButton(
+            icon = MtIcon.SEARCH,
+            contentDescription = "查找 / 替换",
+            buttonSize = 40.dp,
+            onClick = onToggleFind,
+        )
+        MtIconButton(
+            icon = MtIcon.SAVE,
+            contentDescription = "保存",
+            buttonSize = 40.dp,
+            enabled = canSave,
+            tint = if (canSave) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            onClick = onSave,
+        )
         Box {
             MtIconButton(
                 icon = MtIcon.MORE,
@@ -62,36 +83,9 @@ internal fun EditorTopBar(
             )
             EditorMenu(
                 expanded = showMenu,
-                languageLabel = languageLabel,
-                languageManual = languageManual,
-                canToggleComment = canToggleComment,
-                canFormat = canFormat,
-                wordwrap = wordwrap,
-                readOnly = readOnly,
+                input = menuInput,
                 onDismiss = { showMenu = false },
-                onLanguage = onLanguage,
-                onToggleWordwrap = onToggleWordwrap,
-                onUndo = onUndo,
-                onRedo = onRedo,
-                onSave = onSave,
-                onCopyLine = onCopyLine,
-                onCutLine = onCutLine,
-                onLineOp = onLineOp,
-                onToggleComment = onToggleComment,
-                onCompress = onCompress,
-                onFormat = onFormat,
-                onGotoLine = onGotoLine,
-                onToggleFind = onToggleFind,
-            )
-        }
-        TextButton(onClick = { onFontSizeDelta(-1) }) { Text("A-") }
-        TextButton(onClick = { onFontSizeDelta(+1) }) { Text("A+") }
-        TextButton(onClick = onToggleFind) { Text("查找") }
-        TextButton(enabled = canSave, onClick = onSave) {
-            Text(
-                "保存",
-                color = if (canSave) MaterialTheme.colorScheme.primary
-                else MaterialTheme.colorScheme.onSurfaceVariant,
+                onAction = onMenuAction,
             )
         }
     }

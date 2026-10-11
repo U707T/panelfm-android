@@ -128,4 +128,14 @@ class EditorLanguagesTest {
             }
         }
     }
+
+    @Test
+    fun `配色风格：选项与显示名`() {
+        assertEquals(listOf("", "light", "dark"), EditorLanguages.THEME_OPTIONS.map { it.first })
+        assertEquals("跟随应用", EditorLanguages.themeLabel(""))
+        assertEquals("浅色（QuietLight）", EditorLanguages.themeLabel("light"))
+        assertEquals("深色（Darcula）", EditorLanguages.themeLabel("dark"))
+        // 未知值（老数据 / 手改）回落到默认显示名，不炸
+        assertEquals("跟随应用", EditorLanguages.themeLabel("solarized"))
+    }
 }

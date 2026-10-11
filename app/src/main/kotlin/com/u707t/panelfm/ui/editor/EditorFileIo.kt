@@ -2,6 +2,7 @@ package com.u707t.panelfm.ui.editor
 
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.TextEncodings
+import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.Dispatchers
@@ -174,9 +175,23 @@ internal suspend fun readAtMost(
     }
 }
 
+/** 保存结果（v2.0.15：保存路径从「回调里拼文案」改为「返回结构 + 纯函数出文案」，便于单测）。 */
+internal data class SaveOutcome(
+    val ok: Boolean,
+    /** 实际写入的编码（无法表示时可能已回退 UTF-8） */
+    val charset: String = "",
+    val bytes: Int = 0,
+    /** 「保存时自动 .bak 备份」的备份文件名；未开启 / 失败为 null */
+    val backupName: String? = null,
+    val backupFailed: Boolean = false,
+    val error: String? = null,
+)
+
 /**
  * 保存：[text] 按 [charset] 编码写回（BOM 重建 / 无法表示字符回退见 `TextEncodings.encode`），
- * 备份先做且成败都进状态栏；会话断开时自动重连一次（与其余入口一致）。
+ * 备份先做且成败都进返回结果；会话断开时自动重连一次（与其余入口一致）。
+ *
+ * 只回结果、不碰 UI：状态栏文案由 [saveStatusText] 出（纯函数，可单测）。
  */
 internal suspend fun saveText(
     container: AppContainer,
@@ -184,10 +199,8 @@ internal suspend fun saveText(
     text: String,
     charset: String,
     originalMode: Int?,
-    onStatus: (String?) -> Unit,
-    onDone: (Boolean) -> Unit,
-) {
-    try {
+): SaveOutcome {
+    return try {
         val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
         val encoded = TextEncodings.encode(text, charset)
         val bytes = encoded.bytes
@@ -212,19 +225,68 @@ internal suspend fun saveText(
                 runCatching { vfs.setPermissions(uri, originalMode) }
             }
         }
-        val transcoded = if (encoded.charset != charset) "·转存自 $charset" else ""
-        val backupNote = when {
-            !backupEnabled -> ""
-            backupName != null -> "，原文件已备份为 $backupName"
-            else -> "；⚠️ 备份失败（本次未生成备份）"
-        }
-        onStatus("已保存（${encoded.charset}$transcoded，${bytes.size} 字节$backupNote）")
-        onDone(true)
+        SaveOutcome(
+            ok = true,
+            charset = encoded.charset,
+            bytes = bytes.size,
+            backupName = backupName,
+            backupFailed = backupEnabled && backupName == null,
+        )
     } catch (e: Exception) {
-        onStatus("保存失败：${e.message}")
-        onDone(false)
+        SaveOutcome(ok = false, error = e.message ?: "未知错误")
     }
 }
+
+/** 保存结果 → 状态栏文案（纯函数；「转存自 …」「备份失败」都由这里说清楚）。 */
+internal fun saveStatusText(outcome: SaveOutcome, requestedCharset: String): String {
+    if (!outcome.ok) return "保存失败：${outcome.error}"
+    val transcoded = if (outcome.charset != requestedCharset) "·转存自 $requestedCharset" else ""
+    val backupNote = when {
+        outcome.backupName != null -> "，原文件已备份为 ${outcome.backupName}"
+        outcome.backupFailed -> "；⚠️ 备份失败（本次未生成备份）"
+        else -> ""
+    }
+    return "已保存（${outcome.charset}$transcoded，${outcome.bytes} 字节$backupNote）"
+}
+
+/**
+ * 整篇读取（首次装载 / 重新加载的可编辑路径）。
+ *
+ * [charset] == null → 走 `TextEncodings.decode` 的自动识别；
+ * 指定编码（NP 的「指定编码重新加载」）时**不猜**，直接按该编码解（BOM 存在则剥离）。
+ */
+internal suspend fun readWholeText(
+    vfs: VirtualFileSystem,
+    uri: VfsUri,
+    charset: String?,
+    max: Long = MAX_EDIT_SIZE,
+): TextEncodings.Decoded = withContext(Dispatchers.IO) {
+    val bytes = readAtMost(vfs, uri, max)
+    if (charset == null) TextEncodings.decode(bytes)
+    else TextEncodings.Decoded(charset, TextEncodings.decodeWith(charset, bytes))
+}
+
+/**
+ * 保存前判定「文件是否已被外部改动」（纯函数，可单测）。
+ *
+ * 口径（宁少勿误报）：[now] == null（文件被删除 / 不可达）算改动；
+ * 大小两边都已知且不同算改动；修改时间两边都已知（> 0）且不同算改动——
+ * 远端 VFS 常常给不出 mtime（-1），那种情况只看大小。
+ */
+internal fun fileChangedSince(before: FileMetadata, now: FileMetadata?): Boolean {
+    if (now == null) return true
+    if (before.size >= 0 && now.size >= 0 && before.size != now.size) return true
+    if (before.lastModified > 0 && now.lastModified > 0 && before.lastModified != now.lastModified) return true
+    return false
+}
+
+/** 保存前重新取一次元数据；取不到（已删除 / 断连）返回 null。 */
+internal suspend fun statQuietly(container: AppContainer, uri: VfsUri): FileMetadata? = runCatching {
+    withContext(Dispatchers.IO) {
+        val vfs = container.resolveSession(uri) ?: return@withContext null
+        vfs.stat(uri)
+    }
+}.getOrNull()
 
 /**
  * 「保存前自动 .bak 备份」的实际实现。

@@ -89,6 +89,19 @@ internal object EditorLanguages {
     /** 状态栏显示用的语言名（未登记的后缀返回 null）。 */
     fun labelOf(scope: String?): String? = scope?.let { LABELS[it] }
 
+    // ------------------------------------------------------------------ 配色风格（NP `menu_colors_style`）
+
+    /** 「配色风格」的选项：值 to 显示名（`""` = 跟随应用浅深色，默认）。 */
+    val THEME_OPTIONS: List<Pair<String, String>> = listOf(
+        "" to "跟随应用",
+        "light" to "浅色（QuietLight）",
+        "dark" to "深色（Darcula）",
+    )
+
+    /** 菜单 / 状态栏里的配色名。 */
+    fun themeLabel(theme: String): String =
+        THEME_OPTIONS.firstOrNull { it.first == theme }?.second ?: THEME_OPTIONS.first().second
+
     private val ORDER = listOf(
         "source.kotlin", "source.java", "source.c", "source.cpp", "source.cs", "source.go", "source.rust",
         "source.js", "source.ts",
@@ -131,20 +144,33 @@ internal object EditorLanguages {
     /**
      * 创建配色：以主题为底，把背景 / 行号栏 / 当前行对齐应用配色
      * （sora 的主题背景与应用底色不同，不覆盖会出现「补丁块」）。
+     *
+     * [theme] 是 v2.0.15 新增的「配色风格」覆盖（NP 的 `menu_colors_style`）：
+     *  - `""` = 跟随应用浅深色（[dark]）**且**对齐应用底色；
+     *  - `light` / `dark` = 用户显式指定的主题，此时底板 / 当前行用主题自己的颜色
+     *    （强行套应用底色会在「应用浅色 + 编辑器深色主题」时变成两块拼色）。
      */
     fun createColorScheme(
         dark: Boolean,
         background: Int,
         gutterText: Int,
         currentLine: Int,
+        theme: String = "",
     ): TextMateColorScheme {
         val registry = ThemeRegistry.getInstance()
-        registry.setTheme(if (dark) THEME_DARK else THEME_LIGHT)
+        val name = when (theme) {
+            "light" -> THEME_LIGHT
+            "dark" -> THEME_DARK
+            else -> if (dark) THEME_DARK else THEME_LIGHT
+        }
+        registry.setTheme(name)
         return TextMateColorScheme.create(registry).apply {
-            setColor(EditorColorScheme.WHOLE_BACKGROUND, background)
-            setColor(EditorColorScheme.LINE_NUMBER_BACKGROUND, background)
-            setColor(EditorColorScheme.LINE_NUMBER, gutterText)
-            setColor(EditorColorScheme.CURRENT_LINE, currentLine)
+            if (theme.isEmpty()) {
+                setColor(EditorColorScheme.WHOLE_BACKGROUND, background)
+                setColor(EditorColorScheme.LINE_NUMBER_BACKGROUND, background)
+                setColor(EditorColorScheme.LINE_NUMBER, gutterText)
+                setColor(EditorColorScheme.CURRENT_LINE, currentLine)
+            }
         }
     }
 }

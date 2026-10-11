@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
@@ -30,17 +31,54 @@ internal fun EditorLanguageDialog(
         onDismissRequest = onDismiss,
         title = { Text("语法") },
         text = {
-            Column(Modifier.verticalScroll(rememberScrollState())) {
+            ChoiceList {
                 // 自动识别（按扩展名）—— 当前文件后缀对应的语言
-                LanguageOption(
+                EditorChoiceRow(
                     label = "自动识别" + (EditorLanguages.labelOf(autoScope)?.let { "（$it）" } ?: "（纯文本）"),
                     selected = !manual,
                 ) { onPick(null) }
                 EditorLanguages.selectable.forEach { (scope, label) ->
-                    LanguageOption(
+                    EditorChoiceRow(
                         label = label,
                         selected = manual && selectedScope == scope.ifEmpty { null },
                     ) { onPick(scope) }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+    )
+}
+
+/**
+ * 「指定编码重新加载 / 指定保存的编码 / 配色风格 / 字体大小」共用的一行式选项对话框
+ * （单选观感，可滚动）。[options] = 值 to 显示名。
+ */
+@Composable
+internal fun EditorOptionDialog(
+    title: String,
+    subtitle: String?,
+    options: List<Pair<String, String>>,
+    selected: String,
+    onPick: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            Column {
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = 4.dp),
+                    )
+                }
+                ChoiceList {
+                    options.forEach { (value, label) ->
+                        EditorChoiceRow(label = label, selected = value == selected) { onPick(value) }
+                    }
                 }
             }
         },
@@ -112,9 +150,40 @@ internal fun EditorDiscardDialog(
     )
 }
 
-/** 「语法」对话框里的一行（单选观感）。 */
+/**
+ * 通用两按钮确认框（重新加载会丢修改 / 覆盖外部已修改的文件…）。
+ * 文案由调用方给全，这里不猜。
+ */
 @Composable
-private fun LanguageOption(label: String, selected: Boolean, onClick: () -> Unit) {
+internal fun EditorConfirmDialog(
+    title: String,
+    message: String,
+    confirmLabel: String,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = { Text(message) },
+        confirmButton = { TextButton(onClick = onConfirm) { Text(confirmLabel) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
+}
+
+/** 可滚动的选择列表（语言 / 编码 / 字号共用；行数多时不把对话框撑破）。 */
+@Composable
+private fun ChoiceList(content: @Composable () -> Unit) {
+    Column(
+        Modifier
+            .heightIn(max = 420.dp)
+            .verticalScroll(rememberScrollState()),
+    ) { content() }
+}
+
+/** 对话框里的一行（单选观感）。 */
+@Composable
+private fun EditorChoiceRow(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
