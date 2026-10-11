@@ -1,10 +1,6 @@
 package com.u707t.panelfm.ui.editor
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -13,14 +9,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
-import com.u707t.panelfm.core.ui.MtSpec
-import com.u707t.panelfm.core.ui.MtVectorIcon
 
 /**
  * 编辑器 ⋮ 菜单（v2.0.15 重构：内容由 [editorMenuSections] 纯模型产出，顺序 / 分组对齐
@@ -137,6 +129,7 @@ private fun actionIcon(action: EditorMenuAction): MtIcon = when (action) {
     EditorMenuAction.THEME -> MtIcon.COLORIZE
     EditorMenuAction.WORDWRAP -> MtIcon.WRAP
     EditorMenuAction.FLUENT_MODE -> MtIcon.BRIGHTNESS
+    EditorMenuAction.FLUENT_AUTO -> MtIcon.SYNC
     EditorMenuAction.CHARSET_RELOAD -> MtIcon.SYNC
     EditorMenuAction.CHARSET_SAVE -> MtIcon.SAVE_ALT
     EditorMenuAction.FONT_SIZE -> MtIcon.TEXT_SIZE
@@ -147,23 +140,4 @@ private fun actionIcon(action: EditorMenuAction): MtIcon = when (action) {
     EditorMenuAction.FORMAT -> MtIcon.CODE
     EditorMenuAction.COMPRESS -> MtIcon.ARCHIVE
     EditorMenuAction.VALIDATE -> MtIcon.VERIFIED
-}
-
-/** 分页控制条上的小按钮。 */
-@Composable
-internal fun PageButton(icon: MtIcon, enabled: Boolean, onClick: () -> Unit) {
-    Box(
-        Modifier
-            .size(34.dp)
-            .clip(RoundedCornerShape(MtSpec.CornerSmall))
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        MtVectorIcon(
-            icon = icon,
-            size = 20.dp,
-            tint = if (enabled) MaterialTheme.colorScheme.onSurface
-            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
-        )
-    }
 }

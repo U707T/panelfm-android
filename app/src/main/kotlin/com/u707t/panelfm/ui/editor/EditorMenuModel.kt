@@ -4,7 +4,7 @@ package com.u707t.panelfm.ui.editor
  * 编辑器 ⋮ 菜单的**纯模型**（v2.0.15 · 对齐 NP管理器 `edit_menu.xml` 的分组）。
  *
  * 为什么把菜单挪出 UI：菜单项「该不该出现 / 该不该可点」的规则越加越多
- * （只读分段、语言是否支持注释 / 格式化 / 校验、若干视图开关的勾选态…），
+ * （语言是否支持注释 / 格式化 / 校验、若干视图开关的勾选态、流畅模式的自动档…），
  * 写在 Composable 里就没法回归测试。这里只产出「分组 + 条目 + 状态」，
  * 交互（点谁、开关什么）由 `EditorMenu.kt` 负责，点下去干什么由 `EditorScreen` 负责。
  */
@@ -25,7 +25,7 @@ internal enum class EditorMenuAction {
     GOTO_LINE, GOTO_LINE_START, GOTO_LINE_END, GOTO_FILE_START, GOTO_FILE_END,
 
     /** NP `menu_language` / `menu_colors_style` / `menu_text_wordwrap` / `menu_fluent_mode` */
-    LANGUAGE, THEME, WORDWRAP, FLUENT_MODE,
+    LANGUAGE, THEME, WORDWRAP, FLUENT_MODE, FLUENT_AUTO,
 
     /** NP `menu_file_charset` → `load_reset_charset` / `save_reset_charset` */
     CHARSET_RELOAD, CHARSET_SAVE,
@@ -57,13 +57,14 @@ internal data class EditorMenuSection(
 
 /** 菜单需要的全部输入（都来自 `EditorScreen` 的状态 / 设置）。 */
 internal data class EditorMenuInput(
-    /** 只读（大文件分段浏览）时禁用一切会改正文的项 */
-    val readOnly: Boolean,
     val canFormat: Boolean,
     val canValidate: Boolean,
     val canToggleComment: Boolean,
     val wordwrap: Boolean,
+    /** 当前**生效**的流畅模式（含「按文件大小自动」的结论） */
     val fluentMode: Boolean,
+    /** 流畅模式是否是用户显式选择（false = 处于「自动」档，菜单多给一行「恢复自动」） */
+    val fluentManual: Boolean,
     val showWhitespace: Boolean,
     val monospace: Boolean,
     val symbolBar: Boolean,
@@ -87,34 +88,32 @@ private fun entry(
  * 文件 → 编辑 → 查找 → 跳转 → 视图 → 编码 ▶ → 设置 ▶ → 代码整理 → 退出。
  */
 internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection> {
-    val editable = !input.readOnly
     return listOf(
         EditorMenuSection(
             title = "文件",
             entries = listOf(
-                entry(EditorMenuAction.SAVE, "保存", enabled = editable),
+                entry(EditorMenuAction.SAVE, "保存"),
                 entry(EditorMenuAction.RELOAD, "重新加载"),
             ),
         ),
         EditorMenuSection(
             title = "编辑",
             entries = listOf(
-                entry(EditorMenuAction.UNDO, "撤销", enabled = editable),
-                entry(EditorMenuAction.REDO, "重做", enabled = editable),
-                // 复制行只写剪贴板，只读分段下保留可用（与 MT 一致）
+                entry(EditorMenuAction.UNDO, "撤销"),
+                entry(EditorMenuAction.REDO, "重做"),
                 entry(EditorMenuAction.COPY_LINE, "复制行"),
-                entry(EditorMenuAction.CUT_LINE, "剪切行", enabled = editable),
-                entry(EditorMenuAction.DELETE_LINE, "删除行", enabled = editable),
-                entry(EditorMenuAction.CLEAR_LINE, "清空行", enabled = editable),
-                entry(EditorMenuAction.DUPLICATE_LINE, "重复行", enabled = editable),
-                entry(EditorMenuAction.TO_UPPER, "转为大写", enabled = editable),
-                entry(EditorMenuAction.TO_LOWER, "转为小写", enabled = editable),
-                entry(EditorMenuAction.INDENT, "增加缩进", enabled = editable),
-                entry(EditorMenuAction.UNINDENT, "减小缩进", enabled = editable),
+                entry(EditorMenuAction.CUT_LINE, "剪切行"),
+                entry(EditorMenuAction.DELETE_LINE, "删除行"),
+                entry(EditorMenuAction.CLEAR_LINE, "清空行"),
+                entry(EditorMenuAction.DUPLICATE_LINE, "重复行"),
+                entry(EditorMenuAction.TO_UPPER, "转为大写"),
+                entry(EditorMenuAction.TO_LOWER, "转为小写"),
+                entry(EditorMenuAction.INDENT, "增加缩进"),
+                entry(EditorMenuAction.UNINDENT, "减小缩进"),
                 entry(
                     EditorMenuAction.TOGGLE_COMMENT,
                     "切换注释" + if (input.canToggleComment) "" else "（当前语言不支持）",
-                    enabled = input.canToggleComment && editable,
+                    enabled = input.canToggleComment,
                 ),
             ),
         ),
@@ -137,26 +136,38 @@ internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection>
         ),
         EditorMenuSection(
             title = "视图",
-            entries = listOf(
-                entry(
-                    EditorMenuAction.LANGUAGE,
-                    "语法：${input.languageLabel}（${if (input.languageManual) "手动" else "自动"}）",
-                ),
-                entry(EditorMenuAction.THEME, "配色风格：${input.themeLabel}"),
-                entry(EditorMenuAction.WORDWRAP, "自动换行", checked = input.wordwrap),
-                entry(
-                    EditorMenuAction.FLUENT_MODE,
-                    "流畅模式" + if (input.fluentMode) "（已关闭语法高亮）" else "",
-                    checked = input.fluentMode,
-                ),
-            ),
+            entries = buildList {
+                add(
+                    entry(
+                        EditorMenuAction.LANGUAGE,
+                        "语法：${input.languageLabel}（${if (input.languageManual) "手动" else "自动"}）",
+                    ),
+                )
+                add(entry(EditorMenuAction.THEME, "配色风格：${input.themeLabel}"))
+                add(entry(EditorMenuAction.WORDWRAP, "自动换行", checked = input.wordwrap))
+                add(
+                    entry(
+                        EditorMenuAction.FLUENT_MODE,
+                        "流畅模式" +
+                            when {
+                                input.fluentMode -> "（已关闭语法高亮）"
+                                else -> ""
+                            },
+                        checked = input.fluentMode,
+                    ),
+                )
+                // 用户显式选过之后，给一条回到「按文件大小自动」的路（默认档就是自动）
+                if (input.fluentManual) {
+                    add(entry(EditorMenuAction.FLUENT_AUTO, "流畅模式：恢复自动（按文件大小）"))
+                }
+            },
         ),
         EditorMenuSection(
             title = "编码",
             submenu = true,
             entries = listOf(
                 entry(EditorMenuAction.CHARSET_RELOAD, "指定编码重新加载…"),
-                entry(EditorMenuAction.CHARSET_SAVE, "指定保存的编码…", enabled = editable),
+                entry(EditorMenuAction.CHARSET_SAVE, "指定保存的编码…"),
             ),
         ),
         EditorMenuSection(
@@ -174,8 +185,8 @@ internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection>
         EditorMenuSection(
             title = "代码整理",
             entries = listOf(
-                entry(EditorMenuAction.FORMAT, "格式化代码", enabled = input.canFormat && editable),
-                entry(EditorMenuAction.COMPRESS, "压缩代码（去空白）", enabled = editable),
+                entry(EditorMenuAction.FORMAT, "格式化代码", enabled = input.canFormat),
+                entry(EditorMenuAction.COMPRESS, "压缩代码（去空白）"),
                 entry(
                     EditorMenuAction.VALIDATE,
                     "校验语法",

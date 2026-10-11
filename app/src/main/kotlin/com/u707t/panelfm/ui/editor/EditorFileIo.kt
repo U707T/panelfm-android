@@ -12,147 +12,46 @@ import java.io.ByteArrayOutputStream
 /*
  * 编辑器文件层的读写基础设施（与 Compose 无关，可单测）。
  *
- * 分页不变式：对任意相邻两页，`displayEnd(pageN) == displayStart(pageN+1)`——
- * 页头、页尾各在「名义边界外的 SLACK 窗口」内对齐同一条行边界，页与页既不重叠也不漏内容；
- * 只有超长行（SLACK 窗口内没有换行）才退回名义边界切断。
- * 回归测试见 `EditorFileIoTest`。
+ * v2.0.16 起**不再有只读分段浏览**：文本文件一律整篇读进编辑器（可编辑，NP / MT 同款），
+ * 大文件靠两层兜底——
+ *  1. 超过 [AUTO_FLUENT_BYTES] 自动开「流畅模式」（关语法高亮 / 当前行 / 括号高亮）；
+ *  2. 超过 [OPEN_CONFIRM_BYTES] 先确认；超过 [OPEN_LIMIT_BYTES] 直接拒绝（保护内存）。
+ * 判定收敛在纯函数 [editorOpenPlan] 里（回归测试 `EditorOpenPlanTest`）。
  */
 
-/** 可直接编辑的文件大小上限（超过进只读分段浏览） */
-internal const val MAX_EDIT_SIZE = 2L * 1024 * 1024
+/** 超过这个大小自动开启流畅模式（MT 的「自动开启流畅模式阀值」同款语义） */
+internal const val AUTO_FLUENT_BYTES = 2L * 1024 * 1024
 
-/** 大文件分段大小与行对齐冗余 */
-internal const val PAGE_SIZE = 512L * 1024
-internal const val PAGE_SLACK = 64L * 1024
+/** 超过这个大小，打开前先确认（大文件可能占内存 / 卡一下） */
+internal const val OPEN_CONFIRM_BYTES = 16L * 1024 * 1024
+
+/** 打开上限：超过直接拒绝（整篇进内存 + sora 的文档模型，再大就有 OOM 风险） */
+internal const val OPEN_LIMIT_BYTES = 64L * 1024 * 1024
 
 /** 语法高亮字符上限（超过则退化为纯文本，保证输入流畅） */
 internal const val HL_MAX_CHARS = 640_000
 
-internal data class PageSlice(val text: String, val charset: String, val start: Long, val end: Long)
+/** 打开大文件时的处理档位。 */
+internal enum class EditorOpenDecision { OPEN, CONFIRM, REFUSE }
 
-/** 一页在缓冲区里的显示窗口：[skip, tail)（相对缓冲区起点）。 */
-internal data class PageWindow(val skip: Int, val tail: Int)
+/** [editorOpenPlan] 的结论：[autoFluent] = 这次打开要不要自动开流畅模式。 */
+internal data class EditorOpenPlan(val decision: EditorOpenDecision, val autoFluent: Boolean)
 
 /**
- * 计算一页的显示窗口。纯函数（可单测）；[pageSize] / [slack] 仅供测试注入。
+ * 按文件大小决定「怎么打开」（纯函数，可单测；阈值见上面三个常量）。
  *
- * 相邻页不变式：`(page+1)*pageSize + next.skip == page*pageSize + window.tail`。
- * 为使其成立，页尾与下一页页头**用同一个窗口**（名义终点起 [slack] 字节内）找同一条行边界。
+ * 为什么不再只读分段：分段浏览对用户来说等于「大文件打不开 / 改不了」，
+ * NP 与 MT 都是直接进编辑器（大文件关高亮 + 手动「流畅模式」），这里对齐它们；
+ * 内存保护只留一条很粗的线（[OPEN_LIMIT_BYTES]），而不是 2 MB 就锁死。
  */
-internal fun pageWindow(
-    buf: ByteArray,
-    off: Int,
-    page: Int,
-    fileSize: Long,
-    charset: String,
-    pageSize: Long = PAGE_SIZE,
-    slack: Long = PAGE_SLACK,
-): PageWindow {
-    val start = page.toLong() * pageSize
-    // 页头：非首页在前一个 slack 窗口内找行边界（与上一页页尾同一判定）
-    var skip = 0
-    if (page > 0) {
-        val headLimit = minOf(slack, off.toLong()).toInt()
-        val nl = lineBoundaryAfter(buf, headLimit, charset, from = 0)
-        if (nl >= 0) skip = nl
-    }
-    // 页尾：非末页在「名义终点起 slack」窗口内找行边界；找不到（超长行）就切在名义终点
-    var tail = off
-    if (start + pageSize < fileSize) {
-        val from = pageSize.toInt().coerceAtMost(off)
-        val nl = if (from < off) lineBoundaryAfter(buf, off, charset, from = from) else -1
-        tail = if (nl >= 0) nl else from
-    }
-    return PageWindow(skip, tail)
+internal fun editorOpenPlan(size: Long): EditorOpenPlan = when {
+    size > OPEN_LIMIT_BYTES -> EditorOpenPlan(EditorOpenDecision.REFUSE, autoFluent = false)
+    size > OPEN_CONFIRM_BYTES -> EditorOpenPlan(EditorOpenDecision.CONFIRM, autoFluent = true)
+    size > AUTO_FLUENT_BYTES -> EditorOpenPlan(EditorOpenDecision.OPEN, autoFluent = true)
+    else -> EditorOpenPlan(EditorOpenDecision.OPEN, autoFluent = false)
 }
 
-/**
- * 在 [from, limit) 内找「换行之后」的下标；找不到返回 -1。
- * UTF-16 按 2 字节码元、UTF-32 按 4 字节码元识别（`0A 00 [00 00]` / `00 [00 00] 0A`）——
- * 单字节扫描会切进字符中间，UTF-32 后续整段解码错位（变 U+FFFD）。
- */
-internal fun lineBoundaryAfter(buf: ByteArray, limit: Int, charset: String, from: Int): Int {
-    val lim = minOf(limit, buf.size)
-    return when (charset) {
-        "UTF-16LE" -> {
-            var i = from
-            while (i + 1 < lim) {
-                if (buf[i] == 0x0A.toByte() && buf[i + 1] == 0.toByte()) return i + 2
-                i += 2
-            }
-            -1
-        }
-        "UTF-16BE" -> {
-            var i = from
-            while (i + 1 < lim) {
-                if (buf[i] == 0.toByte() && buf[i + 1] == 0x0A.toByte()) return i + 2
-                i += 2
-            }
-            -1
-        }
-        "UTF-32LE" -> {
-            var i = from
-            while (i + 3 < lim) {
-                if (buf[i] == 0x0A.toByte() && buf[i + 1] == 0.toByte() &&
-                    buf[i + 2] == 0.toByte() && buf[i + 3] == 0.toByte()
-                ) return i + 4
-                i += 4
-            }
-            -1
-        }
-        "UTF-32BE" -> {
-            var i = from
-            while (i + 3 < lim) {
-                if (buf[i] == 0.toByte() && buf[i + 1] == 0.toByte() &&
-                    buf[i + 2] == 0.toByte() && buf[i + 3] == 0x0A.toByte()
-                ) return i + 4
-                i += 4
-            }
-            -1
-        }
-        else -> {
-            for (i in from until lim) if (buf[i] == 0x0A.toByte()) return i + 1
-            -1
-        }
-    }
-}
-
-/**
- * 读取一页：从 [page]×PAGE_SIZE 起读 PAGE_SIZE + SLACK（冗余用于行对齐）。
- * 首页先侦测编码（编码名与保存写回共用 `TextEncodings` 一张表），再按编码对齐窗口。
- */
-internal suspend fun loadPage(
-    vfs: VirtualFileSystem,
-    uri: VfsUri,
-    page: Int,
-    fileSize: Long,
-    charset: String?,
-): PageSlice = withContext(Dispatchers.IO) {
-    val start = page.toLong() * PAGE_SIZE
-    if (start >= fileSize) return@withContext PageSlice("", charset ?: "UTF-8", start, start)
-    val readEnd = minOf(start + PAGE_SIZE + PAGE_SLACK, fileSize)
-    val reader = vfs.openRead(uri, offset = start)
-    try {
-        val len = (readEnd - start).toInt().coerceAtLeast(0)
-        val buf = ByteArray(len)
-        var off = 0
-        while (off < len) {
-            val n = reader.read(buf, off, len - off)
-            if (n < 0) break
-            off += n
-        }
-        // 首页：先按本节缓冲区侦测编码（后续页 charset 已知）
-        val detected = if (charset == null) TextEncodings.decode(buf.copyOfRange(0, off)) else null
-        val cs = charset ?: detected!!.charset
-        val window = pageWindow(buf, off, page, fileSize, cs)
-        val text = TextEncodings.decodeWith(cs, buf.copyOfRange(window.skip, window.tail))
-        PageSlice(text, cs, start + window.skip, start + window.tail)
-    } finally {
-        runCatching { reader.close() }
-    }
-}
-
-/** 读至多 [max] 字节（≤2 MB 的可编辑路径用）。 */
+/** 读至多 [max] 字节（[OPEN_LIMIT_BYTES] 是安全上限，正常文本文件一次读完）。 */
 internal suspend fun readAtMost(
     vfs: VirtualFileSystem,
     uri: VfsUri,
@@ -250,7 +149,7 @@ internal fun saveStatusText(outcome: SaveOutcome, requestedCharset: String): Str
 }
 
 /**
- * 整篇读取（首次装载 / 重新加载的可编辑路径）。
+ * 整篇读取（首次装载 / 重新加载）。
  *
  * [charset] == null → 走 `TextEncodings.decode` 的自动识别；
  * 指定编码（NP 的「指定编码重新加载」）时**不猜**，直接按该编码解（BOM 存在则剥离）。
@@ -259,7 +158,7 @@ internal suspend fun readWholeText(
     vfs: VirtualFileSystem,
     uri: VfsUri,
     charset: String?,
-    max: Long = MAX_EDIT_SIZE,
+    max: Long = OPEN_LIMIT_BYTES,
 ): TextEncodings.Decoded = withContext(Dispatchers.IO) {
     val bytes = readAtMost(vfs, uri, max)
     if (charset == null) TextEncodings.decode(bytes)

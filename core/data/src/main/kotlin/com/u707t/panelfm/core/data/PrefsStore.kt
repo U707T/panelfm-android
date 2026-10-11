@@ -103,9 +103,10 @@ data class AppSettings(
     val editorLangOverrides: Map<String, String> = emptyMap(),
     /**
      * 编辑器偏好（v2.0.15 · 对齐 NP管理器 编辑器「设置」子菜单）：
-     *  - [editorWordwrap] `null` = 按语言默认（Markdown / 纯文本 / 未识别默认开）；
+     *  - [editorWordwrap] / [editorFluentMode] 三态：`null` = 未设置（换行按语言默认；
+     *    流畅模式按文件大小自动，> 2 MB 自动开）；`true` / `false` = 用户显式选择；
      *  - [editorTheme] `""` = 跟随应用浅深色，`light` / `dark` = 固定主题配色（NP 的「颜色风格」）；
-     *  - 其余是开关项：显示空白符号 / 等宽字体 / 符号输入栏 / 缩进参考线 / 放大镜 / 流畅模式。
+     *  - 其余是开关项：显示空白符号 / 等宽字体 / 符号输入栏 / 缩进参考线 / 放大镜。
      */
     val editorWordwrap: Boolean? = null,
     val editorFontSize: Int = 14,
@@ -114,7 +115,7 @@ data class AppSettings(
     val editorSymbolBar: Boolean = false,
     val editorIndentGuide: Boolean = true,
     val editorMagnifier: Boolean = true,
-    val editorFluentMode: Boolean = false,
+    val editorFluentMode: Boolean? = null,
     val editorTheme: String = "",
 )
 
@@ -168,7 +169,8 @@ class PrefsStore(private val context: Context) {
         val editorSymbolBar = booleanPreferencesKey("editor_symbol_bar")
         val editorIndentGuide = booleanPreferencesKey("editor_indent_guide")
         val editorMagnifier = booleanPreferencesKey("editor_magnifier")
-        val editorFluentMode = booleanPreferencesKey("editor_fluent_mode")
+        // 三态（on/off/缺省 = 自动）：缺省时「流畅模式」按文件大小自动开（> 2 MB）
+        val editorFluentMode = stringPreferencesKey("editor_fluent_mode")
         val editorTheme = stringPreferencesKey("editor_theme")
         // MT 对齐（v1.0）：输入框历史（recordKey → 历史值）
         val inputHistory = androidx.datastore.preferences.core.stringSetPreferencesKey("input_history")
@@ -234,14 +236,17 @@ class PrefsStore(private val context: Context) {
                 .mapNotNull { line -> parseLangOverride(line) }
                 .toMap(),
             // 编辑器偏好：缺省 → 「未设置」，由界面按语言默认（见 EDITOR-ENGINE.md）
-            editorWordwrap = parseEditorWordwrap(p[Keys.editorWordwrap]),
+            editorWordwrap = parseTriState(p[Keys.editorWordwrap]),
             editorFontSize = (p[Keys.editorFontSize] ?: 14).coerceIn(10, 28),
             editorShowWhitespace = p[Keys.editorShowWhitespace] ?: false,
             editorMonospace = p[Keys.editorMonospace] ?: true,
             editorSymbolBar = p[Keys.editorSymbolBar] ?: false,
             editorIndentGuide = p[Keys.editorIndentGuide] ?: true,
             editorMagnifier = p[Keys.editorMagnifier] ?: true,
-            editorFluentMode = p[Keys.editorFluentMode] ?: false,
+            // 「流畅模式」三态：v2.0.15 曾把同一个键写成布尔值——DataStore 的 Key 只按**名字**比较，
+            // 类型换了以后再按 String 读会 ClassCastException（整条设置流全崩）。
+            // 这里用 asMap() 按键名取原生值，Boolean（老数据）与 String（新数据）都读得回来。
+            editorFluentMode = parseTriStateValue(p.asMap()[Keys.editorFluentMode]),
             editorTheme = sanitizeEditorTheme(p[Keys.editorTheme]),
             inputHistory = (p[Keys.inputHistory] ?: emptySet())
                 .mapNotNull { line ->
@@ -314,7 +319,7 @@ class PrefsStore(private val context: Context) {
 
     /** 编辑器「自动换行」：`null` = 清除记忆，回到「按语言默认」。 */
     suspend fun setEditorWordwrap(on: Boolean?) = context.panelDataStore.edit { prefs ->
-        val encoded = encodeEditorWordwrap(on)
+        val encoded = encodeTriState(on)
         if (encoded == null) prefs.remove(Keys.editorWordwrap) else prefs[Keys.editorWordwrap] = encoded
     }
 
@@ -330,7 +335,14 @@ class PrefsStore(private val context: Context) {
 
     suspend fun setEditorMagnifier(on: Boolean) = context.panelDataStore.edit { it[Keys.editorMagnifier] = on }
 
-    suspend fun setEditorFluentMode(on: Boolean) = context.panelDataStore.edit { it[Keys.editorFluentMode] = on }
+    /**
+     * 编辑器「流畅模式」三态：`null` = 恢复「按文件大小自动」（超过阈值自动开），
+     * `true` / `false` = 用户显式选择（此后不再自动切换）。
+     */
+    suspend fun setEditorFluentMode(on: Boolean?) = context.panelDataStore.edit { prefs ->
+        val encoded = encodeTriState(on)
+        if (encoded == null) prefs.remove(Keys.editorFluentMode) else prefs[Keys.editorFluentMode] = encoded
+    }
 
     /** 编辑器配色：`""` = 跟随应用浅深色，`light` / `dark` = 固定主题。 */
     suspend fun setEditorTheme(theme: String) = context.panelDataStore.edit {
@@ -443,20 +455,33 @@ internal fun parseLangOverride(line: String): Pair<String, String>? {
 }
 
 /**
- * 编辑器「自动换行」三态（v2.0.15）：
- * `"on"` / `"off"` 是用户显式设置，缺省（老数据 / 清空记忆）返回 `null` = 按语言默认。
+ * 编辑器偏好的三态编解码（v2.0.15）：
+ * `"on"` / `"off"` 是用户显式设置，缺省（老数据 / 清空记忆）返回 `null` ——
+ * 「自动换行」按语言默认、「流畅模式」按文件大小自动。
  */
-internal fun parseEditorWordwrap(raw: String?): Boolean? = when (raw) {
+internal fun parseTriState(raw: String?): Boolean? = when (raw) {
     "on" -> true
     "off" -> false
     else -> null
 }
 
-/** [parseEditorWordwrap] 的逆；`null` = 不带值（调用方负责删除键）。 */
-internal fun encodeEditorWordwrap(on: Boolean?): String? = when (on) {
+/** [parseTriState] 的逆；`null` = 不带值（调用方负责删除键）。 */
+internal fun encodeTriState(on: Boolean?): String? = when (on) {
     null -> null
     true -> "on"
     false -> "off"
+}
+
+/**
+ * 从「原生值」解析三态（用于踩过类型变更的键）：
+ * v2.0.15 的 `editor_fluent_mode` 是布尔键，v2.0.16 改成三态字符串键，
+ * 而 DataStore 的 `Key` 只按名字比较 —— 直接按新类型读老数据会 `ClassCastException`，
+ * 所以这条路允许 Boolean（老数据）与 String（新数据）两种形态。
+ */
+internal fun parseTriStateValue(raw: Any?): Boolean? = when (raw) {
+    is Boolean -> raw
+    is String -> parseTriState(raw)
+    else -> null
 }
 
 /** 编辑器配色白名单：只认 `light` / `dark`，其余（空串 / 未知值 / 脏数据）= 跟随应用。 */

@@ -50,7 +50,6 @@ internal fun EditorSearchBar(
     onReplaceTextChange: (String) -> Unit,
     findHistory: List<String>,
     replaceHistory: List<String>,
-    readOnly: Boolean,
     options: EditorSearchOptionsState,
     optionsMenuExpanded: Boolean,
     onOptionsMenuExpandedChange: (Boolean) -> Unit,
@@ -132,8 +131,8 @@ internal fun EditorSearchBar(
         ) {
             SearchActionButton("上个", enabled = findText.isNotEmpty(), onClick = onPrevious)
             SearchActionButton("下个", enabled = findText.isNotEmpty(), onClick = onNext)
-            SearchActionButton("替换", enabled = !readOnly && findText.isNotEmpty(), onClick = onReplace)
-            SearchActionButton("全部", enabled = !readOnly && findText.isNotEmpty(), onClick = onReplaceAll)
+            SearchActionButton("替换", enabled = findText.isNotEmpty(), onClick = onReplace)
+            SearchActionButton("全部", enabled = findText.isNotEmpty(), onClick = onReplaceAll)
             SearchOptionsMenu(
                 expanded = optionsMenuExpanded,
                 options = options,

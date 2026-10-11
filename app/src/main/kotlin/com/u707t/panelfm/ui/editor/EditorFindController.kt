@@ -33,8 +33,6 @@ internal class EditorFindController(
     private val onStatus: (String) -> Unit,
     /** 记录输入历史（去重 / 截断由 PrefsStore 负责）。 */
     private val onHistory: (String, String) -> Unit,
-    /** 只读（大文件分段）时不允许替换。 */
-    private val isReadOnly: () -> Boolean,
 ) {
 
     // ---- 查找条 UI 状态（被组合读取）
@@ -104,7 +102,6 @@ internal class EditorFindController(
 
     /** 「替换」。 */
     fun replaceCurrent(ed: CodeEditor) {
-        if (isReadOnly()) return
         if (findText.isEmpty()) {
             onStatus("请输入查找内容")
             return
@@ -123,7 +120,6 @@ internal class EditorFindController(
 
     /** 「全部替换」。 */
     fun replaceAll(ed: CodeEditor) {
-        if (isReadOnly()) return
         if (findText.isEmpty()) {
             onStatus("请输入查找内容")
             return

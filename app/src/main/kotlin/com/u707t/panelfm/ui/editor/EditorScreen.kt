@@ -35,6 +35,7 @@ import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import com.u707t.panelfm.ui.browser.refreshAll
 import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.event.PublishSearchResultEvent
@@ -53,8 +54,9 @@ import kotlinx.coroutines.withContext
  *  - 渲染 / 输入 / 大文本滚动由 sora 的虚拟化编辑器负责；
  *  - 语法高亮 = TextMate 语法（22 种），配色可跟随应用或固定浅 / 深主题；
  *  - 查找 / 替换 = `EditorSearcher`，状态与交互收在 [EditorFindController]；
- *  - 大文件（> 2 MB）只读分段浏览（每段 512 KB、页与页严格相接），分页 / 保存 / 备份 /
- *    重新加载 / 「指定编码」读写见 `EditorFileIo.kt`；
+ *  - **v2.0.16 起没有只读分段浏览**：文本文件一律整篇进编辑器（NP / MT 同款），
+ *    大文件靠「超过 2 MB 自动开流畅模式 / 超过 16 MB 先确认 / 超过 64 MB 拒绝」兜底
+ *    （判定见 `EditorFileIo.editorOpenPlan`）；
  *  - 菜单内容由 [editorMenuSections] 纯模型产出，顶栏见 `EditorChrome.kt`，
  *    对话框见 `EditorDialogs.kt`，符号输入栏见 `EditorSymbolBar.kt`。
  *
@@ -80,7 +82,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     val symbolBar = settings.editorSymbolBar
     val indentGuide = settings.editorIndentGuide
     val magnifier = settings.editorMagnifier
-    val fluentMode = settings.editorFluentMode
     val editorTheme = settings.editorTheme
 
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
@@ -88,7 +89,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var error by remember { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf<String?>(null) }
-    var readOnly by remember { mutableStateOf(false) }
     var dirty by remember { mutableStateOf(false) }
     var originalMode by remember { mutableStateOf<Int?>(null) }
     var scopeName by remember { mutableStateOf<String?>(null) }
@@ -102,6 +102,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var wordwrap by remember { mutableStateOf(false) }
     var canUndo by remember { mutableStateOf(false) }
     var canRedo by remember { mutableStateOf(false) }
+    /** 「流畅模式」自动档的结论（文件大于阈值 → 开）；用户显式设置优先（见 [fluent]）。 */
+    var autoFluent by remember { mutableStateOf(false) }
 
     // 对话框 / 确认框
     var confirmDiscard by remember { mutableStateOf(false) }
@@ -113,16 +115,11 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var fontSizeDialog by remember { mutableStateOf(false) }
     var confirmReload by remember { mutableStateOf(false) }
     var confirmOverwrite by remember { mutableStateOf(false) }
+    var confirmLargeOpen by remember { mutableStateOf(false) }
+    var pendingOpenSize by remember { mutableStateOf(0L) }
     var pendingSaveCharset by remember { mutableStateOf<String?>(null) }
     var pendingSaveDone by remember { mutableStateOf<() -> Unit>({}) }
     var pendingReloadCharset by remember { mutableStateOf<String?>(null) }
-
-    // 大文件只读分段浏览
-    var paged by remember { mutableStateOf(false) }
-    var page by remember { mutableIntStateOf(0) }
-    var pageCount by remember { mutableIntStateOf(0) }
-    var pageRange by remember { mutableStateOf(0L to 0L) }
-    var pageLoading by remember { mutableStateOf(false) }
 
     // 编辑器实例 + 「待灌入文本」。用普通容器（非 Compose state）避免在组合期写状态。
     val editorHolder = remember { arrayOfNulls<CodeEditor>(1) }
@@ -144,7 +141,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         EditorFindController(
             onStatus = { status = it },
             onHistory = { key, value -> scope.launch { container.prefs.addInputHistory(key, value) } },
-            isReadOnly = { readOnly },
         )
     }
     var findFocus by remember { mutableStateOf(EditorSearchFocus.FIND) }
@@ -158,10 +154,15 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         else -> null
     }
     val canFormat = formatName != null && CodeFormatter.supports(formatName)
-    // 流畅模式：关掉语法高亮（大文本下最贵的一环）；字数超上限也自动退化为纯文本
-    val effectiveScope = if (fluentMode || !highlightActive) null else scopeName
 
-    /** 让编辑器整体换一份文本（初次装载 / 翻段 / 重新加载）。 */
+    /**
+     * 是否处于流畅模式：用户显式选过（`settings.editorFluentMode`）就听用户的，
+     * 否则用「按文件大小自动」的结论（[autoFluent]）。流畅模式关掉语法高亮，是大文件最贵的一环。
+     */
+    val fluent = settings.editorFluentMode ?: autoFluent
+    val effectiveScope = if (fluent || !highlightActive) null else scopeName
+
+    /** 让编辑器整体换一份文本（初次装载 / 重新加载）。 */
     fun pushText(text: String) {
         textVersion += 1
         applyText = textVersion to text
@@ -176,6 +177,18 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     fun syncUndoState(ed: CodeEditor?) {
         canUndo = ed?.canUndo() == true
         canRedo = ed?.canRedo() == true
+    }
+
+    /** 自动开流畅模式时的状态栏说明（用户不知道发生了什么会很困惑）。 */
+    fun autoFluentNotice(): String =
+        "文件较大（> ${Fmt.size(AUTO_FLUENT_BYTES)}），已自动开启流畅模式（⋮ → 视图可关）"
+
+    /** 读取整篇并灌入编辑器（首次打开 / 确认后打开 / 重新加载共用）。 */
+    suspend fun openWhole(vfs: VirtualFileSystem, charsetOverride: String?) {
+        val decoded = readWholeText(vfs, uri, charsetOverride)
+        charset = decoded.charset
+        pushText(decoded.text)
+        dirty = false
     }
 
     /** 「语法」选择：null = 自动识别；空串 = 纯文本；其余 = scope。按扩展名记忆。 */
@@ -196,7 +209,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     /** 离开编辑器：未保存时弹「保存 / 放弃 / 取消」，避免手势返回静默丢修改 */
     fun attemptLeave() {
-        if (!dirty || readOnly) {
+        if (!dirty) {
             onBack()
             return
         }
@@ -210,7 +223,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
      * 写回前再还原，避免「做一次行操作，整个文件的换行符被改掉」。
      */
     fun applyWholeTextOp(ed: CodeEditor, label: String, op: (String, Int) -> String) {
-        if (readOnly) return
         val before = ed.text.toString()
         val cursorLine = ed.cursor.leftLine
         val crlf = before.contains("\r\n")
@@ -272,7 +284,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     /**
      * 重新加载：整篇重读（[charsetOverride] 非空 = NP「指定编码重新加载」，空 = 自动识别）。
-     * 大文件仍然进只读分段浏览（第 0 段）。
+     * 文件在此期间涨到打开上限之外时取消（不硬撑出 OOM）。
      */
     fun reload(charsetOverride: String?) {
         val override = charsetOverride?.takeIf { it.isNotEmpty() }
@@ -280,25 +292,14 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             try {
                 val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
                 val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
+                if (editorOpenPlan(info.size).decision == EditorOpenDecision.REFUSE) {
+                    status = "文件已超过 ${Fmt.size(OPEN_LIMIT_BYTES)}，已取消重新加载"
+                    return@launch
+                }
                 meta = info
                 originalMode = info.permissions
-                if (info.size > MAX_EDIT_SIZE) {
-                    readOnly = true
-                    paged = true
-                    pageCount = ((info.size + PAGE_SIZE - 1) / PAGE_SIZE).toInt().coerceAtLeast(1)
-                    val slice = loadPage(vfs, uri, 0, info.size, charset = override)
-                    charset = slice.charset
-                    page = 0
-                    pageRange = slice.start to slice.end
-                    pushText(slice.text)
-                } else {
-                    readOnly = false
-                    paged = false
-                    val decoded = readWholeText(vfs, uri, override)
-                    charset = decoded.charset
-                    pushText(decoded.text)
-                }
-                dirty = false
+                autoFluent = editorOpenPlan(info.size).autoFluent
+                openWhole(vfs, override)
                 status = "已重新加载（$charset）"
             } catch (e: Exception) {
                 status = "重新加载失败：${e.message ?: "会话不可用"}"
@@ -306,9 +307,9 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         }
     }
 
-    /** 重新加载入口：有未保存修改时先确认（NP `reload`；修改会被丢弃）。 */
+    /** 重新加载入口：有未保存修改时先确认（修改会被丢弃）。 */
     fun requestReload(charsetOverride: String?) {
-        if (dirty && !readOnly) {
+        if (dirty) {
             pendingReloadCharset = charsetOverride
             confirmReload = true
             return
@@ -316,7 +317,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         reload(charsetOverride)
     }
 
-    /** 「复制行」：只写剪贴板，不改正文（只读分段下同样可用）。 */
+    /** 「复制行」：只写剪贴板，不改正文。 */
     fun copyCurrentLine() {
         val line = lineTextOf(editorHolder[0])
         if (line == null) {
@@ -417,9 +418,13 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 status = "自动换行：${if (wordwrap) "开" else "关"}"
             }
             EditorMenuAction.FLUENT_MODE -> {
-                val next = !fluentMode
+                val next = !fluent
                 scope.launch { container.prefs.setEditorFluentMode(next) }
                 status = if (next) "已开启流畅模式（关闭语法高亮，大文本更流畅）" else "已关闭流畅模式"
+            }
+            EditorMenuAction.FLUENT_AUTO -> {
+                scope.launch { container.prefs.setEditorFluentMode(null) }
+                status = "流畅模式：按文件大小自动（> ${Fmt.size(AUTO_FLUENT_BYTES)} 自动开启）"
             }
             EditorMenuAction.CHARSET_RELOAD -> charsetReloadDialog = true
             EditorMenuAction.CHARSET_SAVE -> charsetSaveDialog = true
@@ -479,7 +484,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         languagesReady = true
     }
 
-    // ---- 读取文件（编码识别 / 大文件分段）
+    // ---- 打开文件：一律整篇进编辑器（> 16 MB 先确认、> 64 MB 拒绝；> 2 MB 自动开流畅模式）
     LaunchedEffect(uri) {
         try {
             val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
@@ -496,60 +501,40 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             scopeName = override ?: auto
             // 「自动换行」：用户显式设过就以用户为准，否则按语言默认
             wordwrap = settings.editorWordwrap ?: defaultWordwrap(override ?: auto)
-            if (info.size > MAX_EDIT_SIZE) {
-                readOnly = true
-                paged = true
-                pageCount = ((info.size + PAGE_SIZE - 1) / PAGE_SIZE).toInt().coerceAtLeast(1)
-                val slice = loadPage(vfs, uri, 0, info.size, charset = null)
-                charset = slice.charset
-                page = 0
-                pageRange = slice.start to slice.end
-                pushText(slice.text)
-            } else {
-                val decoded = readWholeText(vfs, uri, null)
-                charset = decoded.charset
-                pushText(decoded.text)
+            val plan = editorOpenPlan(info.size)
+            when (plan.decision) {
+                EditorOpenDecision.REFUSE -> {
+                    error = "文件过大（${Fmt.size(info.size)}），编辑器最多打开 ${Fmt.size(OPEN_LIMIT_BYTES)} 的文本文件"
+                    loading = false
+                }
+                EditorOpenDecision.CONFIRM -> {
+                    // 保持 loading：用户确认后再读，取消就退出本页
+                    pendingOpenSize = info.size
+                    confirmLargeOpen = true
+                }
+                EditorOpenDecision.OPEN -> {
+                    autoFluent = plan.autoFluent
+                    if (plan.autoFluent) status = autoFluentNotice()
+                    openWhole(vfs, null)
+                    loading = false
+                }
             }
-            dirty = false
         } catch (e: Exception) {
             error = e.message ?: "读取失败"
-        } finally {
             loading = false
         }
     }
 
-    /** 翻到指定段（0 起）；会话断开时自动重连一次。 */
-    fun goPage(target: Int) {
-        if (pageLoading) return
-        val info = meta ?: return
-        val t = target.coerceIn(0, (pageCount - 1).coerceAtLeast(0))
-        scope.launch {
-            pageLoading = true
-            try {
-                val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
-                val slice = loadPage(vfs, uri, t, info.size, charset)
-                page = t
-                pageRange = slice.start to slice.end
-                pushText(slice.text)
-            } catch (e: Exception) {
-                status = "读取分段失败：${e.message ?: "会话不可用"}"
-            } finally {
-                pageLoading = false
-            }
-        }
-    }
-
-    val editorSettings = settings
-    val findHistory = editorSettings.inputHistory[PrefsStore.RecordKeys.EDITOR_FIND].orEmpty()
-    val replaceHistory = editorSettings.inputHistory[PrefsStore.RecordKeys.EDITOR_REPLACE].orEmpty()
+    val findHistory = settings.inputHistory[PrefsStore.RecordKeys.EDITOR_FIND].orEmpty()
+    val replaceHistory = settings.inputHistory[PrefsStore.RecordKeys.EDITOR_REPLACE].orEmpty()
 
     val menuInput = EditorMenuInput(
-        readOnly = readOnly,
         canFormat = canFormat,
         canValidate = validateKind != null,
         canToggleComment = commentPrefix != null,
         wordwrap = wordwrap,
-        fluentMode = fluentMode,
+        fluentMode = fluent,
+        fluentManual = settings.editorFluentMode != null,
         showWhitespace = showWhitespace,
         monospace = monospace,
         symbolBar = symbolBar,
@@ -565,9 +550,9 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         EditorTopBar(
             title = (meta?.name ?: uri.name) + if (dirty) " *" else "",
             onBack = { attemptLeave() },
-            canUndo = canUndo && !readOnly,
-            canRedo = canRedo && !readOnly,
-            canSave = !readOnly && dirty,
+            canUndo = canUndo,
+            canRedo = canRedo,
+            canSave = dirty,
             menuInput = menuInput,
             onUndo = { editorHolder[0]?.let { it.undo(); syncUndoState(it) } },
             onRedo = { editorHolder[0]?.let { it.redo(); syncUndoState(it) } },
@@ -583,18 +568,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             onMenuAction = { onMenuAction(it) },
         )
 
-        // ---- 大文件分段浏览控制条
-        if (paged) {
-            EditorPageBar(
-                page = page,
-                pageCount = pageCount,
-                rangeStart = pageRange.first,
-                rangeEnd = pageRange.second,
-                loading = pageLoading,
-                onGo = { goPage(it) },
-            )
-        }
-
         status?.let {
             Text(
                 it,
@@ -609,15 +582,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             error != null -> ErrorState("打开失败：$error", modifier = Modifier.weight(1f).fillMaxWidth())
             else -> {
                 Column(Modifier.weight(1f).fillMaxWidth()) {
-                    if (readOnly) {
-                        Text(
-                            if (paged) "只读：文件大于 ${Fmt.size(MAX_EDIT_SIZE)}，已进入分段浏览（每段 ${Fmt.size(PAGE_SIZE)}）"
-                            else "只读：文件大于 ${Fmt.size(MAX_EDIT_SIZE)}（可另存或复制到本地后编辑）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 2.dp),
-                        )
-                    }
                     AndroidView(
                         factory = { ctx ->
                             CodeEditor(ctx).apply {
@@ -627,8 +591,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                                 setTabWidth(4)
                                 setTextSize(fontSize.toFloat())
                                 setBackgroundColor(android.graphics.Color.TRANSPARENT)
-                                isEditable = false
-                                // 编辑即「已修改」；整体换文本（装载/翻段/重载）不算（撤销栈由 pushText 重置）
+                                // 编辑即「已修改」；整体换文本（装载/重载）不算（撤销栈由 pushText 重置）
                                 subscribeEvent(ContentChangeEvent::class.java) { event, _ ->
                                     if (event.action != ContentChangeEvent.ACTION_SET_NEW_TEXT) {
                                         dirty = true
@@ -666,7 +629,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                                 appliedFontSize[0] = fontSize
                                 ed.setTextSize(fontSize.toFloat())
                             }
-                            ed.isEditable = !readOnly
                             if (appliedWordwrap[0] != wordwrap) {
                                 appliedWordwrap[0] = wordwrap
                                 ed.setWordwrap(wordwrap)
@@ -691,10 +653,10 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                                 runCatching { ed.getComponent(Magnifier::class.java).isEnabled = magnifier }
                             }
                             // 流畅模式：当前行 / 括号高亮一并关掉
-                            if (appliedFluent[0] != fluentMode) {
-                                appliedFluent[0] = fluentMode
-                                ed.setHighlightCurrentLine(!fluentMode)
-                                ed.setHighlightBracketPair(!fluentMode)
+                            if (appliedFluent[0] != fluent) {
+                                appliedFluent[0] = fluent
+                                ed.setHighlightCurrentLine(!fluent)
+                                ed.setHighlightBracketPair(!fluent)
                             }
                             applyText?.let { (version, text) ->
                                 if (appliedVersion[0] != version) {
@@ -711,8 +673,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                         buildString {
                             append("$lineTotal 行 · $charCount 字符 · $charset")
                             append(" · " + (EditorLanguages.labelOf(scopeName) ?: "纯文本"))
-                            if (fluentMode) append(" · 流畅模式")
-                            if (paged) append(" · 分段 ${page + 1}/$pageCount")
+                            if (fluent) append(" · 流畅模式")
                             meta?.size?.let { append(" · ${Fmt.size(it)}") }
                         },
                         style = MaterialTheme.typography.labelSmall,
@@ -731,7 +692,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 onReplaceTextChange = { find.replaceText = it },
                 findHistory = findHistory,
                 replaceHistory = replaceHistory,
-                readOnly = readOnly,
                 options = EditorSearchOptionsState(find.useRegex, find.matchCase, find.wholeWord),
                 optionsMenuExpanded = find.optionsMenuExpanded,
                 onOptionsMenuExpandedChange = { find.optionsMenuExpanded = it },
@@ -749,7 +709,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         // ---- 符号输入栏（NP `symbol_input`；底部一条，可横滑）
         if (symbolBar) {
             EditorSymbolBar(
-                enabled = !readOnly,
+                enabled = true,
                 textColor = MaterialTheme.colorScheme.onSurface,
                 background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                 onSymbol = { insertSymbol(it) },
@@ -854,6 +814,34 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 reload(pendingReloadCharset)
             },
             onDismiss = { confirmReload = false },
+        )
+    }
+
+    if (confirmLargeOpen) {
+        EditorConfirmDialog(
+            title = "文件较大",
+            message = "「${meta?.name ?: uri.name}」${Fmt.size(pendingOpenSize)}，" +
+                "打开可能需要几秒并占用较多内存；打开后会自动开启流畅模式（关语法高亮）。",
+            confirmLabel = "打开",
+            onConfirm = {
+                confirmLargeOpen = false
+                autoFluent = true
+                scope.launch {
+                    try {
+                        val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
+                        openWhole(vfs, null)
+                        status = autoFluentNotice()
+                    } catch (e: Exception) {
+                        error = e.message ?: "读取失败"
+                    } finally {
+                        loading = false
+                    }
+                }
+            },
+            onDismiss = {
+                confirmLargeOpen = false
+                onBack()
+            },
         )
     }
 
