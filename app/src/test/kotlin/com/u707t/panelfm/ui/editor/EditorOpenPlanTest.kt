@@ -1,17 +1,21 @@
 package com.u707t.panelfm.ui.editor
 
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import kotlinx.coroutines.test.runTest
 import org.junit.Test
+import java.io.ByteArrayInputStream
 
 /**
- * 打开大文件的档位判定（v2.0.16 起不再有只读分段浏览，这里锁住新的三层兜底）：
- *  - > 2 MB：自动开流畅模式（仍然可编辑）；
- *  - > 16 MB：先确认；
- *  - > 64 MB：拒绝（保护内存）。
+ * 打开大文件的两件事（v2.0.16 起不再有只读分段浏览）：
+ *  1. 档位判定 [editorOpenPlan]：> 2 MB 自动流畅模式 / > 16 MB 先确认 / > 64 MB 拒绝；
+ *  2. 读取上限 [readUpTo]：**超过上限必须返回 null**，绝不能把截断的前 N MB 当全文
+ *     （拿截断文本编辑再保存 = 静默把大文件写小）。
  *
- * 边界是「超过」：正好等于阈值不触发（例如 2 MB 整的文件不自动开流畅模式）。
+ * 档位边界是「超过」：正好等于阈值不触发（2 MB 整的文件不自动开流畅模式）。
  */
 class EditorOpenPlanTest {
 
@@ -64,5 +68,36 @@ class EditorOpenPlanTest {
                 assertEquals("$size 应自动开流畅模式", size > 2 * mb, editorOpenPlan(size).autoFluent)
             }
         }
+    }
+
+    // ------------------------------------------------------------------ 读取上限
+
+    /** 用内存流模拟 VFS 读取；[chunk] 控制每次返回多少字节（模拟网络流的碎片读）。 */
+    private fun reader(bytes: ByteArray, chunk: Int = Int.MAX_VALUE): (ByteArray, Int, Int) -> Int {
+        val stream = ByteArrayInputStream(bytes)
+        return { buf, off, len -> stream.read(buf, off, minOf(len, chunk)) }
+    }
+
+    @Test
+    fun `正好等于上限：读完返回内容`() = runTest {
+        val data = ByteArray(64) { it.toByte() }
+        assertArrayEquals(data, readUpTo(64, reader(data)))
+        // 空文件同样合法
+        assertArrayEquals(ByteArray(0), readUpTo(64, reader(ByteArray(0))))
+    }
+
+    @Test
+    fun `超过上限：返回 null（不返回截断内容）`() = runTest {
+        val data = ByteArray(65) { it.toByte() }
+        assertNull(readUpTo(64, reader(data)))
+        assertNull(readUpTo(64, reader(data, chunk = 7)))
+    }
+
+    @Test
+    fun `碎片读（每次 1 字节）也能正确判定`() = runTest {
+        val ok = ByteArray(10) { 1 }
+        assertArrayEquals(ok, readUpTo(10, reader(ok, chunk = 1)))
+        val over = ByteArray(11) { 1 }
+        assertNull(readUpTo(10, reader(over, chunk = 1)))
     }
 }

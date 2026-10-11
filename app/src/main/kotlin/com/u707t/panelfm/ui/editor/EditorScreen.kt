@@ -183,12 +183,13 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     fun autoFluentNotice(): String =
         "文件较大（> ${Fmt.size(AUTO_FLUENT_BYTES)}），已自动开启流畅模式（⋮ → 视图可关）"
 
-    /** 读取整篇并灌入编辑器（首次打开 / 确认后打开 / 重新加载共用）。 */
-    suspend fun openWhole(vfs: VirtualFileSystem, charsetOverride: String?) {
-        val decoded = readWholeText(vfs, uri, charsetOverride)
+    /** 读取整篇并灌入编辑器（首次打开 / 确认后打开 / 重新加载共用）；超过上限返回 false。 */
+    suspend fun openWhole(vfs: VirtualFileSystem, charsetOverride: String?): Boolean {
+        val decoded = readWholeText(vfs, uri, charsetOverride) ?: return false
         charset = decoded.charset
         pushText(decoded.text)
         dirty = false
+        return true
     }
 
     /** 「语法」选择：null = 自动识别；空串 = 纯文本；其余 = scope。按扩展名记忆。 */
@@ -299,7 +300,10 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 meta = info
                 originalMode = info.permissions
                 autoFluent = editorOpenPlan(info.size).autoFluent
-                openWhole(vfs, override)
+                if (!openWhole(vfs, override)) {
+                    status = "文件过大（超过 ${Fmt.size(OPEN_LIMIT_BYTES)}），已取消重新加载"
+                    return@launch
+                }
                 status = "已重新加载（$charset）"
             } catch (e: Exception) {
                 status = "重新加载失败：${e.message ?: "会话不可用"}"
@@ -515,7 +519,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 EditorOpenDecision.OPEN -> {
                     autoFluent = plan.autoFluent
                     if (plan.autoFluent) status = autoFluentNotice()
-                    openWhole(vfs, null)
+                    // 读的时候可能已经涨过上限（stat 之后文件变大 / 远端 size 不准）→ 明确拒绝
+                    if (!openWhole(vfs, null)) error = "文件过大（读取时超过 ${Fmt.size(OPEN_LIMIT_BYTES)}）"
                     loading = false
                 }
             }
@@ -709,7 +714,6 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         // ---- 符号输入栏（NP `symbol_input`；底部一条，可横滑）
         if (symbolBar) {
             EditorSymbolBar(
-                enabled = true,
                 textColor = MaterialTheme.colorScheme.onSurface,
                 background = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
                 onSymbol = { insertSymbol(it) },
@@ -829,8 +833,11 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                 scope.launch {
                     try {
                         val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
-                        openWhole(vfs, null)
-                        status = autoFluentNotice()
+                        if (!openWhole(vfs, null)) {
+                            error = "文件过大（读取时超过 ${Fmt.size(OPEN_LIMIT_BYTES)}）"
+                        } else {
+                            status = autoFluentNotice()
+                        }
                     } catch (e: Exception) {
                         error = e.message ?: "读取失败"
                     } finally {

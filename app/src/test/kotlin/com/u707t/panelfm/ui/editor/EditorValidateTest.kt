@@ -85,4 +85,17 @@ class EditorValidateTest {
         assertNotNull(problem)
         assertTrue(problem!!.contains("暂不支持"))
     }
+
+    @Test
+    fun `病态嵌套不会把校验变成崩溃`() {
+        // 深递归扫描器必须自带深度上限（否则 10 万个 '[' 会 StackOverflow 崩掉界面）
+        val deep = "[".repeat(10_000) + "]".repeat(10_000)
+        val problem = EditorValidate.validate(deep, "json")
+        assertNotNull("过深嵌套应报错而不是崩溃", problem)
+        assertTrue("错误信息应说明嵌套过深：$problem", problem!!.contains("嵌套"))
+
+        // 合理深度仍然通过（256 层以内）
+        val ok = "[".repeat(200) + "]".repeat(200)
+        assertNull(EditorValidate.validate(ok, "json"))
+    }
 }

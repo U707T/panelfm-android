@@ -3,28 +3,13 @@ package com.u707t.panelfm.ui.browser
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
-import com.u707t.panelfm.core.common.MtSelection
-import com.u707t.panelfm.core.model.ConflictDecision
-import com.u707t.panelfm.core.model.ConflictPolicy
-import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.ConnectionType
-import com.u707t.panelfm.core.model.SortBy
 import com.u707t.panelfm.core.model.SortSpec
-import com.u707t.panelfm.core.model.TransferOp
-import com.u707t.panelfm.core.transfer.FileOperationPlanner
-import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferRequest
-import com.u707t.panelfm.core.transfer.TransferTask
-import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
-import com.u707t.panelfm.core.transfer.forBrowserBar
 import com.u707t.panelfm.core.transfer.isActive
-import com.u707t.panelfm.core.transfer.isFinished
 import com.u707t.panelfm.core.vfs.FileMetadata
-import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
-import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -32,7 +17,6 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -121,7 +105,6 @@ class BrowserController(internal val container: AppContainer) {
                         ?: if (s.useSingleColumn) BrowseMode.SINGLE else BrowseMode.DUAL
                     update {
                         it.copy(
-                            splitRatio = s.splitRatio,
                             browseMode = savedMode,
                             left = it.left.copy(sort = defaultSort, showHidden = s.showHidden),
                             right = it.right.copy(sort = defaultSort, showHidden = s.showHidden),
@@ -247,11 +230,6 @@ class BrowserController(internal val container: AppContainer) {
             persistScheduled.set(false)
             persistPaths()
         }
-    }
-
-    fun persistSplitRatio() {
-        val ratio = _state.value.splitRatio
-        container.scope.launch { container.prefs.setSplitRatio(ratio) }
     }
 
     // ------------------------------------------------------------------ 状态读写
@@ -450,10 +428,7 @@ class BrowserController(internal val container: AppContainer) {
 
     // ------------------------------------------------------------------ 跨窗格操作
 
-    // ------------------------------------------------------------------ 分隔条 / 路径
-
-    /** 拖动分隔条 */
-    fun setSplitRatio(ratio: Float) = update { it.copy(splitRatio = ratio.coerceIn(0.25f, 0.75f)) }
+    // ------------------------------------------------------------------ 路径
 
     /** 剪贴板是否为空（UI 决定 FAB 是否显示） */
     val hasClipboard: Boolean get() = clipboard.isNotEmpty()

@@ -5,40 +5,17 @@ package com.u707t.panelfm.ui.browser
 // 组织方式：extension 函数（同 package 免 import）；共享状态在 BrowserController.kt（见其头部说明）。
 // ================================================================================================
 
-import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
-import com.u707t.panelfm.core.common.MtSelection
-import com.u707t.panelfm.core.model.ConflictDecision
-import com.u707t.panelfm.core.model.ConflictPolicy
-import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.ConnectionType
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
-import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.transfer.FileOperationPlanner
-import com.u707t.panelfm.core.transfer.TaskState
-import com.u707t.panelfm.core.transfer.TransferRequest
-import com.u707t.panelfm.core.transfer.TransferTask
-import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
-import com.u707t.panelfm.core.transfer.forBrowserBar
-import com.u707t.panelfm.core.transfer.isActive
-import com.u707t.panelfm.core.transfer.isFinished
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
-import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.update
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.util.concurrent.atomic.AtomicLong
 
 // ------------------------------------------------------------------ 列表加载
 
@@ -229,7 +206,7 @@ fun BrowserController.openItem(side: PaneSide, item: FileMetadata) {
                     .ofFileName(item.name) != null
                 when {
                     isArchive -> openArchiveInPane(side, item)
-                    // 未识别类型：弹二级菜单（查看文本 / 编辑文本 / 打开方式），不直接进文本编辑器
+                    // 未识别类型：弹二级菜单（文本方式打开 / 打开方式），不直接进编辑器
                     TypeActions.preferMenuOnOpen(item.extension) -> {
                         focus(side)
                         _openMenuRequest.value = item

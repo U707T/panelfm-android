@@ -42,7 +42,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import androidx.core.graphics.drawable.toBitmap
@@ -57,7 +56,6 @@ import kotlinx.coroutines.withContext
  */
 enum class PreviewMode(val handlerId: String, val label: String, val icon: MtIcon) {
     AUTO("auto", "自动识别", MtIcon.EXPLORE),
-    TEXT("text", "文本查看器", MtIcon.DESC),
     EDITOR("editor", "编辑文本", MtIcon.EDIT),
     RENDER("render", "渲染预览", MtIcon.DESC),
     IMAGE("image", "查看图片", MtIcon.IMAGE),
@@ -304,7 +302,6 @@ private fun SystemTile(app: SystemOpenApp, onPick: () -> Unit) {
 }
 
 private fun builtinColor(mode: PreviewMode): Color = when (mode) {
-    PreviewMode.TEXT -> Color(0xFF5C6BC0)
     PreviewMode.EDITOR -> Color(0xFF4F6BED)
     PreviewMode.IMAGE -> Color(0xFF26A69A)
     PreviewMode.MEDIA -> Color(0xFFE57373)

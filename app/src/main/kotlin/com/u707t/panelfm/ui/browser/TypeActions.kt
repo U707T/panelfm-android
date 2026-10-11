@@ -15,6 +15,9 @@ import com.u707t.panelfm.core.common.SqliteFormats
  *    字体：`查看字体`(0x7f1100f0) · 文本/代码：`编辑文本`(0x7f1100f9)
  *  - 通用：`打开方式…`(0x7f11040d)
  *
+ * v2.0.17：文本 / 代码**只有一个入口**（编辑文本 = 编辑器页面，查看与编辑合一）；
+ * 未识别类型也走同一入口（不再有独立的「文本查看器」页面）。
+ *
  * 这里只产出「该显示哪一项」，不依赖 Compose，便于单测。
  */
 object TypeActions {
@@ -43,10 +46,10 @@ object TypeActions {
     fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
 
     /**
-     * 单击时没有内置查看器、也不该直接丢进文本查看 / 编辑器的类型。
+     * 单击时没有内置查看器、也不该直接丢进编辑器的类型。
      *
      * 未识别（[MimeTypes.Kind.OTHER]）且不是 SQLite：默认弹该项**二级菜单**
-     * （查看文本 / 编辑文本 / 打开方式…），由用户选，而不是一打开就是文本编辑器。
+     * （文本方式打开 / 打开方式…），由用户选，而不是一打开就是编辑器。
      * 用户若给这个后缀设过默认打开方式，调用方应先尊重那个设置。
      */
     fun preferMenuOnOpen(extension: String): Boolean {
@@ -56,14 +59,18 @@ object TypeActions {
 
     fun isApk(kind: MimeTypes.Kind): Boolean = kind == MimeTypes.Kind.APK
 
-    /** 可直接用内置查看器打开（图片 / 音频 / 视频 / 字体 / PDF / 文本 / 代码 / Office 文档） */
+    /**
+     * 有**独立**内置查看器的类型（图片 / 音频 / 视频 / 字体 / PDF / Office 文档）。
+     *
+     * ⚠️ 文本 / 代码不在内：v2.0.17 起文本没有「查看器 + 编辑器」两份，
+     * 统一走编辑器（[ACTION_EDIT_TEXT]），避免两个页面来回切。
+     */
     fun hasBuiltinViewer(kind: MimeTypes.Kind): Boolean = kind in setOf(
         MimeTypes.Kind.IMAGE, MimeTypes.Kind.AUDIO, MimeTypes.Kind.VIDEO,
-        MimeTypes.Kind.FONT, MimeTypes.Kind.PDF, MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE,
-        MimeTypes.Kind.DOCUMENT,
+        MimeTypes.Kind.FONT, MimeTypes.Kind.PDF, MimeTypes.Kind.DOCUMENT,
     )
 
-    /** MT 的内置查看标签（菜单文案；null = 该类型没有内置查看器） */
+    /** MT 的内置查看标签（菜单文案；null = 该类型没有独立查看器） */
     fun viewerLabel(kind: MimeTypes.Kind): String? = when (kind) {
         MimeTypes.Kind.IMAGE -> "查看图片"
         MimeTypes.Kind.AUDIO -> "播放音乐"
@@ -71,7 +78,6 @@ object TypeActions {
         MimeTypes.Kind.FONT -> "查看字体"
         MimeTypes.Kind.PDF -> "查看 PDF"
         MimeTypes.Kind.DOCUMENT -> "文档预览"
-        MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> "查看文本"
         else -> null
     }
 
@@ -107,16 +113,14 @@ object TypeActions {
                     add(ACTION_APK_INFO)
                     add(ACTION_EXTRACT_APK_ICON)
                 }
-                // 文本 / 代码：查看 + 编辑
+                // 文本 / 代码：只有「编辑文本」一个入口（v2.0.17：编辑器 = 查看 + 编辑，唯一页面）
                 MimeTypes.Kind.TEXT, MimeTypes.Kind.CODE -> {
-                    add(ACTION_OPEN_INTERNAL)
                     add(ACTION_EDIT_TEXT)
                     // Markdown / CSV：可以渲染成页面（marked / SheetJS）
                     if (RenderFormats.isRenderable(extension)) add(ACTION_RENDER)
                 }
-                // 未识别：按「通用」处理 —— 文本查看 / 编辑文本 /（数据库则给）SQLite 浏览 / 打开方式
+                // 未识别：按「通用」处理 —— 文本方式打开 /（数据库则给）SQLite 浏览 / 打开方式
                 MimeTypes.Kind.OTHER -> {
-                    add(ACTION_OPEN_INTERNAL)
                     add(ACTION_EDIT_TEXT)
                     if (SqliteFormats.isSqlite(extension)) add(ACTION_SQLITE_BROWSE)
                 }
@@ -135,7 +139,7 @@ object TypeActions {
         ACTION_INSTALL -> "安装"
         ACTION_APK_INFO -> "APK 信息"
         ACTION_EXTRACT_APK_ICON -> "提取图标"
-        ACTION_OPEN_INTERNAL -> viewerLabel(kind) ?: "查看文本"
+        ACTION_OPEN_INTERNAL -> viewerLabel(kind) ?: "查看"
         ACTION_EDIT_TEXT -> "编辑文本"
         ACTION_RENDER -> "渲染预览"
         ACTION_SQLITE_BROWSE -> "SQLite 浏览"

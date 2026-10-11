@@ -1,45 +1,28 @@
 package com.u707t.panelfm.ui.browser
 
 import android.app.Activity
-import android.content.Intent
 import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -48,71 +31,32 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
-import androidx.compose.ui.semantics.onLongClick
-import androidx.compose.ui.semantics.role
-import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
-import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.Spacer
 import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.DividerSideShadow
-import com.u707t.panelfm.core.ui.HSeparator
-import com.u707t.panelfm.core.ui.IconTextButton
-import com.u707t.panelfm.core.ui.MtActionButton
-import com.u707t.panelfm.core.ui.MtBottomIconButton
-import com.u707t.panelfm.core.ui.MtGesture
-import com.u707t.panelfm.core.ui.MtIcon
-import com.u707t.panelfm.core.ui.MtMenuRow
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
-import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.common.MimeTypes
-import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
-import com.u707t.panelfm.core.model.TransferOp
-import com.u707t.panelfm.core.transfer.TaskState
-import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
-import com.u707t.panelfm.core.transfer.overallProgress
-import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.local.LocalVolume
 import com.u707t.panelfm.core.vfs.local.LocalVolumes
-import com.u707t.panelfm.ui.preview.OpenWithDialog
-import com.u707t.panelfm.ui.preview.OpenWithManageDialog
-import com.u707t.panelfm.ui.preview.OpenWithOption
-import com.u707t.panelfm.ui.preview.PreviewMode
 import com.u707t.panelfm.core.vfs.VfsUri
-import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -161,7 +105,6 @@ fun DualPaneScreen(
         ds.rowAction = item
     }
     /** 双列区域的总宽度（分隔条拖动换算用；旧实现用分隔条自身宽度 10dp → 拖不动） */
-    var panesWidthPx by remember { mutableStateOf(0f) }
 
     // ---------------- 侧边栏（MT：≡ 打开抽屉）
     val drawerState = rememberDrawerState(DrawerValue.Closed)
@@ -335,13 +278,10 @@ fun DualPaneScreen(
             // ---------------- 两个窗格
             // MT「单列 / 双列 / 自动切换」（0x7f1101fb/1fc/1fd/1fe）：
             // 自动切换 = 宽屏（≥600dp）双列、窄屏单列；由 ui.effectiveBrowseMode 展开。
+            // v2.0.17：中缝**固定等分**（不再可拖动 —— 误拖之后左右不均且用户不知道去哪复位）。
             val wideEnough = LocalConfiguration.current.screenWidthDp >= 600
             LaunchedEffect(wideEnough) { controller.setWideEnough(wideEnough) }
-            Row(
-                Modifier
-                    .weight(1f)
-                    .onGloballyPositioned { panesWidthPx = it.size.width.toFloat() },
-            ) {
+            Row(Modifier.weight(1f)) {
                 val single = ui.effectiveBrowseMode == BrowseMode.SINGLE
                 val showLeft = !single || ui.focused == PaneSide.LEFT
                 val showRight = !single || ui.focused == PaneSide.RIGHT
@@ -349,7 +289,7 @@ fun DualPaneScreen(
                     // 中缝阴影 v2.0.12：不再画在窗格边缘（旧版与 10dp 分隔条触摸区之间有空隙，
                     // 实机"阴影悬空、与中心线割裂"），改为贴 1px 中线、画在触摸区内部
                     // → 见下方分隔条里的 DividerSideShadow
-                    Box(Modifier.weight(ui.splitRatio)) {
+                    Box(Modifier.weight(1f)) {
                         PaneView(
                             container = container,
                             side = PaneSide.LEFT,
@@ -364,29 +304,12 @@ fun DualPaneScreen(
                     }
                 }
                 if (showLeft && showRight) {
-                    // 可拖动分隔条（复刻 MT 0x7f0c0033 的 0900B2 Guideline + 090111/090112 1px 线；
-                    // MT 的分隔线只有 1px，但触摸区给足 10dp 便于拖动）
+                    // 中缝：MT 的分隔线只有 1px（0x7f0c0033 的 090111/090112）；这里的 10dp 盒子
+                    // 只用于放「贴线阴影」，不再接手势（v2.0.17：比例固定等分）
                     Box(
                         Modifier
                             .width(10.dp)
-                            .fillMaxHeight()
-                            .pointerInput(Unit) {
-                                detectDragGestures(
-                                    onDragEnd = { controller.persistSplitRatio() },
-                                    onDragCancel = { controller.persistSplitRatio() },
-                                ) { change, dragAmount ->
-                                    change.consume()
-                                    val total = panesWidthPx.coerceAtLeast(1f)
-                                    controller.setSplitRatio(ui.splitRatio + dragAmount.x / total)
-                                }
-                            }
-                            .pointerInput(Unit) {
-                                detectTapGestures(onDoubleTap = {
-                                    controller.setSplitRatio(0.5f)
-                                    controller.persistSplitRatio()
-                                })
-                            }
-                            .semantics { contentDescription = "左右窗口分隔条（拖动调整比例，双击恢复等分）" },
+                            .fillMaxHeight(),
                         contentAlignment = Alignment.Center,
                     ) {
                         // 中缝贴线阴影：锚定 1px 中线、在**活动窗格一侧**；
@@ -396,7 +319,7 @@ fun DualPaneScreen(
                     }
                 }
                 if (showRight) {
-                    Box(Modifier.weight(1f - ui.splitRatio)) {
+                    Box(Modifier.weight(1f)) {
                         PaneView(
                             container = container,
                             side = PaneSide.RIGHT,

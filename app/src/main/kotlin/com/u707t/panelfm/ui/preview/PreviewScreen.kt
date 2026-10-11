@@ -4,7 +4,6 @@ import android.content.Intent
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -14,25 +13,16 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.gestures.calculatePan
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.gestures.detectTransformGestures
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -48,8 +38,6 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
@@ -58,7 +46,6 @@ import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.common.RenderFormats
 import com.u707t.panelfm.core.common.SqliteFormats
@@ -68,7 +55,6 @@ import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
@@ -84,7 +70,6 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
     var meta by remember { mutableStateOf<FileMetadata?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var effective by remember { mutableStateOf(request.mode) }
-    var editing by remember { mutableStateOf(request.mode == PreviewMode.EDITOR) }
     var modeMenu by remember { mutableStateOf(false) }
 
     // 记录「当前打开着的文件」：进程被杀 / 直接退出后，下次启动自动回到这里。
@@ -119,7 +104,6 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
     val item = meta
     val resolved: PreviewMode? = if (item != null && !item.isDirectory) {
         var r = effective
-        if (editing) r = PreviewMode.EDITOR
         if (r == PreviewMode.AUTO) {
             val kind = MimeTypes.kindOf(item.extension)
             r = when {
@@ -132,11 +116,12 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 kind == MimeTypes.Kind.PDF -> PreviewMode.PDF
                 // APK：只读信息（PackageManager 解析），不做 dex/arsc 编辑
                 kind == MimeTypes.Kind.APK -> PreviewMode.APK_INFO
-                kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE -> PreviewMode.TEXT
+                // 文本 / 代码 / 未识别 → 编辑器（v2.0.17：文本只有一个页面，查看与编辑合一）
+                kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE -> PreviewMode.EDITOR
                 // Office 文档（docx/xlsx/pptx；旧 .doc/.ppt 进页面后给说明）：只读文档预览
                 kind == MimeTypes.Kind.DOCUMENT -> PreviewMode.OFFICE
-                // 未识别格式：一律文本预览（最多读前 1 MB，界面会标注「已截断」）
-                else -> PreviewMode.TEXT
+                // 未识别格式：同样交给编辑器（打开趟数由 EditorScreen 的打开档位把关）
+                else -> PreviewMode.EDITOR
             }
         }
         r
@@ -197,57 +182,54 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                     onClick = { modeMenu = true },
                 )
                 DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
-                    // 菜单按类型给项：文本/代码/未识别 → 文本 + 编辑；字体/PDF/APK → 各自入口；
-                    // 本地文件才有「外部应用」。媒体/图片/压缩包在当前查看器里即可，不再堆无关入口。
+                    // 菜单按类型给项：文本/代码/未识别 → 只有「编辑文本」（v2.0.17：不再有文本查看器页面）；
+                    // 字体/PDF/APK → 各自入口；本地文件才有「外部应用」。
+                    // 媒体/图片/压缩包在当前查看器里即可，不再堆无关入口。
                     val kind = item?.extension?.let { MimeTypes.kindOf(it) }
                     val textLike = kind == null ||
                         kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER
                     if (textLike) {
                         DropdownMenuItem(
-                            text = { Text("文本", color = if (!editing && resolved == PreviewMode.TEXT) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.TEXT; editing = false; modeMenu = false },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("编辑", color = if (editing) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { editing = true; modeMenu = false },
+                            text = { Text("编辑文本") },
+                            onClick = { effective = PreviewMode.EDITOR; modeMenu = false },
                         )
                     }
                     if (kind == MimeTypes.Kind.DOCUMENT) {
                         DropdownMenuItem(
-                            text = { Text("文档预览", color = if (!editing && resolved == PreviewMode.OFFICE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.OFFICE; editing = false; modeMenu = false },
+                            text = { Text("文档预览", color = if (resolved == PreviewMode.OFFICE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.OFFICE; modeMenu = false },
                         )
                     }
-                    // Markdown / CSV：渲染预览（marked / SheetJS；默认仍是文本查看器，可在这里或「打开方式」里切）
+                    // Markdown / CSV：渲染预览（marked / SheetJS；默认进编辑器，可在这里或「打开方式」里切）
                     if (item != null && RenderFormats.isRenderable(item.extension)) {
                         DropdownMenuItem(
-                            text = { Text("渲染预览", color = if (!editing && resolved == PreviewMode.RENDER) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.RENDER; editing = false; modeMenu = false },
+                            text = { Text("渲染预览", color = if (resolved == PreviewMode.RENDER) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.RENDER; modeMenu = false },
                         )
                     }
                     // SQLite 数据库：只读浏览
                     if (item != null && SqliteFormats.isSqlite(item.extension)) {
                         DropdownMenuItem(
-                            text = { Text("SQLite 浏览", color = if (!editing && resolved == PreviewMode.SQLITE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.SQLITE; editing = false; modeMenu = false },
+                            text = { Text("SQLite 浏览", color = if (resolved == PreviewMode.SQLITE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
+                            onClick = { effective = PreviewMode.SQLITE; modeMenu = false },
                         )
                     }
                     if (kind == MimeTypes.Kind.FONT) {
                         DropdownMenuItem(
                             text = { Text("字体") },
-                            onClick = { effective = PreviewMode.FONT; editing = false; modeMenu = false },
+                            onClick = { effective = PreviewMode.FONT; modeMenu = false },
                         )
                     }
                     if (kind == MimeTypes.Kind.PDF) {
                         DropdownMenuItem(
                             text = { Text("PDF") },
-                            onClick = { effective = PreviewMode.PDF; editing = false; modeMenu = false },
+                            onClick = { effective = PreviewMode.PDF; modeMenu = false },
                         )
                     }
                     if (kind == MimeTypes.Kind.APK) {
                         DropdownMenuItem(
                             text = { Text("APK 信息") },
-                            onClick = { effective = PreviewMode.APK_INFO; editing = false; modeMenu = false },
+                            onClick = { effective = PreviewMode.APK_INFO; modeMenu = false },
                         )
                     }
                     if (uri.scheme == "local") {
@@ -289,14 +271,13 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                 PreviewMode.ARCHIVE -> Text("压缩包：请返回列表后点击它进入内部浏览", Modifier.padding(16.dp))
                 PreviewMode.SYSTEM -> Text("已交给系统应用打开（若未弹出，请检查是否有可用应用）", Modifier.padding(16.dp))
                 PreviewMode.OFFICE -> Text("文档预览（只读）", Modifier.padding(16.dp))
-                // 文本 / 未识别 → 文本预览（未识别类型走通用兜底）
-                else -> TextPreview(container, item)
+                // v2.0.17 起文本 / 未识别都走编辑器（上面已 return），这里只剩「没有内置查看器」的兜底
+                else -> ErrorState("没有可用的内置查看器，可用「打开方式」换一个")
             }
         }
     }
 }
 
-private const val MAX_TEXT_SIZE = 1L * 1024 * 1024
 private const val MAX_IMAGE_SIZE = 32L * 1024 * 1024
 
 /**
@@ -543,82 +524,3 @@ internal fun sampleToFit(width: Int, height: Int, target: Int): Int {
 }
 
 private const val TARGET_MAX_EDGE = 2048
-
-@Composable
-private fun TextPreview(container: AppContainer, item: FileMetadata) {
-    var text by remember { mutableStateOf<String?>(null) }
-    var encoding by remember { mutableStateOf("") }
-    var truncated by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-
-    LaunchedEffect(item.uri) {
-        try {
-            val read = readBytes(container, item.uri, MAX_TEXT_SIZE + 1)
-            truncated = read.size > MAX_TEXT_SIZE
-            val bytes = if (truncated) read.copyOf(MAX_TEXT_SIZE.toInt()) else read
-            val decoded = decodeText(bytes)
-            encoding = decoded.first
-            text = decoded.second
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // message 为 null 时必须有兜底文案，否则界面会永远停在「加载中」（2026-10-08 重审 §2）
-            error = e.message ?: "文本预览失败"
-        }
-    }
-
-    when {
-        error != null -> ErrorState("文本预览失败：$error")
-        text == null -> LoadingState()
-        else -> Column(Modifier.fillMaxSize()) {
-            Text(
-                "${item.name} · ${Fmt.size(item.size)} · ${encoding}" + if (truncated) " · 已截断显示前 1 MB" else "",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
-            )
-            SelectionContainer(Modifier.fillMaxSize()) {
-                LazyColumn(
-                    Modifier
-                        .fillMaxSize()
-                        .horizontalScroll(rememberScrollState()),
-                ) {
-                    items(text!!.split('\n')) { line ->
-                        Text(
-                            line.ifEmpty { " " },
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace,
-                            softWrap = false,
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private fun decodeText(bytes: ByteArray): Pair<String, String> {
-    val decoded = com.u707t.panelfm.core.common.TextEncodings.decode(bytes)
-    return decoded.charset to decoded.text
-}
-
-private suspend fun readBytes(container: AppContainer, uri: VfsUri, max: Long): ByteArray {
-    val vfs = container.locator.find(uri) ?: throw IllegalStateException("会话不可用")
-    val reader = vfs.openRead(uri)
-    try {
-        val out = ByteArrayOutputStream()
-        val buffer = ByteArray(64 * 1024)
-        var total = 0L
-        while (total < max) {
-            val want = minOf(buffer.size.toLong(), max - total).toInt()
-            val n = reader.read(buffer, 0, want)
-            if (n < 0) break
-            out.write(buffer, 0, n)
-            total += n
-        }
-        return out.toByteArray()
-    } finally {
-        runCatching { reader.close() }
-    }
-}

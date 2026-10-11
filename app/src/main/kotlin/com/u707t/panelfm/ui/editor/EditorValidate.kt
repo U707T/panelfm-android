@@ -63,9 +63,15 @@ internal object EditorValidate {
     private class JsonError(message: String, val index: Int, val line: Int, val column: Int) :
         Exception(message)
 
+    /** JSON 递归深度上限（`[[[[…` 这种病态输入不能把「校验」变成 StackOverflow 崩溃）。 */
+    private const val MAX_JSON_DEPTH = 256
+
     /** 严格 JSON 递归下降扫描器（只做校验，不建对象树）。 */
     private class JsonScanner(private val text: String) {
         private var pos = 0
+
+        /** 递归深度上限：病态输入（几万个 `[`）不能把「校验」变成 StackOverflow 崩溃。 */
+        private var depth = 0
 
         fun atEnd(): Boolean = pos >= text.length
 
@@ -90,16 +96,21 @@ internal object EditorValidate {
         }
 
         fun parseValue() {
-            skipWhitespace()
-            if (atEnd()) throw error("内容不完整：缺少值")
-            when (val c = peek()) {
-                '{' -> parseObject()
-                '[' -> parseArray()
-                '"' -> parseString()
-                't' -> expect("true")
-                'f' -> expect("false")
-                'n' -> expect("null")
-                else -> if (c == '-' || c in '0'..'9') parseNumber() else throw error("意外的字符 '$c'")
+            if (++depth > MAX_JSON_DEPTH) throw error("嵌套层级过深（超过 $MAX_JSON_DEPTH 层）")
+            try {
+                skipWhitespace()
+                if (atEnd()) throw error("内容不完整：缺少值")
+                when (val c = peek()) {
+                    '{' -> parseObject()
+                    '[' -> parseArray()
+                    '"' -> parseString()
+                    't' -> expect("true")
+                    'f' -> expect("false")
+                    'n' -> expect("null")
+                    else -> if (c == '-' || c in '0'..'9') parseNumber() else throw error("意外的字符 '$c'")
+                }
+            } finally {
+                depth--
             }
         }
 

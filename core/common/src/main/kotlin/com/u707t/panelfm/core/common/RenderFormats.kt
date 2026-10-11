@@ -8,7 +8,7 @@ package com.u707t.panelfm.core.common
  *  - `.md` / `.markdown` → marked（MIT）+ DOMPurify（Apache-2.0 / MPL-2.0）渲染与清洗；
  *  - `.csv` → SheetJS（已在 vendor 里）按表格渲染。
  *
- * 注意：**默认打开方式不变**（文本查看器）——渲染预览是预览页菜单 / 「打开方式…」里的可选项，
+ * 注意：**默认打开方式不变**（编辑器）——渲染预览是预览页菜单 / 「打开方式…」里的可选项，
  * 用户也可以把它设成 `.md` 的默认打开方式。
  */
 object RenderFormats {

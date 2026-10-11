@@ -168,8 +168,6 @@ data class BrowserUiState(
     val diff: DiffResult? = null,
     /** 进行中的长操作（压缩/校验/对比/完整性测试/远程包下载）：页面底部状态条（审计 U4） */
     val busy: BusyOp? = null,
-    /** 左窗格宽度比例（可拖动分隔条） */
-    val splitRatio: Float = 0.5f,
     /** 重命名冲突（MT：交换 / 删除 / 备份） */
     val renameConflict: RenameConflict? = null,
     /**

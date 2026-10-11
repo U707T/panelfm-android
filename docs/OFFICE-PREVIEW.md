@@ -82,7 +82,7 @@
 ## 5. Markdown / CSV（v2.0.7 起）
 
 同一个页面服务 `kind=markdown` / `kind=csv`（入口：预览页菜单「渲染预览」/「打开方式…」，
-默认打开方式仍是文本查看器 —— 用户可把 `.md` 的默认改成渲染预览）：
+默认打开方式进编辑器 —— 用户可把 `.md` 的默认改成渲染预览）：
 
 - **编码统一在 Kotlin 侧**（`RenderScreen.kt`）：文件字节先过 `TextEncodings.decode()`（UTF-8 / GBK /
   Big5…）再转 UTF-8 喂给页面 —— 页面只按 UTF-8 解，中文 GBK 的 md/csv 不乱码；

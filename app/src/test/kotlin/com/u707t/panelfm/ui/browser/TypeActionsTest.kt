@@ -10,10 +10,10 @@ import org.junit.Test
  * 按类型的二级菜单（MT 对齐）：
  *  - 压缩包 → 解压三件套 + 浏览压缩包 + 打开方式…
  *  - APK → 安装 / APK 信息 / 提取图标 + 打开方式…
- *  - 文本 / 代码 → 查看文本 + 编辑文本 + 打开方式…
+ *  - 文本 / 代码 → **只有编辑文本**（v2.0.17：编辑器 = 查看 + 编辑，唯一页面）+ 打开方式…
  *  - Office 文档（docx/xlsx/pptx；含旧 doc/ppt）→ 文档预览 + 打开方式…
  *  - 图片 / 视频 / 音频 / 字体 / PDF → 内置查看 + 打开方式…
- *  - 未识别类型 → 通用兜底：查看文本 + 编辑文本 + 打开方式…（手动选择）
+ *  - 未识别类型 → 通用兜底：文本方式打开（编辑文本）+ 打开方式…（手动选择）
  *  - 目录 → 无类型菜单；压缩包内部 → 去掉解压 / 安装
  */
 class TypeActionsTest {
@@ -104,10 +104,10 @@ class TypeActionsTest {
     }
 
     @Test
-    fun `媒体与文本给出内置查看`() {
+    fun `媒体给出内置查看`() {
         listOf(
             "jpg", "png", "jfif", "mp4", "mkv", "3gpp", "mp3", "flac", "amr", "m4b", "oga",
-            "ttf", "pdf", "txt", "kt", "c", "go", "srt",
+            "ttf", "pdf",
         ).forEach { ext ->
             val out = ids(ext)
             assertEquals("$ext 应有内置查看", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
@@ -116,10 +116,11 @@ class TypeActionsTest {
     }
 
     @Test
-    fun `未识别类型给通用查看编辑与打开方式`() {
-        val generic = listOf(TypeActions.ACTION_OPEN_INTERNAL, TypeActions.ACTION_EDIT_TEXT, TypeActions.ACTION_OPEN_WITH)
+    fun `未识别类型给「文本方式打开」与打开方式（不再有两个文本入口）`() {
+        val generic = listOf(TypeActions.ACTION_EDIT_TEXT, TypeActions.ACTION_OPEN_WITH)
         assertEquals(generic, ids("xyz"))
         assertEquals(generic, ids("bin"))
+        assertFalse("未识别类型不该再有「查看文本」", ids("xyz").contains(TypeActions.ACTION_OPEN_INTERNAL))
     }
 
     @Test
@@ -138,11 +139,11 @@ class TypeActionsTest {
     }
 
     @Test
-    fun `文本与代码给查看与编辑文本`() {
+    fun `文本与代码只有一个入口：编辑文本`() {
         listOf("txt", "log", "md", "kt", "json").forEach { ext ->
             val out = ids(ext)
-            assertEquals("$ext 应有查看文本", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
             assertEquals("$ext 应有编辑文本", true, out.contains(TypeActions.ACTION_EDIT_TEXT))
+            assertFalse("$ext 不该再有「查看文本」（重复入口）", out.contains(TypeActions.ACTION_OPEN_INTERNAL))
             assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
         }
     }
@@ -152,7 +153,7 @@ class TypeActionsTest {
         listOf("md", "markdown", "csv").forEach { ext ->
             val out = ids(ext)
             assertEquals("$ext 应有渲染预览", true, out.contains(TypeActions.ACTION_RENDER))
-            assertEquals("$ext 仍应有文本查看", true, out.contains(TypeActions.ACTION_OPEN_INTERNAL))
+            assertEquals("$ext 仍应有编辑文本", true, out.contains(TypeActions.ACTION_EDIT_TEXT))
             assertEquals("$ext 最后应为打开方式", TypeActions.ACTION_OPEN_WITH, out.last())
         }
         // 普通文本不给渲染预览
@@ -176,7 +177,7 @@ class TypeActionsTest {
     @Test
     fun `二级菜单文案按 id 与类型给`() {
         assertEquals("编辑文本", TypeActions.labelOf(TypeActions.ACTION_EDIT_TEXT, TypeActions.kindOf("kt")))
-        assertEquals("查看文本", TypeActions.labelOf(TypeActions.ACTION_OPEN_INTERNAL, TypeActions.kindOf("xyz")))
+        assertEquals("编辑文本", TypeActions.labelOf(TypeActions.ACTION_EDIT_TEXT, TypeActions.kindOf("xyz")))
         assertEquals("查看图片", TypeActions.labelOf(TypeActions.ACTION_OPEN_INTERNAL, TypeActions.kindOf("png")))
         assertEquals("播放音乐", TypeActions.labelOf(TypeActions.ACTION_OPEN_INTERNAL, TypeActions.kindOf("mp3")))
         assertEquals("打开方式…", TypeActions.labelOf(TypeActions.ACTION_OPEN_WITH, TypeActions.kindOf("kt")))
@@ -196,5 +197,10 @@ class TypeActionsTest {
         assertEquals("查看字体", TypeActions.viewerLabel(TypeActions.kindOf("ttf")))
         assertNull(TypeActions.viewerLabel(TypeActions.kindOf("zip")))
         assertNull(TypeActions.viewerLabel(TypeActions.kindOf("apk")))
+        // 文本 / 代码没有独立查看器（统一走编辑器）
+        assertNull("文本没有「查看文本」入口", TypeActions.viewerLabel(TypeActions.kindOf("txt")))
+        assertNull(TypeActions.viewerLabel(TypeActions.kindOf("kt")))
+        assertFalse(TypeActions.hasBuiltinViewer(TypeActions.kindOf("txt")))
+        assertTrue(TypeActions.hasBuiltinViewer(TypeActions.kindOf("png")))
     }
 }

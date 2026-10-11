@@ -5,7 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 渲染预览矩阵（Markdown / CSV）：kind 映射与大小写、以及「默认仍是文本查看器」的口径。 */
+/** 渲染预览矩阵（Markdown / CSV）：kind 映射与大小写、以及「默认仍进编辑器」的口径。 */
 class RenderFormatsTest {
 
     @Test
@@ -35,7 +35,7 @@ class RenderFormatsTest {
 
     @Test
     fun `渲染预览被分类为文本或代码（默认打开方式仍是查看器）`() {
-        // md / csv 仍走 TEXT 分类：默认打开方式是文本查看器，渲染预览是显式选择
+        // md / csv 仍走 TEXT 分类：默认打开方式是编辑器，渲染预览是显式选择
         assertEquals(MimeTypes.Kind.TEXT, MimeTypes.kindOf("md"))
         assertEquals(MimeTypes.Kind.TEXT, MimeTypes.kindOf("csv"))
     }

@@ -1,115 +1,42 @@
 package com.u707t.panelfm.ui.browser
 
-import android.app.Activity
-import android.content.Intent
-import androidx.compose.foundation.background
-import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.fillMaxHeight
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalDrawerSheet
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
-import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.Role
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.semantics.onLongClick
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
-import androidx.compose.ui.semantics.stateDescription
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import androidx.core.content.FileProvider
-import androidx.core.graphics.drawable.toBitmap
-import androidx.compose.foundation.layout.Spacer
-import com.u707t.panelfm.core.ui.DividerPx
-import com.u707t.panelfm.core.ui.HSeparator
-import com.u707t.panelfm.core.ui.IconTextButton
 import com.u707t.panelfm.core.ui.MtActionButton
-import com.u707t.panelfm.core.ui.MtBottomIconButton
-import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
-import com.u707t.panelfm.core.ui.MtMenuRow
-import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
-import com.u707t.panelfm.core.ui.MtSpec
-import com.u707t.panelfm.core.ui.MtVectorIcon
-import com.u707t.panelfm.core.ui.PaneEdgeShadow
-import com.u707t.panelfm.core.ui.VDividerPx
-import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.common.MimeTypes
-import com.u707t.panelfm.core.data.PrefsStore
-import com.u707t.panelfm.core.model.ConnectionConfig
-import com.u707t.panelfm.core.model.ConnectionType
-import com.u707t.panelfm.core.model.SortBy
-import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.transfer.overallProgress
 import com.u707t.panelfm.core.vfs.FileMetadata
-import com.u707t.panelfm.core.vfs.SpaceInfo
-import com.u707t.panelfm.core.vfs.VfsException
-import com.u707t.panelfm.core.vfs.local.LocalVolume
-import com.u707t.panelfm.core.vfs.local.LocalVolumes
-import com.u707t.panelfm.ui.preview.OpenWithDialog
-import com.u707t.panelfm.ui.preview.OpenWithManageDialog
-import com.u707t.panelfm.ui.preview.OpenWithOption
-import com.u707t.panelfm.ui.preview.PreviewMode
-import com.u707t.panelfm.core.vfs.VfsUri
-import java.io.File
 import kotlin.math.roundToInt
-import kotlinx.coroutines.launch
 
 // ================================================================================================
 // 从 DualPaneScreen 拆出（重审 🔴1b）：顶栏动作条项 / 底栏文字按钮 / 任务条行。
@@ -177,6 +104,10 @@ internal fun TopActionItems(
         }
         if (typedIds.contains(TypeActions.ACTION_OPEN_INTERNAL)) {
             MtActionButton(MtIcon.EYE, "查看") { onTypedAction(TypeActions.ACTION_OPEN_INTERNAL, typedSingle) }
+        }
+        // 文本 / 代码：唯一入口就是编辑器（v2.0.17 起没有单独的文本查看器）
+        if (typedIds.contains(TypeActions.ACTION_EDIT_TEXT)) {
+            MtActionButton(MtIcon.EDIT, "编辑") { onTypedAction(TypeActions.ACTION_EDIT_TEXT, typedSingle) }
         }
     }
     MtActionButton(MtIcon.COMPARE, "文件对比", enabled = twoFiles) { controller.startFileDiff(focusSide) }

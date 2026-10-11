@@ -51,27 +51,44 @@ internal fun editorOpenPlan(size: Long): EditorOpenPlan = when {
     else -> EditorOpenPlan(EditorOpenDecision.OPEN, autoFluent = false)
 }
 
-/** 读至多 [max] 字节（[OPEN_LIMIT_BYTES] 是安全上限，正常文本文件一次读完）。 */
+/**
+ * 读至多 [max] 字节；**流里还有更多数据时返回 null**（不能把截断文本当全文）。
+ *
+ * 为什么返回值必须是可空：调用方（[readWholeText]）会把它当「整篇文本」灌进编辑器，
+ * 用户改完一保存就把大文件写成了前 64 MB —— 静默数据丢失。多读 1 个字节即可区分
+ * 「正好 max」与「超过 max」，比事后比较文件大小可靠（远端 VFS 的 size 可能是 -1 / 会变动）。
+ */
 internal suspend fun readAtMost(
     vfs: VirtualFileSystem,
     uri: VfsUri,
     max: Long,
-): ByteArray = withContext(Dispatchers.IO) {
+): ByteArray? = withContext(Dispatchers.IO) {
     val reader = vfs.openRead(uri)
     try {
-        val out = ByteArrayOutputStream()
-        val buf = ByteArray(64 * 1024)
-        var total = 0L
-        while (total < max) {
-            val n = reader.read(buf, 0, minOf(buf.size.toLong(), max - total).toInt())
-            if (n < 0) break
-            out.write(buf, 0, n)
-            total += n
-        }
-        out.toByteArray()
+        readUpTo(max) { buf, off, len -> reader.read(buf, off, len) }
     } finally {
         runCatching { reader.close() }
     }
+}
+
+/**
+ * [readAtMost] 的纯读取逻辑（用 lambda 代替流，便于单测）：
+ * 循环直到读完 / 超过 [max]；超过返回 null。
+ */
+internal suspend fun readUpTo(max: Long, read: suspend (ByteArray, Int, Int) -> Int): ByteArray? {
+    val out = ByteArrayOutputStream()
+    val buf = ByteArray(64 * 1024)
+    var total = 0L
+    while (true) {
+        val want = minOf(buf.size.toLong(), max + 1 - total)
+        if (want <= 0) break
+        val n = read(buf, 0, want.toInt())
+        if (n < 0) break
+        out.write(buf, 0, n)
+        total += n
+        if (total > max) return null
+    }
+    return out.toByteArray()
 }
 
 /** 保存结果（v2.0.15：保存路径从「回调里拼文案」改为「返回结构 + 纯函数出文案」，便于单测）。 */
@@ -153,14 +170,17 @@ internal fun saveStatusText(outcome: SaveOutcome, requestedCharset: String): Str
  *
  * [charset] == null → 走 `TextEncodings.decode` 的自动识别；
  * 指定编码（NP 的「指定编码重新加载」）时**不猜**，直接按该编码解（BOM 存在则剥离）。
+ *
+ * **超过 [max] 返回 null**（打开时会再报「文件过大」，见 [editorOpenPlan]）——
+ * 宁可明确拒绝，也不能把截断的前 N MB 当全文交给用户编辑。
  */
 internal suspend fun readWholeText(
     vfs: VirtualFileSystem,
     uri: VfsUri,
     charset: String?,
     max: Long = OPEN_LIMIT_BYTES,
-): TextEncodings.Decoded = withContext(Dispatchers.IO) {
-    val bytes = readAtMost(vfs, uri, max)
+): TextEncodings.Decoded? = withContext(Dispatchers.IO) {
+    val bytes = readAtMost(vfs, uri, max) ?: return@withContext null
     if (charset == null) TextEncodings.decode(bytes)
     else TextEncodings.Decoded(charset, TextEncodings.decodeWith(charset, bytes))
 }

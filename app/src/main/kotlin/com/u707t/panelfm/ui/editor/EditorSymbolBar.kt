@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -29,7 +28,6 @@ import androidx.compose.ui.unit.sp
  */
 @Composable
 internal fun EditorSymbolBar(
-    enabled: Boolean,
     textColor: Color,
     background: Color,
     onSymbol: (String) -> Unit,
@@ -48,14 +46,14 @@ internal fun EditorSymbolBar(
                 Modifier
                     .widthIn(min = 34.dp)
                     .height(36.dp)
-                    .clickable(enabled = enabled) { onSymbol(value) }
+                    .clickable { onSymbol(value) }
                     .padding(horizontal = 4.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     label,
                     fontSize = 12.sp,
-                    color = if (enabled) textColor else textColor.copy(alpha = 0.4f),
+                    color = textColor,
                 )
             }
         }
