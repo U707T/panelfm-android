@@ -11,9 +11,17 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -23,7 +31,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.ui.MtSpec
 import androidx.compose.ui.platform.LocalContext
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.LocalNetwork
@@ -328,6 +339,43 @@ fun AppRoot(container: AppContainer) {
                 right = current.right,
                 onBack = pop,
             )
+        }
+
+        // ---------------- 全局状态提示（所有页面共用）
+        //
+        // 为什么搬到这里：旧实现把 Snackbar 放在 BrowserDialogHost 里 —— 那个宿主只在
+        // 「双列浏览页」组合时才存在。于是在回收站还原 / 删除、文本对比、编辑器保存、
+        // 局域网扫描、设置页里 showStatus(...) 的结果**用户完全看不到**（消息进了队列，
+        // 下一次回浏览页才弹出来，早已对不上刚才的操作）。而且浏览页一旦被移出组合，
+        // 队列里的消息没有任何人消费，会一直堆着。
+        StatusHost(container)
+    }
+}
+
+/**
+ * 全局状态提示宿主（审计 U9 队列语义保留）：一条条显示、错误类停更久、可手动「知道了」。
+ *
+ * 位置：栈最外层，覆盖所有页面；底距 = 底栏高度 + 手势安全区，不再写死 66dp
+ * （全面屏手势条会压住 Snackbar 的下半截）。
+ */
+@Composable
+private fun BoxScope.StatusHost(container: AppContainer) {
+    val controller = container.browser
+    val queue by controller.statusQueue.collectAsState()
+    val message = queue.firstOrNull() ?: return
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        Snackbar(
+            modifier = Modifier
+                .padding(bottom = MtSpec.BottomBarHeight)
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom))
+                .padding(horizontal = 12.dp),
+            action = {
+                TextButton(onClick = { controller.consumeStatus() }) { Text("知道了") }
+            },
+        ) { Text(message) }
+        LaunchedEffect(message) {
+            kotlinx.coroutines.delay(controller.statusDurationMs(message))
+            controller.consumeStatus()
         }
     }
 }

@@ -25,4 +25,24 @@ class StatusDurationTest {
     fun `错误提示一定比普通提示停得久`() {
         assertTrue(statusDurationMs("失败") > statusDurationMs("成功"))
     }
+
+    @Test
+    fun `队列语义：后到的消息排在后面，不会被顶掉`() {
+        // 纯模型：showStatus = 追加并只保留最后 8 条（防止长时间操作刷屏把内存撑大）
+        fun push(queue: List<String>, message: String) = (queue + message).takeLast(8)
+
+        var q = emptyList<String>()
+        q = push(q, "已删除 2 项")
+        q = push(q, "已复制 3 项")
+        assertEquals(listOf("已删除 2 项", "已复制 3 项"), q)
+        // 消费一条（界面显示完 / 点「知道了」）
+        assertEquals(listOf("已复制 3 项"), q.drop(1))
+
+        // 超过上限只丢最老的，最新的必须还在（否则错误提示会被后续噪音顶掉）
+        var big = emptyList<String>()
+        repeat(12) { big = push(big, "消息$it") }
+        assertEquals(8, big.size)
+        assertEquals("消息11", big.last())
+        assertEquals("消息4", big.first())
+    }
 }

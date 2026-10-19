@@ -251,22 +251,21 @@ private class EpubWebViewClient(
     }
 }
 
-/** 读压缩包内条目（顺序读，带上限与目录判断）；不存在 / 超限 / 是目录 → null。 */
+/**
+ * 读压缩包内条目（顺序读，带上限与目录判断）；不存在 / 超限 / 是目录 → null。
+ *
+ * 上限判定同样走 `readBounded`：压缩包条目（尤其 gz）的 size 常为 -1，
+ * 旧实现只比 `meta.size > max`，等于对这类条目**完全不做上限检查**。
+ */
 internal fun readArchiveEntry(archive: ArchiveVfs, host: VfsUri, path: String, max: Long): ByteArray? = runBlocking {
     val uri = ArchiveVfs.uriFor(host, archive.kind, path)
     val meta = runCatching { archive.stat(uri) }.getOrNull() ?: return@runBlocking null
-    if (meta.isDirectory || meta.size > max) return@runBlocking null
+    if (meta.isDirectory || com.u707t.panelfm.core.common.definitelyExceeds(meta.size, max)) {
+        return@runBlocking null
+    }
     val reader = archive.openRead(uri)
     try {
-        val out = ByteArrayOutputStream(if (meta.size > 0) minOf(meta.size, max).toInt() else 64 * 1024)
-        val buf = ByteArray(64 * 1024)
-        while (true) {
-            val n = reader.read(buf, 0, buf.size)
-            if (n < 0) break
-            out.write(buf, 0, n)
-            if (out.size() > max) return@runBlocking null
-        }
-        out.toByteArray()
+        com.u707t.panelfm.core.common.readBounded(max) { buf, off, len -> reader.read(buf, off, len) }
     } finally {
         runCatching { reader.close() }
     }

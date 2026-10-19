@@ -154,7 +154,7 @@ fun BrowserController.copySelectionToClipboard(side: PaneSide, overrideSources: 
         showStatus("请先选中要复制到剪贴板的项（无选择时不取整个目录）")
         return
     }
-    clipboard = sources
+    setClipboard(sources)
     showStatus("已复制 ${sources.size} 项到剪贴板（可到其他目录粘贴）")
 }
 
@@ -164,7 +164,7 @@ fun BrowserController.copySelectionToClipboard(side: PaneSide, overrideSources: 
  */
 fun BrowserController.pasteFromClipboard(side: PaneSide, move: Boolean = false) {
     val st = _state.value
-    val sources = clipboard
+    val sources = clipboard.value
     if (sources.isEmpty()) {
         showStatus("剪贴板为空")
         return
@@ -187,7 +187,7 @@ fun BrowserController.pasteFromClipboard(side: PaneSide, move: Boolean = false) 
     container.engine.enqueue(
         TransferRequest(sources = reachable, destDir = dest, op = op, conflict = ConflictPolicy.ASK)
     )
-    if (move) clipboard = emptyList()
+    if (move) clearClipboard()
     clearSelection(side)
 }
 

@@ -37,6 +37,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtTextField
@@ -78,12 +79,40 @@ fun ConnectionEditScreen(
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
-    val existing = remember(connectionId) { connectionId?.let { id -> container.connectionDao.all().firstOrNull { it.id == id } } }
+
+    /**
+     * 已有连接（编辑模式）。
+     *
+     * ⚠️ 旧实现是 `remember { connectionDao.all()... }` —— **在组合期同步查 SQLite**
+     * （还顺手把整张表读出来再筛一条）。点「编辑」时主线程要等一次库查询 + 口令解密，
+     * 库被别处写锁时直接白卡一帧；而且这里的字段全靠它做初值，不能改成异步再回填
+     * （会被 remember 的初值锁死）。所以：一次性读好 → 用一个**外层标记**挡住首帧，
+     * 读库放在 IO 上，读完才组合表单。
+     */
+    var loadingExisting by remember(connectionId) { mutableStateOf(connectionId != null) }
+    var existing by remember(connectionId) { mutableStateOf<ConnectionConfig?>(null) }
+    var rawSecret by remember(connectionId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(connectionId) {
+        if (connectionId == null) {
+            loadingExisting = false
+            return@LaunchedEffect
+        }
+        val loaded = withContext(Dispatchers.IO) {
+            runCatching { container.connectionDao.all().firstOrNull { it.id == connectionId } }.getOrNull()
+        }
+        rawSecret = loaded?.let { runCatching { container.loadSecret(it.id) }.getOrNull() }
+        existing = loaded
+        loadingExisting = false
+    }
+    if (loadingExisting) {
+        Column(Modifier.fillMaxSize().safeAreaPadding()) {
+            MtScreenTopBar(title = "编辑连接", onBack = onBack)
+            LoadingState("正在读取连接配置…")
+        }
+        return
+    }
 
     // 原始 secret 串（未解码）：S3 是「纯 SK 或旧 AK:SK」，SFTP 是 JSON，其余是裸密码
-    val rawSecret = remember(connectionId) {
-        existing?.let { runCatching { container.loadSecret(it.id) }.getOrNull() }
-    }
     val storedSecrets = remember(connectionId) { SftpSecrets.parse(rawSecret) }
 
     var type by remember { mutableStateOf(existing?.type ?: initialType ?: ConnectionType.SFTP) }
@@ -287,8 +316,10 @@ fun ConnectionEditScreen(
                 }
                 val config = buildConfig()
                 val secret = buildSecret()
-                if (existing != null) {
-                    val oldSecret = runCatching { container.loadSecret(existing.id) }.getOrNull()
+                // 局部快照：existing 是 delegated property，无法智能转换（且异步写入后可能变）
+                val editing = existing
+                if (editing != null) {
+                    val oldSecret = runCatching { container.loadSecret(editing.id) }.getOrNull()
                     val secretSaved = container.saveSecret(config.id, secret)
                     if (!secretSaved) {
                         status = "配置未保存：口令写入失败（系统密钥库不可用）。请稍后重试。"
@@ -297,8 +328,8 @@ fun ConnectionEditScreen(
                     }
                     container.connectionDao.update(config)
                     // 会话键或口令变化 → 断掉旧会话，下次打开用新配置
-                    if (existing.sessionKey != config.sessionKey || oldSecret != secret) {
-                        container.disconnectConnection(existing)
+                    if (editing.sessionKey != config.sessionKey || oldSecret != secret) {
+                        container.disconnectConnection(editing)
                     }
                 } else {
                     val id = container.connectionDao.insert(config)

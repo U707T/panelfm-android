@@ -137,6 +137,15 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     /** 构造可播放的 MediaItem（本地走 file://，其余走 panelfm://） */
     fun itemFor(vfsUri: VfsUri): MediaItem = mediaItemFor(vfsUri, localPathOf(container, vfsUri))
 
+    /**
+     * 「播完自动接下一集」的回调槽。
+     *
+     * 必须是可变槽而不是直接捕获 `playAt`：`Player.Listener` 在 `DisposableEffect(player)`
+     * 里只注册一次，直接捕获会把首次组合时的 playlist / playlistIndex 冻在监听器里 ——
+     * 切过歌之后自动续播会跳回第一集。真实实现见 [playAt] 之后。
+     */
+    val onEnded = remember { mutableStateOf<(() -> Unit)?>(null) }
+
     // 播放期间屏幕常亮；退出释放播放器；亮度改动退出时恢复
     val liveNowPlayingUri by rememberUpdatedState(currentItem?.uri ?: uri)
     DisposableEffect(player) {
@@ -165,6 +174,11 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 // 复审 F19：READY / ENDED 等状态级变化时也刷新一次位置 ——
                 // 只靠「播放中 500ms 轮询」的话，暂停拖动 / 播完时进度条会落后半拍
                 positionMs = player.currentPosition.coerceAtLeast(0)
+                // 播完自动接下一集（播放列表存在且未开「单曲循环」时）。
+                // 旧实现只有手动点「下一集」：一集放完就停在最后一帧，用户以为卡死。
+                // 回调经 mutableStateOf 间接持有：监听器只注册一次，不能直接捕获
+                // playAt / playlist（否则切过歌后自动续播会跳回第一集）。
+                if (state == Player.STATE_ENDED && !looping) onEnded.value?.invoke()
             }
         }
         player.addListener(listener)
@@ -302,6 +316,15 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         val item = playlist.getOrNull(index) ?: return
         play(item.uri, index)
     }
+
+    /**
+     * 播完自动接下一集：每次组合刷新回调槽，槽里读的是**当前**的 playlist / playlistIndex。
+     * 列表末尾就停在最后一帧（不循环，符合「播放列表」语义）。
+     */
+    onEnded.value = {
+        nextTrackAfterEnded(playlist.size, playlistIndex, looping)?.let { playAt(it) }
+    }
+
 
     /** 错误区「重试」：重试**失败的那首**（旧实现恒定重试打开页面时的第一首） */
     fun retryPlayback() {

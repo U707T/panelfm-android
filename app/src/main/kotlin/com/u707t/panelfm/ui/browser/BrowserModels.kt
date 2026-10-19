@@ -67,6 +67,15 @@ data class PaneState(
     val search: String = "",
     /** 类型过滤（MT 的「过滤」）：null = 全部 */
     val filterKind: String? = null,
+    /**
+     * 该目录**未经搜索 / 类型过滤**的完整列表（VFS 返回并已排序）。
+     *
+     * 为什么要有它：过滤与目录内搜索都是**纯客户端**条件，改条件不需要再向服务器要一次目录。
+     * 旧实现 `setSearch` / `setFilter` 直接 `load(side)`（远端 = 一次完整往返，慢网下白等），
+     * 而且部分调用点还紧跟一次 `refresh()` —— 等于连拉两遍。
+     * 现在条件变化只在内存里重算 [items]（见 [applyPaneFilter]）。
+     */
+    val unfilteredItems: List<FileMetadata> = emptyList(),
 ) {
     val tab: PaneTab get() = tabs.getOrElse(activeTab) { tabs.first() }
     val uri: VfsUri get() = tab.uri
@@ -297,6 +306,27 @@ internal fun typedExtractPath(customPath: String?, currentPath: String): String?
 
 /** 状态提示里像"出错"的措辞：这类消息显示更久（审计 U9）。 */
 private val STATUS_ERROR_HINTS = listOf("失败", "错误", "异常", "无法", "⚠️")
+
+/**
+ * 把「搜索关键字 + 类型过滤」应用到一份目录列表上（纯函数，便于单测）。
+ *
+ * 抽成纯函数的原因：条件变化时**只重算内存里的列表**，不再向服务器重拉目录
+ * （见 [PaneState.unfilteredItems]）。规则与 load() 里的完全一致，不允许两处各写一份。
+ */
+internal fun applyPaneFilter(
+    source: List<FileMetadata>,
+    search: String,
+    filterKind: String?,
+): List<FileMetadata> {
+    val bySearch = if (search.isBlank()) source else source.filter {
+        com.u707t.panelfm.core.common.FileSearch.matches(it.name, search)
+    }
+    if (filterKind == null) return bySearch
+    return bySearch.filter {
+        it.isDirectory || it.extension.isEmpty() ||
+            com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == filterKind
+    }
+}
 
 /** 一条状态提示该显示多久（纯函数，便于单测）：错误类 6s、普通 2.6s。 */
 internal fun statusDurationMs(message: String): Long =

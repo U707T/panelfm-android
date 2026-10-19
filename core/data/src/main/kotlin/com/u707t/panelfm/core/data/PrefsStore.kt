@@ -2,9 +2,11 @@ package com.u707t.panelfm.core.data
 
 import android.content.Context
 import androidx.datastore.core.DataStore
+import androidx.datastore.core.handlers.ReplaceFileCorruptionHandler
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.emptyPreferences
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -117,7 +119,19 @@ data class AppSettings(
     val editorTheme: String = "",
 )
 
-private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(name = "panel_prefs")
+/**
+ * 设置文件损坏时的兜底：**换一份空的**继续跑，而不是让整条 settings 流抛异常。
+ *
+ * 为什么必须有：DataStore 在 `panel_prefs.preferences_pb` 被写坏（断电 / 磁盘满 / 杀进程
+ * 恰好落在 rename 中间）时会抛 `CorruptionException`。没有 handler 时这个异常会从
+ * `settings` Flow 里抛出 → 三个收集方（AppContainer、BrowserController、各界面）
+ * 全部静默结束 → 用户看到的是「所有设置不生效、永远默认值、浏览器不自动加载」，
+ * 而且没有任何提示，只能清数据。换空文件至少让 App 可用，且下次写设置会重建。
+ */
+private val Context.panelDataStore: DataStore<Preferences> by preferencesDataStore(
+    name = "panel_prefs",
+    corruptionHandler = ReplaceFileCorruptionHandler { emptyPreferences() },
+)
 
 class PrefsStore(private val context: Context) {
 

@@ -2,17 +2,14 @@ package com.u707t.panelfm.ui.browser
 
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -91,7 +88,8 @@ internal fun BrowserDialogHost(
                     // 「清除」时把类型过滤也一并取消，否则列表仍被类型条件卡住
                     if (q.isBlank() && focused.filterKind != null) controller.setFilter(focusSide, null)
                     if (q.isNotBlank()) scope.launch { container.prefs.addInputHistory(PrefsStore.RecordKeys.FILTER, q) }
-                    controller.refresh(focusSide)
+                    // 不再 refresh：过滤是纯客户端条件，setSearch/setFilter 已在内存里重算列表
+                    // （旧实现这里会再拉一遍目录 —— 远端存储上是白等一次完整往返）
                 },
                 onDismiss = { filterInput = false },
             )
@@ -124,7 +122,6 @@ internal fun BrowserDialogHost(
                                     .clickableNoRipple {
                                         showTypeFilter = false
                                         controller.setFilter(focusSide, kind)
-                                        controller.refresh(focusSide)
                                     }
                                     .padding(vertical = 10.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -624,20 +621,9 @@ internal fun BrowserDialogHost(
             )
         }
     
-        // ---------------- 状态提示（队列：一条条显示，不互相顶掉；错误类停更久 —— 审计 U9）
-        val statusQueue by controller.statusQueue.collectAsState()
-        statusQueue.firstOrNull()?.let { msg ->
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
-                Snackbar(
-                    modifier = Modifier.padding(bottom = 66.dp),
-                    action = { TextButton(onClick = { controller.consumeStatus() }) { Text("知道了") } },
-                ) { Text(msg) }
-            }
-            LaunchedEffect(msg) {
-                kotlinx.coroutines.delay(controller.statusDurationMs(msg))
-                controller.consumeStatus()
-            }
-        }
+        // ---------------- 状态提示已上移到 AppRoot 的全局宿主（v2.0.19）：
+        // 回收站 / 文本对比 / 编辑器 / 设置等页面里的 showStatus 也能看到，
+        // 且浏览页移出组合时队列仍有人消费。这里不再渲染。
     
         // ---------------- 冲突 / 移动确认 / 属性
         ui.renameConflict?.let { conflict ->

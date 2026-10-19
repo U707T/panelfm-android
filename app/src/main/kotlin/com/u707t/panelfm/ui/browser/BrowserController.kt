@@ -430,12 +430,29 @@ class BrowserController(internal val container: AppContainer) {
 
     // ------------------------------------------------------------------ 路径
 
-    /** 剪贴板是否为空（UI 决定 FAB 是否显示） */
-    val hasClipboard: Boolean get() = clipboard.isNotEmpty()
+    /**
+     * 应用内剪贴板（源 URI 列表）。放控制器而不是系统剪贴板：能表达「多项 + 移动语义」。
+     *
+     * ⚠️ 必须是 `MutableStateFlow`（**不是**普通 `@Volatile var`）：界面用它决定
+     * 「粘贴 FAB 是否出现」「⋮ 菜单里有没有粘贴项」。旧实现是普通字段，读它不产生订阅 ——
+     * 复制到剪贴板后 FAB 不会出现，必须切目录 / 触发别的重组才「突然冒出来」；
+     * 移动粘贴清空剪贴板后 FAB 也不消失。
+     */
+    private val _clipboard = MutableStateFlow<List<VfsUri>>(emptyList())
 
-    /** 应用内剪贴板（源 URI 列表）。放控制器而不是系统剪贴板：能表达「多项 + 移动语义」 */
-    @Volatile
-    internal var clipboard: List<VfsUri> = emptyList()
+    /** 只读视图（界面可 `collectAsState`；外部只改 [_clipboard]） */
+    val clipboard: StateFlow<List<VfsUri>> = _clipboard
+
+    internal fun setClipboard(sources: List<VfsUri>) {
+        _clipboard.value = sources
+    }
+
+    internal fun clearClipboard() {
+        _clipboard.value = emptyList()
+    }
+
+    /** 剪贴板是否为空（UI 决定 FAB 是否显示 / 菜单是否给粘贴项） */
+    val hasClipboard: Boolean get() = _clipboard.value.isNotEmpty()
 
     companion object {
         const val HISTORY_LIMIT = 100

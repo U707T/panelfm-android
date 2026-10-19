@@ -48,7 +48,13 @@ fun LoadingState(text: String = "加载中…", modifier: Modifier = Modifier) {
 }
 
 @Composable
-fun EmptyState(title: String, subtitle: String? = null, modifier: Modifier = Modifier) {
+fun EmptyState(
+    title: String,
+    subtitle: String? = null,
+    modifier: Modifier = Modifier,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null,
+) {
     Box(modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Text(title, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -60,6 +66,9 @@ fun EmptyState(title: String, subtitle: String? = null, modifier: Modifier = Mod
                     textAlign = TextAlign.Center,
                     modifier = Modifier.padding(top = 6.dp, start = 24.dp, end = 24.dp),
                 )
+            }
+            if (actionLabel != null && onAction != null) {
+                TextButton(onClick = onAction) { Text(actionLabel) }
             }
         }
     }

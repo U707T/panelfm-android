@@ -84,6 +84,25 @@ internal fun planShuffleToggle(
 }
 
 /**
+ * 播完一首之后应当接着播哪一项（纯函数，可单测）。
+ *
+ * 语义：
+ *  - 单曲循环（[looping]）→ null（交给播放器 repeat，不切歌）；
+ *  - 列表里还有下一项 → 下一项下标；
+ *  - 已到末尾 / 列表为空 / 当前下标无效 → null（停在最后一帧，不循环）。
+ */
+internal fun nextTrackAfterEnded(
+    playlistSize: Int,
+    currentIndex: Int,
+    looping: Boolean,
+): Int? {
+    if (looping) return null
+    if (playlistSize <= 0 || currentIndex !in 0 until playlistSize) return null
+    val next = currentIndex + 1
+    return if (next < playlistSize) next else null
+}
+
+/**
  * 同目录的音频 / 视频列表（播放列表的数据源）。
  *
  * 会话不可用 / 列表失败时**向上抛**（由调用方决定「保持现状」）——不在这里吞异常，

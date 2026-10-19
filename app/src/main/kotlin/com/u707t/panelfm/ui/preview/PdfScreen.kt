@@ -42,7 +42,10 @@ import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
 import java.io.File
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -98,9 +101,13 @@ private fun PdfPager(file: File, onPageCount: (Int) -> Unit) {
     // ⚠️ close 必须与渲染走**同一把锁**：渲染协程被取消时仍会把当前一页渲染完
     //    （IO 块内没有挂起点），与 onDispose 的 close 并发违反 PdfRenderer 的
     //    「非线程安全」前提 —— 先取锁把在飞渲染等完再关（2026-10-08 重审 §2）。
+    // ⚠️ 取锁必须离开主线程：渲染一页是几十毫秒级，`runBlocking { lock.withLock { … } }`
+    //    写在 onDispose 里等于**在主线程上等渲染**（用户返回时明显卡一下，大页更久）。
+    //    改成「后台协程取锁并关闭」：返回动画不等它，渲染器自己会在锁内被关掉。
     DisposableEffect(file) {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         onDispose {
-            runBlocking {
+            scope.launch {
                 lock.withLock {
                     runCatching { renderer?.close() }
                     runCatching { descriptor?.close() }
@@ -206,8 +213,12 @@ private suspend fun materializePdf(container: AppContainer, item: FileMetadata):
     }
     val dir = File(container.appDirs.cacheDir, "pdf")
     runCatching { dir.mkdirs() }
-    val target = File(dir, "doc-${item.uri.toString().hashCode()}-${item.size}.pdf")
+    // ⚠️ 缓存键必须带 uri 的**完整哈希**：旧实现用 `String.hashCode()`（32 位），
+    // 不同 PDF 撞哈希 → 直接打开别人的缓存文件（看到的是错文档）。
+    // 顺带每次落盘前清一遍超龄缓存（见 pruneMaterialized）。
+    val target = File(dir, "doc-${materializeKey(item.uri.toString())}-${item.size}.pdf")
     if (target.exists() && target.length() > 0) return target
+    pruneMaterialized(dir, keep = target)
     val tmp = File(dir, "${target.name}.part")
     val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
     vfs.openRead(item.uri).use { reader ->
@@ -225,4 +236,24 @@ private suspend fun materializePdf(container: AppContainer, item: FileMetadata):
         tmp.delete()
     }
     return target
+}
+
+/** 物化缓存键：SHA-256 前 16 个 hex 字符（碰撞概率可忽略，文件名仍是定长 ASCII） */
+private fun materializeKey(s: String): String =
+    java.security.MessageDigest.getInstance("SHA-256")
+        .digest(s.toByteArray())
+        .take(8)
+        .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+
+/**
+ * 清掉物化缓存里超过 3 天没被碰过的文件（远程 PDF 先落盘才能渲染，只增不减会一直吃存储）。
+ * [keep] 是本次要用的目标文件，永不删除。
+ */
+private fun pruneMaterialized(dir: File, keep: File) {
+    val cutoff = System.currentTimeMillis() - 3L * 24 * 3600 * 1000
+    runCatching {
+        dir.listFiles()?.forEach { f ->
+            if (f != keep && f.lastModified() < cutoff) runCatching { f.delete() }
+        }
+    }
 }

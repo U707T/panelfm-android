@@ -49,4 +49,45 @@ class PaneFilterTest {
         assertFalse(p.filtered)
         assertEquals(p, p.clearedFilter())
     }
+
+    // ---------------- 过滤是纯客户端条件：改条件只重算内存列表，不重拉目录 ----------------
+
+    private fun file(name: String, dir: Boolean = false) =
+        com.u707t.panelfm.core.vfs.FileMetadata(
+            uri = com.u707t.panelfm.core.vfs.VfsUri("local", "emulated", "/$name"),
+            name = name,
+            isDirectory = dir,
+            size = if (dir) -1L else 1L,
+        )
+
+    @Test
+    fun `关键字过滤只筛内存列表`() {
+        val all = listOf(file("a.txt"), file("b.jpg"), file("c.txt"))
+        assertEquals(listOf("a.txt", "c.txt"), applyPaneFilter(all, ".txt", null).map { it.name })
+    }
+
+    @Test
+    fun `类型过滤保留目录与无后缀文件`() {
+        val all = listOf(file("dir", dir = true), file("a.jpg"), file("b.txt"), file("README"))
+        val out = applyPaneFilter(all, "", "IMAGE").map { it.name }
+        // 目录与无后缀项不受类型过滤影响（否则用户连「进上级」都找不到）
+        assertTrue(out.containsAll(listOf("dir", "README")))
+        assertTrue(out.contains("a.jpg"))
+        assertFalse(out.contains("b.txt"))
+    }
+
+    @Test
+    fun `关键字与类型过滤叠加`() {
+        val all = listOf(file("cat.jpg"), file("dog.jpg"), file("cat.txt"))
+        assertEquals(listOf("cat.jpg"), applyPaneFilter(all, "cat", "IMAGE").map { it.name })
+    }
+
+    @Test
+    fun `清空条件后必须能回到完整列表`() {
+        val all = listOf(file("a.jpg"), file("b.txt"))
+        val filtered = applyPaneFilter(all, "a", "IMAGE")
+        assertEquals(1, filtered.size)
+        // 这是「过滤设上就取消不了」那类 bug 的防线：源列表必须原样可用
+        assertEquals(2, applyPaneFilter(all, "", null).size)
+    }
 }

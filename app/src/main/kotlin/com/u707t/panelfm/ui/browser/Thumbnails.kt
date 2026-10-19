@@ -28,8 +28,39 @@ object ThumbCache {
     private val memory = android.util.LruCache<String, Bitmap>(120)
     private var cacheDir: File? = null
 
+    /**
+     * 磁盘缓存上限（默认 128 MB）。
+     *
+     * 旧实现**没有任何淘汰**：`cache/thumbs/<sha1>.png` 只增不减，用户浏览过的每张图都会
+     * 永久留一份缩略图。重度使用几个月后就是几百 MB 的隐形占用（且在 cache 目录里，
+     * 系统只在「存储告急」时才会动它）。现在每次启动 + 每写 64 张图检查一次总量，
+     * 超限按「最久未修改」淘汰到上限的 80%。
+     */
+    private const val MAX_DISK_BYTES = 128L * 1024 * 1024
+    private val writesSincePrune = java.util.concurrent.atomic.AtomicInteger(0)
+
     fun init(dir: String) {
         cacheDir = File(dir).apply { mkdirs() }
+        // 启动时在后台清一次（不阻塞首帧）
+        Thread({
+            runCatching { pruneDiskCache() }
+        }, "panelfm-thumb-prune").apply { isDaemon = true }.start()
+    }
+
+    /** 按「最久未修改」把磁盘缓存淘汰到上限的 80%；返回是否做过删除。 */
+    private fun pruneDiskCache(): Boolean {
+        val dir = cacheDir ?: return false
+        val files = dir.listFiles()?.filter { it.isFile } ?: return false
+        var total = files.sumOf { it.length() }
+        if (total <= MAX_DISK_BYTES) return false
+        val target = (MAX_DISK_BYTES * 8 / 10)
+        // 最老的先删；同一次写入的 .tmp 之类也一并参与统计
+        files.sortedBy { it.lastModified() }.forEach { f ->
+            if (total <= target) return@forEach
+            val len = f.length()
+            if (runCatching { f.delete() }.getOrDefault(false)) total -= len
+        }
+        return true
     }
 
     private fun keyOf(item: FileMetadata): String =
@@ -103,6 +134,10 @@ object ThumbCache {
         memory.put(key, bitmap)
         runCatching {
             fileOf(key)?.let { f -> withContext(Dispatchers.IO) { f.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 80, it) } } }
+        }
+        // 每 64 次写入检查一次磁盘上限（在 IO 上做，不阻塞缩略图返回）
+        if (writesSincePrune.incrementAndGet() % 64 == 0) {
+            withContext(Dispatchers.IO) { runCatching { pruneDiskCache() } }
         }
         return bitmap
     }

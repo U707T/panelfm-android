@@ -26,6 +26,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -61,7 +62,12 @@ import com.u707t.panelfm.ui.browser.refreshAll
 fun TrashScreen(container: AppContainer, onBack: () -> Unit) {
     val scope = rememberCoroutineScope()
     var version by remember { mutableStateOf(0) }
-    val items = remember(version) { container.trash.list() }
+    // 索引读盘要放在 IO 上：list() 是「读 index.json + 解析 JSON」，条目多时是几十毫秒级；
+    // 旧实现直接在组合期同步读（remember { container.trash.list() }），
+    // 点进回收站会白卡一帧，条目越多越明显。
+    val items by produceState(initialValue = emptyList<TrashService.Entry>(), version) {
+        value = withContext(Dispatchers.IO) { container.trash.list() }
+    }
     // 破坏性操作二次确认：旧实现「清空 / 彻底删除」单击即执行，
     // 比普通删除（有确认框）还少一道确认，而这两处恰恰不可逆。
     var confirmPurgeAll by remember { mutableStateOf(false) }

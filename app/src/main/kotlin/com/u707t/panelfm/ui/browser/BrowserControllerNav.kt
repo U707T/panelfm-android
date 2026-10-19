@@ -56,19 +56,15 @@ fun BrowserController.load(side: PaneSide) {
             )
             val listed = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
             updateLoad(side, generation, uri) { it.copy(loadProgress = 0.75f) }
-            val bySearch = listed.filter { matchesSearch(it.name, pane.search) }
-            val items = pane.filterKind?.let { kindName ->
-                bySearch.filter {
-                    it.isDirectory || it.extension.isEmpty() ||
-                        com.u707t.panelfm.core.common.MimeTypes.kindOf(it.extension).name == kindName
-                }
-            } ?: bySearch
+            val items = applyPaneFilter(listed, pane.search, pane.filterKind)
             updateLoad(side, generation, uri) { it.copy(loadProgress = 0.9f) }
             val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
             // loadedUri = 「这批 items 属于哪个目录」：滚动位置记忆按它来记，避免串目录
             updateLoad(side, generation, uri) {
                 it.copy(
                     items = items,
+                    // 未过滤的完整列表：之后改搜索 / 类型过滤只在内存里重算，不再重拉目录
+                    unfilteredItems = listed,
                     loading = false,
                     loadProgress = null,
                     error = null,
@@ -93,6 +89,7 @@ fun BrowserController.load(side: PaneSide) {
                     loadProgress = null,
                     error = (e as? VfsException)?.userMessage ?: (e.message ?: "加载失败"),
                     items = emptyList(),
+                    unfilteredItems = emptyList(),
                     loadedUri = null,
                     selectionAnchor = null,
                     tapAnchor = null,

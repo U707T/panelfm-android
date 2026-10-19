@@ -74,22 +74,11 @@ internal suspend fun readAtMost(
 /**
  * [readAtMost] 的纯读取逻辑（用 lambda 代替流，便于单测）：
  * 循环直到读完 / 超过 [max]；超过返回 null。
+ *
+ * 实现已收敛到 `core.common.readBounded`（预览 / EPUB 也用它，三处不再各写一份）。
  */
-internal suspend fun readUpTo(max: Long, read: suspend (ByteArray, Int, Int) -> Int): ByteArray? {
-    val out = ByteArrayOutputStream()
-    val buf = ByteArray(64 * 1024)
-    var total = 0L
-    while (true) {
-        val want = minOf(buf.size.toLong(), max + 1 - total)
-        if (want <= 0) break
-        val n = read(buf, 0, want.toInt())
-        if (n < 0) break
-        out.write(buf, 0, n)
-        total += n
-        if (total > max) return null
-    }
-    return out.toByteArray()
-}
+internal suspend fun readUpTo(max: Long, read: suspend (ByteArray, Int, Int) -> Int): ByteArray? =
+    com.u707t.panelfm.core.common.readBounded(max, read)
 
 /** 保存结果（v2.0.15：保存路径从「回调里拼文案」改为「返回结构 + 纯函数出文案」，便于单测）。 */
 internal data class SaveOutcome(

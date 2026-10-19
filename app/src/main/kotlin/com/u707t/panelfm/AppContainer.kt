@@ -32,6 +32,7 @@ import com.u707t.panelfm.service.TransferService
 import com.u707t.panelfm.ui.browser.BrowserController
 import com.u707t.panelfm.ui.browser.ThumbCache
 import com.u707t.panelfm.ui.preview.VfsDataSourceFactory
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -51,7 +52,20 @@ class AppContainer(val app: Application) {
 
     val appDirs: AppDirs = AppDirs(app.filesDir.absolutePath, app.cacheDir.absolutePath).also { it.ensure() }
 
-    val scope = CoroutineScope(SupervisorJob() + dispatchers.io)
+    /**
+     * 应用级协程作用域。
+     *
+     * ⚠️ 必须挂 [CoroutineExceptionHandler]：`SupervisorJob` 只保证「一个子作业失败不连坐兄弟」，
+     * **不会**阻止未捕获异常继续上抛到线程默认处理器 —— 默认处理器直接杀进程。
+     * 全仓 100+ 处 `scope.launch`，其中大量是「读数据库 / 落盘 / 连服务器」这类外部失败面，
+     * 一处漏掉 try/catch（例如 DataStore 写失败、SQLite 磁盘满、协程里抛的非 VfsException）
+     * 就是整个 App 闪退。有了 handler：记一条 ERROR 日志、App 继续跑。
+     */
+    private val crashGuard = CoroutineExceptionHandler { _, t ->
+        runCatching { Logx.e("Scope", "未捕获的协程异常（已兜住，未崩溃）", t) }
+    }
+
+    val scope = CoroutineScope(SupervisorJob() + crashGuard + dispatchers.io)
 
     val env: VfsEnv = VfsEnv(
         appDirs = appDirs,

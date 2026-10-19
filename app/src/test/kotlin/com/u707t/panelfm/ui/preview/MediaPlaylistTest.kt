@@ -100,4 +100,31 @@ class MediaPlaylistTest {
         assertEquals(keys(shuffled), keys(out.playlist))
         assertEquals(2, out.playlist.size)
     }
+    // ---------------- 播完自动续播（v2.0.19）
+
+    @Test
+    fun `播完接下一集`() {
+        assertEquals(1, nextTrackAfterEnded(playlistSize = 3, currentIndex = 0, looping = false))
+        assertEquals(2, nextTrackAfterEnded(playlistSize = 3, currentIndex = 1, looping = false))
+    }
+
+    @Test
+    fun `最后一集播完停在原地，不回头重播`() {
+        assertEquals(null, nextTrackAfterEnded(3, 2, looping = false))
+        // 单集列表同样不该「自动重播自己」
+        assertEquals(null, nextTrackAfterEnded(1, 0, looping = false))
+    }
+
+    @Test
+    fun `单曲循环时交给播放器 repeat，不切歌`() {
+        assertEquals(null, nextTrackAfterEnded(3, 0, looping = true))
+    }
+
+    @Test
+    fun `空列表与非法下标不能崩，也不能误切`() {
+        assertEquals(null, nextTrackAfterEnded(0, 0, looping = false))
+        assertEquals(null, nextTrackAfterEnded(0, -1, looping = false))
+        assertEquals(null, nextTrackAfterEnded(3, 3, looping = false))
+        assertEquals(null, nextTrackAfterEnded(3, -1, looping = false))
+    }
 }

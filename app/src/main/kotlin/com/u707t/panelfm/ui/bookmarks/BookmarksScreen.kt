@@ -18,6 +18,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -56,7 +57,13 @@ import com.u707t.panelfm.ui.browser.reorderBookmarks
 fun BookmarksScreen(container: AppContainer, onBack: () -> Unit, onOpen: () -> Unit) {
     var version by remember { mutableStateOf(0) }
     var order by remember { mutableStateOf<List<Long>>(emptyList()) }
-    val raw = remember(version) { container.browser.bookmarks() }
+    // 书签列表要查 SQLite：组合期同步查（remember { browser.bookmarks() }）会在
+    // 进页面时白卡一帧，条目多 / 库被别处写锁时更明显 —— 改到 IO 上读。
+    val raw by produceState(initialValue = emptyList<Bookmark>(), version) {
+        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            container.browser.bookmarks()
+        }
+    }
     // 拖动排序的本地顺序（优先于创建时间序；拖动结束写回数据库）
     val bookmarks: List<Bookmark> = remember(raw, order) {
         if (order.isEmpty()) raw else {

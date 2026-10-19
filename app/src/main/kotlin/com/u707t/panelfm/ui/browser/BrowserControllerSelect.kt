@@ -108,9 +108,17 @@ fun BrowserController.clearSelection(side: PaneSide) {
     updatePane(side) { it.withSelectionCleared() }
 }
 
+/**
+ * 目录内搜索（客户端过滤，**不重拉目录**）。
+ *
+ * 旧实现直接 `load(side)`：远端存储要为此付一次完整的目录往返（慢网下白等），
+ * 而且调用方（过滤对话框）提交后还会再 `refresh()` 一次 —— 等于连拉两遍。
+ * 条件本身只作用于文件名，用 [applyPaneFilter] 在内存里重算即可。
+ */
 fun BrowserController.setSearch(side: PaneSide, query: String) {
-    updatePane(side) { it.copy(search = query) }
-    load(side)
+    updatePane(side) { pane ->
+        pane.copy(items = applyPaneFilter(pane.unfilteredItems, query, pane.filterKind), search = query)
+    }
 }
 
 /**
@@ -123,9 +131,11 @@ fun BrowserController.setSearch(side: PaneSide, query: String) {
 fun BrowserController.matchesSearch(name: String, query: String): Boolean =
     com.u707t.panelfm.core.common.FileSearch.matches(name, query)
 
-/** MT 的「过滤」：按类型筛选当前目录（客户端过滤，立即生效） */
+/** MT 的「过滤」：按类型筛选当前目录（客户端过滤，立即生效，不重拉目录） */
 fun BrowserController.setFilter(side: PaneSide, kind: String?) {
-    updatePane(side) { it.copy(filterKind = kind) }
+    updatePane(side) { pane ->
+        pane.copy(items = applyPaneFilter(pane.unfilteredItems, pane.search, kind), filterKind = kind)
+    }
 }
 
 // ------------------------------------------------------------------ 书签 / 首页

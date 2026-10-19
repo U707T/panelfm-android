@@ -287,8 +287,19 @@ private suspend fun materializeApk(container: AppContainer, item: FileMetadata):
     }
     val dir = File(container.appDirs.cacheDir, "apk")
     runCatching { dir.mkdirs() }
-    val target = File(dir, "pkg-${item.uri.toString().hashCode()}-${item.size}.apk")
+    // 缓存键用 SHA-256 前 16 个 hex（旧实现是 String.hashCode()，32 位 → 不同 APK 撞哈希
+    // 会直接解析成别人的包信息 / 装错包）
+    val key = java.security.MessageDigest.getInstance("SHA-256")
+        .digest(item.uri.toString().toByteArray())
+        .take(8)
+        .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+    val target = File(dir, "pkg-$key-${item.size}.apk")
     if (target.exists() && target.length() > 0) return target
+    // 清掉 3 天没碰过的物化缓存（APK 动辄几十上百 MB，只增不减会吃掉用户存储）
+    val cutoff = System.currentTimeMillis() - 3L * 24 * 3600 * 1000
+    runCatching {
+        dir.listFiles()?.forEach { f -> if (f != target && f.lastModified() < cutoff) runCatching { f.delete() } }
+    }
     val tmp = File(dir, "${target.name}.part")
     val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
     vfs.openRead(item.uri).use { reader ->

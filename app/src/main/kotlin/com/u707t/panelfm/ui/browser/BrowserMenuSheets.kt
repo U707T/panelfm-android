@@ -122,6 +122,8 @@ internal fun BrowserMoreMenu(
     val context = LocalContext.current
     val focused = ui.focusedPane
     val focusSide = ui.focused
+    // 订阅剪贴板：复制后「粘贴」两项要立刻出现在菜单里，移动粘贴后要立刻消失
+    val clipboardItems by controller.clipboard.collectAsState()
     with(ds) {
         // ---------------- ⋮ 菜单
         //   顺序**逐条对照 MT 截图**（右半屏的菜单）：
@@ -149,7 +151,6 @@ internal fun BrowserMoreMenu(
                         showMoreMenu = false
                         controller.setSearch(focusSide, "")
                         controller.setFilter(focusSide, null)
-                        controller.refresh(focusSide)
                         controller.showStatus("已清除过滤")
                     }
                 }
@@ -166,7 +167,7 @@ internal fun BrowserMoreMenu(
                 // ---- 以下是 PanelFM 的扩展项（MT 的 ⋮ 里没有，但语义上属于同一层）----
                 MtMenuRow(MtIcon.KEYBOARD, "输入路径") { showMoreMenu = false; gotoPath = true }
                 MtMenuRow(MtIcon.COPY, "复制到剪贴板") { showMoreMenu = false; controller.copySelectionToClipboard(focusSide) }
-                if (controller.hasClipboard) {
+                if (clipboardItems.isNotEmpty()) {
                     MtMenuRow(MtIcon.PASTE, "粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide) }
                     MtMenuRow(MtIcon.CUT, "移动粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide, move = true) }
                 }

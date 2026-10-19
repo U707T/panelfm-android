@@ -31,6 +31,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.definitelyExceeds
+import com.u707t.panelfm.core.common.readBounded
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.OfficeFormats
 import com.u707t.panelfm.core.common.RenderFormats
@@ -270,27 +272,30 @@ internal fun PreviewDiagnosticsDialog(
     )
 }
 
-/** 读取文件字节（带大小上限；超限直接给可执行的提示，而不是渲染到一半崩掉）。 */
+/**
+ * 读取文件字节（带大小上限）。
+ *
+ * ⚠️ 上限必须**判定在读取过程中**，不能只看 `item.size`：远端 VFS / 压缩包条目的
+ * size 可能是 -1（未知，见 `FileMetadata.size` 默认值与 `ArchiveVfs` 的 gz 分支），
+ * 这时 `item.size > max` 恒为 false —— 旧实现会把「前 max 字节」当整份文档交给渲染器，
+ * 用户看到的是**被截断的文档**（表格少一半、PPT 缺页），而且没有任何提示。
+ * 现在统一走 `readBounded`（多读 1 字节即可区分「正好 max」与「超过 max」），
+ * 与编辑器同一口径。
+ */
 internal suspend fun readPreviewBytes(container: AppContainer, item: FileMetadata, max: Long): ByteArray {
-    if (item.size > max) {
-        throw IllegalStateException("文件超过 ${Fmt.size(max)}，暂不支持内置预览。\n\n请用「打开方式…」交给外部应用。")
-    }
+    if (definitelyExceeds(item.size, max)) throw tooLargeForPreview(max)
     // resolveSession：会话被回收 / URI 丢过连接号时自动重连（与预览页一致，
     // 旧写法只用 locator.find，网络盘放一会儿再进来会直接报「会话不可用」）
     val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用")
     val reader = vfs.openRead(item.uri)
     try {
-        val out = ByteArrayOutputStream(minOf(item.size, max).toInt().coerceAtLeast(0))
-        val buf = ByteArray(64 * 1024)
-        var total = 0L
-        while (total < max) {
-            val n = reader.read(buf, 0, minOf(buf.size.toLong(), max - total).toInt())
-            if (n < 0) break
-            out.write(buf, 0, n)
-            total += n
-        }
-        return out.toByteArray()
+        return readBounded(max) { buf, off, len -> reader.read(buf, off, len) }
+            ?: throw tooLargeForPreview(max)
     } finally {
         runCatching { reader.close() }
     }
 }
+
+private fun tooLargeForPreview(max: Long) = IllegalStateException(
+    "文件超过 ${Fmt.size(max)}，暂不支持内置预览。\n\n请用「打开方式…」交给外部应用。",
+)

@@ -123,10 +123,23 @@ fun PaneView(
     onRowAction: (FileMetadata) -> Unit,
 ) {
     val listState = rememberLazyListState()
-    // 剪贴板里有没有内容（决定粘贴 FAB 是否出现）
-    val clipboardReady = controller.hasClipboard
+    // 剪贴板里有没有内容（决定粘贴 FAB 是否出现）—— 必须订阅：复制 / 移动粘贴后要立刻变化
+    val clipboardItems by controller.clipboard.collectAsState()
+    val clipboardReady = clipboardItems.isNotEmpty()
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
     val settings by container.settings.collectAsState()
+    // 缩略图策略 / 副标题档位在这里算一次，下传给每一行（行内不再订阅 settings）
+    val thumbPolicy = remember(
+        settings.thumbnailsOnMobile,
+        settings.thumbnailMaxBytes,
+        settings.thumbnailTimeoutSec,
+    ) {
+        ThumbPolicy(
+            onMobileData = settings.thumbnailsOnMobile,
+            maxBytes = settings.thumbnailMaxBytes,
+            timeoutSec = settings.thumbnailTimeoutSec,
+        )
+    }
     val density = LocalDensity.current
 
 
@@ -327,9 +340,20 @@ fun PaneView(
                     actionLabel = "重试",
                     onAction = { controller.refresh(side) },
                 )
+                // ⚠️ 「过滤后为空」必须排在 canGoUp 之前判断：子目录里过滤不到东西时，
+                // canGoUp 恒为真 → 旧逻辑只画一行 `..`，用户完全不知道是过滤把内容挡住了。
+                pane.items.isEmpty() && pane.filtered -> EmptyState(
+                    title = "没有匹配的项",
+                    subtitle = "当前目录里有内容，但都被搜索 / 类型过滤挡住了",
+                    actionLabel = "清除过滤",
+                    onAction = {
+                        controller.setSearch(side, "")
+                        controller.setFilter(side, null)
+                    },
+                )
                 pane.items.isEmpty() && !canGoUp -> EmptyState(
-                    if (pane.filtered) "没有匹配的项" else "空目录",
-                    if (pane.filtered) "试试清除搜索或过滤条件" else "底部 ＋ 新建，或从对面窗格复制进来",
+                    "空目录",
+                    "底部 ＋ 新建，或从对面窗格复制进来",
                 )
                 else -> LazyColumn(
                     state = listState,
@@ -365,6 +389,11 @@ fun PaneView(
                         MtFileRow(
                             container = container,
                             skipThumb = listState.isScrollInProgress && settings.skipThumbsWhileScrolling,
+                            // 设置项由窗格顶层取一次、按值下传：每一行各自 collectAsState 会
+                            // 产生 N 份订阅 + N 次重组（长目录里滚动明显发涩），
+                            // 见 ThumbPolicy 的 KDoc 里同一条结论。
+                            thumbPolicy = thumbPolicy,
+                            listDisplayMode = settings.listDisplayMode,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
                             // 行动效预览：只有被滑动的那一行读这个位移（其余行传 null，不参与重组）
@@ -556,6 +585,10 @@ private fun ParentRow(onClick: () -> Unit) {
 private fun MtFileRow(
     container: com.u707t.panelfm.AppContainer,
     skipThumb: Boolean,
+    /** 缩略图策略（窗格顶层取一次后下传，行内不再各自订阅 settings） */
+    thumbPolicy: ThumbPolicy,
+    /** 列表副标题档位（同上，按值下传） */
+    listDisplayMode: Int,
     item: FileMetadata,
     selected: Boolean,
     /** 滑动选中的行动效：非 null = 这一行刚被滑动选中（值 = 目标横向位移 px），随后弹回 0 */
@@ -563,18 +596,10 @@ private fun MtFileRow(
     onTap: () -> Unit,
     onLongPress: () -> Unit,
 ) {
-    val settings by container.settings.collectAsState()
-
     // 窗格焦点用「活动侧阴影 + 顶栏计数」表达即可；MT 2.14.5 实测**两窗格颜色一致**，
     // 不做整体调暗（旧实现非活动窗格淡化 0.85，同机对比时明显偏灰）。
-    // 缩略图策略由本行已有的 settings 下传，避免每行再各订阅一次 settings 流
     val thumb = rememberThumb(
-        container, item, targetPx = 96, skip = skipThumb,
-        policy = ThumbPolicy(
-            onMobileData = settings.thumbnailsOnMobile,
-            maxBytes = settings.thumbnailMaxBytes,
-            timeoutSec = settings.thumbnailTimeoutSec,
-        ),
+        container, item, targetPx = 96, skip = skipThumb, policy = thumbPolicy,
     )
     val dark = LocalPanelDarkTheme.current
     val previewMaxPx = with(LocalDensity.current) { MtGesture.SwipeAnimDp.dp.toPx() }
@@ -655,7 +680,7 @@ private fun MtFileRow(
             )
             Text(
                 // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
-                rowSubtitle(settings.listDisplayMode, item),
+                rowSubtitle(listDisplayMode, item),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize, lineHeight = 13.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
