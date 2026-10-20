@@ -10,18 +10,22 @@ on:
   pull_request:
   workflow_dispatch:
 
+# 默认只读；只有 release job 需要 contents: write（建 tag / 发 Release）。
 permissions:
-  contents: write
+  contents: read
 
-# 同一分支连续推送时取消旧任务，避免排队
+# 同一 ref 互斥，但**只取消 PR 的旧任务**。
+# main 的 push 一律排队：cancel-in-progress 砍掉正在发布的 run 会留下缺 ABI 的半成品 Release，
+# 而下一个 run 的 exists 检查会看到「Release 已存在」永久跳过补传 → 只能人工删 tag + Release 才能恢复。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # ------------------------------------------------------------------ 单元测试
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -35,9 +39,14 @@ jobs:
           ./gradlew testDebugUnitTest --stacktrace
 
   # ------------------------------------------------------------------ 构建 APK
+  # PR：只出 debug（fork / Dependabot 拿不到 secrets，碰 release 会硬失败 → 永远红）
+  # push / dispatch：debug + release；缺 keystore 时 release 依旧硬失败（禁止发 debug 签名的 release）
   android:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      BUILD_RELEASE: ${{ github.event_name != 'pull_request' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -45,34 +54,41 @@ jobs:
           distribution: zulu
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
+      # 不兜底：装不上就在这一步红，而不是 10 分钟后变成「platform 37 not found」
       - name: Install SDK components (compileSdk 37)
-        continue-on-error: true
         run: |
-          SDKMANAGER=$(ls $ANDROID_HOME/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
-          if [ -n "$SDKMANAGER" ]; then
-            yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-            "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" > /dev/null 2>&1 || true
-          fi
+          SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
+          SDKMANAGER=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | tail -1)
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0"
+          test -d "$SDK_ROOT/platforms/android-37"
       # 签名：key.properties / keystore 来自仓库 secrets。
       # ⚠️ 缺 keystore 时 **release 构建会硬失败**（见 app/build.gradle.kts 的 taskGraph.whenReady：
       # 只出 release 时才校验，testDebugUnitTest 不受影响）—— 这是故意的：禁止发布 debug 签名的 release APK。
-      - name: Decode keystore
-        continue-on-error: true
-        run: echo "${{ secrets.KEYSTORE }}" | base64 --decode > keystore.jks
-      - name: Write key.properties
-        continue-on-error: true
+      # secret 走 env 注入，不直接插进 shell 命令行（口令含 " $ ` \ 会把 key.properties 写坏）；
+      # 不 continue-on-error：缺 / 坏 keystore 应当场红。
+      - name: Decode keystore + write key.properties
+        if: github.event_name != 'pull_request'
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE }}
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
-          test -s keystore.jks || exit 0
-          {
-            echo "storeFile=../keystore.jks"
-            echo "storePassword=${{ secrets.STORE_PASSWORD }}"
-            echo "keyAlias=${{ secrets.KEY_ALIAS }}"
-            echo "keyPassword=${{ secrets.KEY_PASSWORD }}"
-          } > key.properties
-      - name: Build debug + release
+          set -euo pipefail
+          [ -n "${KEYSTORE_B64:-}" ] || { echo "::error::缺少 KEYSTORE secret"; exit 1; }
+          printf '%s' "$KEYSTORE_B64" | base64 -d > keystore.jks
+          keytool -list -keystore keystore.jks -storepass "$STORE_PASSWORD" > /dev/null
+          printf 'storeFile=../keystore.jks\nstorePassword=%s\nkeyAlias=%s\nkeyPassword=%s\n' \
+            "$STORE_PASSWORD" "$KEY_ALIAS" "$KEY_PASSWORD" > key.properties
+          chmod 600 key.properties keystore.jks
+      - name: Build debug
         run: |
           chmod +x gradlew
-          ./gradlew assembleDebug assembleRelease --stacktrace
+          ./gradlew assembleDebug --stacktrace
+      - name: Build release (signed)
+        if: github.event_name != 'pull_request'
+        run: ./gradlew assembleRelease --stacktrace
       # 分 ABI 出包：debug / release 各 3 个；文件名沿用发布命名，缺失直接报错（不再静默）
       - name: Rename APKs
         run: |
@@ -80,15 +96,26 @@ jobs:
           mkdir -p out
           for abi in arm64-v8a armeabi-v7a x86_64; do
             cp "app/build/outputs/apk/debug/app-${abi}-debug.apk" "out/PanelFM-debug-${abi}.apk"
-            cp "app/build/outputs/apk/release/app-${abi}-release.apk" "out/PanelFM-release-${abi}.apk"
+            if [ "$BUILD_RELEASE" = "true" ]; then
+              cp "app/build/outputs/apk/release/app-${abi}-release.apk" "out/PanelFM-release-${abi}.apk"
+            fi
           done
           ls -la out
+      # 先上传再校验：16KB 门不过时也要有包可下载排查（上传成功即代表 build + rename 成功）
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PanelFM-apks
+          path: out/*.apk
+          if-no-files-found: error
       # Android 15+ 16KB 页大小兼容：APK 内 .so 必须 STORED 且 16KB 对齐、ELF LOAD 段 ≥ 16KB。
       # 与 mp4fix 的发布硬门槛一致，防止依赖升级后回归。
       - name: Verify 16 KB page-size compatibility (Android 15+)
         run: |
           python3 - <<'PY'
-          import glob, os, struct, subprocess, sys, tempfile, zipfile
+          import glob, os, shutil, struct, subprocess, sys, tempfile, zipfile
+
+          if shutil.which('readelf') is None:
+              print('缺少 readelf（binutils），无法校验 ELF LOAD 段对齐'); sys.exit(1)
 
           bad = []
           apks = sorted(glob.glob('out/PanelFM-*.apk'))
@@ -105,10 +132,12 @@ jobs:
 
           with tempfile.TemporaryDirectory() as td:
               for apk in apks:
+                  sos = 0
                   with zipfile.ZipFile(apk) as z:
                       for info in z.infolist():
                           if not (info.filename.startswith('lib/') and info.filename.endswith('.so')):
                               continue
+                          sos += 1
                           z.fp.seek(info.header_offset)
                           hdr = z.fp.read(30)
                           name_len, extra_len = struct.unpack('<HH', hdr[26:30])
@@ -119,6 +148,9 @@ jobs:
                               bad.append((apk, info.filename, 'zip align', data_off % 16384))
                           z.extract(info.filename, td)
                           check_elf(os.path.join(td, info.filename), apk, info.filename)
+                  # 一个 .so 都没有时上面的循环什么都不检查 —— 显式判失败，避免门形同虚设
+                  if sos == 0:
+                      bad.append((apk, 'lib/', 'no .so found'))
 
           if bad:
               print('16KB 兼容检查失败：')
@@ -127,11 +159,6 @@ jobs:
               sys.exit(1)
           print(f'16KB 兼容检查通过：{len(apks)} 个 APK 的 .so 均 STORED + 16KB 对齐 + ELF LOAD ≥ 16KB')
           PY
-      - uses: actions/upload-artifact@v4
-        with:
-          name: PanelFM-apks
-          path: out/*.apk
-          if-no-files-found: error
 
   # ------------------------------------------------------------------ 发布
   # 仅当 app/build.gradle.kts 的 versionName 还没有对应 tag 时创建 Release
@@ -139,63 +166,76 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: android
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: PanelFM-apks
           path: apks
-      - name: Read version
+      # 发布前把关：版本号解析不出来、CHANGELOG 缺段、release 包缺失 → 当场红，不发半成品
+      - name: Preflight (version + release APKs + CHANGELOG section)
         id: version
         run: |
-          VERSION=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | head -1 | sed 's/.*"\(.*\)"/\1/')
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$VERSION" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          VERSION=$(sed -n 's/^ *versionName = "\([^"]*\)"/\1/p' app/build.gradle.kts | head -1)
+          [ -n "$VERSION" ] || { echo "::error::解析 versionName 失败"; exit 1; }
+          ls apks/PanelFM-release-*.apk > /dev/null || { echo "::error::缺少 release APK"; exit 1; }
+          # 段首必须整段匹配：`## v2.0.1` 不能命中 `## v2.0.19`（同理 v1.4.0 不能命中 v1.4.0-rc.x）
+          esc=${VERSION//./\\.}
+          awk -v re="^## v${esc}([[:space:]]|$)" \
+            '$0 ~ re { f=1; next } f && /^## / { exit } f { print }' \
+            CHANGELOG.md > section.raw
+          sed '/./,$!d' section.raw > section.md   # 去掉段首空行，备注不出现连续空行
+          [ -s section.md ] || { echo "::error::CHANGELOG.md 缺少 v$VERSION 段落"; exit 1; }
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VERSION" >> "$GITHUB_OUTPUT"
       - name: Check existing release
         id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
-          if gh release view "${{ steps.version.outputs.tag }}" > /dev/null 2>&1; then
-            echo "exists=true" >> $GITHUB_OUTPUT
+          set -euo pipefail
+          if out=$(gh release view "$TAG" --json tagName 2>&1); then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          elif printf '%s' "$out" | grep -qiE 'not found|could not find'; then
+            echo "exists=false" >> "$GITHUB_OUTPUT"
           else
-            echo "exists=false" >> $GITHUB_OUTPUT
+            # 401 / 网络 / 限流不能当成「没有 Release」，否则会去创建一个已存在的 Release
+            echo "::error::查询 Release 失败：$out"
+            exit 1
           fi
       - name: Create release
         if: steps.check.outputs.exists == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
+          TAG: ${{ steps.version.outputs.tag }}
         run: |
+          set -euo pipefail
           # 版本号带 -rc 后缀 → 预发布（prerelease），与 IRIS / mp4fix 的发版约定一致
-          FLAGS=""
+          FLAGS=()
           case "$VERSION" in
-            *-rc*) FLAGS="--prerelease" ;;
+            *-rc*) FLAGS+=(--prerelease) ;;
           esac
           # Release 备注 = 只放 **CHANGELOG.md 里本版本的段落**（“新增/修复”要点；不带通用说明两行）
           NOTES_FILE="release_notes.md"
           {
-            if [ -n "$FLAGS" ]; then
+            if [ ${#FLAGS[@]} -gt 0 ]; then
               echo "> 预发布 RC：版本号含 -rc 后缀"
               echo ""
             fi
-            # 提取本版本段落：从 `## v$VERSION` 到下一个 `## ` 标题前
-            awk -v ver="## v$VERSION" '
-              index($0, ver) == 1 { f=1; next }
-              f && /^## / { exit }
-              f { print }
-            ' CHANGELOG.md > section.md
-            if [ -s section.md ]; then
-              echo "## 本次修复 / 更新"
-              echo ""
-              cat section.md
-            else
-              echo "（CHANGELOG.md 里未找到 v$VERSION 段落）"
-            fi
+            echo "## 本次修复 / 更新"
+            echo ""
+            cat section.md
           } > "$NOTES_FILE"
-          gh release create "${{ steps.version.outputs.tag }}" \
+          # tag 钉在本次构建的提交上：--target main 会用「运行时的 main」，main 前进后 tag 与 APK 对不上
+          gh release create "$TAG" \
             apks/PanelFM-release-*.apk \
-            --title "PanelFM ${{ steps.version.outputs.tag }}" \
+            --title "PanelFM $TAG" \
             --notes-file "$NOTES_FILE" \
-            $FLAGS \
-            --target main
+            --target "$GITHUB_SHA" \
+            "${FLAGS[@]}"
