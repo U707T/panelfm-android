@@ -10,6 +10,25 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.0.20 — CI 发布链路加固（本轮无 App 代码改动）
+
+> 一句话：这版只动 `.github/workflows/ci.yml`，修的是「发版这件事」本身 ——
+> 发布中的任务会被下一次 push 取消、每个 PR 必红、版本号或 CHANGELOG 写错也照发。
+
+- **发布不再被下一次 push 取消（🔴）**：`cancel-in-progress` 只对 PR 生效，main 的 push 一律排队。
+  此前新 push 会砍掉正在 `gh release create` 的 run，留下缺 ABI 的半成品 Release，
+  而后续 run 看到「Release 已存在」就永久跳过补传 —— 只能人工删 tag + Release 才能恢复。
+- **PR 只出 debug（🔴）**：fork / Dependabot 拿不到签名 secrets，此前 PR 也会跑 `assembleRelease`
+  并触发 `taskGraph.whenReady` 的硬校验，于是每个 PR 必红；现在 release 构建只在 push / dispatch 执行，
+  main 上缺 keystore 仍然硬失败（禁止发 debug 签名的包）。
+- **签名 secret 改走 env（🟡）**：口令不再直接插进 shell 命令行，含 `"` `$` 反引号的口令不会再把
+  `key.properties` 写坏；解码后先 `keytool -list` 验签，缺 / 坏 keystore 当场报错而不是 10 分钟后报签名失败。
+- **发布前置校验（🟡）**：versionName 解析失败、CHANGELOG 缺本版段落、release 包缺失都会让 job 红，
+  不再发出「备注里写着未找到段落」的 Release；版本段改为整段匹配（`v2.0.1` 不再命中 `v2.0.19`）。
+- **tag 钉在构建提交上（🟡）**：`--target "$GITHUB_SHA"` 取代 `--target main`，main 前进后 tag 不再与 APK 错位。
+- **权限与超时（🟡）**：workflow 默认 `contents: read`，只有 release job 提权；三个 job 都设了 `timeout-minutes`。
+- **16KB 门先打包再校验（🔵）**：校验失败时也能从 artifact 下载包排查；`.so` 一个都没有时显式判失败，不再空过。
+
 ## v2.0.19 — 稳定性收口：崩溃兜底 / 设置损坏自愈 / 剪贴板与过滤即时生效
 
 > 一句话：这版不新增功能，修的是「用久了会出事」的那一批：一次没 catch 的协程异常、
