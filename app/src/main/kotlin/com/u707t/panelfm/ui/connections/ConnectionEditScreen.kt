@@ -44,6 +44,7 @@ import com.u707t.panelfm.core.ui.MtTextField
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.DefaultGateway
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.ui.HSeparator
@@ -238,6 +239,30 @@ fun ConnectionEditScreen(
         secure = parsed.secure
         basePath = parsed.path
         return true
+    }
+
+    /**
+     * 「网关」快捷按钮：读取当前默认网关并填入主机 / IP。
+     *
+     * 读网关要碰系统路由表（/proc 兜底还要读文件），放 IO 上；读不到就明确提示，
+     * **不做「猜一个 .1 填进去」**——网段改过网关时那会把用户引到错误的主机上排查。
+     */
+    fun fillDefaultGateway() {
+        if (busy) return
+        scope.launch {
+            val gateway = withContext(Dispatchers.IO) {
+                runCatching { DefaultGateway.ipv4(context) }.getOrNull()
+            }
+            status = when {
+                gateway.isNullOrBlank() ->
+                    "未读取到默认网关（当前网络可能没有默认路由，如仅移动数据 / VPN）"
+                gateway == host.trim() -> "当前主机就是默认网关：$gateway"
+                else -> {
+                    host = gateway
+                    "已填入默认网关：$gateway"
+                }
+            }
+        }
     }
 
     val badUrlMessage = "URL 格式不正确，示例：http://192.168.1.9:5244/dav"
@@ -462,6 +487,7 @@ fun ConnectionEditScreen(
                     onValueChange = { host = it },
                     label = "主机 / IP",
                     placeholder = "192.168.1.9",
+                    trailing = { GatewayFillButton(enabled = !busy, onClick = ::fillDefaultGateway) },
                 )
                 MtTextField(
                     value = port,
@@ -719,7 +745,8 @@ fun ConnectionEditScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = when {
                     it.startsWith("连接成功") -> MaterialTheme.colorScheme.primary
-                    it.startsWith("连接失败") || it.startsWith("保存失败") || it.startsWith("URL") -> MaterialTheme.colorScheme.error
+                    it.startsWith("连接失败") || it.startsWith("保存失败") ||
+                        it.startsWith("URL") || it.startsWith("未读取到") -> MaterialTheme.colorScheme.error
                     else -> MaterialTheme.colorScheme.onSurfaceVariant
                 },
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
@@ -755,6 +782,35 @@ fun ConnectionEditScreen(
                 }) { Text("复制") }
             },
             dismissButton = { TextButton(onClick = { publicKeyLine = null }) { Text("关闭") } },
+        )
+    }
+}
+
+/**
+ * 「主机 / IP」右侧的小按钮：点一下读取默认网关并填入。
+ *
+ * 图标 + 文字（而不是纯图标）：纯图标容易被当成 Wi-Fi / 网络状态开关；
+ * 禁用态跟随输入框（保存 / 测试进行中不允许改字段）。
+ */
+@Composable
+private fun GatewayFillButton(enabled: Boolean, onClick: () -> Unit) {
+    val color = if (enabled) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+    }
+    Row(
+        Modifier
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        MtVectorIcon(icon = MtIcon.ROUTER, size = 16.dp, tint = color)
+        Text(
+            "网关",
+            style = MaterialTheme.typography.labelMedium,
+            color = color,
+            modifier = Modifier.padding(start = 4.dp),
         )
     }
 }
