@@ -54,25 +54,27 @@ jobs:
           distribution: zulu
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      # 断言在本地目录上，而不是在 sdkmanager 的返回值上：
-      # runner 镜像已预装 android-37，但 sdkmanager 的远端仓库并不提供该包（"Failed to find package"），
-      # 所以装不上不算错（镜像预装 / 仅镜像内可见），**平台目录不在**才算错 —— 那时 build 必挂，
-      # 提前在这里红比 10 分钟后报「platform 37 not found」清楚得多。
-      - name: Ensure SDK platform 37 (compileSdk)
+      # compileSdk 37 在 runner 上的真实来源是 **AGP 的 sdkDownload**：镜像只到 android-36，
+      # 而 sdkmanager 的默认 channel 列不到 platforms;android-37（"Failed to find package"）。
+      # 所以这一步只做两件事：接受 licenses（AGP 自动下载的前提）+ 尽力预装；装不上给 warning，
+      # 不再静默吞掉，也不对平台目录断言 —— 平台本来就是构建期才下载的，断言会误杀。
+      - name: Install SDK components (compileSdk 37)
         run: |
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          echo "已有 platforms: $(ls "$SDK_ROOT/platforms" | tr '\n' ' ')"
-          if [ ! -d "$SDK_ROOT/platforms/android-37" ] || [ ! -d "$SDK_ROOT/build-tools/37.0.0" ]; then
-            SDKMANAGER=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1 || true)
-            if [ -n "${SDKMANAGER:-}" ]; then
-              yes 2>/dev/null | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
-              "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" \
-                || echo "::warning::sdkmanager 未能安装（镜像预装或仓库未提供），继续由断言判定"
+          SDKMANAGER=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1 || true)
+          if [ -z "${SDKMANAGER:-}" ]; then
+            echo "::warning::未找到 sdkmanager，licenses 未预先接受（AGP 自动下载可能失败）"
+          else
+            yes 2>/dev/null | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+            if [ -d "$SDK_ROOT/platforms/android-37" ]; then
+              echo "platforms;android-37 已存在"
             else
-              echo "::warning::未找到 sdkmanager，跳过补装"
+              "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" \
+                || echo "::warning::sdkmanager 列不到 platforms;android-37（默认 channel 未提供），改由 AGP 的 sdkDownload 下载"
             fi
           fi
-          test -d "$SDK_ROOT/platforms/android-37" || { echo "::error::缺少 Android platform 37"; exit 1; }
+          test -f "$SDK_ROOT/licenses/android-sdk-license" \
+            || echo "::warning::未写入 android-sdk-license，AGP 自动下载可能失败"
       # 签名：key.properties / keystore 来自仓库 secrets。
       # ⚠️ 缺 keystore 时 **release 构建会硬失败**（见 app/build.gradle.kts 的 taskGraph.whenReady：
       # 只出 release 时才校验，testDebugUnitTest 不受影响）—— 这是故意的：禁止发布 debug 签名的 release APK。
