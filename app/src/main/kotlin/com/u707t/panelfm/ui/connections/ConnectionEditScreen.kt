@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
@@ -32,6 +33,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
@@ -242,7 +245,7 @@ fun ConnectionEditScreen(
     }
 
     /**
-     * 「网关」快捷按钮：读取当前默认网关并填入主机 / IP。
+     * 「小闪电」快捷按钮：读取当前默认网关并填入主机 / IP。
      *
      * 读网关要碰系统路由表（/proc 兜底还要读文件），放 IO 上；读不到就明确提示，
      * **不做「猜一个 .1 填进去」**——网段改过网关时那会把用户引到错误的主机上排查。
@@ -787,10 +790,10 @@ fun ConnectionEditScreen(
 }
 
 /**
- * 「主机 / IP」右侧的小按钮：点一下读取默认网关并填入。
+ * 「主机 / IP」右侧的小闪电按钮：点一下读取默认网关并填入。
  *
- * 图标 + 文字（而不是纯图标）：纯图标容易被当成 Wi-Fi / 网络状态开关；
- * 禁用态跟随输入框（保存 / 测试进行中不允许改字段）。
+ * 纯图标（18dp 图标 + 36dp 点击区）：不再挤占主机名 / 域名；无障碍描述写明真实作用，
+ * 读屏不会只念一个「按钮」。禁用态跟随输入框（保存 / 测试进行中不允许改字段）。
  */
 @Composable
 private fun GatewayFillButton(enabled: Boolean, onClick: () -> Unit) {
@@ -799,19 +802,15 @@ private fun GatewayFillButton(enabled: Boolean, onClick: () -> Unit) {
     } else {
         MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
     }
-    Row(
+    Box(
         Modifier
+            .padding(start = 8.dp)
+            .size(36.dp)
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(start = 12.dp, top = 4.dp, bottom = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .semantics { contentDescription = "读取默认网关" },
+        contentAlignment = Alignment.Center,
     ) {
-        MtVectorIcon(icon = MtIcon.ROUTER, size = 16.dp, tint = color)
-        Text(
-            "网关",
-            style = MaterialTheme.typography.labelMedium,
-            color = color,
-            modifier = Modifier.padding(start = 4.dp),
-        )
+        MtVectorIcon(icon = MtIcon.BOLT, size = 18.dp, tint = color)
     }
 }
 
