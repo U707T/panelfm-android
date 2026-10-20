@@ -245,7 +245,7 @@ fun ConnectionEditScreen(
     }
 
     /**
-     * 「小闪电」快捷按钮：读取当前默认网关并填入主机 / IP。
+     * 「小闪电」快捷按钮：读取当前默认网关并填入主机 / IP（WebDAV 则拼成 URL）。
      *
      * 读网关要碰系统路由表（/proc 兜底还要读文件），放 IO 上；读不到就明确提示，
      * **不做「猜一个 .1 填进去」**——网段改过网关时那会把用户引到错误的主机上排查。
@@ -256,14 +256,29 @@ fun ConnectionEditScreen(
             val gateway = withContext(Dispatchers.IO) {
                 runCatching { DefaultGateway.ipv4(context) }.getOrNull()
             }
-            status = when {
-                gateway.isNullOrBlank() ->
-                    "未读取到默认网关（当前网络可能没有默认路由，如仅移动数据 / VPN）"
-                gateway == host.trim() -> "当前主机就是默认网关：$gateway"
-                else -> {
-                    host = gateway
-                    "已填入默认网关：$gateway"
+            if (gateway.isNullOrBlank()) {
+                status = "未读取到默认网关（当前网络可能没有默认路由，如仅移动数据 / VPN）"
+                return@launch
+            }
+            if (type == ConnectionType.WEBDAV) {
+                // WebDAV 只有 URL 一行：按当前端口 / HTTPS / 路径把网关拼成完整 URL；
+                // 已经是该网关时只提示，不覆盖用户手填的路径
+                if (WebDavUrl.parse(url)?.host == gateway) {
+                    status = "当前 URL 已指向默认网关：$gateway"
+                    return@launch
                 }
+                val davPort = port.toIntOrNull() ?: type.defaultPort
+                host = gateway
+                port = davPort.toString()
+                url = WebDavUrl.build(gateway, davPort, secure, basePath)
+                status = "已填入默认网关：$gateway"
+                return@launch
+            }
+            status = if (gateway == host.trim()) {
+                "当前主机就是默认网关：$gateway"
+            } else {
+                host = gateway
+                "已填入默认网关：$gateway"
             }
         }
     }
@@ -483,6 +498,7 @@ fun ConnectionEditScreen(
                     label = "URL",
                     placeholder = "https://dav.xxx.com:443/dav",
                     keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri,
+                    trailing = { GatewayFillButton(enabled = !busy, onClick = ::fillDefaultGateway) },
                 )
             } else {
                 MtTextField(
@@ -790,9 +806,9 @@ fun ConnectionEditScreen(
 }
 
 /**
- * 「主机 / IP」右侧的小闪电按钮：点一下读取默认网关并填入。
+ * 「主机 / IP」/ WebDAV URL 右侧的小闪电按钮：点一下读取默认网关并填入。
  *
- * 纯图标（18dp 图标 + 36dp 点击区）：不再挤占主机名 / 域名；无障碍描述写明真实作用，
+ * 纯图标（18dp 图标 + 36dp 点击区）：不再挤占主机名 / 域名 / URL；无障碍描述写明真实作用，
  * 读屏不会只念一个「按钮」。禁用态跟随输入框（保存 / 测试进行中不允许改字段）。
  */
 @Composable

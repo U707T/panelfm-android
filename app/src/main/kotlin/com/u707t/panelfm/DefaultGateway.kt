@@ -9,7 +9,7 @@ import java.net.Inet4Address
 import java.net.InetAddress
 
 /**
- * 读取当前使用的**默认网关（IPv4）**——「主机 / IP」输入框右侧小闪电快捷按钮用。
+ * 读取当前使用的**默认网关（IPv4）**——「主机 / IP」/ WebDAV URL 右侧小闪电快捷按钮用。
  *
  * 为什么不用 `WifiManager.getDhcpInfo().gateway`：
  *  - 它只覆盖 Wi-Fi（有线 / 热点 / 网络共享拿不到），还要 ACCESS_WIFI_STATE 权限；
