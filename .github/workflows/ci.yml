@@ -54,14 +54,25 @@ jobs:
           distribution: zulu
           java-version: 21
       - uses: gradle/actions/setup-gradle@v4
-      # 不兜底：装不上就在这一步红，而不是 10 分钟后变成「platform 37 not found」
-      - name: Install SDK components (compileSdk 37)
+      # 断言在本地目录上，而不是在 sdkmanager 的返回值上：
+      # runner 镜像已预装 android-37，但 sdkmanager 的远端仓库并不提供该包（"Failed to find package"），
+      # 所以装不上不算错（镜像预装 / 仅镜像内可见），**平台目录不在**才算错 —— 那时 build 必挂，
+      # 提前在这里红比 10 分钟后报「platform 37 not found」清楚得多。
+      - name: Ensure SDK platform 37 (compileSdk)
         run: |
           SDK_ROOT="${ANDROID_HOME:-$ANDROID_SDK_ROOT}"
-          SDKMANAGER=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager | tail -1)
-          yes | "$SDKMANAGER" --licenses > /dev/null || true
-          "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0"
-          test -d "$SDK_ROOT/platforms/android-37"
+          echo "已有 platforms: $(ls "$SDK_ROOT/platforms" | tr '\n' ' ')"
+          if [ ! -d "$SDK_ROOT/platforms/android-37" ] || [ ! -d "$SDK_ROOT/build-tools/37.0.0" ]; then
+            SDKMANAGER=$(ls "$SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | tail -1 || true)
+            if [ -n "${SDKMANAGER:-}" ]; then
+              yes 2>/dev/null | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+              "$SDKMANAGER" "platforms;android-37" "build-tools;37.0.0" \
+                || echo "::warning::sdkmanager 未能安装（镜像预装或仓库未提供），继续由断言判定"
+            else
+              echo "::warning::未找到 sdkmanager，跳过补装"
+            fi
+          fi
+          test -d "$SDK_ROOT/platforms/android-37" || { echo "::error::缺少 Android platform 37"; exit 1; }
       # 签名：key.properties / keystore 来自仓库 secrets。
       # ⚠️ 缺 keystore 时 **release 构建会硬失败**（见 app/build.gradle.kts 的 taskGraph.whenReady：
       # 只出 release 时才校验，testDebugUnitTest 不受影响）—— 这是故意的：禁止发布 debug 签名的 release APK。
