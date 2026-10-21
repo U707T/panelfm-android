@@ -1,25 +1,21 @@
 package com.u707t.panelfm.ui.connections
 
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,32 +29,18 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
-import com.u707t.panelfm.core.ui.LoadingState
-import com.u707t.panelfm.core.ui.MtIcon
-import com.u707t.panelfm.core.ui.MtScreenTopBar
-import com.u707t.panelfm.core.ui.MtTextField
-import com.u707t.panelfm.core.ui.MtVectorIcon
-import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.DefaultGateway
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.ui.HSeparator
+import com.u707t.panelfm.core.ui.LoadingState
+import com.u707t.panelfm.core.ui.MtScreenTopBar
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.VfsException
-import com.u707t.panelfm.core.vfs.VfsUri
-import com.u707t.panelfm.core.vfs.s3.S3Config
-import com.u707t.panelfm.core.vfs.sftp.SftpAuth
-import com.u707t.panelfm.core.vfs.sftp.SftpConfig
-import com.u707t.panelfm.core.vfs.sftp.SftpSecrets
 import com.u707t.panelfm.core.vfs.sftp.SshKeys
-import com.u707t.panelfm.core.vfs.smb.SmbConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -67,8 +49,11 @@ import java.io.File
 /**
  * 连接编辑器：FTP / FTPS / WebDAV / SMB / S3 / SFTP。
  *
- * WebDAV 复刻 MT 的「编辑 WebDav」样式：**URL 单行输入**（http://host:port/dav）、用户名、密码（可切换可见）、
- * 自定义 UA、初始路径、备注，以及开关项（信任所有 HTTPS 证书 / 在侧拉栏隐藏地址 / 缩略图选项），底部 测试 / 取消 / 保存。
+ * 结构（v2.0.24 拆分）：
+ *  - [ConnectionEditState]：全部表单字段 + 配置/口令构造 + 协议切换迁移规则；
+ *  - [ConnectionCommonFields] / [SftpSection] / [SmbSection] / [S3Section] / [ProtocolSwitches]：
+ *    按协议分段的渲染（`ConnectionFormSections.kt`）；
+ *  - 本文件只负责：编辑态加载（失败/已删除分开处理）、私钥选择、保存/测试流程、页面骨架。
  */
 @Composable
 fun ConnectionEditScreen(
@@ -84,119 +69,111 @@ fun ConnectionEditScreen(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
 
-    /**
-     * 已有连接（编辑模式）。
-     *
-     * ⚠️ 旧实现是 `remember { connectionDao.all()... }` —— **在组合期同步查 SQLite**
-     * （还顺手把整张表读出来再筛一条）。点「编辑」时主线程要等一次库查询 + 口令解密，
-     * 库被别处写锁时直接白卡一帧；而且这里的字段全靠它做初值，不能改成异步再回填
-     * （会被 remember 的初值锁死）。所以：一次性读好 → 用一个**外层标记**挡住首帧，
-     * 读库放在 IO 上，读完才组合表单。
-     */
     var loadingExisting by remember(connectionId) { mutableStateOf(connectionId != null) }
     var existing by remember(connectionId) { mutableStateOf<ConnectionConfig?>(null) }
     var rawSecret by remember(connectionId) { mutableStateOf<String?>(null) }
-    LaunchedEffect(connectionId) {
+    // 读库失败 ≠ 记录不存在：前者必须给错误 + 重试，后者提示已删除。
+    // 旧实现把两者都当 null，编辑页会静默变成「添加」，保存时插一条重复连接。
+    var loadError by remember(connectionId) { mutableStateOf<String?>(null) }
+    var missingExisting by remember(connectionId) { mutableStateOf(false) }
+    var loadAttempt by remember(connectionId) { mutableStateOf(0) }
+
+    LaunchedEffect(connectionId, loadAttempt) {
         if (connectionId == null) {
             loadingExisting = false
             return@LaunchedEffect
         }
-        val loaded = withContext(Dispatchers.IO) {
-            runCatching { container.connectionDao.all().firstOrNull { it.id == connectionId } }.getOrNull()
+        loadingExisting = true
+        loadError = null
+        missingExisting = false
+        existing = null
+        val result = withContext(Dispatchers.IO) {
+            runCatching { container.connectionDao.all().firstOrNull { it.id == connectionId } }
         }
-        rawSecret = loaded?.let { runCatching { container.loadSecret(it.id) }.getOrNull() }
-        existing = loaded
+        result.onFailure { e ->
+            loadError = e.message ?: e.javaClass.simpleName
+        }.onSuccess { loaded ->
+            if (loaded == null) {
+                missingExisting = true
+            } else {
+                // loadSecret 内部已切 IO（查 secret_ref + Keystore 解密）
+                rawSecret = runCatching { container.loadSecret(loaded.id) }.getOrNull()
+                existing = loaded
+            }
+        }
         loadingExisting = false
     }
+
     if (loadingExisting) {
         Column(Modifier.fillMaxSize().safeAreaPadding()) {
-            MtScreenTopBar(title = "编辑连接", onBack = onBack)
+            MtScreenTopBar(title = if (connectionId == null) "添加连接" else "编辑连接", onBack = onBack)
             LoadingState("正在读取连接配置…")
         }
         return
     }
-
-    // 原始 secret 串（未解码）：S3 是「纯 SK 或旧 AK:SK」，SFTP 是 JSON，其余是裸密码
-    val storedSecrets = remember(connectionId) { SftpSecrets.parse(rawSecret) }
-
-    var type by remember { mutableStateOf(existing?.type ?: initialType ?: ConnectionType.SFTP) }
-    var name by remember { mutableStateOf(existing?.name ?: "") }
-    // 网络分组（MT：连接可归组，侧边栏按组展示；DB 有 group_name 字段但此前无 UI）
-    var group by remember { mutableStateOf(existing?.group ?: "") }
-    var host by remember { mutableStateOf(existing?.host ?: prefillHost ?: "") }
-    var port by remember { mutableStateOf((existing?.port ?: prefillPort ?: type.defaultPort).toString()) }
-    var user by remember { mutableStateOf(existing?.user ?: "") }
-    // 口令回填按协议解码（S3 的旧拼接串要取 SK 部分，否则保存时会被再拼一层；见 ConnectionSecrets）
-    var password by remember { mutableStateOf(ConnectionSecrets.passwordForEdit(existing?.type, rawSecret)) }
-    var showPassword by remember { mutableStateOf(false) }
-    var basePath by remember { mutableStateOf(existing?.basePath ?: "/") }
-    // 与 DavConfig / S3Config 的同款 fallback 对齐（键缺失按端口推：443 = HTTPS）——
-    // 否则编辑老连接时显示 false、保存又写回，会把「无法关闭 HTTPS」的现状再固化一轮
-    var secure by remember { mutableStateOf(existing?.option("secure")?.toBoolean() ?: (port.toIntOrNull() == 443)) }
-    var trustSelfSigned by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_TRUST_SELF_SIGNED)?.toBoolean() ?: false) }
-    var implicitTls by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_IMPLICIT_TLS)?.toBoolean() ?: false) }
-    var passive by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_PASSIVE)?.toBoolean() ?: true) }
-    // MT「编码」：FTP/FTPS/SFTP 的文件名编码（中文服务器常需 GBK/GB18030）
-    var encoding by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_ENCODING).orEmpty().ifBlank { "UTF-8" }) }
-    var userAgent by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_USER_AGENT).orEmpty()) }
-    var initialPath by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_INITIAL_PATH).orEmpty()) }
-    var hiddenInDrawer by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_HIDDEN_IN_DRAWER) == "true") }
-    var loadThumbs by remember { mutableStateOf(existing?.option(ConnectionConfig.OPT_LOAD_THUMBS) != "false") }
-    var showThumbOptions by remember { mutableStateOf(false) }
-
-    // WebDAV：URL 单行（MT 样式）
-    val existingDav = existing?.takeIf { it.type == ConnectionType.WEBDAV }
-    var url by remember {
-        mutableStateOf(
-            when {
-                existingDav != null ->
-                    WebDavUrl.build(existingDav.host, existingDav.port, secure, existingDav.basePath)
-                initialType == ConnectionType.WEBDAV && !prefillHost.isNullOrBlank() ->
-                    WebDavUrl.build(prefillHost, prefillPort ?: 80, false, "/")
-                else -> ""
+    loadError?.let { message ->
+        Column(Modifier.fillMaxSize().safeAreaPadding()) {
+            MtScreenTopBar(title = "编辑连接", onBack = onBack)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("读取连接配置失败", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = { loadAttempt++ }) { Text("重试") }
             }
-        )
+        }
+        return
+    }
+    if (missingExisting) {
+        Column(Modifier.fillMaxSize().safeAreaPadding()) {
+            MtScreenTopBar(title = "编辑连接", onBack = onBack)
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text("连接不存在或已被删除", style = MaterialTheme.typography.titleMedium)
+                Text(
+                    "它可能刚在侧拉栏里被删除。返回列表刷新后再试。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(onClick = onBack) { Text("返回列表") }
+            }
+        }
+        return
     }
 
-    // SFTP
-    var sftpAuth by remember {
-        mutableStateOf(
-            runCatching { SftpAuth.valueOf(existing?.option(SftpConfig.OPT_AUTH) ?: SftpAuth.PASSWORD.name) }
-                .getOrDefault(SftpAuth.PASSWORD)
-        )
+    val state = remember(connectionId) {
+        ConnectionEditState(existing, rawSecret, prefillHost, prefillPort, initialType)
     }
-    var keyPath by remember { mutableStateOf(existing?.option(SftpConfig.OPT_KEY_PATH) ?: "") }
-    var keyPassphrase by remember { mutableStateOf(storedSecrets.keyPassphrase ?: "") }
-    var jumpEnabled by remember { mutableStateOf(!existing?.option(SftpConfig.OPT_JUMP_HOST).isNullOrBlank()) }
-    var jumpHost by remember { mutableStateOf(existing?.option(SftpConfig.OPT_JUMP_HOST).orEmpty()) }
-    var jumpPort by remember { mutableStateOf(existing?.option(SftpConfig.OPT_JUMP_PORT) ?: "22") }
-    var jumpUser by remember { mutableStateOf(existing?.option(SftpConfig.OPT_JUMP_USER).orEmpty()) }
-    var jumpPassword by remember { mutableStateOf(storedSecrets.jumpPassword ?: "") }
-
-    // SMB
-    var smbDomain by remember { mutableStateOf(existing?.option(SmbConfig.OPT_DOMAIN).orEmpty()) }
-    var smbShare by remember { mutableStateOf(existing?.option(SmbConfig.OPT_SHARE).orEmpty()) }
-    // S3
-    var s3Region by remember { mutableStateOf(existing?.option(S3Config.OPT_REGION) ?: "us-east-1") }
-    var s3PathStyle by remember { mutableStateOf(existing?.option(S3Config.OPT_PATH_STYLE)?.toBoolean() ?: true) }
-    var s3Domain by remember { mutableStateOf(existing?.option(S3Config.OPT_DOWNLOAD_DOMAIN).orEmpty()) }
-    var s3Bucket by remember { mutableStateOf(existing?.option(S3Config.OPT_BUCKET).orEmpty()) }
 
     var status by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
     var publicKeyLine by remember { mutableStateOf<String?>(null) }
+    var showThumbOptions by remember { mutableStateOf(false) }
 
     val keyPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             try {
                 val fileName = withContext(Dispatchers.IO) {
-                    val picked = uri.lastPathSegment?.substringAfterLast('/') ?: "id_key"
+                    // lastPathSegment 来自外部 URI，可能带 `/` 或 `..`：只取 basename，防止写到 keysDir 之外
+                    val picked = File(uri.lastPathSegment ?: "id_key").name
+                        .takeIf { it.isNotBlank() && it != "." && it != ".." } ?: "id_key"
                     val dest = File(container.appDirs.keysDir, picked)
-                    withContext(Dispatchers.IO) {
-                        context.contentResolver.openInputStream(uri)?.use { input ->
-                            dest.outputStream().use { output -> input.copyTo(output) }
-                        }
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        dest.outputStream().use { output -> input.copyTo(output) }
                     }
                     // 私钥仅本应用可读写（相当于 chmod 600）
                     dest.setReadable(false, false)
@@ -205,7 +182,7 @@ fun ConnectionEditScreen(
                     dest.setWritable(true, true)
                     dest.absolutePath
                 }
-                keyPath = fileName
+                state.keyPath = fileName
                 status = "已导入私钥：${File(fileName).name}"
             } catch (e: Exception) {
                 status = "私钥导入失败：${e.message}"
@@ -215,34 +192,16 @@ fun ConnectionEditScreen(
 
     // 端口跟随协议默认值：仅当当前端口仍是「上一个协议的默认值」（用户没手改过）才更新——
     // 编辑既有连接切协议（FTP→SMB 后端口仍 21）也一并修掉；prefill（局域网扫描）不覆盖。
-    var prevType by remember { mutableStateOf(type) }
-    LaunchedEffect(type) {
-        if (prefillPort == null && port == prevType.defaultPort.toString()) {
-            port = type.defaultPort.toString()
+    var prevType by remember { mutableStateOf(state.type) }
+    LaunchedEffect(state.type) {
+        if (prefillPort == null && state.port == prevType.defaultPort.toString()) {
+            state.port = state.type.defaultPort.toString()
         }
-        prevType = type
+        prevType = state.type
     }
 
     // 保存 / 测试进行中拦截系统返回：中途退出会留下「secret 已更新、配置未更新」的半态
-    androidx.activity.compose.BackHandler(enabled = busy) { status = "正在与服务器交互，请稍候…" }
-
-    /** 切到 WebDAV 标签时，用当前字段回填 URL（LAN 扫描预填场景） */
-    fun syncUrlFromFields() {
-        if (type == ConnectionType.WEBDAV && url.isBlank() && host.isNotBlank()) {
-            url = WebDavUrl.build(host.trim(), port.toIntOrNull() ?: 80, secure, basePath)
-        }
-    }
-
-    /** 复刻 MT：保存 / 测试前把 URL 解析回各字段；返回 false = URL 格式不正确 */
-    fun applyUrlIfWebDav(): Boolean {
-        if (type != ConnectionType.WEBDAV) return true
-        val parsed = WebDavUrl.parse(url) ?: return false
-        host = parsed.host
-        port = parsed.port.toString()
-        secure = parsed.secure
-        basePath = parsed.path
-        return true
-    }
+    BackHandler(enabled = busy) { status = "正在与服务器交互，请稍候…" }
 
     /**
      * 「小闪电」快捷按钮：读取当前默认网关并填入主机 / IP（WebDAV 则拼成 URL）。
@@ -260,105 +219,54 @@ fun ConnectionEditScreen(
                 status = "未读取到默认网关（当前网络可能没有默认路由，如仅移动数据 / VPN）"
                 return@launch
             }
-            if (type == ConnectionType.WEBDAV) {
+            if (state.type == ConnectionType.WEBDAV) {
                 // WebDAV 只有 URL 一行：按当前端口 / HTTPS / 路径把网关拼成完整 URL；
                 // 已经是该网关时只提示，不覆盖用户手填的路径
-                if (WebDavUrl.parse(url)?.host == gateway) {
+                if (WebDavUrl.parse(state.url)?.host == gateway) {
                     status = "当前 URL 已指向默认网关：$gateway"
                     return@launch
                 }
-                val davPort = port.toIntOrNull() ?: type.defaultPort
-                host = gateway
-                port = davPort.toString()
-                url = WebDavUrl.build(gateway, davPort, secure, basePath)
+                val davPort = state.port.toIntOrNull() ?: state.type.defaultPort
+                state.host = gateway
+                state.port = davPort.toString()
+                state.url = WebDavUrl.build(gateway, davPort, state.secure, state.basePath)
                 status = "已填入默认网关：$gateway"
                 return@launch
             }
-            status = if (gateway == host.trim()) {
+            status = if (gateway == state.host.trim()) {
                 "当前主机就是默认网关：$gateway"
             } else {
-                host = gateway
+                state.host = gateway
                 "已填入默认网关：$gateway"
             }
         }
     }
-
-    val badUrlMessage = "URL 格式不正确，示例：http://192.168.1.9:5244/dav"
-    val ready = (if (type == ConnectionType.WEBDAV) WebDavUrl.parse(url) != null else host.isNotBlank()) && !busy
-
-    fun buildOptions(): Map<String, String> = buildMap {
-        // `secure` 键只有 WebDAV / S3 消费，**无条件写布尔值**：旧实现只在 true 时写，
-        // 导致 443 端口上「关闭 HTTPS / 显式 http://」被 Config 的 `port == 443` fallback 覆盖
-        if (type == ConnectionType.WEBDAV || type == ConnectionType.S3) put("secure", secure.toString())
-        if (trustSelfSigned) put(ConnectionConfig.OPT_TRUST_SELF_SIGNED, "true")
-        if (implicitTls) put(ConnectionConfig.OPT_IMPLICIT_TLS, "true")
-        if (!passive) put(ConnectionConfig.OPT_PASSIVE, "false")
-        if (userAgent.isNotBlank()) put(ConnectionConfig.OPT_USER_AGENT, userAgent.trim())
-        if (initialPath.isNotBlank()) put(ConnectionConfig.OPT_INITIAL_PATH, initialPath.trim())
-        if (hiddenInDrawer) put(ConnectionConfig.OPT_HIDDEN_IN_DRAWER, "true")
-        if (!loadThumbs) put(ConnectionConfig.OPT_LOAD_THUMBS, "false")
-        // SFTP 固定 UTF-8（协议层），没有编码消费方——写侧只对 FTP / FTPS 生效，与 UI 显示范围一致
-        if ((type == ConnectionType.FTP || type == ConnectionType.FTPS) &&
-            encoding.isNotBlank() && encoding != "UTF-8"
-        ) {
-            put(ConnectionConfig.OPT_ENCODING, encoding.trim())
-        }
-        if (type == ConnectionType.SMB) {
-            if (smbDomain.isNotBlank()) put(SmbConfig.OPT_DOMAIN, smbDomain.trim())
-            if (smbShare.isNotBlank()) put(SmbConfig.OPT_SHARE, smbShare.trim())
-        }
-        if (type == ConnectionType.S3) {
-            put(S3Config.OPT_REGION, s3Region.trim().ifBlank { "us-east-1" })
-            put(S3Config.OPT_PATH_STYLE, s3PathStyle.toString())
-            if (s3Domain.isNotBlank()) put(S3Config.OPT_DOWNLOAD_DOMAIN, s3Domain.trim())
-            if (s3Bucket.isNotBlank()) put(S3Config.OPT_BUCKET, s3Bucket.trim())
-        }
-        if (type == ConnectionType.SFTP) {
-            put(SftpConfig.OPT_AUTH, sftpAuth.name)
-            if (sftpAuth == SftpAuth.KEY && keyPath.isNotBlank()) put(SftpConfig.OPT_KEY_PATH, keyPath)
-            if (jumpEnabled && jumpHost.isNotBlank()) {
-                put(SftpConfig.OPT_JUMP_HOST, jumpHost.trim())
-                put(SftpConfig.OPT_JUMP_PORT, jumpPort.trim().ifBlank { "22" })
-                put(SftpConfig.OPT_JUMP_USER, jumpUser.trim())
-            }
-        }
-    }
-
-    /** 口令编解码已收拢到 [ConnectionSecrets]（纯函数 + 单测；S3 落库纯 SK，修复编辑保存层层加前缀） */
-    fun buildSecret(): String? = ConnectionSecrets.build(type, password, keyPassphrase, jumpPassword)
-
-    fun buildConfig(id: Long = existing?.id ?: 0L): ConnectionConfig = ConnectionConfig(
-        id = id,
-        type = type,
-        name = name.ifBlank { host },
-        host = host.trim(),
-        port = port.toIntOrNull() ?: type.defaultPort,
-        user = user.trim(),
-        basePath = basePath.ifBlank { "/" },
-        group = group.trim(),
-        options = buildOptions(),
-    )
 
     fun doSave() {
         busy = true
         status = null
         scope.launch {
             try {
-                if (!applyUrlIfWebDav()) {
-                    status = badUrlMessage
+                if (!state.applyUrlIfWebDav()) {
+                    status = "URL 格式不正确，示例：http://192.168.1.9:5244/dav"
                     busy = false
                     return@launch
                 }
                 // 端口范围校验：旧实现 filter 掉非数字后就存，`99999` 这类值会一路写进 DB，
                 // 直到连接时才以「连接被拒绝」的形式暴露，用户很难联想到是配置问题。
-                val portNumber = port.toIntOrNull() ?: type.defaultPort
+                val portNumber = state.port.toIntOrNull() ?: state.type.defaultPort
                 if (portNumber !in 1..65535) {
-                    status = "端口必须在 1–65535 之间（当前：$port）"
+                    status = "端口必须在 1–65535 之间（当前：${state.port}）"
                     busy = false
                     return@launch
                 }
-                val config = buildConfig()
-                val secret = buildSecret()
+                state.smbProblem?.let { problem ->
+                    status = problem
+                    busy = false
+                    return@launch
+                }
+                val config = state.buildConfig()
+                val secret = state.buildSecret()
                 // 局部快照：existing 是 delegated property，无法智能转换（且异步写入后可能变）
                 val editing = existing
                 if (editing != null) {
@@ -369,7 +277,14 @@ fun ConnectionEditScreen(
                         busy = false
                         return@launch
                     }
-                    container.connectionDao.update(config)
+                    // update 返回受影响行数：记录在别处被删时不能报成功（secret 已写，回滚成旧值）
+                    val updated = container.connectionDao.update(config)
+                    if (updated <= 0) {
+                        runCatching { container.saveSecret(config.id, oldSecret) }
+                        status = "保存失败：连接已被删除，请返回列表刷新后重试"
+                        busy = false
+                        return@launch
+                    }
                     // 会话键或口令变化 → 断掉旧会话，下次打开用新配置
                     if (editing.sessionKey != config.sessionKey || oldSecret != secret) {
                         container.disconnectConnection(editing)
@@ -405,7 +320,7 @@ fun ConnectionEditScreen(
         status = "正在测试读取文件列表…"
         scope.launch {
             // MT（0x7f1102b7）：卡住时给出可操作提示——主/被动模式是最常见的元凶
-            val isFtp = type == ConnectionType.FTP || type == ConnectionType.FTPS
+            val isFtp = state.type == ConnectionType.FTP || state.type == ConnectionType.FTPS
             val stuckHint = if (isFtp) {
                 "正在测试读取文件列表… (如果卡在这一步，请尝试切换主/被动模式)"
             } else {
@@ -416,21 +331,27 @@ fun ConnectionEditScreen(
                 if (busy) status = stuckHint
             }
             try {
-                if (!applyUrlIfWebDav()) {
+                if (!state.applyUrlIfWebDav()) {
                     hintJob.cancel()
-                    status = badUrlMessage
+                    status = "URL 格式不正确，示例：http://192.168.1.9:5244/dav"
                     busy = false
                     return@launch
                 }
-                val portNumber = port.toIntOrNull() ?: type.defaultPort
+                val portNumber = state.port.toIntOrNull() ?: state.type.defaultPort
                 if (portNumber !in 1..65535) {
                     hintJob.cancel()
-                    status = "端口必须在 1–65535 之间（当前：$port）"
+                    status = "端口必须在 1–65535 之间（当前：${state.port}）"
                     busy = false
                     return@launch
                 }
-                val config = buildConfig()
-                val count = container.testConnection(config, secretOverride = buildSecret())
+                state.smbProblem?.let { problem ->
+                    hintJob.cancel()
+                    status = problem
+                    busy = false
+                    return@launch
+                }
+                val config = state.buildConfig()
+                val count = container.testConnection(config, secretOverride = state.buildSecret())
                 status = "连接成功：根目录 $count 项"
             } catch (e: Exception) {
                 status = "连接失败：" + ((e as? VfsException)?.userMessage ?: e.message)
@@ -442,13 +363,11 @@ fun ConnectionEditScreen(
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        // ---------------- 顶部
         MtScreenTopBar(
-            title = (if (existing == null) "添加 " else "编辑 ") + type.label,
+            title = (if (existing == null) "添加 " else "编辑 ") + state.type.label,
             onBack = onBack,
         )
 
-        // ---------------- 表单
         Column(
             Modifier
                 .weight(1f)
@@ -463,296 +382,54 @@ fun ConnectionEditScreen(
                     ConnectionType.WEBDAV, ConnectionType.FTP, ConnectionType.FTPS,
                 ).forEach { t ->
                     TextButton(
-                        onClick = {
-                            type = t
-                            if (t == ConnectionType.WEBDAV) syncUrlFromFields()
-                        },
-                        contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 10.dp, vertical = 2.dp),
+                        onClick = { state.selectType(t) },
+                        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                            horizontal = 10.dp,
+                            vertical = 2.dp,
+                        ),
                     ) {
                         Text(
                             // MT 的协议名：`对象存储(S3)` 带括号
                             if (t == ConnectionType.S3) "对象存储(S3)" else t.label,
                             style = MaterialTheme.typography.bodyMedium,
-                            color = if (t == type) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (t == state.type) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
 
             // ---------------- 连接字段（复刻 MT 的 `TextInputLayout`：label 在上、下划线、hint 在框内）
-            //   MT 原文（`0x7f0c0082` WebDAV）：URL / 用户名 / 密码 / 初始路径 / 备注
-            //   非 WebDAV 协议用「主机 + 端口 + 用户名 + 密码 + 根路径 + 初始路径 + 备注 + 分组」
-            if (type == ConnectionType.WEBDAV) {
-                // MT 的 URL 单行输入：hint 示例就是 `https://dav.xxx.com:443/dav`
-                MtTextField(
-                    value = url,
-                    onValueChange = { text ->
-                        url = text
-                        WebDavUrl.parse(text)?.let { p ->
-                            host = p.host
-                            port = p.port.toString()
-                            secure = p.secure
-                            basePath = p.path
+            ConnectionCommonFields(state, busy, ::fillDefaultGateway)
+
+            // ---------------- 协议专属
+            if (state.type == ConnectionType.SFTP) {
+                SftpSection(
+                    state = state,
+                    onPickKey = { keyPicker.launch(arrayOf("*/*")) },
+                    onShowPublicKey = {
+                        scope.launch {
+                            val line = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    SshKeys.loadKeyPairs(state.keyPath, state.keyPassphrase.ifEmpty { null })
+                                        .firstOrNull()?.let { pair -> SshKeys.publicKeyLine(pair.public) }
+                                }
+                            }.getOrNull()
+                            if (line == null) {
+                                status = "读取公钥失败（口令是否正确？）"
+                            } else {
+                                publicKeyLine = line
+                            }
                         }
                     },
-                    label = "URL",
-                    placeholder = "https://dav.xxx.com:443/dav",
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Uri,
-                    trailing = { GatewayFillButton(enabled = !busy, onClick = ::fillDefaultGateway) },
-                )
-            } else {
-                MtTextField(
-                    value = host,
-                    onValueChange = { host = it },
-                    label = "主机 / IP",
-                    placeholder = "192.168.1.9",
-                    trailing = { GatewayFillButton(enabled = !busy, onClick = ::fillDefaultGateway) },
-                )
-                MtTextField(
-                    value = port,
-                    onValueChange = { text -> port = text.filter { ch -> ch.isDigit() }.take(5) },
-                    label = "端口",
-                    placeholder = "0",
-                    keyboardType = androidx.compose.ui.text.input.KeyboardType.Number,
                 )
             }
+            if (state.type == ConnectionType.SMB) SmbSection(state)
+            if (state.type == ConnectionType.S3) S3Section(state)
 
-            MtTextField(
-                value = user,
-                onValueChange = { user = it },
-                label = if (type == ConnectionType.S3) "用户名 / Access Key（AK）" else "用户名",
-                placeholder = "可空",
-            )
-            MtTextField(
-                value = if (type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY) "" else password,
-                onValueChange = { password = it },
-                label = when {
-                    type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY -> "密码（使用私钥时忽略）"
-                    type == ConnectionType.S3 -> "密码 / Secret Key（SK）"
-                    else -> "密码"
-                },
-                placeholder = "可空",
-                enabled = !(type == ConnectionType.SFTP && sftpAuth == SftpAuth.KEY),
-                visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
-                // MT 的密码框带 👁 可见性切换（`app:passwordToggleEnabled=true`）
-                trailing = {
-                    Box(
-                        Modifier
-                            .clickable { showPassword = !showPassword }
-                            .padding(start = 10.dp),
-                    ) {
-                        MtVectorIcon(
-                            icon = if (showPassword) MtIcon.EYE_OFF else MtIcon.EYE,
-                            size = 22.dp,
-                            tint = if (showPassword) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                },
-            )
-            if (type == ConnectionType.WEBDAV) {
-                MtTextField(
-                    value = userAgent,
-                    onValueChange = { userAgent = it },
-                    label = "自定义 UA",
-                    placeholder = "可空",
-                )
-            } else if (type == ConnectionType.SMB) {
-                // SMB 的地址路径以「/共享名」开头（SmbVfs.splitSmbPath，首段即共享）——
-                // 旧文案（/home/user）与模型不符：用户填子目录名会顶替「共享名」去找错共享
-                MtTextField(
-                    value = basePath,
-                    onValueChange = { basePath = it },
-                    label = "起始路径（含共享名，如 /public/docs）",
-                    placeholder = "/public",
-                )
-            } else if (type != ConnectionType.S3) {
-                MtTextField(
-                    value = basePath,
-                    onValueChange = { basePath = it },
-                    label = "根路径",
-                    placeholder = "/home/user",
-                )
-            }
-            // S3 不显示「根路径」：没有消费方；bucket 内的起始前缀请用下方「初始路径」
-            MtTextField(
-                value = initialPath,
-                onValueChange = { initialPath = it },
-                label = "初始路径",
-                placeholder = "可空",
-            )
-            MtTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = "备注",
-                placeholder = "可空",
-            )
-            MtTextField(
-                value = group,
-                onValueChange = { group = it },
-                label = "网络分组",
-                placeholder = "可空",
-            )
-
-            // ---------------- SFTP 专属
-            if (type == ConnectionType.SFTP) {
-                Text("认证方式", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    TextButton(onClick = { sftpAuth = SftpAuth.PASSWORD }) {
-                        Text("密码", color = if (sftpAuth == SftpAuth.PASSWORD) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    TextButton(onClick = { sftpAuth = SftpAuth.KEY }) {
-                        Text("私钥", color = if (sftpAuth == SftpAuth.KEY) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-                if (sftpAuth == SftpAuth.KEY) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        TextButton(onClick = { keyPicker.launch(arrayOf("*/*")) }) { Text("选择私钥文件…") }
-                        if (keyPath.isNotBlank()) {
-                            Text(File(keyPath).name, style = MaterialTheme.typography.labelSmall)
-                            TextButton(onClick = {
-                                scope.launch {
-                                    val line = runCatching {
-                                        withContext(Dispatchers.IO) {
-                                            SshKeys.loadKeyPairs(keyPath, keyPassphrase.ifEmpty { null }).firstOrNull()?.let { pair ->
-                                                SshKeys.publicKeyLine(pair.public)
-                                            }
-                                        }
-                                    }.getOrNull()
-                                    if (line == null) {
-                                        status = "读取公钥失败（口令是否正确？）"
-                                    } else {
-                                        publicKeyLine = line
-                                    }
-                                }
-                            }) { Text("查看公钥") }
-                        }
-                    }
-                    OutlinedTextField(
-                        value = keyPassphrase,
-                        onValueChange = { keyPassphrase = it },
-                        label = { Text("私钥口令（无口令留空）") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    Text(
-                        "支持 OpenSSH / PEM 私钥（ed25519 / ecdsa / rsa）；公钥贴到服务器 ~/.ssh/authorized_keys 即可。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                SwitchRow("使用跳板机（ProxyJump）", jumpEnabled) { jumpEnabled = it }
-                if (jumpEnabled) {
-                    OutlinedTextField(value = jumpHost, onValueChange = { jumpHost = it }, label = { Text("跳板机主机") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = jumpPort, onValueChange = { jumpPort = it.filter { ch -> ch.isDigit() } }, label = { Text("跳板机端口") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = jumpUser, onValueChange = { jumpUser = it }, label = { Text("跳板机用户名") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                    OutlinedTextField(value = jumpPassword, onValueChange = { jumpPassword = it }, label = { Text("跳板机密码") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                }
-                Text(
-                    "安全提示：首次连接会自动记录主机指纹（TOFU）；指纹变化时会拒绝连接并提示。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            // ---------------- SMB 专属
-            if (type == ConnectionType.SMB) {
-                OutlinedTextField(value = smbShare, onValueChange = { smbShare = it }, label = { Text("共享名（如 public / media）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = smbDomain, onValueChange = { smbDomain = it }, label = { Text("域 / 工作组（可留空）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                Text(
-                    "支持 SMB2/3（自动协商 3.1.1 → 3.0.2 → 2.1），NTLMv2 认证；\"所有文件访问\"外的路径无需额外授权。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            // ---------------- S3 专属
-            if (type == ConnectionType.S3) {
-                OutlinedTextField(value = s3Region, onValueChange = { s3Region = it }, label = { Text("Region（AWS 必填；R2 填 auto）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = s3Bucket, onValueChange = { s3Bucket = it }, label = { Text("默认 Bucket（可留空，进目录后选）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(value = s3Domain, onValueChange = { s3Domain = it }, label = { Text("自定义下载域名（可选，如 cdn.example.com）") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                SwitchRow("路径样式（path-style，自建 MinIO/Alist 建议开启）", s3PathStyle) { s3PathStyle = it }
-                Text(
-                    "新建连接时主机填端点（如 s3.amazonaws.com / xxx.r2.cloudflarestorage.com / 192.168.1.9:9000），协议选 http/https 由上面「使用 HTTPS/TLS」决定。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            // ---------------- 开关项（MT 样式：右侧 Switch）
-            // 只对**真正读取该选项**的协议显示开关。
-            // 旧实现对所有协议都渲染，导致 SFTP / SMB 用户打开后毫无效果（静默无效的开关
-            // 比没有开关更糟：用户会以为自己已经放开了校验）。
-            if (type == ConnectionType.WEBDAV || type == ConnectionType.FTP ||
-                type == ConnectionType.FTPS || type == ConnectionType.S3
-            ) {
-                SwitchRow(
-                    if (type == ConnectionType.WEBDAV) "信任所有 HTTPS 证书" else "信任自签证书",
-                    trustSelfSigned,
-                ) { trustSelfSigned = it }
-            }
-            if (type == ConnectionType.S3) {
-                SwitchRow("使用 HTTPS/TLS", secure) { secure = it }
-            }
-            if (type == ConnectionType.FTPS) {
-                // 端口联动：隐式 TLS 标准端口是 990——打开时从默认 21 切到 990、关闭时切回 21
-                //（用户手改过的其他端口不动；FtpConfig 的 990 兜底对 UI 默认 21 不可达，联动必须在这里做）
-                SwitchRow("隐式 TLS（990 端口）", implicitTls) { on ->
-                    implicitTls = on
-                    if (on && port == "21") port = "990"
-                    if (!on && port == "990") port = "21"
-                }
-            }
-            if (type == ConnectionType.FTP || type == ConnectionType.FTPS) {
-                SwitchRow("被动模式（PASV/EPSV，推荐）", passive) { passive = it }
-            }
-            // MT：FTP/FTPS 的「编码」（文件名编码；中文 FTP 服务器常用 GBK）。
-            // SFTP 不显示：SSH 协议固定 UTF-8、无消费方（静默无效的开关比没有开关更糟）
-            if (type == ConnectionType.FTP || type == ConnectionType.FTPS) {
-                Text("编码", style = MaterialTheme.typography.labelLarge, modifier = Modifier.padding(top = 4.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    listOf("UTF-8", "GBK", "GB18030", "Big5").forEach { enc ->
-                        TextButton(onClick = { encoding = enc }) {
-                            Text(
-                                enc,
-                                color = if (encoding == enc) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-                Text(
-                    "文件名编码。中文 FTP 服务器列表乱码时改成 GBK / GB18030。",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            SwitchRow("在侧拉栏隐藏地址", hiddenInDrawer) { hiddenInDrawer = it }
-
-            // ---------------- 缩略图选项（可展开，MT 的「缩略图选项 >>」）
-            Column {
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable { showThumbOptions = !showThumbOptions }
-                        .padding(vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text("缩略图选项", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-                    Text(
-                        if (showThumbOptions) "⌃" else "≫",
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                if (showThumbOptions) {
-                    SwitchRow("加载缩略图", loadThumbs) { loadThumbs = it }
-                    Text(
-                        "关闭后该连接中的网络图片不再加载列表缩略图（点开仍可正常预览）。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
+            // ---------------- 开关项 / 缩略图选项
+            ProtocolSwitches(state)
+            ThumbnailOptions(state, showThumbOptions) { showThumbOptions = !showThumbOptions }
 
             Spacer(Modifier.padding(bottom = 4.dp))
         }
@@ -781,10 +458,14 @@ fun ConnectionEditScreen(
                 .padding(horizontal = 12.dp, vertical = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(enabled = ready, onClick = { doTest() }) { Text(if (busy) "测试中…" else "测试") }
+            TextButton(enabled = state.ready(busy), onClick = { doTest() }) {
+                Text(if (busy) "测试中…" else "测试")
+            }
             Spacer(Modifier.weight(1f))
             TextButton(enabled = !busy, onClick = onBack) { Text("取消") }
-            Button(enabled = ready, onClick = { doSave() }) { Text(if (busy) "保存中…" else "保存") }
+            Button(enabled = state.ready(busy), onClick = { doSave() }) {
+                Text(if (busy) "保存中…" else "保存")
+            }
         }
     }
 
@@ -802,44 +483,5 @@ fun ConnectionEditScreen(
             },
             dismissButton = { TextButton(onClick = { publicKeyLine = null }) { Text("关闭") } },
         )
-    }
-}
-
-/**
- * 「主机 / IP」/ WebDAV URL 右侧的小闪电按钮：点一下读取默认网关并填入。
- *
- * 纯图标（18dp 图标 + 36dp 点击区）：不再挤占主机名 / 域名 / URL；无障碍描述写明真实作用，
- * 读屏不会只念一个「按钮」。禁用态跟随输入框（保存 / 测试进行中不允许改字段）。
- */
-@Composable
-private fun GatewayFillButton(enabled: Boolean, onClick: () -> Unit) {
-    val color = if (enabled) {
-        MaterialTheme.colorScheme.primary
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-    }
-    Box(
-        Modifier
-            .padding(start = 8.dp)
-            .size(36.dp)
-            .clickable(enabled = enabled, onClick = onClick)
-            .semantics { contentDescription = "读取默认网关" },
-        contentAlignment = Alignment.Center,
-    ) {
-        MtVectorIcon(icon = MtIcon.BOLT, size = 18.dp, tint = color)
-    }
-}
-
-/** MT 样式开关行：左文字、右 Switch */
-@Composable
-private fun SwitchRow(label: String, checked: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(label, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChange, enabled = enabled)
     }
 }

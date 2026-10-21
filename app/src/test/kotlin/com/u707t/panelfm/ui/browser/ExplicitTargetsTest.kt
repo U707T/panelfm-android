@@ -56,4 +56,14 @@ class ExplicitTargetsTest {
         assertNull(planCompressTargets(emptyList(), listOf(b), null, "zip"))
         assertNull(planCompressTargets(null, emptyList(), null, "zip"))
     }
+
+    @Test
+    fun `压缩：文件名里的路径被收敛为单段，不允许拼出当前目录`() {
+        // 误贴路径 / 想写上层目录：只取叶子名，绝不让 `..` 进入 VfsUri
+        assertEquals("evil.zip", planCompressTargets(null, listOf(b, c), "../../evil", "zip")!!.name)
+        assertEquals("evil.zip", planCompressTargets(null, listOf(b, c), "C:\\tmp\\evil", "zip")!!.name)
+        // `.` / `..` / 空白 → 回退自动命名
+        assertEquals("archive.zip", planCompressTargets(null, listOf(b, c), "..", "zip")!!.name)
+        assertEquals("archive.zip", planCompressTargets(null, listOf(b, c), "   ", "zip")!!.name)
+    }
 }

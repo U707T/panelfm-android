@@ -72,15 +72,26 @@ fun MtSearchDialog(
         runCatching { focusRequester.requestFocus() }
         keyboard?.show()
     }
+    // 大小条件非法时不能静默当成「不限制」：禁掉确定并在输入框下说明（旧实现 parseSizeText 返回 -1）
+    val minBytes = parseSizeText(minSizeText)
+    val maxBytes = parseSizeText(maxSizeText)
+    val minSizeBad = advanced && minSizeText.isNotBlank() && minBytes == null
+    val maxSizeBad = advanced && maxSizeText.isNotBlank() && maxBytes == null
+    // 上下界都可解析时再校验区间：min > max 是「永远搜不到」，不能当成一次正常搜索
+    val sizeRangeBad = advanced && minBytes != null && maxBytes != null &&
+        minBytes >= 0 && maxBytes >= 0 && minBytes > maxBytes
+    val sizeBad = minSizeBad || maxSizeBad || sizeRangeBad
     val submit = {
-        onSearch(
-            query.trim(),
-            field,
-            recursive,
-            parseSizeText(minSizeText),
-            parseSizeText(maxSizeText),
-        )
-        onDismiss()
+        if (!sizeBad) {
+            onSearch(
+                query.trim(),
+                field,
+                recursive,
+                minBytes ?: -1L,
+                maxBytes ?: -1L,
+            )
+            onDismiss()
+        }
     }
 
     AlertDialog(
@@ -168,6 +179,7 @@ fun MtSearchDialog(
                             label = { Text("最小大小") },
                             placeholder = { Text("如 512K") },
                             singleLine = true,
+                            isError = minSizeBad || sizeRangeBad,
                             modifier = Modifier.weight(1f),
                         )
                         Box(Modifier.padding(horizontal = 4.dp))
@@ -177,13 +189,18 @@ fun MtSearchDialog(
                             label = { Text("最大大小") },
                             placeholder = { Text("如 10M") },
                             singleLine = true,
+                            isError = maxSizeBad || sizeRangeBad,
                             modifier = Modifier.weight(1f),
                         )
                     }
                     Text(
-                        "大小支持 K / M / G 后缀；留空表示不限制",
+                        when {
+                            sizeRangeBad -> "最小值不能大于最大值"
+                            sizeBad -> "大小格式不正确：示例 512K / 1.5MB / 2G；留空表示不限制"
+                            else -> "大小支持 K / M / G（可写 512K / 1.5MB）；留空表示不限制"
+                        },
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        color = if (sizeBad) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
@@ -191,7 +208,7 @@ fun MtSearchDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = query.isNotBlank(),
+                enabled = query.isNotBlank() && !sizeBad,
                 onClick = { submit() },
             ) { Text("确定") }
         },
@@ -212,6 +229,10 @@ fun MtSearchResultsDialog(
     results: List<FileMetadata>,
     searching: Boolean,
     stopped: Boolean = false,
+    /** 子目录列举失败数（网络 / 权限）；0 = 全部目录都读到了 */
+    failedDirs: Int = 0,
+    /** 内容读取失败的文件数；与「未命中」区分显示 */
+    contentFailures: Int = 0,
     /** 本次搜索的起点路径（显示相对路径用）；null = 显示完整父路径 */
     rootPath: String? = null,
     onStop: () -> Unit = {},
@@ -244,8 +265,24 @@ fun MtSearchResultsDialog(
                 }
                 if (stopped && !searching) {
                     // MT 0x7f110620「搜索结果数量过多，已停止搜索」
+                    // 用户主动点「停止」时不该说成「数量过多」：只有达到 300 条才用这条文案
                     Text(
-                        "搜索结果数量过多，已停止搜索（显示前 ${results.size} 条）",
+                        if (results.size >= 300) "搜索结果数量过多，已停止搜索（显示前 ${results.size} 条）"
+                        else "搜索已停止（显示前 ${results.size} 条）",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                // 失败必须可见：旧实现把 list / 内容读取的错误全吞成「空目录 / 未命中」
+                if (!searching && (failedDirs > 0 || contentFailures > 0)) {
+                    Text(
+                        buildString {
+                            if (failedDirs > 0) append("$failedDirs 个目录无法读取（网络或权限）")
+                            if (contentFailures > 0) {
+                                if (isNotEmpty()) append("；")
+                                append("$contentFailures 个文件内容读取失败")
+                            }
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -291,15 +328,25 @@ fun MtSearchResultsDialog(
     )
 }
 
-/** 解析「512K / 10M / 1G / 4096」→ 字节；-1 = 不限制 */
-internal fun parseSizeText(input: String): Long {
-    val t = input.trim().uppercase()
-    if (t.isEmpty()) return -1
+/**
+ * 解析「512K / 10M / 1.5GB / 4096」→ 字节；空串 = -1（不限制）；格式错误 = null。
+ *
+ * 旧实现把非法输入（10KB、-5）也返回 -1，与「不限制」无法区分：用户以为加了条件，
+ * 实际搜的是全部文件。现在由对话框把 null 显示成错误并禁用「确定」。
+ */
+internal fun parseSizeText(input: String): Long? {
+    val raw = input.trim()
+    if (raw.isEmpty()) return -1L
+    // 允许 K / KB / M / MB / G / GB（B 剥掉即可；单独一个 B 仍算非法）
+    val t = raw.uppercase().removeSuffix("B")
+    if (t.isEmpty()) return null
     val (num, mul) = when {
         t.endsWith("G") -> t.dropLast(1) to (1024L * 1024 * 1024)
         t.endsWith("M") -> t.dropLast(1) to (1024L * 1024)
         t.endsWith("K") -> t.dropLast(1) to 1024L
         else -> t to 1L
     }
-    return num.toDoubleOrNull()?.let { (it * mul).toLong() } ?: -1
+    val value = num.trim().toDoubleOrNull() ?: return null
+    if (!value.isFinite() || value < 0) return null
+    return (value * mul).toLong().coerceAtLeast(0L)
 }

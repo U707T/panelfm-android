@@ -39,10 +39,11 @@ class ConnectionDao(private val db: PanelDb) {
         return id
     }
 
-    fun update(config: ConnectionConfig) {
+    /** 返回受影响行数；0 = 记录已不存在（调用方必须提示，不能当作保存成功）。 */
+    fun update(config: ConnectionConfig): Int {
         // 注意：update 不能带上 created_at —— 否则每次编辑连接都会把「创建时间」改成当前时间，
         // 侧边栏按创建时间排序 / 展示会随之漂移（旧实现 toValues() 里无条件写 created_at）。
-        db.writableDatabase.update("connection", config.toValues(includeCreatedAt = false), "id = ?", arrayOf(config.id.toString()))
+        return db.writableDatabase.update("connection", config.toValues(includeCreatedAt = false), "id = ?", arrayOf(config.id.toString()))
     }
 
     fun delete(id: Long) {

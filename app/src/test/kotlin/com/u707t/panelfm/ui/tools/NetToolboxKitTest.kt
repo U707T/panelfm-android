@@ -62,6 +62,16 @@ class NetToolboxKitTest {
     }
 
     @Test
+    fun pingTargetRejectsOptionLikeInput() {
+        // 以 - 开头会被系统 ping 当成开关（-f / -i），不是主机
+        assertTrue(NetToolboxKit.isPingTargetValid("192.168.1.1"))
+        assertTrue(NetToolboxKit.isPingTargetValid("  www.baidu.com  "))
+        assertTrue(!NetToolboxKit.isPingTargetValid(""))
+        assertTrue(!NetToolboxKit.isPingTargetValid("   "))
+        assertTrue(!NetToolboxKit.isPingTargetValid("-f"))
+    }
+
+    @Test
     fun hexDumpFormatsLinesAndTruncates() {
         val dump = NetToolboxKit.hexDump("AB".toByteArray(Charsets.UTF_8))
         val firstLine = dump.lineSequence().first()

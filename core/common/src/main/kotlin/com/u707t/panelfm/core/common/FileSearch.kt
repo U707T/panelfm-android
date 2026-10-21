@@ -14,6 +14,9 @@ package com.u707t.panelfm.core.common
  *
  * [rank] 给结果排序：0 完全同名、1 以关键字开头、2 其它命中；不命中返回 null。
  * 否定和正则不参与「同名优先」（一律 2）。
+ *
+ * 性能约定：规则是**每次操作编译一次**的。目录过滤 / 递归搜索请用 [compile] 拿 [Matcher] 复用，
+ * 不要逐条调用 [matches] —— 旧实现每个文件名都现编译一次正则，大目录里是数万次编译。
  */
 object FileSearch {
 
@@ -37,28 +40,91 @@ object FileSearch {
         }
     }
 
-    fun matches(name: String, query: String): Boolean {
-        val q = query.trim()
-        if (q.isEmpty()) return true
-        return when {
-            q.startsWith("!/") -> !regexMatch(name, q.removePrefix("!/"))
-            q.startsWith("/") -> regexMatch(name, q.removePrefix("/"))
-            q.startsWith("!") -> !positiveMatch(name, q.removePrefix("!"))
-            else -> positiveMatch(name, q)
+    /**
+     * 一次编译、多次匹配（目录过滤与递归搜索复用同一个实例）。
+     *
+     * 构造时就把正则 / glob 编译好并固定「取反 / 子串」分支；[matches] 与 [rank] 只做匹配，
+     * 不再分配或编译。行为与一次性接口 [FileSearch.matches] / [FileSearch.rank] 完全一致。
+     */
+    class Matcher internal constructor(query: String) {
+
+        private val q: String = query.trim()
+        private val negate: Boolean
+        private val regex: Regex?
+        private val literal: String?
+
+        /** glob 是「整串匹配」（锚定正则），正则语法是「包含匹配」——两者不能共用 containsMatchIn。 */
+        private val glob: Boolean
+
+        init {
+            var neg = false
+            var rx: Regex? = null
+            var lit: String? = null
+            var isGlob = false
+            when {
+                q.startsWith("!/") -> {
+                    neg = true
+                    rx = compileRegex(q.removePrefix("!/"))
+                }
+                q.startsWith("/") -> {
+                    rx = compileRegex(q.removePrefix("/"))
+                }
+                q.startsWith("!") -> {
+                    neg = true
+                    val body = q.removePrefix("!")
+                    if (FileSearch.containsWildcard(body) || FileSearch.hasEscape(body)) {
+                        rx = globRegex(body)
+                        isGlob = true
+                    } else {
+                        lit = body
+                    }
+                }
+                else -> {
+                    if (FileSearch.containsWildcard(q) || FileSearch.hasEscape(q)) {
+                        rx = globRegex(q)
+                        isGlob = true
+                    } else {
+                        lit = q
+                    }
+                }
+            }
+            negate = neg
+            regex = rx
+            literal = lit
+            glob = isGlob
+        }
+
+        fun matches(name: String): Boolean {
+            if (q.isEmpty()) return true
+            val hit = when {
+                // glob 必须整串匹配：Regex.containsMatchIn 在 "$" 前允许末尾换行，会漏出 `a\n` 这类文件名
+                regex != null -> if (glob) regex.matches(name) else regex.containsMatchIn(name)
+                literal != null -> literal.isEmpty() || name.contains(literal, ignoreCase = true)
+                else -> false
+            }
+            return if (negate) !hit else hit
+        }
+
+        fun rank(name: String): Int? {
+            if (!matches(name)) return null
+            if (q.isEmpty() || q.startsWith("/") || q.startsWith("!/") || q.startsWith("!")) return 2
+            if (name.equals(q, ignoreCase = true)) return 0
+            // 与旧实现同一口径：含未转义通配符的规则不参与「前缀优先」
+            if (!FileSearch.containsWildcard(q) && name.startsWith(q, ignoreCase = true)) return 1
+            return 2
         }
     }
 
-    /** 搜索类型选了「正则」时用：非法正则不命中。大小写按用户写的正则来（敏感）。 */
-    fun matchesRegex(name: String, pattern: String): Boolean = regexMatch(name, pattern)
+    /** 编译一次，拿到可复用的匹配器。 */
+    fun compile(query: String): Matcher = Matcher(query)
 
-    fun rank(name: String, query: String): Int? {
-        if (!matches(name, query)) return null
-        val q = query.trim()
-        if (q.isEmpty() || q.startsWith("/") || q.startsWith("!/") || q.startsWith("!")) return 2
-        if (name.equals(q, ignoreCase = true)) return 0
-        if (!containsWildcard(q) && name.startsWith(q, ignoreCase = true)) return 1
-        return 2
-    }
+    fun matches(name: String, query: String): Boolean = Matcher(query).matches(name)
+
+    /** 搜索类型选了「正则」时用：非法正则不命中。大小写按用户写的正则来（敏感）。 */
+    fun matchesRegex(name: String, pattern: String): Boolean =
+        compileRegex(pattern)?.containsMatchIn(name) ?: false
+
+    fun rank(name: String, query: String): Int? = Matcher(query).rank(name)
 
     /** 父路径相对搜索根的展示。就在搜索起点时显示「当前目录」。 */
     fun relativeParent(rootPath: String, parentPath: String?): String {
@@ -86,16 +152,6 @@ object FileSearch {
         return runCatching { Regex(body) }.isFailure
     }
 
-    private fun positiveMatch(name: String, raw: String): Boolean {
-        if (raw.isEmpty()) return true
-        // 通配符或有转义 → 走 glob 精确匹配；否则维持「子串包含」（最常用、最快）
-        return if (containsWildcard(raw) || hasEscape(raw)) globMatch(name, raw)
-        else name.contains(raw, ignoreCase = true)
-    }
-
-    private fun regexMatch(name: String, pattern: String): Boolean =
-        runCatching { Regex(pattern).containsMatchIn(name) }.getOrDefault(false)
-
     /**
      * 未转义的 `*` 或 `?`（`\*` 这类转义对不算通配）。
      * 只有 `\` 后面跟 `\` / `*` / `?` 时才构成转义；`\` 后跟其它字符时，`\` 按字面量看。
@@ -115,7 +171,7 @@ object FileSearch {
     }
 
     /** 是否含转义对（`\\` / `\*` / `\?`）。 */
-    private fun hasEscape(pattern: String): Boolean {
+    internal fun hasEscape(pattern: String): Boolean {
         var i = 0
         while (i < pattern.length - 1) {
             if (pattern[i] == '\\' && pattern[i + 1] in "\\*?") return true
@@ -123,24 +179,28 @@ object FileSearch {
         }
         return false
     }
+}
 
-    private fun globMatch(name: String, pattern: String): Boolean {
-        val sb = StringBuilder()
-        var i = 0
-        while (i < pattern.length) {
-            val c = pattern[i]
-            if (c == '\\' && i + 1 < pattern.length && pattern[i + 1] in "\\*?") {
-                sb.append(Regex.escape(pattern[i + 1].toString()))
-                i += 2
-                continue
-            }
-            when (c) {
-                '*' -> sb.append(".*")
-                '?' -> sb.append(".")
-                else -> sb.append(Regex.escape(c.toString()))
-            }
-            i++
+/** 正则编译失败返回 null（调用方按「不命中」处理）。 */
+private fun compileRegex(pattern: String): Regex? = runCatching { Regex(pattern) }.getOrNull()
+
+/** glob → 锚定正则；编译失败返回 null。 */
+private fun globRegex(pattern: String): Regex? {
+    val sb = StringBuilder()
+    var i = 0
+    while (i < pattern.length) {
+        val c = pattern[i]
+        if (c == '\\' && i + 1 < pattern.length && pattern[i + 1] in "\\*?") {
+            sb.append(Regex.escape(pattern[i + 1].toString()))
+            i += 2
+            continue
         }
-        return runCatching { Regex("^$sb$", RegexOption.IGNORE_CASE).matches(name) }.getOrDefault(false)
+        when (c) {
+            '*' -> sb.append(".*")
+            '?' -> sb.append(".")
+            else -> sb.append(Regex.escape(c.toString()))
+        }
+        i++
     }
+    return runCatching { Regex("^$sb$", RegexOption.IGNORE_CASE) }.getOrNull()
 }

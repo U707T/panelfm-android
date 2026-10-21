@@ -15,6 +15,7 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.isActive
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -31,7 +32,14 @@ import kotlinx.coroutines.launch
  */
 class TransferService : Service() {
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    /**
+     * 服务级异常兜底：SupervisorJob 只隔离子协程，**不阻止**未捕获异常上抛到主线程默认处理器。
+     * 这里是独立 scope（v2.0.19 只给 AppContainer 加过 handler），漏掉就是后台传输时崩溃/通知冻住。
+     */
+    private val crashGuard = CoroutineExceptionHandler { _, e ->
+        Logx.e("TransferService", "uncaught in service scope: ${e.message}", e)
+    }
+    private val scope = CoroutineScope(SupervisorJob() + crashGuard + Dispatchers.Main.immediate)
     private var collectJob: Job? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -142,6 +150,8 @@ class TransferService : Service() {
 
     override fun onDestroy() {
         collectJob?.cancel()
+        // 异常销毁 / 用户 stopService 时通知不一定被系统立刻清掉：显式移除
+        stopForegroundCompat()
         scope.cancel()
         Logx.i("TransferService", "onDestroy")
         super.onDestroy()
@@ -151,12 +161,12 @@ class TransferService : Service() {
         private const val CHANNEL_ID = "panelfm.transfer"
         private const val NOTIFICATION_ID = 1001
 
-        fun start(context: Context) {
-            runCatching {
-                val intent = Intent(context, TransferService::class.java)
-                context.startForegroundService(intent)
-            }
-        }
+        /** @return false = 没能进入前台（调用方必须提示：任务切后台可能被系统中断） */
+        fun start(context: Context): Boolean = runCatching {
+            context.startForegroundService(Intent(context, TransferService::class.java))
+            true
+        }.onFailure { Logx.e("TransferService", "startForegroundService failed: ${it.message}", it) }
+            .getOrDefault(false)
 
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, TransferService::class.java)) }

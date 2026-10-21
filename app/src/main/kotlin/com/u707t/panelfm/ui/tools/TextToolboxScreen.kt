@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -30,6 +31,9 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.safeAreaPadding
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
 import java.util.Base64
@@ -48,6 +52,11 @@ import java.util.Base64
 /** 纯逻辑（可单测）：不依赖 Compose / Android。解码类返回 null 表示输入不是有效格式。 */
 object TextToolboxKit {
 
+    /** 十六进制查表：逐字节 `String.format` 是 1MB 输入秒级卡顿的根源（见 v2.0.24 工具页修复）。 */
+    private const val HEX_UPPER = "0123456789ABCDEF"
+    private const val HEX_LOWER = "0123456789abcdef"
+    private val HEX_PREFIX = Regex("0[xX]")
+
     // ---------------------------------------------------------------- 编码（返回 null = 输入非法）
 
     fun base64Encode(s: String): String =
@@ -62,18 +71,30 @@ object TextToolboxKit {
     }
 
     /** 空格分隔、大写、两位一组（UTF-8 字节）。 */
-    fun hexEncode(s: String): String =
-        s.toByteArray(Charsets.UTF_8).joinToString(" ") { "%02X".format(it) }
+    fun hexEncode(s: String): String {
+        val bytes = s.toByteArray(Charsets.UTF_8)
+        if (bytes.isEmpty()) return ""
+        val sb = StringBuilder(bytes.size * 3)
+        for (b in bytes) {
+            val v = b.toInt() and 0xFF
+            sb.append(HEX_UPPER[v ushr 4]).append(HEX_UPPER[v and 0xF]).append(' ')
+        }
+        sb.setLength(sb.length - 1)
+        return sb.toString()
+    }
 
     /** 宽容解码：允许空白 / 逗号 / 分号分隔与 `0x` 前缀；长度为奇数或含非法字符时返回 null。 */
     fun hexDecode(s: String): String? {
-        val stripped = s.replace(Regex("0[xX]"), "")
+        val stripped = s.replace(HEX_PREFIX, "")
             .filterNot { it.isWhitespace() || it == ',' || it == ';' }
         if (stripped.isEmpty()) return ""
         if (stripped.length % 2 != 0) return null
-        if (!stripped.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }) return null
-        val bytes = ByteArray(stripped.length / 2) { i ->
-            stripped.substring(i * 2, i * 2 + 2).toInt(16).toByte()
+        val bytes = ByteArray(stripped.length / 2)
+        for (i in bytes.indices) {
+            val hi = hexVal(stripped[i * 2])
+            val lo = hexVal(stripped[i * 2 + 1])
+            if (hi < 0 || lo < 0) return null
+            bytes[i] = ((hi shl 4) or lo).toByte()
         }
         return String(bytes, Charsets.UTF_8)
     }
@@ -81,39 +102,61 @@ object TextToolboxKit {
     private val Unreserved = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~".toSet()
 
     /** RFC 3986 百分号编码（空格 → %20，不是表单的 +）；路径 / 查询串都适用。 */
-    fun urlEncode(s: String): String = buildString {
-        for (b in s.toByteArray(Charsets.UTF_8)) {
-            val c = (b.toInt() and 0xFF).toChar()
-            if (c in Unreserved) append(c) else append('%').append("%02X".format(b))
+    fun urlEncode(s: String): String {
+        val bytes = s.toByteArray(Charsets.UTF_8)
+        val sb = StringBuilder(bytes.size * 3)
+        for (b in bytes) {
+            val v = b.toInt() and 0xFF
+            val c = v.toChar()
+            if (c in Unreserved) {
+                sb.append(c)
+            } else {
+                sb.append('%').append(HEX_UPPER[v ushr 4]).append(HEX_UPPER[v and 0xF])
+            }
         }
+        return sb.toString()
     }
 
     /** 只解码合法 `%XX` 序列；非法序列（如 `100% wrong`）原样保留，不做破坏性替换。 */
     fun urlDecode(s: String): String {
         val out = ByteArrayOutputStream()
         var i = 0
+        // 普通片段整段转字节（逐字符 String/ByteArray 分配在长文本上是百万级垃圾）
+        var plainStart = 0
+        fun flushPlain(until: Int) {
+            if (until > plainStart) out.write(s.substring(plainStart, until).toByteArray(Charsets.UTF_8))
+        }
         while (i < s.length) {
             val c = s[i]
             if (c == '%' && i + 2 < s.length) {
                 val hi = hexVal(s[i + 1])
                 val lo = hexVal(s[i + 2])
                 if (hi >= 0 && lo >= 0) {
+                    flushPlain(i)
                     out.write((hi shl 4) or lo)
                     i += 3
+                    plainStart = i
                     continue
                 }
             }
-            // 普通字符按码点写入（保住代理对，如 emoji）
-            val cp = s.codePointAt(i)
-            out.write(String(Character.toChars(cp)).toByteArray(Charsets.UTF_8))
-            i += Character.charCount(cp)
+            i += Character.charCount(s.codePointAt(i))
         }
+        flushPlain(s.length)
         return String(out.toByteArray(), Charsets.UTF_8)
     }
 
     /** 全量转义（含 ASCII），Java 风格 `\u4F60`、大写、每 UTF-16 码元一个。 */
-    fun unicodeEncode(s: String): String = buildString {
-        for (ch in s) append("\\u").append("%04X".format(ch.code))
+    fun unicodeEncode(s: String): String {
+        val sb = StringBuilder(s.length * 6)
+        for (ch in s) {
+            val v = ch.code
+            sb.append('\\').append('u')
+                .append(HEX_UPPER[(v ushr 12) and 0xF])
+                .append(HEX_UPPER[(v ushr 8) and 0xF])
+                .append(HEX_UPPER[(v ushr 4) and 0xF])
+                .append(HEX_UPPER[v and 0xF])
+        }
+        return sb.toString()
     }
 
     /** 只替换合法 `\uXXXX`（大小写均可）；非法处（如 `C:\users`）原样保留。 */
@@ -157,9 +200,15 @@ object TextToolboxKit {
     fun sha1(s: String): String = digest("SHA-1", s)
     fun sha256(s: String): String = digest("SHA-256", s)
 
-    private fun digest(algorithm: String, s: String): String =
-        MessageDigest.getInstance(algorithm).digest(s.toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+    private fun digest(algorithm: String, s: String): String {
+        val bytes = MessageDigest.getInstance(algorithm).digest(s.toByteArray(Charsets.UTF_8))
+        val sb = StringBuilder(bytes.size * 2)
+        for (b in bytes) {
+            val v = b.toInt() and 0xFF
+            sb.append(HEX_LOWER[v ushr 4]).append(HEX_LOWER[v and 0xF])
+        }
+        return sb.toString()
+    }
 
     // ---------------------------------------------------------------- 文本
 
@@ -216,17 +265,27 @@ private val TextToolboxOps: List<ToolOp> = listOf(
 @Composable
 fun TextToolboxScreen(container: AppContainer, onBack: () -> Unit) {
     val clipboard = LocalClipboardManager.current
+    val scope = rememberCoroutineScope()
     var input by remember { mutableStateOf("") }
     var output by remember { mutableStateOf("") }
     var status by remember { mutableStateOf("") }
+    // 编码 / 摘要是 CPU 活：跑在 Default 上，处理期间禁用 chips（避免连点叠加）
+    var busy by remember { mutableStateOf(false) }
 
     fun apply(op: ToolOp) {
-        val r = op.run(input)
-        if (r == null) {
-            status = "「${op.label}」失败：输入不是有效格式（结果区保留上一次内容）"
-        } else {
-            output = r
-            status = if (r.isEmpty()) "已应用：${op.label}（结果为空）" else "已应用：${op.label}"
+        if (busy) return
+        val snapshot = input
+        busy = true
+        status = "处理中：${op.label}…"
+        scope.launch {
+            val r = withContext(Dispatchers.Default) { runCatching { op.run(snapshot) }.getOrNull() }
+            if (r != null) output = r
+            status = when {
+                r == null -> "「${op.label}」失败：输入不是有效格式（结果区保留上一次内容）"
+                r.isEmpty() -> "已应用：${op.label}（结果为空）"
+                else -> "已应用：${op.label}"
+            }
+            busy = false
         }
     }
 
@@ -255,7 +314,7 @@ fun TextToolboxScreen(container: AppContainer, onBack: () -> Unit) {
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 TextToolboxOps.forEach { op ->
-                    ToolChip(op.label) { apply(op) }
+                    ToolChip(op.label, enabled = !busy) { apply(op) }
                 }
             }
             OutlinedTextField(
@@ -288,21 +347,21 @@ fun TextToolboxScreen(container: AppContainer, onBack: () -> Unit) {
                         output = t
                         status = "已交换：结果 → 原始"
                     },
-                    enabled = output.isNotEmpty(),
+                    enabled = !busy && output.isNotEmpty(),
                 ) { Text("结果变原始") }
                 TextButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(output))
                         status = "已复制结果"
                     },
-                    enabled = output.isNotEmpty(),
+                    enabled = !busy && output.isNotEmpty(),
                 ) { Text("复制结果") }
                 TextButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(input))
                         status = "已复制原始字符串"
                     },
-                    enabled = input.isNotEmpty(),
+                    enabled = !busy && input.isNotEmpty(),
                 ) { Text("复制原始") }
                 TextButton(
                     onClick = {
@@ -310,7 +369,7 @@ fun TextToolboxScreen(container: AppContainer, onBack: () -> Unit) {
                         output = ""
                         status = "已清空"
                     },
-                    enabled = input.isNotEmpty() || output.isNotEmpty(),
+                    enabled = !busy && (input.isNotEmpty() || output.isNotEmpty()),
                 ) { Text("清空") }
             }
             Column(Modifier.padding(bottom = 12.dp)) {}
@@ -318,17 +377,21 @@ fun TextToolboxScreen(container: AppContainer, onBack: () -> Unit) {
     }
 }
 
-/** 操作 chip（NP 是动态 Button；这里用 MT 观感的浅色圆角块）。 */
+/** 操作 chip（NP 是动态 Button；这里用 MT 观感的浅色圆角块）。处理中禁用，避免连点叠加。 */
 @Composable
-private fun ToolChip(label: String, onClick: () -> Unit) {
+private fun ToolChip(label: String, enabled: Boolean = true, onClick: () -> Unit) {
     Text(
         label,
         style = MaterialTheme.typography.labelMedium,
-        color = MaterialTheme.colorScheme.primary,
+        color = if (enabled) MaterialTheme.colorScheme.primary
+        else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
         modifier = Modifier
             .clip(RoundedCornerShape(MtSpec.CornerSmall))
-            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f))
-            .clickable(onClick = onClick)
+            .background(
+                (if (enabled) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.surfaceVariant).copy(alpha = 0.10f)
+            )
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = 10.dp, vertical = 6.dp),
     )
 }

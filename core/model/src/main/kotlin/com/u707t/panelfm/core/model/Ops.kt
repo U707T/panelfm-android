@@ -23,6 +23,11 @@ data class ConflictInfo(
     val isMove: Boolean = false,
     /** 源是否文件夹 —— 文件→文件夹的「替换」= 递归删除整个文件夹，文案与默认项都必须区分 */
     val sourceIsDirectory: Boolean = false,
+    /**
+     * 全局唯一冲突序号：对话框的「为后续冲突执行相同操作」/单选状态按它重置。
+     * 只按文件名重置不够——不同目录下的同名同大小文件会沿用上一次的选择。
+     */
+    val token: Long = 0L,
 )
 
 /** [ConflictInfo] 的解说文案：按「源类型 × 目标类型」四象限分派（对话框与测试共用）。 */

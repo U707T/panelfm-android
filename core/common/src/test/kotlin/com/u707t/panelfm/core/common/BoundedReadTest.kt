@@ -65,11 +65,31 @@ class BoundedReadTest {
     }
 
     @Test
-    fun `读端一直返回 0 不会变成死循环`() {
+    fun `读端一直返回 0 必须报错而不是返回半截内容`() {
         var calls = 0
-        val out = runBlocking { readBounded(1024) { _, _, _ -> calls++; 0 } }
-        assertArrayEquals(ByteArray(0), out)
+        val failure = runCatching {
+            runBlocking { readBounded(1024) { _, _, _ -> calls++; 0 } }
+        }.exceptionOrNull()
+        assertTrue("应是 IOException，实际：$failure", failure is java.io.IOException)
         assertTrue("必须靠「连续 0 读」退出，实际调用 $calls 次", calls <= 3)
+    }
+
+    @Test
+    fun `读了部分内容后停止响应也必须报错`() {
+        var calls = 0
+        val failure = runCatching {
+            runBlocking {
+                readBounded(1024) { buf, _, _ ->
+                    if (calls++ == 0) {
+                        buf[0] = 42
+                        1
+                    } else {
+                        0
+                    }
+                }
+            }
+        }.exceptionOrNull()
+        assertTrue("半截内容不能当完整结果，实际：$failure", failure is java.io.IOException)
     }
 
     @Test

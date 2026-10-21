@@ -76,4 +76,65 @@ class FileSearchTest {
         assertFalse(FileSearch.worthContentScan("db"))
         assertFalse(FileSearch.worthContentScan("so"))
     }
+
+    // ---------------- 编译复用（性能修复）：Matcher 必须与一次性接口逐字节等价 ----------------
+
+    @Test
+    fun `编译后的匹配器与一次性接口等价`() {
+        val queries = listOf(
+            "",
+            "readme",
+            "*.log",
+            "a?.txt",
+            "!*.tmp",
+            "/.*\\.log",
+            "!/.*\\.log",
+            "a\\*b",
+            "what\\?",
+            "a\\\\b",
+            "!",
+            "/",
+            "!/",
+            "*",
+        )
+        val names = listOf(
+            "readme",
+            "README",
+            "readme.txt",
+            "app.log",
+            "a.LOG",
+            "cache.tmp",
+            "a*b",
+            "what?",
+            "a\\b",
+            "abc",
+            "",
+            "a\n",
+        )
+        for (q in queries) {
+            val matcher = FileSearch.compile(q)
+            for (n in names) {
+                assertEquals("q=$q name=$n", FileSearch.matches(n, q), matcher.matches(n))
+            }
+        }
+    }
+
+    @Test
+    fun `编译后的排序与一次性接口等价`() {
+        val queries = listOf("readme", "readme*", "!readme", "/readme", "a\\*b", "")
+        val names = listOf("readme", "Readme", "readme.txt", "my-readme", "notes.md", "a*b")
+        for (q in queries) {
+            val matcher = FileSearch.compile(q)
+            for (n in names) {
+                assertEquals("q=$q name=$n", FileSearch.rank(n, q), matcher.rank(n))
+            }
+        }
+    }
+
+    @Test
+    fun `glob 是整串匹配：末尾换行不会被当成命中`() {
+        // Regex("^a.*$").containsMatchIn("a\n") 为 true，而文件名是允许带换行的
+        assertFalse(FileSearch.compile("a*").matches("a\n"))
+        assertTrue(FileSearch.compile("a*").matches("a"))
+    }
 }

@@ -542,6 +542,73 @@ class ArchiveVfsTest {
         return out.toString(Charsets.UTF_8.name())
     }
 
+    // ---------------- v2.0.24：重复条目 / 条目消失 / 大量合成目录 ----------------
+
+    private fun makeTar(dir: File, entries: List<Pair<String, String>>): File {
+        val tar = File(dir, "dups.tar")
+        TarArchiveOutputStream(tar.outputStream()).use { tos ->
+            entries.forEach { (name, text) ->
+                val bytes = text.toByteArray()
+                val entry = TarArchiveEntry(name).apply { size = bytes.size.toLong() }
+                tos.putArchiveEntry(entry)
+                tos.write(bytes)
+                tos.closeArchiveEntry()
+            }
+        }
+        return tar
+    }
+
+    @Test
+    fun `tar 同名条目读到索引保留的最后一份`() = runTest {
+        val dir = Files.createTempDirectory("arc-dup").toFile()
+        val file = makeTar(dir, listOf("dup.txt" to "first", "dup.txt" to "second"))
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.TAR, file, env())
+        vfs.connect()
+        val base = "/" + VfsUri.encodeHost(host.toString()) + "!/"
+
+        val root = vfs.list(VfsUri.of("archive", "tar", base))
+        assertEquals(1, root.count { it.name == "dup.txt" })
+        // 索引保留最后一条元数据，重开读取也必须拿到最后一条的内容（旧实现只比名字 → "first"）
+        assertEquals("second", readAll(vfs, VfsUri.of("archive", "tar", base + "dup.txt")))
+    }
+
+    @Test
+    fun `条目在挂载后消失时报 NotFound 而不是空文件`() = runTest {
+        val dir = Files.createTempDirectory("arc-gone").toFile()
+        val file = makeTar(dir, listOf("gone.txt" to "payload"))
+        val host = VfsUri.of("local", "emulated", "/${file.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.TAR, file, env())
+        vfs.connect()
+
+        // 挂载后原地重写压缩包：索引里还有 gone.txt，但文件里已经没有它
+        makeTar(dir, listOf("other.txt" to "other"))
+        val reader = vfs.openRead(VfsUri.of("archive", "tar", "/" + VfsUri.encodeHost(host.toString()) + "!/gone.txt"))
+        val failure = runCatching { reader.read(ByteArray(16), 0, 16) }.exceptionOrNull()
+        runCatching { reader.close() }
+        assertTrue("实际异常：$failure", failure is VfsException.NotFound)
+    }
+
+    @Test
+    fun `大量合成目录不重复且完整`() = runTest {
+        val dir = Files.createTempDirectory("arc-dirs").toFile()
+        val zip = File(dir, "many.zip")
+        ZipOutputStream(zip.outputStream()).use { zos ->
+            repeat(300) { i ->
+                zos.putNextEntry(ZipEntry("d$i/f.txt"))
+                zos.write("x".toByteArray())
+                zos.closeEntry()
+            }
+        }
+        val host = VfsUri.of("local", "emulated", "/${zip.name}")
+        val vfs = ArchiveVfs(host, ArchiveVfs.ArchiveKind.ZIP, zip, env())
+        vfs.connect()
+        val root = vfs.list(VfsUri.of("archive", "zip", "/" + VfsUri.encodeHost(host.toString()) + "!/"))
+        assertEquals(300, root.size)
+        assertEquals(300, root.map { it.name }.toSet().size)
+        assertTrue(root.all { it.isDirectory })
+    }
+
     private class MemoryVfs : VirtualFileSystem {
         override val id = "mem"
         override val scheme = "mem"

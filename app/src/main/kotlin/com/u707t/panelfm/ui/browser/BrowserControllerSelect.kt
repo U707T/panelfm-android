@@ -333,10 +333,16 @@ fun BrowserController.tapSelect(side: PaneSide, item: FileMetadata): Boolean {
  * 可递归子目录；高级条件：按内容（文本类且 ≤2MB，读前 512K）与文件大小范围。
  *
  * **MT 的三条反馈文案（0x7f110430 / 0x7f110620 / 0x7f110686）**：
- *  - 到达 [confirmEvery] 条时回调 [onAskContinue]：返回 false = 停止（"搜索结果数量过多，已停止搜索"）
- *  - [isCancelled] 每轮检查一次 → 用户点「停止搜索」后立即中断
+ *  - 到达结果预算（初始 [limit]）先回调 [onAskContinue]：确认后预算按 [confirmEvery] 递增，
+ *    返回 false 才停止；没有询问回调时截断并标记 [SearchOutcome.capped]
+ *  - [isCancelled] 每个条目、每次内容读取块都检查 →「停止搜索」立即生效
  *  - 搜索会实时把中间结果交给 [onPartial]（界面可边搜边显示，与 MT 的「搜索结果(%d)」一致）
+ *
+ * 失败语义：根目录列举失败直接抛给调用方（不能显示成「没搜到」）；子目录失败计入
+ * [SearchOutcome.failedDirs]，内容读取失败单独计数，不污染「未命中」。
  */
+private class SearchHit(val item: FileMetadata, val rank: Int, val lowerName: String)
+
 suspend fun BrowserController.searchTree(
     side: PaneSide,
     nameQuery: String,
@@ -352,40 +358,60 @@ suspend fun BrowserController.searchTree(
     onAskContinue: (suspend (Int) -> Boolean)? = null,
     isCancelled: () -> Boolean = { false },
     onPartial: ((List<FileMetadata>) -> Unit)? = null,
+    /** 内容搜索总读取预算；用尽即停止（避免 8000 × 512KB 的串行读取） */
+    maxContentBytes: Long = CONTENT_SCAN_MAX_TOTAL,
 ): SearchOutcome {
     val root = pane(side).uri
     val vfs = container.locator.find(root) ?: throw VfsException.Unsupported("会话不可用")
-    val out = ArrayList<FileMetadata>()
+    val budget = SearchBudget(limit, confirmEvery ?: 0)
+    val out = ArrayList<SearchHit>()
     var scanned = 0
     var stopped = false
-    var askedAt = 0
+    var failedDirs = 0
+    var contentFailures = 0
+    var contentBytes = 0L
+
+    // 规则只编译一次：逐条匹配与结果排序共用同一个匹配器
+    val matcher = if (nameQuery.isBlank()) null else com.u707t.panelfm.core.common.FileSearch.compile(nameQuery)
+    val regexMatcher = if (nameRegex) runCatching { Regex(nameQuery) }.getOrNull() else null
+    val ranked = matcher != null && !nameRegex
 
     // MT 搜索类型：文件名（包含 / 通配符 / 正则，语法在 FileSearch）
-    val nameOk: (FileMetadata) -> Boolean = when {
-        nameQuery.isBlank() -> { _ -> true }
-        nameRegex -> { item -> com.u707t.panelfm.core.common.FileSearch.matchesRegex(item.name, nameQuery) }
-        else -> { item -> com.u707t.panelfm.core.common.FileSearch.matches(item.name, nameQuery) }
+    fun nameOk(item: FileMetadata): Boolean = when {
+        nameQuery.isBlank() -> true
+        nameRegex -> regexMatcher?.containsMatchIn(item.name) ?: false
+        else -> matcher!!.matches(item.name)
     }
 
     fun sizeOk(item: FileMetadata): Boolean =
         (minSize < 0 || item.size >= minSize) && (maxSize < 0 || item.size <= maxSize)
 
+    fun contentCandidate(item: FileMetadata): Boolean =
+        !item.isDirectory && contentScanWorthReading(item.size, item.extension)
+
     suspend fun contentOk(item: FileMetadata): Boolean {
         if (contentQuery.isBlank()) return true
-        if (item.isDirectory || item.size < 0 || item.size > 2 * 1024 * 1024) return false
-        // 已知二进制（图片 / 音视频 / 压缩包 / 数据库 / .so 等）不读，省得白读字节
-        if (!com.u707t.panelfm.core.common.FileSearch.worthContentScan(item.extension)) return false
-        return runCatching {
-            withContext(container.dispatchers.vfs) {
-                val reader = vfs.openRead(item.uri, 0, 512 * 1024)
+        if (!contentCandidate(item)) return false
+        if (contentBytes >= maxContentBytes) {
+            // 总读取预算用尽属于「截断」，不是用户点停止：用 capped 让文案说清是上限
+            stopped = true
+            budget.markCapped()
+            return false
+        }
+        return try {
+            // null = 中途被取消 / 总预算用尽（由调用方统一置 stopped，避免在 IO 线程改状态）
+            val found: Boolean? = withContext(container.dispatchers.vfs) {
+                val reader = vfs.openRead(item.uri, 0, CONTENT_SCAN_BYTES)
                 try {
-                    // 先整体读字节再按编码识别解码（旧实现逐块 String(buf) 会用平台默认字符集：
+                    // 先整体读字节再按编码识别解码（逐块 String(buf) 会用平台默认字符集：
                     // UTF-8 中文在块边界被截断、GBK 文件整段乱码，中文内容搜索几乎不可用）
-                    val out = java.io.ByteArrayOutputStream()
+                    val bytes = java.io.ByteArrayOutputStream()
                     val buf = ByteArray(64 * 1024)
                     var total = 0
                     var emptyReads = 0
-                    while (total < 512 * 1024) {
+                    while (total < CONTENT_SCAN_BYTES) {
+                        // 逐块检查：远端读一个 512KB 可能要几秒，不能等整个目录读完才响应「停止」
+                        if (isCancelled() || contentBytes >= maxContentBytes) return@withContext null
                         val n = reader.read(buf, 0, buf.size)
                         if (n < 0) break
                         if (n == 0) {
@@ -393,63 +419,95 @@ suspend fun BrowserController.searchTree(
                             continue
                         }
                         emptyReads = 0
-                        out.write(buf, 0, n)
+                        contentBytes += n
+                        bytes.write(buf, 0, n)
                         total += n
                     }
-                    val text = com.u707t.panelfm.core.common.TextEncodings.decode(out.toByteArray()).text
+                    val text = com.u707t.panelfm.core.common.TextEncodings.decode(bytes.toByteArray()).text
                     text.contains(contentQuery, ignoreCase = true)
                 } finally {
                     runCatching { reader.close() }
                 }
             }
-        }.getOrDefault(false)
+            if (found == null) {
+                stopped = true
+                false
+            } else {
+                found
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            contentFailures++
+            false
+        }
     }
 
+    /** 结果快照：rank 在命中时就算好，排序不再重复匹配（旧实现每次比较都重算 rank + 编译正则）。 */
+    fun snapshot(): List<FileMetadata> =
+        if (!ranked) out.sortedBy { it.lowerName }.map { it.item }
+        else out.sortedWith(compareBy({ it.rank }, { it.lowerName })).map { it.item }
+
     /**
-     * 结果快照：按「同名 > 前缀 > 包含」排序后交给界面（边搜边显示也是有序的）。
-     * 正则 / 空查询没有轻重之分 → 只按名称排。
+     * 结果预算控制：预算未到放行；到了就先问，确认后按步长扩容。
+     * 没有询问通道时标记 capped 并停止（不能像旧实现那样静默截断）。
      */
-    fun snapshot(): List<FileMetadata> = if (nameRegex || nameQuery.isBlank()) {
-        out.sortedBy { it.name.lowercase() }
-    } else {
-        out.sortedWith(
-            compareBy(
-                { com.u707t.panelfm.core.common.FileSearch.rank(it.name, nameQuery) ?: 2 },
-                { it.name.lowercase() },
-            ),
-        )
+    suspend fun allowMore(): Boolean {
+        if (!budget.reached(out.size)) return true
+        if (confirmEvery == null || onAskContinue == null) {
+            budget.markCapped()
+            return false
+        }
+        onPartial?.invoke(snapshot())
+        val go = try {
+            onAskContinue(out.size)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
+        if (!go) {
+            stopped = true
+            return false
+        }
+        budget.continueAfterAsk(out.size)
+        return true
     }
 
     suspend fun walk(dir: VfsUri, depth: Int) {
-        if (out.size >= limit || scanned >= scanCap || depth > 12 || stopped) return
+        if (stopped || scanned >= scanCap || depth > 12) return
         if (isCancelled()) { stopped = true; return }
-        val items = runCatching { withContext(container.dispatchers.vfs) { vfs.list(dir) } }
-            .getOrDefault(emptyList())
+        if (!allowMore()) return
+        val items = try {
+            withContext(container.dispatchers.vfs) { vfs.list(dir) }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // 根目录失败 = 会话不可用 / 无权限：交给上层提示，不能伪装成「没有匹配项」
+            if (depth == 0) throw e
+            failedDirs++
+            emptyList()
+        }
         scanned += items.size
         for (item in items) {
-            if (out.size >= limit) return
-            if (!item.isDirectory &&
-                nameOk(item) &&
-                sizeOk(item) &&
-                contentOk(item)
-            ) {
-                out.add(item)
-                // MT 0x7f110430「已搜索到 %s 个结果，你确定继续搜索？」：到阈值先问再继续
-                if (confirmEvery != null && onAskContinue != null &&
-                    out.size >= confirmEvery && out.size > askedAt
-                ) {
-                    askedAt = out.size
-                    onPartial?.invoke(snapshot())
-                    val go = runCatching { onAskContinue(out.size) }.getOrDefault(false)
-                    if (!go) { stopped = true; return }
-                }
-                // 边搜边显示（MT 的「搜索结果(%d)」实时更新）
-                if (out.size % 20 == 0) onPartial?.invoke(snapshot())
+            if (stopped) return
+            if (isCancelled()) { stopped = true; return }
+            if (!allowMore()) return
+            if (item.isDirectory) continue
+            if (!nameOk(item) || !sizeOk(item)) continue
+            if (!contentOk(item)) {
+                if (stopped) return
+                continue
             }
+            val rank = if (ranked) matcher.rank(item.name) ?: 2 else 2
+            out.add(SearchHit(item, rank, item.name.lowercase()))
+            // 边搜边显示（MT 的「搜索结果(%d)」实时更新）
+            if (out.size % 20 == 0) onPartial?.invoke(snapshot())
         }
         if (recursive) {
             for (item in items) {
-                if (out.size >= limit || scanned >= scanCap || stopped) return
+                if (stopped || scanned >= scanCap) return
+                if (isCancelled()) { stopped = true; return }
                 if (item.isDirectory && !item.isHidden) walk(item.uri, depth + 1)
             }
         }
@@ -461,6 +519,9 @@ suspend fun BrowserController.searchTree(
         items = finalItems,
         stopped = stopped || scanned >= scanCap,
         scanned = scanned,
+        capped = budget.capped,
+        failedDirs = failedDirs,
+        contentFailures = contentFailures,
     )
 }
 

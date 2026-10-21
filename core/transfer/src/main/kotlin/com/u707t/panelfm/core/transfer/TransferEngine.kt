@@ -4,6 +4,7 @@ import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.PanelDispatchers
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -59,6 +60,9 @@ class TransferEngine(
 
     private val queue = Channel<TransferTask>(Channel.UNLIMITED)
     private val workers = java.util.concurrent.atomic.AtomicInteger(0)
+
+    /** 每个任务的自动收场协程句柄：任务被移除时必须能取消，否则会一直等一个不会发生的终态。 */
+    private val watchers = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
     /** 正在运行的任务数（严格按 [maxConcurrent] 限流，支持运行中调整） */
     private val runningCount = java.util.concurrent.atomic.AtomicInteger(0)
@@ -125,7 +129,9 @@ class TransferEngine(
         )
         _tasks.update { it + task }
         queue.trySend(task)
-        scope.launch { watchAutoDismiss(task) }
+        val watcher = scope.launch { watchAutoDismiss(task) }
+        watchers[task.id] = watcher
+        watcher.invokeOnCompletion { watchers.remove(task.id) }
         Logx.i("TransferEngine", "enqueue ${task.title} (${task.id.take(8)})")
         return task
     }
@@ -136,7 +142,9 @@ class TransferEngine(
 
     /** 清空所有已结束的任务（含失败）——用户手动确认过才走这里。 */
     fun clearFinished() {
+        val finished = _tasks.value.filter { it.state.value.isFinished }
         _tasks.update { list -> list.filter { !it.state.value.isFinished } }
+        finished.forEach { watchers.remove(it.id)?.cancel() }
     }
 
     /**
@@ -148,6 +156,9 @@ class TransferEngine(
     fun remove(task: TransferTask) {
         task.cancel()
         _tasks.update { it - task }
+        // 排队中被移除的任务可能永远走不到终态（例如所有 worker 都卡在暂停任务上）：
+        // 收场协程必须一起取消，否则每个被移除的任务都会留下一个永久挂起的协程。
+        watchers.remove(task.id)?.cancel()
     }
 
     /**

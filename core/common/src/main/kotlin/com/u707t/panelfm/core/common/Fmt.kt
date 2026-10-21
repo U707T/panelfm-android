@@ -142,7 +142,11 @@ object Fmt {
     fun percent(done: Long, total: Long): Int =
         if (total <= 0) 0 else ((done * 100 / total).coerceIn(0, 100)).toInt()
 
-    fun count(n: Int): String = if (n > 9999) "${n / 1000}k" else n.toString()
+    fun count(n: Int): String = when {
+        n >= 1_000_000 -> "${n / 1_000_000}M"
+        n > 9999 -> "${n / 1000}k"
+        else -> n.toString()
+    }
 
 }
 

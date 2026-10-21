@@ -30,6 +30,8 @@ import com.github.junrar.exception.UnsupportedRarVersionException
 import com.github.junrar.exception.WrongPasswordException
 import com.github.junrar.rarfile.FileHeader
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -235,7 +237,7 @@ class ArchiveVfs(
         }
     }
 
-    private fun buildIndex() {
+    private suspend fun buildIndex() {
         // 重开前先放掉旧句柄（空包重建 / close 后重连场景，第 5 批审计 🔵7）：
         // 旧实现直接覆盖 zipFile/sevenZ 字段，旧句柄只能等 finalizer 兜底。
         runCatching { zipFile?.close() }
@@ -250,6 +252,8 @@ class ArchiveVfs(
                 val zf = ZipFile.builder().setFile(localFile).get()
                 zipFile = zf
                 zf.entries.asSequence().forEach { e ->
+                    // 大包（几万条目）建索引是秒级到分钟级：每个条目给协程一次取消机会
+                    currentCoroutineContext().ensureActive()
                     if (e.generalPurposeBit.usesEncryption()) zipHasEncryptedEntries = true
                     val path = normalize(e.name, e.isDirectory)
                     if (path != null) {
@@ -271,6 +275,7 @@ class ArchiveVfs(
                 sevenZ = sz
                 var e = sz.nextEntry
                 while (e != null) {
+                    currentCoroutineContext().ensureActive()
                     val path = normalize(e.name, e.isDirectory)
                     if (path != null) {
                         index[path] = Entry(
@@ -289,6 +294,7 @@ class ArchiveVfs(
                 openTar().use { tar ->
                     var e = tar.nextEntry
                     while (e != null) {
+                        currentCoroutineContext().ensureActive()
                         val path = normalize(e.name, e.isDirectory)
                         if (path != null) {
                             index[path] = Entry(
@@ -309,6 +315,7 @@ class ArchiveVfs(
                     CpioArchiveInputStream(raw).use { cpio ->
                         var e = cpio.nextEntry
                         while (e != null) {
+                            currentCoroutineContext().ensureActive()
                             val path = normalize(e.name, e.isDirectory)
                             if (path != null) {
                                 index[path] = Entry(
@@ -330,6 +337,7 @@ class ArchiveVfs(
                     ArArchiveInputStream(raw).use { ar ->
                         var e = ar.nextEntry
                         while (e != null) {
+                            currentCoroutineContext().ensureActive()
                             val path = normalize(e.name, e.isDirectory)
                             if (path != null) {
                                 index[path] = Entry(
@@ -351,6 +359,7 @@ class ArchiveVfs(
                 rarArchive().use { ra ->
                     var e = ra.nextFileHeader()
                     while (e != null) {
+                        currentCoroutineContext().ensureActive()
                         val path = normalize(e.fileName, e.isDirectory)
                         if (path != null) {
                             index[path] = Entry(
@@ -691,14 +700,16 @@ class ArchiveVfs(
                     )
                 )
             }
-            // 合成目录（没有显式目录条目时补齐）
-            childDirs.forEach { dirName ->
-                if (items.none { it.name == dirName }) {
-                    items.add(FileMetadata.dir(uri.child(dirName), dirName))
-                }
-            }
+            // 合成目录（没有显式目录条目时补齐）：先收集已出现过的名字，避免每个目录都对 items 线性扫一遍
+            // （旧注释声称这里已消除 O(n²)，实际只改了 stat 的 dirPaths；本处才是真正的平方级热点）
+            val shown = HashSet<String>(items.size * 2)
+            val merged = ArrayList<FileMetadata>(items.size + childDirs.size)
+            items.forEach { item -> if (shown.add(item.name)) merged.add(item) }
+            childDirs.forEach { dirName -> if (shown.add(dirName)) merged.add(FileMetadata.dir(uri.child(dirName), dirName)) }
+            items.clear()
+            items.addAll(merged)
         }
-        return sortFileItems(items.distinctBy { it.name }, options.sort)
+        return sortFileItems(items, options.sort)
     }
 
     override suspend fun stat(uri: VfsUri): FileMetadata {
@@ -859,19 +870,41 @@ class ArchiveVfs(
                 }
             }
             ArchiveKind.SEVEN_Z -> {
-                // 7z 顺序读取：重新打开并跳到目标条目
+                // 7z 顺序读取：重新打开并跳到目标条目。必须 name + size 一起匹配：
+                // 同名条目（追加/重复打包）只比名字会读到第一份的内容，而索引保留的是最后一份。
                 val sz = sevenZFile()
+                val target = entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
                 var e = sz.nextEntry
-                while (e != null && e.name != (entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry).name) {
+                var found: org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry? = null
+                while (e != null) {
+                    if (e.name == target.name && e.size == target.size) {
+                        found = e
+                        break
+                    }
                     e = sz.nextEntry
+                }
+                if (found == null) {
+                    runCatching { sz.close() }
+                    throw VfsException.NotFound(VfsUri.of("archive", kind.id, "/$path"))
                 }
                 SevenZInputStream(sz, password)
             }
             ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2, ArchiveKind.TAR_XZ -> {
                 val tar = openTar()
+                val target = entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry
                 var e = tar.nextEntry
-                while (e != null && e.name != (entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry).name) {
+                var found: org.apache.commons.compress.archivers.tar.TarArchiveEntry? = null
+                while (e != null) {
+                    if (e.name == target.name && e.size == target.size) {
+                        found = e
+                        break
+                    }
                     e = tar.nextEntry
+                }
+                // 找不到时旧实现直接返回已到 EOF 的流：上层读到 0 字节，像「文件本来就是空的」
+                if (found == null) {
+                    runCatching { tar.close() }
+                    throw VfsException.NotFound(VfsUri.of("archive", kind.id, "/$path"))
                 }
                 tar
             }

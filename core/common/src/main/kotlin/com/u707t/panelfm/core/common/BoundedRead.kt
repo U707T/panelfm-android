@@ -1,6 +1,7 @@
 package com.u707t.panelfm.core.common
 
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 
 /**
  * 「带上限的顺序读」的唯一实现（编辑器 / 预览 / 压缩包条目共用）。
@@ -36,8 +37,11 @@ suspend fun readBounded(
         val n = read(buf, 0, want.toInt())
         if (n < 0) break
         if (n == 0) {
-            // 契约允许返回 0（个别远端流在 EOF 边缘会这样），但不能因此空转成死循环
-            if (++emptyReads >= 3) break
+            // 契约允许「EOF 边缘偶发 0」，但不能因此空转；连续 0 读意味着流没有进展。
+            // 绝不能把已读字节当完整内容返回（那正是本文件要消灭的「静默截断」）。
+            if (++emptyReads >= 3) {
+                throw IOException("读取无进展：源已停止响应（已读 $total 字节）")
+            }
             continue
         }
         emptyReads = 0

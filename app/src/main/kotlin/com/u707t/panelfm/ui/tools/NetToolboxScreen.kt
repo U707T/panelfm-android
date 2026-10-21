@@ -154,24 +154,45 @@ object NetToolboxKit {
     }
 
     /**
+     * Ping 目标合法性：空、或以 `-` 开头的字符串会被系统 ping 当成开关（`-f` / `-i`），
+     * 不是主机名。IP / 域名 / IPv6 都不会以 `-` 开头。
+     */
+    fun isPingTargetValid(raw: String): Boolean {
+        val t = raw.trim()
+        return t.isNotEmpty() && !t.startsWith("-")
+    }
+
+    /**
      * 标准 HEX dump（二进制响应用）：每行 16 字节 =
      * `偏移  4+4 组十六进制  |ASCII|`；超过 [limit] 字节截断并附说明。
      * 对齐 NP「网络工具」的响应 HEX 视图（格式取更通用的 dump 风格）。
+     *
+     * 逐字节用 `String.format` 一次要几百纳秒，16KB 就是上万次格式化（主线程切视图会卡一帧）：
+     * 这里走查表 + StringBuilder，输出逐字符保持原格式。
      */
     fun hexDump(bytes: ByteArray, limit: Int = 16 * 1024): String {
         val n = minOf(bytes.size, limit)
-        val sb = StringBuilder(n / 16 * 80 + 64)
+        val sb = StringBuilder((n / 16 + 2) * 80)
         var i = 0
         while (i < n) {
             val end = minOf(i + 16, n)
-            sb.append("%08X  ".format(i))
-            for (j in i until i + 16) {
-                if (j < end) sb.append("%02X ".format(bytes[j])) else sb.append("   ")
-                if (j == i + 7) sb.append(' ')
+            for (shift in 28 downTo 0 step 4) {
+                sb.append(HEX_UPPER[(i ushr shift) and 0xF])
             }
-            sb.append(" |")
-            for (j in i until end) {
-                val b = bytes[j].toInt() and 0xFF
+            sb.append("  ")
+            for (j in 0 until 16) {
+                val k = i + j
+                if (k < end) {
+                    val v = bytes[k].toInt() and 0xFF
+                    sb.append(HEX_UPPER[v ushr 4]).append(HEX_UPPER[v and 0xF]).append(' ')
+                } else {
+                    sb.append("   ")
+                }
+                if (j == 7) sb.append(' ')
+            }
+            sb.append('|')
+            for (k in i until end) {
+                val b = bytes[k].toInt() and 0xFF
                 sb.append(if (b in 32..126) b.toChar() else '.')
             }
             sb.append("|\n")
@@ -183,6 +204,9 @@ object NetToolboxKit {
         return sb.toString()
     }
 }
+
+/** 十六进制查表：避免逐字节 `String.format`（见 [NetToolboxKit.hexDump]）。 */
+private const val HEX_UPPER = "0123456789ABCDEF"
 
 /**
  * 网络工具箱：Ping / HTTP 两个页签。
@@ -270,42 +294,52 @@ private fun PingPane(container: AppContainer) {
     fun start() {
         val target = host.trim()
         if (target.isEmpty() || running) return
+        if (!NetToolboxKit.isPingTargetValid(target)) {
+            output = "目标不能以 - 开头（会被系统 ping 当成参数）"
+            return
+        }
         output = ""
         running = true
         scope.launch {
-            // 记入历史（NP 的 Ping 历史是 Spinner，这里并入统一输入历史；失败静默）
-            container.prefs.addInputHistory(PrefsStore.RecordKeys.NET_PING_HOST, target)
-            val args = NetToolboxKit.buildPingArgs(
-                target,
-                count.toIntOrNull() ?: 4,
-                size.toIntOrNull() ?: 64,
-                timeout.toIntOrNull() ?: 4,
-            )
-            val p = withContext(Dispatchers.IO) {
-                runCatching { ProcessBuilder(args).redirectErrorStream(true).start() }.getOrNull()
-            }
-            if (p == null) {
-                output = "无法启动系统 ping（/system/bin/ping 不可用）"
-                running = false
-                return@launch
-            }
-            procHolder[0] = p
-            withContext(Dispatchers.IO) {
-                try {
-                    p.inputStream.bufferedReader().useLines { lines ->
-                        lines.forEach { line ->
-                            withContext(Dispatchers.Main) { output += line + "\n" }
-                        }
-                    }
-                    p.waitFor()
-                } catch (e: kotlinx.coroutines.CancellationException) {
-                    throw e // 页面离开：让协程正常收尾，不吞取消信号
-                } catch (_: Exception) {
-                    // 用户点了「停止」：进程被 destroy、流关闭，属预期路径
+            // 状态旗标必须有 finally：写历史 / 起进程任何一步失败都不能把按钮永久卡在「Ping 中…」
+            try {
+                // 历史写入失败与 Ping 无关，不能连带整次执行
+                runCatching { container.prefs.addInputHistory(PrefsStore.RecordKeys.NET_PING_HOST, target) }
+                val args = NetToolboxKit.buildPingArgs(
+                    target,
+                    count.toIntOrNull() ?: 4,
+                    size.toIntOrNull() ?: 64,
+                    timeout.toIntOrNull() ?: 4,
+                )
+                val p = withContext(Dispatchers.IO) {
+                    runCatching { ProcessBuilder(args).redirectErrorStream(true).start() }.getOrNull()
                 }
+                if (p == null) {
+                    output = "无法启动系统 ping（/system/bin/ping 不可用）"
+                    return@launch
+                }
+                procHolder[0] = p
+                withContext(Dispatchers.IO) {
+                    try {
+                        p.inputStream.bufferedReader().useLines { lines ->
+                            lines.forEach { line ->
+                                withContext(Dispatchers.Main) { output += line + "\n" }
+                            }
+                        }
+                        p.waitFor()
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e // 页面离开：让协程正常收尾，不吞取消信号
+                    } catch (_: Exception) {
+                        // 用户点了「停止」：进程被 destroy、流关闭，属预期路径
+                    }
+                }
+            } finally {
+                val p = procHolder[0]
+                procHolder[0] = null
+                // 异常路径下进程可能还活着（流被提前关闭）：一并收掉，别留后台 ping
+                if (p != null && p.isAlive) runCatching { p.destroy() }
+                running = false
             }
-            procHolder[0] = null
-            running = false
         }
     }
 
@@ -467,9 +501,18 @@ private fun HttpPane() {
         OkHttpClient.Builder()
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
+            // 慢速滴流服务器可以每 19s 喂一个字节，readTimeout 永远不触发：给整次请求封顶
+            .callTimeout(30, TimeUnit.SECONDS)
             .build()
     }
-    DisposableEffect(Unit) { onDispose { inFlight[0]?.cancel() } }
+    DisposableEffect(Unit) {
+        onDispose {
+            inFlight[0]?.cancel()
+            // 客户端跟着页面走：连接池 / 线程不释放的话，反复进出工具箱会叠加多套
+            client.connectionPool.evictAll()
+            client.dispatcher.executorService.shutdown()
+        }
+    }
 
     fun send() {
         val target = NetToolboxKit.normalizeUrl(url)
@@ -623,8 +666,11 @@ private fun HttpPane() {
             Text(
                 status.ifEmpty { "响应显示在下方" },
                 style = MaterialTheme.typography.labelSmall,
-                color = if (status.startsWith("HTTP") || status.startsWith("请求中"))
-                    MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                color = when {
+                    status.startsWith("请求失败") || status.startsWith("已取消") -> MaterialTheme.colorScheme.error
+                    status.startsWith("HTTP") || status.startsWith("请求中") -> MaterialTheme.colorScheme.primary
+                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                },
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier

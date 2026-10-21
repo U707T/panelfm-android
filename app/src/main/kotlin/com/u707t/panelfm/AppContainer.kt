@@ -183,15 +183,22 @@ class AppContainer(val app: Application) {
         }
         // 任务运行时启用前台服务通知（M9）；用 taskEvents 才能观察到任务的开始/结束
         scope.launch {
-            var foregound = false
+            var foreground = false
+            // 启动失败只提示一次：taskEvents 每次进度回调都会进这里，不能每 200ms 重试一次
+            var startFailedForBatch = false
             engine.taskEvents.collect { tasks ->
                 val active = tasks.any { it.state.value.isActive }
-                if (active && !foregound) {
-                    foregound = true
-                    TransferService.start(app)
-                } else if (!active && foregound) {
-                    foregound = false
-                    TransferService.stop(app)
+                if (active && !foreground && !startFailedForBatch) {
+                    // 起不来（Android 12+ 后台限制 / 系统拒绝）必须让用户知道：任务切后台可能被中断
+                    foreground = TransferService.start(app)
+                    if (!foreground) {
+                        startFailedForBatch = true
+                        browser.showStatus("后台传输通知不可用：切到后台后传输可能被系统中断")
+                    }
+                } else if (!active) {
+                    if (foreground) TransferService.stop(app)
+                    foreground = false
+                    startFailedForBatch = false
                 }
             }
         }
@@ -452,7 +459,12 @@ class AppContainer(val app: Application) {
     suspend fun saveSecret(configId: Long, secret: String?): Boolean =
         withContext(Dispatchers.IO) { secretStore.put(connectionDao.secretRef(configId), secret) }
 
-    fun loadSecret(configId: Long): String? = secretStore.get(connectionDao.secretRef(configId))
+    /**
+     * 读取口令。内部会查 secret_ref 并做 Keystore 解密，**必须**离开主线程：
+     * 编辑页的加载与保存都调用它，调用方本身已在协程里。
+     */
+    suspend fun loadSecret(configId: Long): String? =
+        withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(configId)) }
 
     fun close() {
         runCatching { remote.stop() }

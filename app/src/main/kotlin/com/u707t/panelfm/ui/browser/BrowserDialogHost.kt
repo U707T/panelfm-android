@@ -151,15 +151,21 @@ internal fun BrowserDialogHost(
                         !recursive && !hasSizeFilter && field == SearchField.NAME -> controller.setSearch(focusSide, q)
                         !recursive && !hasSizeFilter && field == SearchField.REGEX -> controller.setSearch(focusSide, "/$q")
                         else -> {
+                            // 代次隔离：旧协程取消后仍会跑完 catch 块的几行，只有当前代次能写状态
+                            val generation = ++searchGeneration
                             searching = true
                             searchStopped = false
                             searchResults = emptyList()
                             searchResultsOpen = true
                             searchResultsDismissed = false
+                            searchFailedDirs = 0
+                            searchContentFailures = 0
                             searchRootPath = focused.uri.displayPath
+                            searchAsk = null
                             searchJob?.cancel()
                             searchJob = scope.launch {
-                                container.prefs.addSearchQuery(q)
+                                // 历史写入失败不能连带整次搜索（DataStore 磁盘满时曾经会把按钮卡在「搜索中…」）
+                                runCatching { container.prefs.addSearchQuery(q) }
                                 // 注意：**不能用 runCatching 包 `searchTree`** —— 点「停止搜索」时
                                 // `searchJob.cancel()` 会让它抛 CancellationException，而 runCatching
                                 // 会把「取消」当成失败：弹一条「搜索失败：Job was cancelled」，
@@ -176,34 +182,50 @@ internal fun BrowserDialogHost(
                                         // MT 0x7f110430：到 300 条先问「你确定继续搜索？」
                                         confirmEvery = 300,
                                         onAskContinue = { n ->
-                                            val gate = kotlinx.coroutines.CompletableDeferred<Boolean>()
-                                            searchAsk = n to gate
-                                            gate.await()
+                                            // 旧代次可能在被取消前走到询问点：不能让它把新搜索的确认框顶掉
+                                            if (generation != searchGeneration) {
+                                                false
+                                            } else {
+                                                val gate = kotlinx.coroutines.CompletableDeferred<Boolean>()
+                                                searchAsk = n to gate
+                                                gate.await()
+                                            }
                                         },
-                                        isCancelled = { !searching },
+                                        isCancelled = { generation != searchGeneration || !searching },
                                         onPartial = { partial ->
-                                            searchResults = partial
-                                            // 只在用户没有收起结果时自动刷新弹窗（F13）
-                                            if (!searchResultsDismissed) searchResultsOpen = true
+                                            // 取消中的旧搜索可能还会回传一次中间结果：代次不符直接丢弃
+                                            if (generation == searchGeneration) {
+                                                searchResults = partial
+                                                // 只在用户没有收起结果时自动刷新弹窗（F13）
+                                                if (!searchResultsDismissed) searchResultsOpen = true
+                                            }
                                         },
                                     )
                                 } catch (e: kotlinx.coroutines.CancellationException) {
                                     null        // 取消不是错误；「已停止搜索」已由 onStop 提示过
                                 } catch (e: Exception) {
-                                    controller.showStatus((e as? VfsException)?.userMessage ?: "搜索失败：${e.message}")
+                                    if (generation == searchGeneration) {
+                                        controller.showStatus((e as? VfsException)?.userMessage ?: "搜索失败：${e.message}")
+                                    }
                                     null
                                 }
+                                // 旧代次的收尾绝不能写新搜索的状态（旧实现就是在这里把 searching 置 false，
+                                // 导致紧随其后的新搜索在根目录被自己的「已停止」判定掐断）
+                                if (generation != searchGeneration) return@launch
                                 searching = false
                                 if (outcome != null) {
                                     searchResults = outcome.items
-                                    searchStopped = outcome.stopped
+                                    searchFailedDirs = outcome.failedDirs
+                                    searchContentFailures = outcome.contentFailures
+                                    searchStopped = outcome.stopped || outcome.capped
                                     if (!searchResultsDismissed) {
                                         searchResultsOpen = true
                                     } else {
                                         controller.showStatus("搜索完成：${outcome.items.size} 条（可从 ⋮ →「搜索结果」查看）")
                                     }
-                                    if (outcome.stopped && outcome.items.size >= 300) {
-                                        controller.showStatus("搜索结果数量过多，已停止搜索")
+                                    when {
+                                        outcome.capped -> controller.showStatus("搜索结果达到上限（${outcome.items.size} 条），请缩小搜索范围")
+                                        outcome.stopped && outcome.items.size >= 300 -> controller.showStatus("搜索结果数量过多，已停止搜索")
                                     }
                                 }
                             }
@@ -218,10 +240,14 @@ internal fun BrowserDialogHost(
                 results = results,
                 searching = searching,
                 stopped = searchStopped,
+                failedDirs = searchFailedDirs,
+                contentFailures = searchContentFailures,
                 rootPath = searchRootPath,
                 onStop = {
-                    // MT 0x7f110686「停止搜索」
+                    // MT 0x7f110686「停止搜索」：代次先失效，旧协程的收尾就不能再写状态
+                    searchGeneration++
                     searchJob?.cancel()
+                    searchAsk = null
                     searching = false
                     searchStopped = true
                     controller.showStatus("已停止搜索（已找到 ${results.size} 条）")
@@ -231,10 +257,19 @@ internal fun BrowserDialogHost(
                     refineInput = true
                 },
                 onClear = {
+                    // 边搜边清必须真正停下来：否则 onPartial 会立刻把结果又填回去
+                    if (searching) {
+                        searchGeneration++
+                        searchJob?.cancel()
+                        searchAsk = null
+                        searching = false
+                    }
                     searchResults = null
                     searchResultsOpen = false
                     searchResultsDismissed = false
                     searchStopped = false
+                    searchFailedDirs = 0
+                    searchContentFailures = 0
                     searchRootPath = null
                     controller.showStatus("已清除搜索")
                 },

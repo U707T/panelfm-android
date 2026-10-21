@@ -49,7 +49,18 @@ internal class BrowserDialogsState {
     var searchResultsDismissed by mutableStateOf(false)
     var searching by mutableStateOf(false)
     var searchStopped by mutableStateOf(false)
-    var searchJob by mutableStateOf<Job?>(null)
+    /** 不参与重组：只在「停止 / 新搜索」时取消用；放 state 里会让每次搜索都多一次全屏重组 */
+    var searchJob: Job? = null
+    /**
+     * 搜索代次：旧协程被取消后仍会跑完 catch 块的几行，只有当前代次允许写 UI 状态。
+     * 旧实现没有这层隔离，重搜时旧协程会把 `searching` 置 false，新搜索在根目录就被掐断。
+     *
+     * `@Volatile`：`isCancelled` 在内容搜索的 IO 线程上读它，「停止」必须立刻可见。
+     */
+    @Volatile
+    var searchGeneration: Int = 0
+    var searchFailedDirs by mutableStateOf(0)
+    var searchContentFailures by mutableStateOf(0)
     var refineInput by mutableStateOf(false)
     var searchAsk by mutableStateOf<Pair<Int, CompletableDeferred<Boolean>>?>(null)
     /** 本次搜索的起点路径（结果行显示相对路径用） */

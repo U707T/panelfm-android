@@ -616,6 +616,7 @@ class TransferTask internal constructor(
             isDirectory = existing.isDirectory,
             isMove = request.op == TransferOp.MOVE,
             sourceIsDirectory = sourceIsDirectory,
+            token = CONFLICT_SEQ.incrementAndGet(),
         )
         val waiter = CompletableDeferred<ConflictDecision>()
         conflictWaiter = waiter
@@ -831,6 +832,8 @@ class TransferTask internal constructor(
     }
 
     companion object {
+        /** 冲突对话框的全局序号（跨任务唯一；见 [ConflictInfo.token]）。 */
+        private val CONFLICT_SEQ = java.util.concurrent.atomic.AtomicLong(0)
         const val BUFFER_SIZE = 256 * 1024
         private const val MAX_EMPTY_READS = 3
     }

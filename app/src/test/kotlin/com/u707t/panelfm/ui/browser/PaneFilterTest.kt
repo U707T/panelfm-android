@@ -90,4 +90,15 @@ class PaneFilterTest {
         // 这是「过滤设上就取消不了」那类 bug 的防线：源列表必须原样可用
         assertEquals(2, applyPaneFilter(all, "", null).size)
     }
+
+    @Test
+    fun `过滤支持通配符 正则与否定`() {
+        val all = listOf(file("a.log"), file("b.txt"), file("c.log"), file("d.LOG"))
+        assertEquals(
+            listOf("a.log", "c.log", "d.LOG"),
+            applyPaneFilter(all, "*.log", null).map { it.name },
+        )
+        assertEquals(listOf("a.log", "c.log"), applyPaneFilter(all, "/^[ac]\\.log$", null).map { it.name })
+        assertEquals(listOf("b.txt"), applyPaneFilter(all, "!*.log", null).map { it.name })
+    }
 }

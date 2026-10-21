@@ -117,6 +117,12 @@ data class SearchOutcome(
     val stopped: Boolean,
     /** 实际扫描的条目数（MT 的「搜索结果数量过多，已停止搜索」判断依据） */
     val scanned: Int,
+    /** 结果数达到预算且无法继续（调用方没有提供询问回调）；与 [stopped] 分开，便于文案区分 */
+    val capped: Boolean = false,
+    /** 子目录列举失败的数量（根目录失败会直接抛出，不会走到这里） */
+    val failedDirs: Int = 0,
+    /** 内容读取失败的文件数（超时 / 权限 / 编码异常），不计入「未命中」 */
+    val contentFailures: Int = 0,
 )
 
 /** 移动前的二次确认（需求：移动必须确认；跨协议要写明中转语义） */
@@ -283,10 +289,23 @@ internal fun planCompressTargets(
 ): CompressPlan? {
     val sources = overrideSources ?: fallbackSources
     if (sources.isEmpty()) return null
-    val base = fileName?.trim()?.takeIf { it.isNotEmpty() }
+    // 文件名输入框是「文件名」不是「路径」：用户误贴 / 输入 `../../x` 时不能让它穿出当前目录
+    val base = sanitizeArchiveFileName(fileName)
         ?: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.zipNameFor(sources).removeSuffix(".zip")
     val name = if (base.endsWith(".$formatExt")) base else "$base.$formatExt"
     return CompressPlan(sources, name)
+}
+
+/**
+ * 压缩文件名只保留单段叶子名：
+ *  - `a/b.zip` / `a\\b.zip` → `b.zip`（误贴路径不会把文件写到别的目录）
+ *  - `.` / `..` / 空 → null（调用方回退自动命名）
+ */
+internal fun sanitizeArchiveFileName(raw: String?): String? {
+    val text = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val leaf = text.substringAfterLast('/').substringAfterLast('\\').trim()
+    if (leaf.isEmpty() || leaf == "." || leaf == "..") return null
+    return leaf
 }
 
 /**
@@ -299,7 +318,17 @@ internal fun planCompressTargets(
  */
 internal fun typedExtractPath(customPath: String?, currentPath: String): String? {
     val raw = customPath?.trim()?.takeIf { it.isNotEmpty() } ?: return null
-    val norm = "/" + raw.trim('/')
+    // 段级归一化：`.` 丢弃、`..` 回退上一段（到根为止）。不能让 `../x` 拼成 `/../x` 后由
+    // 文件系统解析到目标目录之外（解压目标同样必须留在存储根内）。
+    val segments = ArrayDeque<String>()
+    raw.replace('\\', '/').split('/').forEach { seg ->
+        when (seg) {
+            "", "." -> Unit
+            ".." -> if (segments.isNotEmpty()) segments.removeLast()
+            else -> segments.addLast(seg)
+        }
+    }
+    val norm = "/" + segments.joinToString("/")
     val current = currentPath.trimEnd('/').ifEmpty { "/" }
     return if (norm == current) null else norm
 }
@@ -318,8 +347,10 @@ internal fun applyPaneFilter(
     search: String,
     filterKind: String?,
 ): List<FileMetadata> {
-    val bySearch = if (search.isBlank()) source else source.filter {
-        com.u707t.panelfm.core.common.FileSearch.matches(it.name, search)
+    // 规则只编译一次：旧实现逐条调用 matches()，通配 / 正则条件下每个文件名都现编译一次正则
+    val bySearch = if (search.isBlank()) source else {
+        val matcher = com.u707t.panelfm.core.common.FileSearch.compile(search)
+        source.filter { matcher.matches(it.name) }
     }
     if (filterKind == null) return bySearch
     return bySearch.filter {

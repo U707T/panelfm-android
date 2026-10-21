@@ -31,4 +31,14 @@ class ExtractTargetTest {
         assertEquals("/sdcard/Documents", typedExtractPath("/sdcard/Documents/", "/sdcard/Download"))
         assertEquals("/", typedExtractPath("/", "/sdcard/Download"))
     }
+
+    @Test
+    fun `点段归一化：上跳不会逃出存储根`() {
+        // `../x` 不能在拼成 `/../x` 后由文件系统解析到目标目录之外
+        assertEquals("/x", typedExtractPath("../x", "/sdcard/Download"))
+        assertEquals("/b", typedExtractPath("a/../b", "/sdcard/Download"))
+        assertEquals("/", typedExtractPath("..", "/sdcard/Download"))
+        // 归一到当前目录 → 仍返回 null（保持「选择当前目录」模式）
+        assertNull(typedExtractPath("sdcard/./Download", "/sdcard/Download"))
+    }
 }

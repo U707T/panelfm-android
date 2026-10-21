@@ -93,4 +93,12 @@ class FmtTest {
         // sticky：目录 1777 → drwxrwxrwt
         assertEquals("drwxrwxrwt", Fmt.modeLong(0x200 or 0b111_111_111, isDirectory = true))
     }
+
+    @Test
+    fun `数量进位到 M`() {
+        assertEquals("9999", Fmt.count(9999))
+        assertEquals("10k", Fmt.count(10_000))
+        assertEquals("999k", Fmt.count(999_999))
+        assertEquals("1M", Fmt.count(1_000_000))
+    }
 }
