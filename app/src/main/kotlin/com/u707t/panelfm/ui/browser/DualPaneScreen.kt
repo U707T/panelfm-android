@@ -2,6 +2,8 @@ package com.u707t.panelfm.ui.browser
 
 import android.app.Activity
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,15 +32,18 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -212,210 +217,248 @@ fun DualPaneScreen(
             }
         }
     }
-    ModalNavigationDrawer(
-        drawerState = drawerState,
-        // v2.0.13 修复：库（material3 1.4）的抽屉拖拽手势是**全屏区域**生效的 ——
-        // 列表上任何一次右滑（滑动选中 / 右滑出菜单）都会先把它当成「拉开抽屉」，
-        // 拉出约十几 dp 后被行手势按 24dp 阈值抢断、回弹 —— 实机表现就是
-        // 「每次右滑，屏幕最左缘一条竖影抽动」。
-        // MT 语义下横向滑动全部属于行手势（滑动选中），抽屉只手按 ☰ 打开；
-        // 关闭库手势后：☰ 打开 / 遮罩点击、返回键、条目点击关闭。
-        gesturesEnabled = false,
-        drawerContent = {
-            ModalDrawerSheet(Modifier.fillMaxWidth(0.84f)) {
-                // 抽屉内容顶部加安全区（状态栏），否则「PanelFM」标题会顶到状态栏下面
-                Column(Modifier.safeAreaPadding()) {
-                    MtSideDrawer(
-                        container = container,
-                    volumes = volumes,
-                    spaces = spaces,
-                    connectingId = connecting,
-                    onOpenVolume = { openVolumeInActivePane(it) },
-                    onOpenConnection = { openConnectionInActivePane(it) },
-                    onOpenRecentPath = { uri ->
-                        closeDrawer()
-                        val conn = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
-                        controller.open(focusSide, uri, conn?.id, conn?.name)
-                    },
-                    onEditConnection = { id -> closeDrawer(); onEditConnection(id) },
-                    onOpenTrash = { closeDrawer(); onOpenTrash() },
-                    onOpenApps = { closeDrawer(); onOpenApps() },
-                    onOpenEditor = {
-                        closeDrawer()
-                        val item = focused.selectedItems.firstOrNull { !it.isDirectory }
-                        if (item != null) onOpenEditor(item.uri)
-                        else controller.showStatus("在列表中点击文本文件即可用内置编辑器打开（或先选中一个文件）")
-                    },
-                    onOpenRemote = { closeDrawer(); onOpenRemote() },
-                    onOpenBookmarks = { closeDrawer(); onOpenBookmarks() },
-                    onOpenTasks = { closeDrawer(); onOpenTasks() },
-                    onOpenLanScan = { closeDrawer(); onOpenLanScan() },
-                    onOpenNetToolbox = { closeDrawer(); onOpenNetToolbox() },
-                    onOpenTextToolbox = { closeDrawer(); onOpenTextToolbox() },
-                    onAddConnection = { type -> closeDrawer(); onAddConnection(type) },
-                    onOpenSettings = { closeDrawer(); onOpenSettings() },
-                        showStatus = { controller.showStatus(it) },
-                    )
+    // v2.1.1 修复：抽屉打开后点右侧遮罩没反应（回不到文件列表）。
+    // 根因在库：material3 1.4 的 Scrim 把「点击关闭」和手势开关绑在了一起 ——
+    //   NavigationDrawerKt.ModalNavigationDrawer 里 scrim 的 onClose 是
+    //   { if (gesturesEnabled && drawerState.confirmStateChange(Closed)) scope.launch { close() } }
+    // 而本页为了不让「右滑选中」被抽屉拖拽抢断，必须 gesturesEnabled = false（见下），
+    // 两者一绑，遮罩点击就成了死区（只剩 ☰ / 返回键能关）。
+    // 修法：不动库手势，实测抽屉宽度，在抽屉右缘之外补一层只负责「点一下关抽屉」的点击区。
+    var drawerWidthPx by remember { mutableIntStateOf(0) }
+    Box(Modifier.fillMaxSize()) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            // v2.0.13 修复：库（material3 1.4）的抽屉拖拽手势是**全屏区域**生效的 ——
+            // 列表上任何一次右滑（滑动选中 / 右滑出菜单）都会先把它当成「拉开抽屉」，
+            // 拉出约十几 dp 后被行手势按 24dp 阈值抢断、回弹 —— 实机表现就是
+            // 「每次右滑，屏幕最左缘一条竖影抽动」。
+            // MT 语义下横向滑动全部属于行手势（滑动选中），抽屉只手按 ☰ 打开；
+            // 关闭库手势后：☰ 打开 / 返回键 / 条目点击关闭。
+            // ⚠️ 「遮罩点击关闭」也被这个开关一起关掉了（库的 scrim onClose 判 gesturesEnabled），
+            // 所以下面另补了一层遮罩点击区 —— 别再把那层当成多余代码删掉。
+            gesturesEnabled = false,
+            drawerContent = {
+                ModalDrawerSheet(
+                    Modifier
+                        .fillMaxWidth(0.84f)
+                        // 实测抽屉宽度：下面「遮罩点击区」要靠它精确贴住抽屉右缘
+                        .onSizeChanged { drawerWidthPx = it.width },
+                ) {
+                    // 抽屉内容顶部加安全区（状态栏），否则「PanelFM」标题会顶到状态栏下面
+                    Column(Modifier.safeAreaPadding()) {
+                        MtSideDrawer(
+                            container = container,
+                        volumes = volumes,
+                        spaces = spaces,
+                        connectingId = connecting,
+                        onOpenVolume = { openVolumeInActivePane(it) },
+                        onOpenConnection = { openConnectionInActivePane(it) },
+                        onOpenRecentPath = { uri ->
+                            closeDrawer()
+                            val conn = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+                            controller.open(focusSide, uri, conn?.id, conn?.name)
+                        },
+                        onEditConnection = { id -> closeDrawer(); onEditConnection(id) },
+                        onOpenTrash = { closeDrawer(); onOpenTrash() },
+                        onOpenApps = { closeDrawer(); onOpenApps() },
+                        onOpenEditor = {
+                            closeDrawer()
+                            val item = focused.selectedItems.firstOrNull { !it.isDirectory }
+                            if (item != null) onOpenEditor(item.uri)
+                            else controller.showStatus("在列表中点击文本文件即可用内置编辑器打开（或先选中一个文件）")
+                        },
+                        onOpenRemote = { closeDrawer(); onOpenRemote() },
+                        onOpenBookmarks = { closeDrawer(); onOpenBookmarks() },
+                        onOpenTasks = { closeDrawer(); onOpenTasks() },
+                        onOpenLanScan = { closeDrawer(); onOpenLanScan() },
+                        onOpenNetToolbox = { closeDrawer(); onOpenNetToolbox() },
+                        onOpenTextToolbox = { closeDrawer(); onOpenTextToolbox() },
+                        onAddConnection = { type -> closeDrawer(); onAddConnection(type) },
+                        onOpenSettings = { closeDrawer(); onOpenSettings() },
+                            showStatus = { controller.showStatus(it) },
+                        )
+                    }
                 }
-            }
-        },
-    ) {
-        Column(
-            Modifier
-                .fillMaxSize()
-                // 全面屏（v2.0.14）：**顶部不在这里内缩** —— 状态栏区域交给顶栏自己（顶栏底色向上
-                // 铺满到屏幕顶端，见 BrowserTopBar）；其余三边照旧。否则浅色主题下最顶会留一条
-                // 窗口白底（下面是深色顶栏 → 明显断层）。
-                .windowInsetsPadding(
-                    WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
-                ),
+            },
         ) {
-            BrowserTopBar(container, controller, ui, ds, onOpenDrawer = { scope.launch { drawerState.open() } })
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    // 全面屏（v2.0.14）：**顶部不在这里内缩** —— 状态栏区域交给顶栏自己（顶栏底色向上
+                    // 铺满到屏幕顶端，见 BrowserTopBar）；其余三边照旧。否则浅色主题下最顶会留一条
+                    // 窗口白底（下面是深色顶栏 → 明显断层）。
+                    .windowInsetsPadding(
+                        WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal + WindowInsetsSides.Bottom),
+                    ),
+            ) {
+                BrowserTopBar(container, controller, ui, ds, onOpenDrawer = { scope.launch { drawerState.open() } })
 
-            // MT：顶栏底部分割线 1px（0903F8）
-            DividerPx()
+                // MT：顶栏底部分割线 1px（0903F8）
+                DividerPx()
 
-            // ---------------- 两个窗格
-            // MT「单列 / 双列 / 自动切换」（0x7f1101fb/1fc/1fd/1fe）：
-            // 自动切换 = 宽屏（≥600dp）双列、窄屏单列；由 ui.effectiveBrowseMode 展开。
-            // v2.0.17：中缝**固定等分**（不再可拖动 —— 误拖之后左右不均且用户不知道去哪复位）。
-            val wideEnough = LocalConfiguration.current.screenWidthDp >= 600
-            LaunchedEffect(wideEnough) { controller.setWideEnough(wideEnough) }
-            Row(Modifier.weight(1f)) {
-                val single = ui.effectiveBrowseMode == BrowseMode.SINGLE
-                val showLeft = !single || ui.focused == PaneSide.LEFT
-                val showRight = !single || ui.focused == PaneSide.RIGHT
-                if (showLeft) {
-                    // 中缝阴影 v2.0.12：不再画在窗格边缘（旧版与 10dp 分隔条触摸区之间有空隙，
-                    // 实机"阴影悬空、与中心线割裂"），改为贴 1px 中线、画在触摸区内部
-                    // → 见下方分隔条里的 DividerSideShadow
-                    Box(Modifier.weight(1f)) {
-                        PaneView(
-                            container = container,
-                            side = PaneSide.LEFT,
-                            pane = ui.left,
-                            focused = ui.focused == PaneSide.LEFT,
-                            // 操作前两侧路径栏**同时**高亮（源与目标都要看得见）
-                            highlight = ui.highlight,
-                            controller = controller,
-                            modifier = Modifier.fillMaxSize(),
-                            onRowAction = { ds.rowAction = it },
-                        )
-                    }
-                }
-                if (showLeft && showRight) {
-                    // 中缝：MT 的分隔线只有 1px（0x7f0c0033 的 090111/090112）；这里的 10dp 盒子
-                    // 只用于放「贴线阴影」，不再接手势（v2.0.17：比例固定等分）
-                    Box(
-                        Modifier
-                            .width(10.dp)
-                            .fillMaxHeight(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        // 中缝贴线阴影：锚定 1px 中线、在**活动窗格一侧**；
-                        // 整块画在 10dp 触摸区内部（不遮内容），切换焦点时交叉淡化
-                        DividerSideShadow(leftActive = ui.focused == PaneSide.LEFT)
-                        VDividerPx()
-                    }
-                }
-                if (showRight) {
-                    Box(Modifier.weight(1f)) {
-                        PaneView(
-                            container = container,
-                            side = PaneSide.RIGHT,
-                            pane = ui.right,
-                            focused = ui.focused == PaneSide.RIGHT,
-                            highlight = ui.highlight,
-                            controller = controller,
-                            modifier = Modifier.fillMaxSize(),
-                            onRowAction = { ds.rowAction = it },
-                        )
-                    }
-                }
-            }
-
-            // ---------------- 任务条（只显示进行中 / 失败；完成、已取消立即消失，不再常驻）
-            if (ui.tasks.isNotEmpty()) {
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    ui.tasks.take(2).forEach { snapshot -> TaskRow(snapshot, controller, onOpenTasks) }
-                    val rest = ui.tasks.size - 2
-                    if (rest > 0) {
-                        Text(
-                            "还有 $rest 个任务…（点此查看全部）",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickableNoRipple { onOpenTasks() }
-                                .padding(vertical = 2.dp),
-                        )
-                    }
-                }
-            }
-
-            // ---------------- 长操作状态条（审计 U4：压缩 / 校验 / 对比 / 完整性测试 / 远程包下载）
-            // 不可消失（没有关闭按钮），一律带「取消」；点过取消后转为「正在取消…」直到作业收尾。
-            ui.busy?.let { op ->
-                Column(
-                    Modifier
-                        .fillMaxWidth()
-                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalArrangement = Arrangement.spacedBy(3.dp),
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        if (op.progress == null) {
-                            CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                            Spacer(Modifier.width(8.dp))
-                        }
-                        Text(
-                            op.title,
-                            style = MaterialTheme.typography.labelSmall,
-                            fontWeight = FontWeight.Medium,
-                            modifier = Modifier.weight(1f),
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        op.progress?.let {
-                            Text(
-                                "${(it * 100).roundToInt()}%",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.primary,
+                // ---------------- 两个窗格
+                // MT「单列 / 双列 / 自动切换」（0x7f1101fb/1fc/1fd/1fe）：
+                // 自动切换 = 宽屏（≥600dp）双列、窄屏单列；由 ui.effectiveBrowseMode 展开。
+                // v2.0.17：中缝**固定等分**（不再可拖动 —— 误拖之后左右不均且用户不知道去哪复位）。
+                val wideEnough = LocalConfiguration.current.screenWidthDp >= 600
+                LaunchedEffect(wideEnough) { controller.setWideEnough(wideEnough) }
+                Row(Modifier.weight(1f)) {
+                    val single = ui.effectiveBrowseMode == BrowseMode.SINGLE
+                    val showLeft = !single || ui.focused == PaneSide.LEFT
+                    val showRight = !single || ui.focused == PaneSide.RIGHT
+                    if (showLeft) {
+                        // 中缝阴影 v2.0.12：不再画在窗格边缘（旧版与 10dp 分隔条触摸区之间有空隙，
+                        // 实机"阴影悬空、与中心线割裂"），改为贴 1px 中线、画在触摸区内部
+                        // → 见下方分隔条里的 DividerSideShadow
+                        Box(Modifier.weight(1f)) {
+                            PaneView(
+                                container = container,
+                                side = PaneSide.LEFT,
+                                pane = ui.left,
+                                focused = ui.focused == PaneSide.LEFT,
+                                // 操作前两侧路径栏**同时**高亮（源与目标都要看得见）
+                                highlight = ui.highlight,
+                                controller = controller,
+                                modifier = Modifier.fillMaxSize(),
+                                onRowAction = { ds.rowAction = it },
                             )
                         }
-                        if (op.cancellable) {
-                            TextButton(onClick = { controller.cancelBusy() }) {
-                                Text("取消", style = MaterialTheme.typography.labelSmall)
-                            }
-                        } else {
+                    }
+                    if (showLeft && showRight) {
+                        // 中缝：MT 的分隔线只有 1px（0x7f0c0033 的 090111/090112）；这里的 10dp 盒子
+                        // 只用于放「贴线阴影」，不再接手势（v2.0.17：比例固定等分）
+                        Box(
+                            Modifier
+                                .width(10.dp)
+                                .fillMaxHeight(),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            // 中缝贴线阴影：锚定 1px 中线、在**活动窗格一侧**；
+                            // 整块画在 10dp 触摸区内部（不遮内容），切换焦点时交叉淡化
+                            DividerSideShadow(leftActive = ui.focused == PaneSide.LEFT)
+                            VDividerPx()
+                        }
+                    }
+                    if (showRight) {
+                        Box(Modifier.weight(1f)) {
+                            PaneView(
+                                container = container,
+                                side = PaneSide.RIGHT,
+                                pane = ui.right,
+                                focused = ui.focused == PaneSide.RIGHT,
+                                highlight = ui.highlight,
+                                controller = controller,
+                                modifier = Modifier.fillMaxSize(),
+                                onRowAction = { ds.rowAction = it },
+                            )
+                        }
+                    }
+                }
+
+                // ---------------- 任务条（只显示进行中 / 失败；完成、已取消立即消失，不再常驻）
+                if (ui.tasks.isNotEmpty()) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        ui.tasks.take(2).forEach { snapshot -> TaskRow(snapshot, controller, onOpenTasks) }
+                        val rest = ui.tasks.size - 2
+                        if (rest > 0) {
                             Text(
-                                "正在取消…",
+                                "还有 $rest 个任务…（点此查看全部）",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 6.dp),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickableNoRipple { onOpenTasks() }
+                                    .padding(vertical = 2.dp),
                             )
                         }
                     }
-                    op.progress?.let { ThinProgressBar(it) }
-                    op.detail?.let {
-                        Text(
-                            it,
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
+                }
+
+                // ---------------- 长操作状态条（审计 U4：压缩 / 校验 / 对比 / 完整性测试 / 远程包下载）
+                // 不可消失（没有关闭按钮），一律带「取消」；点过取消后转为「正在取消…」直到作业收尾。
+                ui.busy?.let { op ->
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.85f))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalArrangement = Arrangement.spacedBy(3.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (op.progress == null) {
+                                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text(
+                                op.title,
+                                style = MaterialTheme.typography.labelSmall,
+                                fontWeight = FontWeight.Medium,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            op.progress?.let {
+                                Text(
+                                    "${(it * 100).roundToInt()}%",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary,
+                                )
+                            }
+                            if (op.cancellable) {
+                                TextButton(onClick = { controller.cancelBusy() }) {
+                                    Text("取消", style = MaterialTheme.typography.labelSmall)
+                                }
+                            } else {
+                                Text(
+                                    "正在取消…",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(horizontal = 6.dp),
+                                )
+                            }
+                        }
+                        op.progress?.let { ThinProgressBar(it) }
+                        op.detail?.let {
+                            Text(
+                                it,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
                     }
                 }
-            }
 
-            BrowserBottomBar(container, controller, ui, ds, onOpenBookmarks = onOpenBookmarks)
+                BrowserBottomBar(container, controller, ui, ds, onOpenBookmarks = onOpenBookmarks)
+            }
+        }
+
+        // 遮罩点击区：只在抽屉打开时存在（关闭态不存在这一层，文件列表点击不受影响），
+        // 覆盖范围 = 屏幕宽 − 抽屉实测宽（右侧那条被压暗的区域）。
+        if (drawerOpen && drawerWidthPx > 0) {
+            val drawerWidth = with(LocalDensity.current) { drawerWidthPx.toDp() }
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .padding(start = drawerWidth),
+            ) {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClickLabel = "关闭侧边栏",
+                        ) { closeDrawer() },
+                )
+            }
         }
     }
 
