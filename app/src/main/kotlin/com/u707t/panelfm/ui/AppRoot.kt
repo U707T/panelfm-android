@@ -65,7 +65,7 @@ sealed interface Screen {
     data object Settings : Screen
     data object Bookmarks : Screen
     data object LanScan : Screen
-    /** 网络工具箱（Ping / HTTP，v2.0.12，借鉴 NP管理器「网络工具」） */
+    /** 网络工具箱（Ping / DNS / HTTP / 端口，v2.1.0） */
     data object NetToolbox : Screen
     /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12，借鉴 NP管理器「工具箱」） */
     data object TextToolbox : Screen

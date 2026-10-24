@@ -92,7 +92,7 @@ fun MtSideDrawer(
     onOpenBookmarks: () -> Unit,
     onOpenTasks: () -> Unit,
     onOpenLanScan: () -> Unit,
-    /** 网络工具箱（Ping / HTTP，v2.0.12） */
+    /** 网络工具箱（Ping / DNS / HTTP / 端口，v2.1.0） */
     onOpenNetToolbox: () -> Unit,
     /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12） */
     onOpenTextToolbox: () -> Unit,
@@ -401,7 +401,12 @@ fun MtSideDrawer(
                     progress = activeProgress,
                 )
                 DrawerTool("局域网扫描", MtIcon.EXPLORE, onOpenLanScan)
-                DrawerTool("网络工具箱", MtIcon.WEB, onOpenNetToolbox)
+                DrawerTool(
+                    "网络工具箱",
+                    MtIcon.WEB,
+                    onOpenNetToolbox,
+                    subtitle = "Ping · DNS · HTTP · 端口",
+                )
                 DrawerTool("字符串工具箱", MtIcon.TEXT_SIZE, onOpenTextToolbox)
                 DrawerTool("更多工具", if (expandMore) MtIcon.UNFOLD_UP else MtIcon.UNFOLD_DOWN, onClick = { expandMore = !expandMore })
                 if (expandMore) {
@@ -473,11 +478,17 @@ fun MtSideDrawer(
 }
 
 @Composable
-private fun DrawerTool(title: String, icon: MtIcon, onClick: () -> Unit, progress: Float? = null) {
+private fun DrawerTool(
+    title: String,
+    icon: MtIcon,
+    onClick: () -> Unit,
+    progress: Float? = null,
+    subtitle: String? = null,
+) {
     MtListRow(
         title = title,
         titleSize = 14.sp,
-        subtitle = null,
+        subtitle = subtitle,
         icon = {
             RoundIconBox(size = 30.dp) {
                 MtVectorIcon(icon = icon, size = 14.dp, tint = MaterialTheme.colorScheme.surface)

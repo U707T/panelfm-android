@@ -48,7 +48,7 @@ class NetToolboxKitTest {
             NetToolboxKit.buildPingArgs("example.com", count = 0, size = 999_999, timeoutSec = -5),
         )
         assertEquals(
-            listOf("ping", "-c", "100", "-s", "8", "-w", "120", "8.8.8.8"),
+            listOf("ping", "-c", "100", "-s", "8", "-w", "300", "8.8.8.8"),
             NetToolboxKit.buildPingArgs(" 8.8.8.8 ", count = 9999, size = 1, timeoutSec = 9999),
         )
     }
@@ -102,10 +102,11 @@ class NetToolboxKitTest {
     }
 
     @Test
-    fun decodeBodyPlainAndTruncated() {
-        assertEquals("你好", NetToolboxKit.decodeBody("你好".toByteArray(Charsets.UTF_8)))
+    fun decodeBodySmartPlainAndTruncated() {
+        // v2.1.0：decodeBody（一律 UTF-8 硬解）已被 decodeBodySmart 取代（自动识别编码 + 二进制判定）
+        assertEquals("你好", NetToolboxKit.decodeBodySmart("你好".toByteArray(Charsets.UTF_8)).text)
         val big = ByteArray(10) { 'A'.code.toByte() }
-        val text = NetToolboxKit.decodeBody(big, limit = 4)
+        val text = NetToolboxKit.decodeBodySmart(big, limit = 4).text
         assertTrue(text.startsWith("AAAA"))
         assertTrue(text.contains("已截断"))
     }

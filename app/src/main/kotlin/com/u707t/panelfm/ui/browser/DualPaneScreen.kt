@@ -77,7 +77,7 @@ fun DualPaneScreen(
     onOpenSettings: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onOpenLanScan: () -> Unit,
-    /** 网络工具箱（Ping / HTTP，v2.0.12） */
+    /** 网络工具箱（Ping / DNS / HTTP / 端口，v2.1.0） */
     onOpenNetToolbox: () -> Unit,
     /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12） */
     onOpenTextToolbox: () -> Unit,

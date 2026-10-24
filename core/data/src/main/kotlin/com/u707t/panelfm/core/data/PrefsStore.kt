@@ -200,6 +200,15 @@ class PrefsStore(private val context: Context) {
 
         /** 网络工具箱 Ping 的目标历史（v2.0.12；NP 的 PingActivity 用 Spinner 存历史，这里并入统一输入历史） */
         const val NET_PING_HOST = "net_ping_host"
+
+        /** 网络工具箱 DNS 查询的域名历史（v2.1.0） */
+        const val NET_DNS_HOST = "net_dns_host"
+
+        /** 网络工具箱 HTTP 请求的 URL 历史（v2.1.0） */
+        const val NET_HTTP_URL = "net_http_url"
+
+        /** 网络工具箱端口探测的主机历史（v2.1.0） */
+        const val NET_PORT_HOST = "net_port_host"
     }
 
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
