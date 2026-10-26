@@ -67,10 +67,11 @@ targetSdk 37
 
 ### 工具箱
 
-- **网络**：Ping（IPv4/IPv6、结论行）、DNS（自拼 RFC 1035 报文，10 种记录类型，可指定服务器）、HTTP（自动识别 UTF-8/GBK/Big5/UTF-16，二进制自动切 HEX）、端口探测（并发 TCP connect + banner 抓取）
+- **网络**：Ping（IPv4/IPv6、结论行）、DNS（自拼 RFC 1035 报文，10 种记录类型，可指定服务器）、HTTP（自动识别 UTF-8/GBK/Big5/UTF-16，二进制自动切 HEX）
 - **字符串**：摘要 / 编解码 / 大小写 / 去重排序 / HEX dump
 - **文本对比**：行级差异、忽略空白/大小写、上下差异跳转、并排与统一视图
-- **局域网扫描**，识别常见服务
+- **局域网扫描**：网段发现（本机 /24）与单机多端口探测同页 —— 端口支持快捷多选 / 预设 / `1-1024` 区间，
+  带 banner 与耗时，点结果按端口预选协议直接建连接（v2.1.2 起端口探测并入此处）
 
 ---
 
@@ -125,10 +126,10 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 
 本节数据来自 2026-10-08 起的全量重审（`docs/AUDIT-2026-10-08-REAUDIT.md`）与后续批次。
 
-- **单测**：96 个测试文件、**618** 个 `@Test`
+- **单测**：96 个测试文件、**624** 个 `@Test`
 - **巨型文件已清零**：重审时 `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）是两座大山，现已拆成 6 + 8 个文件；`MediaScreen` 1,886 → 655 行；`EditorScreen` 1,064 → 512 行。目前全仓仅 `ArchiveVfs.kt`（1,058 行）略超 1,000 行
 - **重审收口**：第 1–10 批共修掉 105 条问题（101 修 + 4 记录在案），含多条静默坏数据路径
-- 审计文档按模块留档：`AUDIT-2026-10-08-REAUDIT.md`（全量总文档）、`-10-11-CHANGESET`、`-10-19-STABILITY`、`-10-21-*`、`-10-23-NETTOOLBOX`
+- 审计文档按模块留档：`AUDIT-2026-10-08-REAUDIT.md`（全量总文档）、`-10-11-CHANGESET`、`-10-19-STABILITY`、`-10-21-*`、`-10-23-NETTOOLBOX`、`-10-26-PORTSCAN`
 
 设计说明见：
 - [`docs/SELECTION-MODEL.md`](docs/SELECTION-MODEL.md) —— 选择 / 多选交互模型（唯一设计说明）

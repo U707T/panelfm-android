@@ -10,7 +10,7 @@ import com.u707t.panelfm.core.common.TextEncodings
 // 界面状态与协程在 NetToolboxScreen / NetPanes*.kt。
 //
 // 分工：
-//   NetToolboxKit —— Ping 参数与输出统计、HTTP 头与响应体、端口表、HEX dump
+//   NetToolboxKit —— Ping 参数与输出统计、HTTP 头与响应体、HEX dump
 //   DnsKit        —— DNS 报文编解码与 UDP 查询
 // ================================================================================================
 
@@ -111,46 +111,6 @@ object NetToolboxKit {
         "114.114.114.114" to "114 DNS",
         "8.8.8.8" to "Google",
         "1.1.1.1" to "Cloudflare",
-    )
-
-    /**
-     * 常用端口表（端口探测页）：`端口 to 说明`。
-     * 只收「远程连接 / 调试」真会用到的，不做 1-65535 全扫（手机发热且被网络设备限速）。
-     */
-    val CommonPorts: List<Pair<Int, String>> = listOf(
-        21 to "FTP",
-        22 to "SSH / SFTP",
-        23 to "Telnet",
-        25 to "SMTP",
-        53 to "DNS",
-        80 to "HTTP",
-        110 to "POP3",
-        143 to "IMAP",
-        443 to "HTTPS",
-        445 to "SMB",
-        873 to "rsync",
-        1080 to "SOCKS",
-        1433 to "SQL Server",
-        1521 to "Oracle",
-        2049 to "NFS",
-        2375 to "Docker",
-        3306 to "MySQL",
-        3389 to "RDP",
-        4444 to "常见反弹端口",
-        5000 to "Flask / UPnP",
-        5432 to "PostgreSQL",
-        5900 to "VNC",
-        6379 to "Redis",
-        7001 to "WebLogic",
-        8000 to "常见 HTTP 备用",
-        8080 to "HTTP 代理 / Tomcat",
-        8443 to "HTTPS 备用",
-        8888 to "常见面板",
-        9000 to "PHP-FPM / Portainer",
-        9090 to "常见面板",
-        9200 to "Elasticsearch",
-        11211 to "Memcached",
-        27017 to "MongoDB",
     )
 
     // ------------------------------------------------------------------ URL / 请求头
@@ -388,43 +348,6 @@ object NetToolboxKit {
         }
         if (inString || depth != 0) return null
         return out.toString()
-    }
-
-    // ------------------------------------------------------------------ 端口
-
-    /** 解析用户输入的端口列表：支持 `80,443` / `1-1024` / 混写；非法片段忽略。 */
-    fun parsePorts(raw: String): List<Int> {
-        val out = sortedSetOf<Int>()
-        raw.split(',', '，', ' ', '\n').forEach { part ->
-            val t = part.trim()
-            if (t.isEmpty()) return@forEach
-            val dash = t.indexOf('-')
-            if (dash > 0) {
-                val a = t.substring(0, dash).trim().toIntOrNull()
-                val b = t.substring(dash + 1).trim().toIntOrNull()
-                if (a != null && b != null && a in 1..65535 && b in 1..65535) {
-                    val from = minOf(a, b)
-                    val to = maxOf(a, b)
-                    // 单次最多 2048 个端口：再宽就不是「探测」而是全扫了
-                    for (p in from..minOf(to, from + 2047)) out += p
-                }
-            } else {
-                t.toIntOrNull()?.takeIf { it in 1..65535 }?.let { out += it }
-            }
-        }
-        return out.toList()
-    }
-
-    /** 端口说明（找不到返回 null）。 */
-    fun portLabel(port: Int): String? = CommonPorts.firstOrNull { it.first == port }?.second
-
-    /** 结果表格的一行。 */
-    data class PortResult(val port: Int, val open: Boolean, val banner: String?, val elapsedMs: Long)
-
-    /** 汇总：`开放 3 / 共 34 · 用时 1.2 s` */
-    fun portSummary(results: List<PortResult>, elapsedMs: Long): String {
-        val open = results.count { it.open }
-        return "开放 $open / 共 ${results.size} · 用时 ${Fmt.duration(elapsedMs)}"
     }
 }
 

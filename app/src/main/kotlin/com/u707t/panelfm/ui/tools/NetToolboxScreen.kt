@@ -49,15 +49,17 @@ import kotlinx.coroutines.withContext
 //  - 没有 DNS 查询、没有端口探测 —— 排查「连不上」缺的就是这两步；
 //  - 结果只能在屏幕上读，取不走（这是个文件管理器，结果本该能存成文件）。
 //
-// 现在四页签：Ping / DNS / HTTP / 端口，共用一套输入区 + 统计条 + 结果区（见 NetWidgets）。
+// 现在三页签：Ping / DNS / HTTP，共用一套输入区 + 统计条 + 结果区（见 NetWidgets）。
 // 每页都支持「复制结果」与「存到当前窗格」。
+//
+// v2.1.2：原「端口」页签已合并进「局域网扫描」（网段 × 多端口 / 单机 × 多端口同一页），
+// 引擎换成 core/common 的 PortScan —— 端口面板是旧的闪退源（协程扇出 + 无上限 banner 读取）。
 // ================================================================================================
 
 private enum class NetTab(val label: String) {
     PING("Ping"),
     DNS("DNS"),
     HTTP("HTTP"),
-    PORT("端口"),
 }
 
 /**
@@ -76,7 +78,7 @@ fun NetToolboxScreen(container: AppContainer, onBack: () -> Unit) {
     ) {
         MtScreenTopBar(
             title = "网络工具箱",
-            subtitle = "Ping · DNS · HTTP · 端口",
+            subtitle = "Ping · DNS · HTTP",
             onBack = onBack,
         )
         NetTabRow(
@@ -88,7 +90,6 @@ fun NetToolboxScreen(container: AppContainer, onBack: () -> Unit) {
             NetTab.PING -> PingPane(container)
             NetTab.DNS -> DnsPane(container)
             NetTab.HTTP -> HttpPane(container)
-            NetTab.PORT -> PortPane(container)
         }
     }
 }

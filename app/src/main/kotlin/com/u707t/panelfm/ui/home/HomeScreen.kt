@@ -82,7 +82,7 @@ fun HomeScreen(
     onOpenSettings: () -> Unit,
     onOpenBookmarks: () -> Unit,
     onScanLan: () -> Unit,
-    /** 网络工具箱（Ping / DNS / HTTP / 端口，v2.1.0） */
+    /** 网络工具箱（Ping / DNS / HTTP；端口已并入局域网扫描，v2.1.2） */
     onOpenNetToolbox: () -> Unit,
     /** 字符串工具箱（编码 / 摘要 / 文本 / 进制，v2.0.12） */
     onOpenTextToolbox: () -> Unit,
@@ -380,8 +380,8 @@ fun HomeScreen(
                 ToolRow("远程管理", MtIcon.DNS) { onOpenRemote() }
                 ToolRow("已安装应用", MtIcon.EXTENSION) { onOpenApps() }
                 ToolRow("文本编辑器", MtIcon.CODE) { onOpenEditor() }
-                ToolRow("局域网扫描", MtIcon.EXPLORE) { onScanLan() }
-                ToolRow("网络工具箱", MtIcon.WEB, subtitle = "Ping · DNS · HTTP · 端口") { onOpenNetToolbox() }
+                ToolRow("局域网扫描", MtIcon.EXPLORE, subtitle = "网段发现 · 端口探测") { onScanLan() }
+                ToolRow("网络工具箱", MtIcon.WEB, subtitle = "Ping · DNS · HTTP") { onOpenNetToolbox() }
                 ToolRow("字符串工具箱", MtIcon.TEXT_SIZE) { onOpenTextToolbox() }
                 ToolRow("书签", MtIcon.BOOKMARK) { onOpenBookmarks() }
                 ToolRow("传输任务" + if (active > 0) "（$active 进行中）" else "", MtIcon.GET_APP) { onOpenTasks() }

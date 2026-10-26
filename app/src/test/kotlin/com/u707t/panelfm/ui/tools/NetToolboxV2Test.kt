@@ -7,7 +7,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** 网络工具箱 v2.1.0 新增能力：DNS 报文编解码 / 智能解码 / JSON 美化 / 端口解析 / 统计。 */
+/** 网络工具箱能力：DNS 报文编解码 / 智能解码 / JSON 美化 / 受限头剔除 / 统计。
+ *  端口解析已随「端口探测」合并到 core/common 的 PortScan（测试见 PortScanTest）。 */
 class NetToolboxV2Test {
 
     // ------------------------------------------------------------------ DNS 报文
@@ -163,32 +164,6 @@ class NetToolboxV2Test {
         assertNull(NetToolboxKit.prettyJson("not json"))
         assertNull(NetToolboxKit.prettyJson("""{"a":1""")) // 括号不配对
         assertNull(NetToolboxKit.prettyJson("""{"a":"unclosed}"""))
-    }
-
-    // ------------------------------------------------------------------ 端口
-
-    @Test
-    fun `端口列表解析支持区间与混写`() {
-        assertEquals(listOf(22, 80, 443), NetToolboxKit.parsePorts("22,80,443"))
-        assertEquals(listOf(1, 2, 3), NetToolboxKit.parsePorts("1-3"))
-        assertEquals(listOf(22, 80, 81), NetToolboxKit.parsePorts(" 80 ，22  79-81 ").filter { it != 79 })
-        // 越界与垃圾片段被忽略
-        assertEquals(emptyList<Int>(), NetToolboxKit.parsePorts("0,70000,abc"))
-        // 区间上限保护：不会因为 1-65535 生成 6 万个任务
-        assertTrue(NetToolboxKit.parsePorts("1-65535").size <= 2048)
-        // 去重 + 升序
-        assertEquals(listOf(80, 443), NetToolboxKit.parsePorts("443,80,80"))
-    }
-
-    @Test
-    fun `端口说明表有内容且不重复`() {
-        assertTrue(NetToolboxKit.CommonPorts.size >= 25)
-        assertEquals(
-            NetToolboxKit.CommonPorts.size,
-            NetToolboxKit.CommonPorts.map { it.first }.toSet().size,
-        )
-        assertEquals("SSH / SFTP", NetToolboxKit.portLabel(22))
-        assertNull(NetToolboxKit.portLabel(65534))
     }
 
     // ------------------------------------------------------------------ 请求头
