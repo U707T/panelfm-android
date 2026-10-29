@@ -167,8 +167,15 @@ object ThumbCache {
 data class ThumbPolicy(
     val onMobileData: Boolean,
     val maxBytes: Long,
-    val timeoutSec: Int,
 )
+
+/**
+ * 单张缩略图的加载上限（v2.1.4 起固定 5 秒，不再暴露成设置项）。
+ *
+ * 为什么必须有上限：远端（SFTP / WebDAV / SMB）读一张坏图可能一直不返回，
+ * 没有超时就是一条协程永久挂起；5 秒足够覆盖慢速网络的首包，超时就回退类型图标。
+ */
+private const val LOAD_TIMEOUT_SEC = 5
 
 /** 列表行里的缩略图（不可用/未加载时返回 null，由调用方回退到类型图标） */
 @Composable
@@ -196,13 +203,7 @@ fun rememberThumb(
     ) {
         // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置（切换设置会刷新加载行为）
         val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || policy.onMobileData
-        // MT「缩略图未在 N 秒内加载完成将会取消加载」（0 = 不超时）
-        val timeout = policy.timeoutSec
-        val bitmap = if (timeout > 0) {
-            kotlinx.coroutines.withTimeoutOrNull(timeout * 1000L) {
-                ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
-            }
-        } else {
+        val bitmap = kotlinx.coroutines.withTimeoutOrNull(LOAD_TIMEOUT_SEC * 1000L) {
             ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
         }
         value = bitmap?.asImageBitmap()

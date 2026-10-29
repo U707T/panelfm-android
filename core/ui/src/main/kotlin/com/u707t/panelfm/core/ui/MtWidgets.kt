@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
@@ -43,7 +42,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -53,7 +51,6 @@ import androidx.compose.ui.unit.sp
  * MT 复刻专用控件集（数值全部来自 `/workspace/mt-analysis/MT-UI-功能-逻辑-解析.md`）。
  *
  * 这些控件把「MT 的观感」集中到一处，避免每个界面各写各的魔法数字：
- *  - [MtDialog]：MT 的对话框骨架（标题居中 + 内容 paddingTop 18dp，见 §6.1 / B.1）
  *  - [MtFab]：MT 的 FAB 规范（50dp / 图标 20dp / #FFFF0000 底 / elevation 3→6，见 A.2）
  *  - [PaneEdgeShadow]：双窗格焦点阴影四件套（5dp 渐变 #67000000→透明，见 E.2）
  *  - [MtMenuRow]：⋮ 菜单行（30dp 图标列 + 文字 + 可选右侧箭头/勾选）
@@ -221,55 +218,6 @@ fun MtFab(
     ) {
         MtVectorIcon(icon = icon, size = MtSpec.FabIcon, tint = Color.White)
     }
-}
-
-/**
- * MT 的对话框骨架（复刻 §6.1 / 附录 B.1）：
- *  - 标题 `TextView id=090464`：`ellipsize=3`、`textAlignment=5`（**居中**）、上下 padding 用主题值
- *  - 内容区：左右 padding = 主题属性 `?7F04017D`、**paddingTop = 18dp**（`@7F070025`）
- *  - 选项：RadioButton `textSize=16sp`、CheckBox 默认样式、Spinner
- *
- * 用法与 [AlertDialog] 一致，但排版按 MT 的规范固定下来。
- */
-@Composable
-fun MtDialog(
-    onDismissRequest: () -> Unit,
-    title: String,
-    /** 标题左侧的图标（MT 的「对话框图标」三模式，见 [DialogIcon]） */
-    titleIcon: MtIcon? = null,
-    dialogIconMode: Int = 0,
-    text: @Composable () -> Unit,
-    confirmButton: @Composable () -> Unit,
-    dismissButton: (@Composable () -> Unit)? = null,
-) {
-    AlertDialog(
-        onDismissRequest = onDismissRequest,
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                if (titleIcon != null) {
-                    DialogIcon(
-                        icon = titleIcon,
-                        mode = DialogIconMode.of(dialogIconMode),
-                        size = 28.dp,
-                    )
-                }
-                Text(
-                    title,
-                    // MT：标题居中、单行省略
-                    textAlign = TextAlign.Center,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    style = MaterialTheme.typography.titleMedium.copy(fontSize = 20.sp),
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(top = MtSpec.DialogPaddingTop),
-                )
-            }
-        },
-        text = { Column(Modifier.padding(top = MtSpec.DialogPaddingTop)) { text() } },
-        confirmButton = confirmButton,
-        dismissButton = dismissButton,
-    )
 }
 
 /**

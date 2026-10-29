@@ -25,7 +25,6 @@ import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.model.defaultPolicy
 import com.u707t.panelfm.core.model.explanationText
 import com.u707t.panelfm.core.ui.DialogIcon
-import com.u707t.panelfm.core.ui.DialogIconMode
 import com.u707t.panelfm.core.ui.MtIcon
 
 
@@ -65,7 +64,6 @@ fun MoveConfirmDialog(pending: PendingMove, onConfirm: () -> Unit, onCancel: () 
 @Composable
 fun ConflictDialog(
     info: ConflictInfo,
-    dialogIconMode: Int = 0,
     onDecision: (ConflictPolicy, Boolean) -> Unit,
 ) {
     // 按「冲突」重置：键必须是全局唯一 token。只用文件名会让不同目录下的同名文件
@@ -80,7 +78,7 @@ fun ConflictDialog(
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // MT 的「对话框图标」在冲突框也出现（深浅自适应）；图标换成 MT 的真实矢量
-                DialogIcon(MtIcon.ERROR, DialogIconMode.of(dialogIconMode), size = 32.dp)
+                DialogIcon(MtIcon.ERROR, size = 32.dp)
                 Text("文件已存在", modifier = Modifier.padding(start = 10.dp))
             }
         },

@@ -37,7 +37,6 @@ data class AppSettings(
     val dirsFirst: Boolean = true,
     val maxConcurrentTasks: Int = 2,
     val thumbnailsOnMobile: Boolean = false,
-    val useSingleColumn: Boolean = false,
     /**
      * 浏览模式三档：AUTO / SINGLE / DUAL（设置页可改，重启保留）。
      *
@@ -52,8 +51,6 @@ data class AppSettings(
     val homePath: String? = null,
     /** 时间显示到秒 */
     val showSeconds: Boolean = false,
-    /** 记忆上次的双列路径 */
-    val rememberLastPath: Boolean = true,
     /** 底栏上滑调出书签 */
     val bookmarkSwipe: Boolean = true,
     /**
@@ -67,9 +64,6 @@ data class AppSettings(
      * 语义由 `MediaScreen` 的 `Lifecycle.Event.ON_STOP` 观察者执行（关闭时 pause，开启时不干预）。
      */
     val backgroundPlay: Boolean = false,
-    /** 底部工具栏额外下边距（全面屏手势下的舒适区，0=自动） */
-    val bottomBarPaddingDp: Int = 8,
-    val skipThumbsWhileScrolling: Boolean = true,
     /** 按文件夹记忆的排序（MT「仅应用于此文件夹」）：key = 去 query 的 uri 字符串，值 = "by|asc|dirs" */
     val folderSorts: Map<String, String> = emptyMap(),
     /** 搜索历史（最近在前，最多 10 条） */
@@ -89,14 +83,10 @@ data class AppSettings(
     val listDisplayMode: Int = 2,
     /** MT「超过 X 大小的图片文件不加载缩略图」（字节，0 = 不限制） */
     val thumbnailMaxBytes: Long = 3L * 1024 * 1024,
-    /** MT「缩略图未在 N 秒内加载完成将会取消加载」（0 = 不超时） */
-    val thumbnailTimeoutSec: Int = 5,
     /** MT「退出前双次确认」 */
     val confirmExit: Boolean = false,
     /** MT「保存文件时自动将原文件重命名为 .bak 备份文件」 */
     val backupOnSave: Boolean = false,
-    /** MT「对话框图标」：0 深色背景（自适应）/ 1 浅色背景（自适应）/ 2 无背景 */
-    val dialogIconMode: Int = 0,
     /**
      * MT 的输入框历史（`app:recordKey`）：键名照抄 MT（`filter_record` / `rename_multi_pattern` /
      * `editor_find` …），值 = 最近使用在前、去重、最多 12 条。
@@ -161,26 +151,21 @@ class PrefsStore(private val context: Context) {
         val trustSelfSigned = booleanPreferencesKey("trust_self_signed")
         val homePath = stringPreferencesKey("home_path")
         val showSeconds = booleanPreferencesKey("show_seconds")
-        val rememberLast = booleanPreferencesKey("remember_last_path")
         val bookmarkSwipe = booleanPreferencesKey("bookmark_swipe")
         // 视频 / 音频「自动后台播放」：缺省 = false（退到后台即暂停）
         val backgroundPlay = booleanPreferencesKey("background_play")
-        val bottomPad = intPreferencesKey("bottom_bar_padding")
         val lastLeft = stringPreferencesKey("last_left")
         val lastRight = stringPreferencesKey("last_right")
         val folderSorts = androidx.datastore.preferences.core.stringSetPreferencesKey("folder_sorts")
         val searchHistory = stringPreferencesKey("search_history")
         val fontScaleLevel = intPreferencesKey("font_scale_level")
-        val skipThumbs = booleanPreferencesKey("skip_thumbs_scrolling")
-        // MT 对齐批次（v0.14.0）：保留文件时间 / 启动路径 / 列表显示 / 缩略图策略 / 退出确认 / .bak / 对话框图标
+        // MT 对齐批次（v0.14.0）：保留文件时间 / 启动路径 / 列表显示 / 退出确认 / .bak
         val preserveMtime = booleanPreferencesKey("preserve_mtime")
         val startAtHome = booleanPreferencesKey("start_at_home")
         val listDisplayMode = intPreferencesKey("list_display_mode")
         val thumbMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("thumb_max_bytes")
-        val thumbTimeoutSec = intPreferencesKey("thumb_timeout_sec")
         val confirmExit = booleanPreferencesKey("confirm_exit")
         val backupOnSave = booleanPreferencesKey("backup_on_save")
-        val dialogIconMode = intPreferencesKey("dialog_icon_mode")
         val tapRangeSelect = booleanPreferencesKey("tap_range_select")
         // 编辑器「语法」手动选择（ext|scope 行；scope 空串 = 纯文本）
         val editorLangOverrides = androidx.datastore.preferences.core.stringSetPreferencesKey("editor_lang_overrides")
@@ -234,19 +219,18 @@ class PrefsStore(private val context: Context) {
             dirsFirst = p[Keys.dirsFirst] ?: true,
             maxConcurrentTasks = p[Keys.maxConcurrent] ?: 2,
             thumbnailsOnMobile = p[Keys.thumbsMobile] ?: false,
-            useSingleColumn = p[Keys.singleColumn] ?: false,
             // 老数据没有 browse_mode 键：退回旧的「默认单列显示」布尔值，
-            // 否则曾开启该开关的用户会突然变成双列（静默改掉用户的既有选择）
+            // 否则曾开启该开关的用户会突然变成双列（静默改掉用户的既有选择）。
+            // ⚠️ `single_column` 只剩这一处迁移读取（v2.1.4 删掉 useSingleColumn 字段与写入口后，
+            //    仍然要能读回 v1.x 的存量数据）。
             browseMode = p[Keys.browseMode]
                 ?: if (p[Keys.singleColumn] == true) "SINGLE" else "DUAL",
             userAgent = p[Keys.userAgent] ?: "PanelFM/0.1 (Android)",
             trustSelfSigned = p[Keys.trustSelfSigned] ?: false,
             homePath = p[Keys.homePath],
             showSeconds = p[Keys.showSeconds] ?: false,
-            rememberLastPath = p[Keys.rememberLast] ?: true,
             bookmarkSwipe = p[Keys.bookmarkSwipe] ?: true,
             backgroundPlay = p[Keys.backgroundPlay] ?: false,
-            bottomBarPaddingDp = p[Keys.bottomPad] ?: 8,
             folderSorts = (p[Keys.folderSorts] ?: emptySet())
                 .mapNotNull { line ->
                     val parts = line.split('|')
@@ -255,15 +239,12 @@ class PrefsStore(private val context: Context) {
                 .toMap(),
             searchHistory = (p[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() },
             fontScaleLevel = p[Keys.fontScaleLevel] ?: 1,
-            skipThumbsWhileScrolling = p[Keys.skipThumbs] ?: true,
             preserveModifiedTime = p[Keys.preserveMtime] ?: true,
             startAtHome = p[Keys.startAtHome] ?: false,
             listDisplayMode = (p[Keys.listDisplayMode] ?: 2).coerceIn(0, 2),
             thumbnailMaxBytes = p[Keys.thumbMaxBytes] ?: (3L * 1024 * 1024),
-            thumbnailTimeoutSec = p[Keys.thumbTimeoutSec] ?: 5,
             confirmExit = p[Keys.confirmExit] ?: false,
             backupOnSave = p[Keys.backupOnSave] ?: false,
-            dialogIconMode = (p[Keys.dialogIconMode] ?: 0).coerceIn(0, 2),
             tapRangeSelect = p[Keys.tapRangeSelect] ?: false,
             editorLangOverrides = (p[Keys.editorLangOverrides] ?: emptySet())
                 .mapNotNull { line -> parseLangOverride(line) }
@@ -301,28 +282,21 @@ class PrefsStore(private val context: Context) {
     suspend fun setDirsFirst(on: Boolean) = context.panelDataStore.edit { it[Keys.dirsFirst] = on }
     suspend fun setMaxConcurrent(n: Int) = context.panelDataStore.edit { it[Keys.maxConcurrent] = n.coerceIn(1, 4) }
     suspend fun setThumbsOnMobile(on: Boolean) = context.panelDataStore.edit { it[Keys.thumbsMobile] = on }
-    suspend fun setSkipThumbsWhileScrolling(on: Boolean) = context.panelDataStore.edit { it[Keys.skipThumbs] = on }
-    suspend fun setSingleColumn(on: Boolean) = context.panelDataStore.edit {
-        it[Keys.singleColumn] = on
-        // 两个键保持同步：browse_mode 是新的一等入口，single_column 只作兼容回退
-        it[Keys.browseMode] = if (on) "SINGLE" else "DUAL"
-    }
 
-    /** 浏览模式（AUTO / SINGLE / DUAL）。与 [setSingleColumn] 同步写，避免两个开关打架。 */
+    /** 浏览模式（AUTO / SINGLE / DUAL）。 */
     suspend fun setBrowseMode(mode: String) = context.panelDataStore.edit {
         it[Keys.browseMode] = mode
+        // 兼容键：只为「降级回 v1.x / v2.1.3 及更早版本」保留，本版本只读一次做迁移
         it[Keys.singleColumn] = (mode == "SINGLE")
     }
     suspend fun setUserAgent(ua: String) = context.panelDataStore.edit { it[Keys.userAgent] = ua }
     suspend fun setTrustSelfSigned(on: Boolean) = context.panelDataStore.edit { it[Keys.trustSelfSigned] = on }
 
     suspend fun setShowSeconds(on: Boolean) = context.panelDataStore.edit { it[Keys.showSeconds] = on }
-    suspend fun setRememberLastPath(on: Boolean) = context.panelDataStore.edit { it[Keys.rememberLast] = on }
     suspend fun setBookmarkSwipe(on: Boolean) = context.panelDataStore.edit { it[Keys.bookmarkSwipe] = on }
 
     /** 「自动后台播放」：只写这一个键，缺省（从未设置）时读取端按 `false` 处理 */
     suspend fun setBackgroundPlay(on: Boolean) = context.panelDataStore.edit { it[Keys.backgroundPlay] = on }
-    suspend fun setBottomBarPadding(dp: Int) = context.panelDataStore.edit { it[Keys.bottomPad] = dp.coerceIn(0, 28) }
 
     /** 按文件夹记忆排序：value == null 表示清除该文件夹的规则 */
     suspend fun setFolderSort(key: String, value: String?) = context.panelDataStore.edit { prefs ->
@@ -337,10 +311,8 @@ class PrefsStore(private val context: Context) {
     suspend fun setStartAtHome(on: Boolean) = context.panelDataStore.edit { it[Keys.startAtHome] = on }
     suspend fun setListDisplayMode(mode: Int) = context.panelDataStore.edit { it[Keys.listDisplayMode] = mode.coerceIn(0, 2) }
     suspend fun setThumbnailMaxBytes(bytes: Long) = context.panelDataStore.edit { it[Keys.thumbMaxBytes] = bytes.coerceAtLeast(0) }
-    suspend fun setThumbnailTimeoutSec(sec: Int) = context.panelDataStore.edit { it[Keys.thumbTimeoutSec] = sec.coerceIn(0, 60) }
     suspend fun setConfirmExit(on: Boolean) = context.panelDataStore.edit { it[Keys.confirmExit] = on }
     suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }
-    suspend fun setDialogIconMode(mode: Int) = context.panelDataStore.edit { it[Keys.dialogIconMode] = mode.coerceIn(0, 2) }
     suspend fun setTapRangeSelect(on: Boolean) = context.panelDataStore.edit { it[Keys.tapRangeSelect] = on }
 
     /** 编辑器「语法」：按扩展名记一条手动选择；[scope] 为 null 表示恢复自动识别。 */

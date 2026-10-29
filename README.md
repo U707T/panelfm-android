@@ -6,7 +6,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.1.3 (98)
+版本      2.1.4 (99)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk

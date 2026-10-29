@@ -132,12 +132,10 @@ fun PaneView(
     val thumbPolicy = remember(
         settings.thumbnailsOnMobile,
         settings.thumbnailMaxBytes,
-        settings.thumbnailTimeoutSec,
     ) {
         ThumbPolicy(
             onMobileData = settings.thumbnailsOnMobile,
             maxBytes = settings.thumbnailMaxBytes,
-            timeoutSec = settings.thumbnailTimeoutSec,
         )
     }
     val density = LocalDensity.current
@@ -388,7 +386,7 @@ fun PaneView(
                     ) { item ->
                         MtFileRow(
                             container = container,
-                            skipThumb = listState.isScrollInProgress && settings.skipThumbsWhileScrolling,
+                            skipThumb = listState.isScrollInProgress,
                             // 设置项由窗格顶层取一次、按值下传：每一行各自 collectAsState 会
                             // 产生 N 份订阅 + N 次重组（长目录里滚动明显发涩），
                             // 见 ThumbPolicy 的 KDoc 里同一条结论。

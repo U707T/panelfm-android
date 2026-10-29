@@ -36,10 +36,14 @@ import com.u707t.panelfm.ui.browser.BrowseMode
 import kotlinx.coroutines.launch
 
 /**
- * 设置页（对齐 MT 的「设置」观感）：
- * 主题（跟随系统 / 浅色 / 深色 三选一）、动态取色、字体大小、缩略图、任务并发、
- * 底栏下边距、全局 User-Agent（可编辑，此前只读且与协议层不一致）、
- * 视频播放（自动后台播放，**默认关闭**）等。
+ * 设置页（对齐 MT 的「设置」观感）。
+ *
+ * 只保留**真的会改变行为**的开关：主题 / 动态取色 / 显示 / 手势 / 文件 / 缩略图 /
+ * 视频播放 / 界面 / 传输 / 网络。
+ *
+ * v2.1.4 删掉的项（早期 MT 复刻遗留，见 CHANGELOG）：记忆上次的双列路径（与「启动时进入首页」
+ * 重复）、对话框图标背景（只覆盖 2 个对话框）、底部工具栏下边距（安全区已由 insets 处理）、
+ * 缩略图的两个纯实现细节（滚动跳过 / 超时秒数）。
  */
 @Composable
 fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
@@ -101,13 +105,6 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("默认显示隐藏文件", settings.showHidden) {
             scope.launch { container.prefs.setShowHidden(it) }
         }
-        // 「默认单列显示」旧开关已移除（第 9 批 🔵3）：它是 browse_mode 迁移前的兼容入口，
-        // 与下方「界面 → 浏览模式（自动 / 单列 / 双列）」控制同一份数据且二者语义打架
-        // （旧开关的「手机窄屏」措辞并不存在：它写的是绝对 SINGLE，而不是按屏宽自适应）。
-        // 需要单列：用「浏览模式 → 单列」；需要窄屏自适应：用「自动切换」。
-        SettingSwitch("记忆上次的双列路径", settings.rememberLastPath) {
-            scope.launch { container.prefs.setRememberLastPath(it) }
-        }
         SettingSwitch("底栏上滑调出书签", settings.bookmarkSwipe) {
             scope.launch { container.prefs.setBookmarkSwipe(it) }
         }
@@ -135,16 +132,18 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setStartAtHome(it) }
         }
         Text(
-            // MT 0x7f110200/201/202「文件列表显示策略」三档
+            // MT 0x7f110200/201/202「文件列表显示策略」三档（按钮用短名，完整语义看上一行）
             "文件列表显示：" + com.u707t.panelfm.core.common.MtListSubtitle.MODE_LABELS[settings.listDisplayMode],
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 4.dp),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 1, 2).forEach { mode ->
+            // ⚠️ 按钮文案必须短：三档全名加起来 40+ 汉字，一行放不下（旧实现直接塞 MODE_LABELS，
+            //    真机上三枚按钮互相挤压换行）
+            listOf("时间", "权限+大小", "时间+大小").forEachIndexed { mode, short ->
                 TextButton(onClick = { scope.launch { container.prefs.setListDisplayMode(mode) } }) {
                     Text(
-                        com.u707t.panelfm.core.common.MtListSubtitle.MODE_LABELS[mode],
+                        short,
                         color = if (mode == settings.listDisplayMode) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -162,9 +161,6 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("移动数据下加载缩略图", settings.thumbnailsOnMobile) {
             scope.launch { container.prefs.setThumbsOnMobile(it) }
         }
-        SettingSwitch("快速滚动时跳过缩略图加载（MT 同款手感）", settings.skipThumbsWhileScrolling) {
-            scope.launch { container.prefs.setSkipThumbsWhileScrolling(it) }
-        }
         Text(
             "超过该大小的图片不加载缩略图：" + com.u707t.panelfm.core.common.Fmt.size(settings.thumbnailMaxBytes),
             style = MaterialTheme.typography.bodyMedium,
@@ -181,23 +177,6 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 }
             }
         }
-        Text(
-            "缩略图加载超时取消：${if (settings.thumbnailTimeoutSec == 0) "不超时" else "${settings.thumbnailTimeoutSec} 秒"}",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 3, 5, 10).forEach { sec ->
-                TextButton(onClick = { scope.launch { container.prefs.setThumbnailTimeoutSec(sec) } }) {
-                    Text(
-                        if (sec == 0) "不超时" else "${sec}s",
-                        color = if (sec == settings.thumbnailTimeoutSec) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
         // 视频 / 音频播放（v2.1.3）：目前只有「自动后台播放」一项。
         // 放在「缩略图」之后 —— 与「界面」「传输」这类全局偏好区分开，按媒体相关归组。
         SectionLabel("视频播放")
@@ -224,38 +203,6 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                     Text(
                         label,
                         color = if (browserState.browseMode == mode) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Text(
-            "对话框图标背景：" + listOf("深色背景（自适应）", "浅色背景（自适应）", "无背景（受系统影响）")[settings.dialogIconMode],
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 1, 2).forEach { mode ->
-                TextButton(onClick = { scope.launch { container.prefs.setDialogIconMode(mode) } }) {
-                    Text(
-                        listOf("深色", "浅色", "无背景")[mode],
-                        color = if (mode == settings.dialogIconMode) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Text(
-            "底部工具栏下边距（全面屏手势时更舒适）：${settings.bottomBarPaddingDp}dp",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 6, 10, 14, 20, 28).forEach { dp ->
-                TextButton(onClick = { scope.launch { container.prefs.setBottomBarPadding(dp) } }) {
-                    Text(
-                        dp.toString(),
-                        color = if (dp == settings.bottomBarPaddingDp) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -300,13 +247,11 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         Column(Modifier.padding(top = 16.dp)) {
             Text("关于", style = MaterialTheme.typography.titleSmall)
             Text(
-                "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}（原生 Kotlin / Compose）\n" +
-                    "已实现：双列浏览（打开即双列）、MT 侧边栏抽屉、本地/SFTP(跳板机)/FTP·FTPS/WebDAV/SMB/S3、\n" +
-                    "压缩包挂载解压压缩、任务引擎（进度/暂停/冲突/续传）、文本编辑器（语法高亮/查找替换/编码读写/大文件流畅模式）、\n" +
-                    "图片/音视频/PDF/文本预览、回收站/远程管理/已安装应用；MT 式搜索（正则/内容/历史）、排序按文件夹记忆、打开方式网格、属性统计。\n" +
-                    "交互按 MT 管理器官方手册 + 截图复刻（v0.13.0 起：滑动多选 / 长按菜单 / 箭头跟随目标窗口；\n" +
-                    "无障碍朗读覆盖顶栏 / 底栏 / 文件列表）。\n" +
-                    "本项目不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
+                "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}（原生 Kotlin / Compose 双窗格文件管理器）\n" +
+                    "协议：本地 / SFTP / FTP·FTPS / WebDAV / SMB / S3；压缩包挂载与读写（zip）\n" +
+                    "预览：图片、音视频、PDF、Office / Markdown / CSV、EPUB、SQLite、APK、字体、文本（sora-editor）\n" +
+                    "工具：网络工具箱（Ping / DNS / HTTP）、局域网扫描（网段 + 端口）、文本对比、回收站\n" +
+                    "不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

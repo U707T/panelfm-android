@@ -100,9 +100,8 @@ class BrowserController(internal val container: AppContainer) {
                 if (!startupApplied) {
                     startupApplied = true
                     val defaultSort = SortSpec(s.sortBy, s.sortAscending, s.dirsFirst)
-                    // 读回持久化的浏览模式；老数据没有该键时退回 useSingleColumn 派生值
-                    val savedMode = runCatching { BrowseMode.valueOf(s.browseMode) }.getOrNull()
-                        ?: if (s.useSingleColumn) BrowseMode.SINGLE else BrowseMode.DUAL
+                    // 读回持久化的浏览模式（老数据的 single_column 迁移在 PrefsStore.settings 里完成）
+                    val savedMode = runCatching { BrowseMode.valueOf(s.browseMode) }.getOrDefault(BrowseMode.DUAL)
                     update {
                         it.copy(
                             browseMode = savedMode,
@@ -137,7 +136,6 @@ class BrowserController(internal val container: AppContainer) {
                     }
                     return@launch
                 }
-                if (!s0.rememberLastPath) return@launch
                 val (lastLeft, lastRight) = container.prefs.lastPathsSuspend()
                 val leftUri = lastLeft?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
                 val rightUri = lastRight?.let { runCatching { VfsUri.parse(it) }.getOrNull() }
@@ -194,7 +192,6 @@ class BrowserController(internal val container: AppContainer) {
     /** 退出前保存双列路径（MT：记忆上次路径） */
     fun persistPaths() {
         if (!startupRestoreDone) return
-        if (!container.settings.value.rememberLastPath) return
         val st = _state.value
         container.scope.launch {
             container.prefs.saveLastPaths(st.left.uri.toString(), st.right.uri.toString())
@@ -223,7 +220,6 @@ class BrowserController(internal val container: AppContainer) {
      */
     fun schedulePersistPaths() {
         if (!startupRestoreDone) return
-        if (!container.settings.value.rememberLastPath) return
         if (!persistScheduled.compareAndSet(false, true)) return
         container.scope.launch {
             kotlinx.coroutines.delay(300)
@@ -263,7 +259,7 @@ class BrowserController(internal val container: AppContainer) {
     /**
      * 设置浏览模式三档（MT「单列 / 双列 / 自动切换」）。
      *
-     * 必须持久化：旧实现只改内存状态，重启就回落到 `useSingleColumn` 派生值，
+     * 必须持久化：旧实现只改内存状态，重启就回落到默认值，
      * 「自动切换」永远留不住（见审计报告 R4）。
      */
     fun setBrowseMode(mode: BrowseMode) {

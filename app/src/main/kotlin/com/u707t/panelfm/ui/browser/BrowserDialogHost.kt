@@ -682,7 +682,6 @@ internal fun BrowserDialogHost(
         ui.conflict?.let { info ->
             ConflictDialog(
                 info = info,
-                dialogIconMode = settings.dialogIconMode,
             ) { policy, applyAll -> controller.resolveConflict(policy, applyAll) }
         }
         ui.diff?.let { diff ->

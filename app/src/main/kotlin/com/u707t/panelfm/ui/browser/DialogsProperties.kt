@@ -26,7 +26,6 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.DialogIcon
-import com.u707t.panelfm.core.ui.DialogIconMode
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
@@ -68,7 +67,7 @@ fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetada
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 // MT「对话框图标」设置（0x7f1102f3/2f4/2f5/2f6）：深色 / 浅色 / 无背景
-                DialogIcon(MtIcon.INFO, DialogIconMode.of(settings.dialogIconMode))
+                DialogIcon(MtIcon.INFO)
                 Text("属性", modifier = Modifier.padding(start = 10.dp))
             }
         },

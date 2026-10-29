@@ -112,6 +112,14 @@ import kotlinx.coroutines.launch
 // 从 DualPaneScreen 拆出（重审 🔴1b）：底栏（选择当前目录 / 多选工具栏 / 命令栏）。
 // ================================================================================================
 
+/**
+ * 底栏底部的额外内边距（v2.1.4 起固定）。
+ *
+ * 安全区已由 `DualPaneScreen` 的 `windowInsetsPadding(safeDrawing … Bottom)` 处理；
+ * 这里只是 MT 观感上的呼吸位，早期做成了 0–28dp 六档设置项，实际没人按机型和手势改。
+ */
+private val BottomBarExtraPadding = 8.dp
+
 @Composable
 internal fun BrowserBottomBar(
     container: AppContainer,
@@ -167,7 +175,7 @@ internal fun BrowserBottomBar(
             }
         } else if (focused.hasSelection) {
             // MT：多选模式下底栏变成「全选 / 反选 / 类选 / …」动态按钮（0x7f11062b/632/633）
-            val bottomExtraSel = settings.bottomBarPaddingDp.dp
+            val bottomExtraSel = BottomBarExtraPadding
             Column {
                 DividerPx()
                 Row(
@@ -188,7 +196,7 @@ internal fun BrowserBottomBar(
                 }
             }
         } else {
-            val bottomExtra = settings.bottomBarPaddingDp.dp
+            val bottomExtra = BottomBarExtraPadding
             Column {
                 // MT：底栏上方的 1px 分割线（`090110` / `09007D`）
                 DividerPx()
