@@ -18,6 +18,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Stable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +34,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
@@ -47,6 +51,7 @@ import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -58,6 +63,7 @@ import kotlinx.coroutines.launch
  *  - 左缘：锁定小圆钮；右缘：静音小圆钮；竖滑浮现中央胶囊：右 = 音量 / 左 = 应用内亮度（照 IRIS）
  *  - 手势：单击显隐（播放中 5s 自动隐藏）；双击左右 ±10s、中间播放暂停；长按 2.0x；横滑进度；竖滑音量 / 亮度
  *  - 同目录音视频自动组成播放列表（⏮ ⏭）
+ *  - 自动后台播放：设置 → 视频播放 里显式开启（**默认关 = 退到后台即暂停**）
  *
  * 拆分（2026-10-08 重审 §2）：本文件只保留页面骨架（状态 / 播放器效果 / 装配）；
  * 数据源见 [MediaDataSource] 所在的 `MediaDataSource.kt`，控件见 `MediaChrome.kt`，
@@ -83,6 +89,42 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             .setMediaSourceFactory(DefaultMediaSourceFactory(container.vfsDataSourceFactory))
             .build()
             .apply { setAudioAttributes(audioAttributes, true) }
+    }
+
+    /**
+     * 「自动后台播放」（设置 → 视频播放；**默认关闭**，v2.1.3）。
+     *
+     * 只订阅这一个字段：`AppSettings` 里别的设置变动不该把播放器整体重组一遍。
+     * 初值直接取当前快照（`StateFlow.value`），避免首帧用 `false` 覆盖「已开启」的用户。
+     */
+    val backgroundPlay by remember { container.settings.map { it.backgroundPlay } }
+        .collectAsState(initial = container.settings.value.backgroundPlay)
+
+    /**
+     * 退到后台（Home / 最近任务 / 熄屏）时的行为：
+     *  - **关（默认）→ 暂停**：本应用的播放器是「打开看一眼」的预览场景，
+     *    退出应用后声音还在响、又没有媒体通知可以停，属于打扰；
+     *  - 开 → 不干预，ExoPlayer 继续出声（音频焦点仍由播放器持有）。
+     *
+     * 判定用 [ExoPlayer.playWhenReady] 而不是 `isPlaying`：缓冲中（还没真正出声）
+     * 时 `isPlaying` 为 false，用它会漏掉「刚点开就按 Home」这一条最常见的路径。
+     *
+     * ⚠️ 只暂停、不负责「回前台自动续播」：离开前是什么状态，回来还是什么状态，
+     *    否则「退出去接个电话，回来自己在放」会让人以为播放器失控。
+     * ⚠️ 开关经 [rememberUpdatedState] 读取：设置页改完立即生效，不必重进播放器。
+     */
+    val backgroundPlayNow = rememberUpdatedState(backgroundPlay)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, player) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP && !backgroundPlayNow.value &&
+                runCatching { player.playWhenReady }.getOrDefault(false)
+            ) {
+                runCatching { player.pause() }
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     var isPlaying by remember { mutableStateOf(false) }
@@ -194,11 +236,15 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     }
 
     // 位置/缓冲轮询：**仅播放中**、500ms 一次（进度条足够顺滑；暂停时不再空转）
+    // 后台（Activity 不可见）跳过刷新：开了「自动后台播放」后可能后台响上一小时，
+    // 界面一个像素都看不见，每秒两次 setState + 重组纯属白烧电。
     LaunchedEffect(player, isPlaying) {
         if (!isPlaying) return@LaunchedEffect
         while (true) {
-            positionMs = player.currentPosition.coerceAtLeast(0)
-            bufferedMs = player.bufferedPosition.coerceAtLeast(0)
+            if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                positionMs = player.currentPosition.coerceAtLeast(0)
+                bufferedMs = player.bufferedPosition.coerceAtLeast(0)
+            }
             delay(500)
         }
     }

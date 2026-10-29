@@ -38,7 +38,8 @@ import kotlinx.coroutines.launch
 /**
  * 设置页（对齐 MT 的「设置」观感）：
  * 主题（跟随系统 / 浅色 / 深色 三选一）、动态取色、字体大小、缩略图、任务并发、
- * 底栏下边距、全局 User-Agent（可编辑，此前只读且与协议层不一致）等。
+ * 底栏下边距、全局 User-Agent（可编辑，此前只读且与协议层不一致）、
+ * 视频播放（自动后台播放，**默认关闭**）等。
  */
 @Composable
 fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
@@ -196,6 +197,20 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 }
             }
         }
+
+        // 视频 / 音频播放（v2.1.3）：目前只有「自动后台播放」一项。
+        // 放在「缩略图」之后 —— 与「界面」「传输」这类全局偏好区分开，按媒体相关归组。
+        SectionLabel("视频播放")
+        SettingSwitch("自动后台播放（默认关闭）", settings.backgroundPlay) {
+            scope.launch { container.prefs.setBackgroundPlay(it) }
+        }
+        Text(
+            "视频与音频共用同一个播放器：开启后切到后台 / 熄屏继续出声（音量与播放列表照常）；\n" +
+                "关闭则离开应用即暂停，不会有声音留在后台。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+        )
 
         SectionLabel("界面")
         Text(

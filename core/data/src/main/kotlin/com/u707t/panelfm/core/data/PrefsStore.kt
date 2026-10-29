@@ -56,6 +56,17 @@ data class AppSettings(
     val rememberLastPath: Boolean = true,
     /** 底栏上滑调出书签 */
     val bookmarkSwipe: Boolean = true,
+    /**
+     * 视频 / 音频「自动后台播放」：`true` = 退到后台（Home / 最近任务 / 熄屏）继续出声；
+     * `false`（**默认**）= 退到后台即暂停。
+     *
+     * 默认关的理由：本应用的主体是文件管理，播放器是「打开看一眼」的预览场景 ——
+     * 随手按 Home 之后声音还在响、且没有媒体通知可以停，属于打扰；
+     * 真当播放器用的场景（听歌 / 听剧）可显式打开，见 `SettingsScreen` 的「视频播放」段。
+     *
+     * 语义由 `MediaScreen` 的 `Lifecycle.Event.ON_STOP` 观察者执行（关闭时 pause，开启时不干预）。
+     */
+    val backgroundPlay: Boolean = false,
     /** 底部工具栏额外下边距（全面屏手势下的舒适区，0=自动） */
     val bottomBarPaddingDp: Int = 8,
     val skipThumbsWhileScrolling: Boolean = true,
@@ -152,6 +163,8 @@ class PrefsStore(private val context: Context) {
         val showSeconds = booleanPreferencesKey("show_seconds")
         val rememberLast = booleanPreferencesKey("remember_last_path")
         val bookmarkSwipe = booleanPreferencesKey("bookmark_swipe")
+        // 视频 / 音频「自动后台播放」：缺省 = false（退到后台即暂停）
+        val backgroundPlay = booleanPreferencesKey("background_play")
         val bottomPad = intPreferencesKey("bottom_bar_padding")
         val lastLeft = stringPreferencesKey("last_left")
         val lastRight = stringPreferencesKey("last_right")
@@ -232,6 +245,7 @@ class PrefsStore(private val context: Context) {
             showSeconds = p[Keys.showSeconds] ?: false,
             rememberLastPath = p[Keys.rememberLast] ?: true,
             bookmarkSwipe = p[Keys.bookmarkSwipe] ?: true,
+            backgroundPlay = p[Keys.backgroundPlay] ?: false,
             bottomBarPaddingDp = p[Keys.bottomPad] ?: 8,
             folderSorts = (p[Keys.folderSorts] ?: emptySet())
                 .mapNotNull { line ->
@@ -305,6 +319,9 @@ class PrefsStore(private val context: Context) {
     suspend fun setShowSeconds(on: Boolean) = context.panelDataStore.edit { it[Keys.showSeconds] = on }
     suspend fun setRememberLastPath(on: Boolean) = context.panelDataStore.edit { it[Keys.rememberLast] = on }
     suspend fun setBookmarkSwipe(on: Boolean) = context.panelDataStore.edit { it[Keys.bookmarkSwipe] = on }
+
+    /** 「自动后台播放」：只写这一个键，缺省（从未设置）时读取端按 `false` 处理 */
+    suspend fun setBackgroundPlay(on: Boolean) = context.panelDataStore.edit { it[Keys.backgroundPlay] = on }
     suspend fun setBottomBarPadding(dp: Int) = context.panelDataStore.edit { it[Keys.bottomPad] = dp.coerceIn(0, 28) }
 
     /** 按文件夹记忆排序：value == null 表示清除该文件夹的规则 */
