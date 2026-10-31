@@ -286,6 +286,25 @@ class PathInputTest {
     }
 
     @Test
+    fun `顶栏展示路径不带协议前缀`() {
+        // 本地仍显示真实文件系统路径
+        assertEquals(
+            "/storage/emulated/0/Download",
+            pathDisplayOf(VfsUri.parse("local://emulated/Download"), volumes),
+        )
+        // 网络只显示存储内路径（连接名由标签页/侧栏表达）
+        assertEquals(
+            "/home/u",
+            pathDisplayOf(VfsUri.parse("sftp://nas:22/home/u?c=7"), volumes),
+        )
+        val host = VfsUri.parse("sftp://nas:22/home/u/a.zip")
+        assertEquals(
+            "/home/u/a.zip!/dir",
+            pathDisplayOf(PathInput.archiveUri(host, "zip", "dir"), volumes),
+        )
+    }
+
+    @Test
     fun `压缩包完整路径带感叹号`() {
         val host = VfsUri.parse("local://emulated/Download/a.zip")
         assertEquals(

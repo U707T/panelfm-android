@@ -170,15 +170,15 @@ internal fun BrowserTopBar(
                     MtVectorIcon(icon = MtIcon.MENU, size = 26.dp, tint = MtSpec.TopBarText)
                 }
 
-                // 中间：路径（可点面包屑）+ 统计（小字）
+                // 中间：路径（单行居中，复刻 MT）+ 统计（小字居中）
                 Column(
                     Modifier
                         .weight(1f)
                         .padding(horizontal = 4.dp),
-                    horizontalAlignment = Alignment.Start,
+                    horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
-                    // MT / NP 口径：路径按层级拆开，点哪一级跳哪一级；当前级点开路径菜单。
-                    // 旧实现是一行纯文本 —— 想跳上层只能开「输入路径」对话框或长按底栏 ↑。
+                    // MT 原版观感：一行居中完整路径；点开是层级菜单（祖先目录 + 操作），长按复制。
+                    // 旧实现只有一行纯文本，想跳上层只能开「输入路径」对话框或长按底栏 ↑。
                     BrowserPathBar(
                         focused = focused,
                         focusSide = focusSide,

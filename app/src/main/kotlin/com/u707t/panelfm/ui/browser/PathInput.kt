@@ -11,11 +11,11 @@ import com.u707t.panelfm.core.vfs.local.LocalVolumes
  *
  * 一块内容：
  *  - [PathInput]：把「跳转到路径」输入框里的各种写法解析成 [VfsUri]；
- *  - [pathCrumbs]：把当前 URI 拆成可点的面包屑（含压缩包内部的宿主路径）；
+ *  - [pathCrumbs]：把当前 URI 拆成层级列表（顶栏路径菜单 / 压缩包宿主层级）；
  *  - [pathTextOf]：把 VFS URI 还原成用户能看懂、能粘贴的完整路径。
  *
  * 设计口径对齐 MT / NP：
- *  - 面包屑每一级可点；最后一级是当前目录；
+ *  - 顶栏路径保持 MT 的单行居中观感，层级跳转收进点击菜单；最后一级是当前目录；
  *  - 路径输入支持 `~`（存储根）、相对路径（`../Music`）、系统绝对路径
  *    （`/storage/emulated/0/...`、`/sdcard/...`）与协议 URI（`sftp://…`、`s3://…`）；
  *  - 压缩包里可以直接写 `a.zip!/目录/文件`。
@@ -238,20 +238,14 @@ internal object PathInput {
 
     fun archiveUri(host: VfsUri, kindId: String, inner: String): VfsUri =
         VfsUri("archive", kindId, "/" + VfsUri.encodeHost(host.toString()) + "!/" + inner.trimStart('/'))
-
-    /** 当前挂载点的根（压缩包 = 包内根，其余 = 协议根） */
-    fun mountRootOf(uri: VfsUri): VfsUri = when (uri.scheme) {
-        "archive" -> archiveHostOf(uri)?.let { archiveUri(it, uri.authority, "") } ?: uri.copy(path = "/")
-        else -> uri.copy(path = "/")
-    }
 }
 
 // ================================================================================================
-// 面包屑
+// 路径层级
 // ================================================================================================
 
 /**
- * 一级面包屑。
+ * 一级路径层级（顶栏路径菜单用）。
  *
  * [mountLabel] 用于「从压缩包里点宿主目录」时把标签页名换回宿主存储名；
  * 普通层级为 null（保持当前标签页名）。
@@ -264,10 +258,10 @@ internal data class PathCrumb(
 )
 
 /**
- * 当前 URI → 面包屑。
+ * 当前 URI → 路径层级列表（顶栏路径菜单的数据源）。
  *
- * 压缩包的拆法是关键：`/Download/a.zip!/dir/sub` 显示成
- * `内部存储 › Download › a.zip › dir › sub`
+ * 压缩包的拆法是关键：`/Download/a.zip!/dir/sub` 在菜单里是
+ * `内部存储 / Download / a.zip / dir / sub`
  *  - `a.zip` 指向**压缩包根**（不是宿主文件本身，文件不能被 list）；
  *  - 宿主层级（内部存储 / Download）点击即退出压缩包；
  *  - 包内层级继续在 archive 里走。
@@ -299,7 +293,7 @@ private fun archiveCrumbs(
     val host = PathInput.archiveHostOf(uri)
         ?: return listOf(PathCrumb("压缩包", uri, current = true))
     // 不能用当前标签页名：压缩包页的标签是「a.zip · ZIP」，不是宿主存储名。
-    // 本地宿主按卷名，远程宿主退回主机名（能从面包屑看出在哪台机器上）。
+    // 本地宿主按卷名，远程宿主退回主机名（能从层级菜单看出在哪台机器上）。
     val hostMount = mountLabelOf(host, "", volumes)
     val crumbs = mutableListOf<PathCrumb>()
 
@@ -334,6 +328,24 @@ private fun mountLabelOf(uri: VfsUri, fallback: String, volumes: List<LocalVolum
 
 private fun List<PathCrumb>.markCurrent(): List<PathCrumb> =
     mapIndexed { index, crumb -> crumb.copy(current = index == lastIndex) }
+
+/**
+ * 顶栏展示用路径（MT 观感）：
+ *  - 本地 → 真实文件系统路径（`/storage/emulated/0/…`）
+ *  - 网络 → 存储内路径（`/home/u`，不带 `sftp://host` 前缀；连接名由标签页/侧栏表达）
+ *  - 压缩包 → 宿主展示路径 + `!/` + 包内路径
+ *
+ * 与 [pathTextOf] 分开：复制 / 历史 / 输入框仍用可还原的完整路径。
+ */
+internal fun pathDisplayOf(uri: VfsUri, volumes: List<LocalVolume>): String = when (uri.scheme) {
+    "local" -> pathTextOf(uri, volumes)
+    "archive" -> {
+        val host = PathInput.archiveHostOf(uri)
+        if (host == null) VfsUris.stripped(uri).toString()
+        else pathDisplayOf(host, volumes) + "!/" + ArchiveVfs.parseInner(uri.path)
+    }
+    else -> uri.displayPath
+}
 
 /**
  * VFS URI → 可复制的完整路径：
