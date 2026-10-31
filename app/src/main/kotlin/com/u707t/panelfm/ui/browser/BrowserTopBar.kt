@@ -77,7 +77,7 @@ import com.u707t.panelfm.core.ui.MtBottomIconButton
 import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
-import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
+import com.u707t.panelfm.core.ui.LocalTopBarBackground
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.PaneEdgeShadow
@@ -130,7 +130,7 @@ internal fun BrowserTopBar(
         //   MT 的顶栏**始终是深色**（浅色主题 #151515 / 深色 #303030）；
         //   结构：TabLayout(0903F9) + ⋮(0902B2) + ＋(090116) + 动作条(09022F) + 1px 分割线(0903F8)
         //   NORMAL 态：动作条整行 GONE；SELECTING 态：出现「复制 / 移动 / 删除」三连（可横向滚动）
-        val topBarBg = if (LocalPanelDarkTheme.current) MtSpec.TopBarDark else MtSpec.TopBarLight
+        val topBarBg = LocalTopBarBackground.current
         Column(
             Modifier
                 .fillMaxWidth()

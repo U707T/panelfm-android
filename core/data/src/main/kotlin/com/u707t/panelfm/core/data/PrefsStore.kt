@@ -29,6 +29,8 @@ fun ThemeMode.next(): ThemeMode = when (this) {
 
 data class AppSettings(
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    /** 配色预设 id（mt / mojian / daiqing / songyan / zheshi）；未知值回落 mt */
+    val themePreset: String = "mt",
     /** 动态取色默认关闭（MT 观感是固定中性色板，设置里可开） */
     val dynamicColor: Boolean = false,
     val showHidden: Boolean = false,
@@ -138,6 +140,7 @@ class PrefsStore(private val context: Context) {
 
     private object Keys {
         val theme = stringPreferencesKey("theme")
+        val themePreset = stringPreferencesKey("theme_preset")
         val dynamicColor = booleanPreferencesKey("dynamic_color")
         val showHidden = booleanPreferencesKey("show_hidden")
         val sortBy = stringPreferencesKey("sort_by")
@@ -215,6 +218,7 @@ class PrefsStore(private val context: Context) {
     val settings: Flow<AppSettings> = context.panelDataStore.data.map { p ->
         AppSettings(
             themeMode = runCatching { ThemeMode.valueOf(p[Keys.theme] ?: ThemeMode.SYSTEM.name) }.getOrDefault(ThemeMode.SYSTEM),
+            themePreset = p[Keys.themePreset] ?: "mt",
             dynamicColor = p[Keys.dynamicColor] ?: false,
             showHidden = p[Keys.showHidden] ?: false,
             sortBy = runCatching { SortBy.valueOf(p[Keys.sortBy] ?: SortBy.NAME.name) }.getOrDefault(SortBy.NAME),
@@ -276,6 +280,7 @@ class PrefsStore(private val context: Context) {
     }
 
     suspend fun setTheme(mode: ThemeMode) = context.panelDataStore.edit { it[Keys.theme] = mode.name }
+    suspend fun setThemePreset(id: String) = context.panelDataStore.edit { it[Keys.themePreset] = id }
     suspend fun setDynamicColor(on: Boolean) = context.panelDataStore.edit { it[Keys.dynamicColor] = on }
     suspend fun setShowHidden(on: Boolean) = context.panelDataStore.edit { it[Keys.showHidden] = on }
     suspend fun setSort(by: SortBy, ascending: Boolean) = context.panelDataStore.edit {

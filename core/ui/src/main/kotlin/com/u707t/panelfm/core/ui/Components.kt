@@ -149,14 +149,14 @@ fun UsageBar(
                 Modifier
                     .fillMaxWidth(ratio.toFloat())
                     .height(height)
-                    .background(AccentBlue),
+                    .background(MaterialTheme.colorScheme.primary),
             )
         }
         Text(
             text = "${(ratio * 100).toInt()}%",
-            // 行高收紧：labelSmall 默认 16sp 行高会把整行撑起来；颜色与横线同取强调蓝（MT 实测）
+            // 行高收紧：labelSmall 默认 16sp 行高会把整行撑起来；颜色与横线同取主题强调色
             style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp, lineHeight = 12.sp),
-            color = AccentBlue,
+            color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.padding(start = 6.dp),
         )
     }

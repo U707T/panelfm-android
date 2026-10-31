@@ -10,6 +10,23 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.2.0 — 五套配色主题（参考 cfbrowser 墨笺 / 黛青 / 松烟 / 赭石）
+
+> 一句话：参考 cfbrowser 的纸墨配色，在 MT 蓝之外加入 4 套预设；菜单/浮层本来就从 MaterialTheme 取色，切主题自动跟随。
+
+- **新增 `ThemePreset`**：MT 蓝（默认）/ 墨笺（暖纸 + 朱砂）/ 黛青（冷灰青 + 靛蓝）/
+  松烟（灰绿 + 松烟绿）/ 赭石（沙纸 + 赭石）；每套给出完整明暗 `ColorScheme`（含 surfaceContainer 五级、
+  fixed 系列、errorContainer）、顶栏深色底与分割线。
+- **设置 → 配色主题**：三枚色卡（表面 / 强调 / 顶栏）+ 名称说明 + 单选；切换立即生效，持久化 `theme_preset`。
+- **顶栏 / 抽屉头 / 分割线跟随主题**：新增 `LocalTopBarBackground` / `LocalDividerColor`；
+  MT 预设保持原来的 `#151515` / `#303030` 与灰分割线。
+- **动态取色优先**：开启时走系统壁纸色，顶栏回落 MT 深色；选择预设会自动关闭动态取色。
+- **菜单 / 路径面板 / 动作面板**继续从 `MaterialTheme` 取色（v2.1.9），五套主题统一切换，不需要逐组件改色。
+- **修正**：深色 `surfaceDim` / `surfaceBright` 方向、`errorContainer` 不拿中性 surfaceVariant 顶替、
+  fixed roles 不再漏 M3 默认紫灰。
+- **验证**：新增 `ThemePresetTest` 7 例；全量 **673** 例单测通过；`:app:compileDebugKotlin` 干净。
+- 详细审计：`docs/AUDIT-2026-10-31-THEMES.md`。
+
 ## v2.1.9 — 浮层配色收回主题色：暖纸/陶土橙 → 主题 surface + primary 蓝
 
 > 一句话：v2.1.8 的暖纸 + 陶土橙放到冷白列表、深色顶栏和蓝色进度条旁边，像另一个 App。

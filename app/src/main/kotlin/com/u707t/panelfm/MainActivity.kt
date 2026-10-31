@@ -54,6 +54,7 @@ class MainActivity : ComponentActivity() {
             PanelTheme(
                 darkTheme = dark,
                 dynamicColor = settings.dynamicColor,
+                presetId = settings.themePreset,
                 fontScale = fontScaleFactor(settings.fontScaleLevel),
             ) {
                 // 长按口径统一（v2.0.14）：400ms（MT 口径）+ 全 App 同拍。

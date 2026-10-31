@@ -49,6 +49,7 @@ import com.u707t.panelfm.core.ui.MtFolderGlyph
 import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
+import com.u707t.panelfm.core.ui.LocalTopBarBackground
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.MtListRow
@@ -144,7 +145,7 @@ fun MtSideDrawer(
 
     Column(Modifier.fillMaxWidth()) {
         // ---------------- 头部（复刻 MT：深色底 #151515 + 图标 + 名称 + 副标题 + 右上 ⋮）
-        val drawerHeaderBg = if (appDark) MtSpec.TopBarDark else MtSpec.TopBarLight
+        val drawerHeaderBg = LocalTopBarBackground.current
         Row(
             Modifier
                 .fillMaxWidth()
