@@ -196,6 +196,9 @@ class PrefsStore(private val context: Context) {
         const val EDITOR_FIND = "editor_find"
         const val EDITOR_REPLACE = "editor_replace"
 
+        /** 顶部路径栏 / ⋮「输入路径」的历史（存解析后的完整路径，v2.1.5） */
+        const val PATH = "path_record"
+
         /** 网络工具箱 Ping 的目标历史（v2.0.12；NP 的 PingActivity 用 Spinner 存历史，这里并入统一输入历史） */
         const val NET_PING_HOST = "net_ping_host"
 

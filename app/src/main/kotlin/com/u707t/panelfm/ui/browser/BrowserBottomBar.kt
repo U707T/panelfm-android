@@ -280,7 +280,7 @@ internal fun BrowserBottomBar(
                     // 压缩包内部也能「↑」（回到压缩包所在目录），与 PaneView 的 canGoUp 一致
                     MtBottomIconButton(
                         icon = MtIcon.UP,
-                        label = "上级目录（长按输入路径）",
+                        label = "上级目录（长按跳转路径）",
                         enabled = focused.uri.parent != null || focused.uri.scheme == "archive",
                         onLongClick = { gotoPath = true },
                     ) { controller.up(focusSide) }

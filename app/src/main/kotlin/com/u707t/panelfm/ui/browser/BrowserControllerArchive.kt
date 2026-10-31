@@ -41,13 +41,23 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
 /** 把压缩包挂载成只读 VFS 并在当前窗格进入（MT 的「进入压缩包」体验）。远程包先下载：可见进度、可取消（审计 U4）。 */
-fun BrowserController.openArchiveInPane(side: PaneSide, item: FileMetadata) {
-    launchBusy("打开压缩包 ${item.name}") { report ->
-        val archive = mountArchiveInteractive(item.uri, item.name) { done, total ->
+fun BrowserController.openArchiveInPane(side: PaneSide, item: FileMetadata) =
+    openArchiveAt(side, item.uri, inner = "")
+
+/**
+ * 挂载压缩包并进入指定内层目录。
+ *
+ * [host] 是压缩包文件本身的 URI；[inner] 是包内路径（`""` = 包根）。
+ * 「跳转到路径」输入 `a.zip!/dir` 时走这里 —— 没挂载过的包会先下载/挂载（带进度与取消），
+ * 而不是像旧实现那样直接抛「未连接：zip」。
+ */
+internal fun BrowserController.openArchiveAt(side: PaneSide, host: VfsUri, inner: String) {
+    launchBusy("打开压缩包 ${host.name}") { report ->
+        val archive = mountArchiveInteractive(host, host.name) { done, total ->
             report.report(done, total, "下载中 " + Fmt.transferred(done, total))
         } ?: return@launchBusy
-        val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, archive.kind)
-        open(side, inner, connectionId = null, label = "${item.name} · ${archive.kind.label}")
+        val innerUri = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, archive.kind, inner)
+        open(side, innerUri, connectionId = null, label = "${host.name} · ${archive.kind.label}")
     }
 }
 
@@ -59,7 +69,7 @@ fun BrowserController.openArchiveInPane(side: PaneSide, item: FileMetadata) {
  *    头加密的 7z 连挂载都不行，取消 = 放弃本次操作。
  * 返回 null = 用户取消了「必须口令才能继续」的路径。
  */
-private suspend fun BrowserController.mountArchiveInteractive(
+internal suspend fun BrowserController.mountArchiveInteractive(
     host: VfsUri,
     displayName: String,
     onProgress: com.u707t.panelfm.core.vfs.ProgressCallback? = null,

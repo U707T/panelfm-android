@@ -67,7 +67,6 @@ import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -171,23 +170,20 @@ internal fun BrowserTopBar(
                     MtVectorIcon(icon = MtIcon.MENU, size = 26.dp, tint = MtSpec.TopBarText)
                 }
 
-                // 中间：路径（大字，居中）+ 统计（小字，居中）
+                // 中间：路径（可点面包屑）+ 统计（小字）
                 Column(
                     Modifier
                         .weight(1f)
                         .padding(horizontal = 4.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
+                    horizontalAlignment = Alignment.Start,
                 ) {
-                    Text(
-                        // MT：路径完整显示，放不下才省略
-                        focused.uri.displayPath.ifEmpty { "/" },
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = MtSpec.TopBarTitleSize,
-                            fontWeight = FontWeight.SemiBold,
-                        ),
-                        color = MtSpec.TopBarText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
+                    // MT / NP 口径：路径按层级拆开，点哪一级跳哪一级；当前级点开路径菜单。
+                    // 旧实现是一行纯文本 —— 想跳上层只能开「输入路径」对话框或长按底栏 ↑。
+                    BrowserPathBar(
+                        focused = focused,
+                        focusSide = focusSide,
+                        controller = controller,
+                        ds = ds,
                     )
                     Text(
                         buildString {

@@ -58,18 +58,17 @@ internal fun BrowserDialogHost(
     with(ds) {
         // ---------------- 各种输入框
         if (gotoPath) {
+            // 路径输入框里给「真实路径」而不是 displayPath（本地是 /storage/emulated/0/…，
+            // 网络是协议 URI）；配合 PathInput 的解析，粘贴回来能落在同一位置。
+            val volumes = remember(context) { com.u707t.panelfm.core.vfs.local.LocalVolumes.volumes(context) }
             TextInputDialog(
-                title = "跳转路径",
-                initial = focused.uri.displayPath,
+                title = "跳转到路径",
+                initial = pathTextOf(focused.uri, volumes),
                 label = "路径",
-                hint = "可写完整 URI（s3://bucket/dir、/share/sub），也可写相对路径",
-                onConfirm = { input ->
-                    val text = input.trim()
-                    val dest = if (text.contains("://")) runCatching { VfsUri.parse(text) }.getOrNull()
-                    else focused.uri.withPath(if (text.startsWith("/")) text else "/$text")
-                    if (dest != null) controller.open(focusSide, dest, focused.tab.connectionId, focused.tab.label)
-                    else controller.showStatus("路径格式不正确")
-                },
+                hint = "绝对路径 /storage/emulated/0/Download、相对路径 ../Music、~ 为存储根；" +
+                    "也可写 sftp://… / s3://…；压缩包内写 a.zip!/目录",
+                history = settings.inputHistory[PrefsStore.RecordKeys.PATH].orEmpty(),
+                onConfirm = { input -> controller.jumpToPath(focusSide, input) },
                 onDismiss = { gotoPath = false },
             )
         }

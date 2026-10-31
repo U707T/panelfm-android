@@ -6,12 +6,14 @@ package com.u707t.panelfm.ui.browser
 // ================================================================================================
 
 import com.u707t.panelfm.core.common.Logx
+import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.transfer.FileOperationPlanner
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.ListOptions
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
+import com.u707t.panelfm.core.vfs.archive.ArchiveVfs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -171,12 +173,36 @@ private fun BrowserController.openStamped(
 }
 
 /**
- * 点击列表项（对齐 MT 的「打开方式」逻辑）：
- *  - 目录 → 进入
- *  - 该扩展名设置了默认打开方式 → 直接用它
- *  - 压缩包（未设置默认）→ 进入压缩包内部浏览
- *  - 其它 → 预览（自动识别）
+ * 「跳转到路径」：解析输入框（绝对 / 相对 / `~` / 系统路径 / 协议 URI / `a.zip!/目录`）后打开。
+ *
+ * 解析规则集中在 [PathInput]（纯函数，单测覆盖）；这里只负责：
+ *  1. 记一条路径历史（记解析后的完整路径，换个目录再用历史不会跑偏）；
+ *  2. 压缩包目标先确保挂载（复用「打开压缩包」的长操作通道），再进入指定内层目录。
  */
+fun BrowserController.jumpToPath(side: PaneSide, input: String) {
+    val volumes = com.u707t.panelfm.core.vfs.local.LocalVolumes.volumes(container.app)
+    when (val parsed = PathInput.resolve(input, pane(side).uri, volumes)) {
+        is PathInput.Result.Bad -> showStatus(parsed.message)
+        is PathInput.Result.Ok -> {
+            val history = pathTextOf(parsed.uri, volumes)
+            container.scope.launch {
+                runCatching { container.prefs.addInputHistory(PrefsStore.RecordKeys.PATH, history) }
+            }
+            val host = parsed.archiveHost
+            if (host != null) {
+                openArchiveAt(side, host, ArchiveVfs.parseInner(parsed.uri.path))
+            } else {
+                // 跨协议跳转（例如在 SFTP 里输入 dav://…）要把标签页名换成目标连接名，
+                // 否则标签还挂着上一个存储的名字；同协议跳转保持原标签（label = null）。
+                val crossScheme = parsed.uri.scheme != pane(side).uri.scheme
+                val label = parsed.label
+                    ?: if (crossScheme) container.connectionForUri(parsed.uri)?.name else null
+                open(side, parsed.uri, connectionId = null, label = label)
+            }
+        }
+    }
+}
+
 /**
  * 点击列表项（对齐 MT 的「打开方式」逻辑）：
  *  - 目录 → 进入

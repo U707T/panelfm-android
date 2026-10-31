@@ -165,7 +165,7 @@ internal fun BrowserMoreMenu(
                     controller.showStatus("已交换窗口")
                 }
                 // ---- 以下是 PanelFM 的扩展项（MT 的 ⋮ 里没有，但语义上属于同一层）----
-                MtMenuRow(MtIcon.KEYBOARD, "输入路径") { showMoreMenu = false; gotoPath = true }
+                MtMenuRow(MtIcon.KEYBOARD, "跳转到路径…") { showMoreMenu = false; gotoPath = true }
                 MtMenuRow(MtIcon.COPY, "复制到剪贴板") { showMoreMenu = false; controller.copySelectionToClipboard(focusSide) }
                 if (clipboardItems.isNotEmpty()) {
                     MtMenuRow(MtIcon.PASTE, "粘贴到当前目录") { showMoreMenu = false; controller.pasteFromClipboard(focusSide) }

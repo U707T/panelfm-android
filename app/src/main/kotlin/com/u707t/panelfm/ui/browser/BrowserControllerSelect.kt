@@ -145,7 +145,14 @@ fun BrowserController.bookmarks(): List<com.u707t.panelfm.core.data.Bookmark> =
 
 fun BrowserController.addBookmark(side: PaneSide) {
     val pane = pane(side)
-    val name = pane.uri.name.ifEmpty { pane.tab.label }
+    // 压缩包内的 uri.name 是编码后的宿主串（形如 %2Fstorage…!），不能当书签名；
+    // 用标签页名（a.zip · ZIP）或压缩包文件名。
+    val inArchive = pane.uri.scheme == "archive"
+    val name = if (inArchive) {
+        pane.tab.label.ifBlank { pane.archiveHostName ?: "压缩包" }
+    } else {
+        pane.uri.name.ifEmpty { pane.tab.label }
+    }
     runCatching {
         container.bookmarkDao.add(
             com.u707t.panelfm.core.data.Bookmark(
@@ -157,7 +164,7 @@ fun BrowserController.addBookmark(side: PaneSide) {
             )
         )
     }
-    showStatus("已添加书签：${pane.uri.displayPath}")
+    showStatus("已添加书签：" + if (inArchive) name else pane.uri.displayPath)
 }
 
 fun BrowserController.removeBookmark(id: Long) {
