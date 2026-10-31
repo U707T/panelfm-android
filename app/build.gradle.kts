@@ -44,8 +44,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 100
-        versionName = "2.1.5"
+        versionCode = 101
+        versionName = "2.1.6"
     }
 
     // 单元测试里 call android.util.Log / org.json 桩不抛「not mocked」；

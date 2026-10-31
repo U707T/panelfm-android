@@ -6,7 +6,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.1.5 (100)
+版本      2.1.6 (101)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -128,7 +128,7 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 
 本节数据来自 2026-10-08 起的全量重审（`docs/AUDIT-2026-10-08-REAUDIT.md`）与后续批次。
 
-- **单测**：99 个测试文件、**653** 个 `@Test`
+- **单测**：101 个测试文件、**665** 个 `@Test`
 - **巨型文件已清零**：重审时 `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）是两座大山，现已拆成 6 + 8 个文件；`MediaScreen` 1,886 → 655 行；`EditorScreen` 1,064 → 512 行。目前全仓仅 `ArchiveVfs.kt`（1,058 行）略超 1,000 行
 - **重审收口**：第 1–10 批共修掉 105 条问题（101 修 + 4 记录在案），含多条静默坏数据路径
 - 审计文档按模块留档：`AUDIT-2026-10-08-REAUDIT.md`（全量总文档）、`-10-11-CHANGESET`、`-10-19-STABILITY`、`-10-21-*`、`-10-23-NETTOOLBOX`、`-10-26-PORTSCAN`

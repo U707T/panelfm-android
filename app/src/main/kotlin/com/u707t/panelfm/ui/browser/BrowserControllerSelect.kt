@@ -143,28 +143,56 @@ fun BrowserController.setFilter(side: PaneSide, kind: String?) {
 fun BrowserController.bookmarks(): List<com.u707t.panelfm.core.data.Bookmark> =
     runCatching { container.bookmarkDao.all() }.getOrDefault(emptyList())
 
+/**
+ * 书签目标：压缩包**内部**不能直接收藏 —— 下次从书签打开时包还没挂载，
+ * `archive://` URI 会直接报「未连接：zip」。落到压缩包所在的宿主目录才是能打开的路径。
+ * 其余路径原样返回。
+ */
+internal fun bookmarkTargetOf(uri: VfsUri): VfsUri {
+    var target = uri
+    var guard = 0
+    // 支持「压缩包里再开压缩包」：一路退到最外层宿主目录
+    while (target.scheme == "archive" && guard++ < 8) {
+        target = PathInput.archiveHostOf(target)?.parent ?: break
+    }
+    return target
+}
+
 fun BrowserController.addBookmark(side: PaneSide) {
     val pane = pane(side)
-    // 压缩包内的 uri.name 是编码后的宿主串（形如 %2Fstorage…!），不能当书签名；
-    // 用标签页名（a.zip · ZIP）或压缩包文件名。
-    val inArchive = pane.uri.scheme == "archive"
-    val name = if (inArchive) {
-        pane.tab.label.ifBlank { pane.archiveHostName ?: "压缩包" }
+    val target = bookmarkTargetOf(pane.uri)
+    if (pane.uri.scheme == "archive" && target.scheme == "archive") {
+        showStatus("无法确定压缩包所在目录，未添加书签")
+        return
+    }
+    val fromArchive = target != pane.uri
+    val name = when {
+        // 压缩包内的 uri.name 是编码后的宿主串（形如 %2Fstorage…!），不能当书签名
+        fromArchive -> target.name.ifEmpty { "${pane.archiveHostName ?: "压缩包"} 所在目录" }
+        else -> pane.uri.name.ifEmpty { pane.tab.label }
+    }
+    // 普通路径沿用当前标签页的连接号（同主机多账号也不会选错）；
+    // 只有「从压缩包退到宿主目录」才需要按宿主 URI 反查连接。
+    val connectionId = if (fromArchive) {
+        container.connectionForUri(target)?.id ?: pane.tab.connectionId
     } else {
-        pane.uri.name.ifEmpty { pane.tab.label }
+        pane.tab.connectionId
     }
     runCatching {
         container.bookmarkDao.add(
             com.u707t.panelfm.core.data.Bookmark(
                 id = 0,
-                connectionId = pane.tab.connectionId,
-                uri = pane.uri,
+                connectionId = connectionId,
+                uri = target,
                 name = name,
                 createdAt = System.currentTimeMillis(),
             )
         )
     }
-    showStatus("已添加书签：" + if (inArchive) name else pane.uri.displayPath)
+    showStatus(
+        if (fromArchive) "压缩包内不能直接收藏，已添加所在目录：${target.displayPath}"
+        else "已添加书签：${target.displayPath}",
+    )
 }
 
 fun BrowserController.removeBookmark(id: Long) {

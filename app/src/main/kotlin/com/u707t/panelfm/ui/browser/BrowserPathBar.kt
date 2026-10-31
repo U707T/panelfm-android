@@ -221,6 +221,10 @@ private fun PathMenuItems(
                     onCopy()
                 },
             )
-            .padding(horizontal = 16.dp, vertical = 6.dp),
+            .padding(horizontal = 16.dp, vertical = 6.dp)
+            .semantics {
+                role = Role.Button
+                contentDescription = "复制完整路径 $fullPath"
+            },
     )
 }

@@ -244,6 +244,21 @@ class PathInputTest {
         assertTrue(crumbs.last().current)
     }
 
+    @Test
+    fun `压缩包书签落到宿主所在目录`() {
+        val host = VfsUri.parse("local://emulated/Download/a.zip")
+        // 包内任何层级 → 收藏包所在的 Download，下次从书签能直接打开
+        assertEquals(
+            "local://emulated/Download",
+            bookmarkTargetOf(PathInput.archiveUri(host, "zip", "dir/sub")).toString(),
+        )
+        // 普通目录原样
+        assertEquals(
+            "local://emulated/Download",
+            bookmarkTargetOf(VfsUri.parse("local://emulated/Download")).toString(),
+        )
+    }
+
     // ------------------------------------------------------------------ 完整路径文本
 
     @Test

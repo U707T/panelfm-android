@@ -57,7 +57,17 @@ internal fun BrowserController.openArchiveAt(side: PaneSide, host: VfsUri, inner
             report.report(done, total, "下载中 " + Fmt.transferred(done, total))
         } ?: return@launchBusy
         val innerUri = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, archive.kind, inner)
-        open(side, innerUri, connectionId = null, label = "${host.name} · ${archive.kind.label}")
+        val label = "${host.name} · ${archive.kind.label}"
+        // 指定的是包内文件（a.zip!/dir/a.txt）→ 打开所在目录并选中它；
+        // 目录 / 找不到 → 照常打开（找不到时 load 会给明确错误）
+        val meta = statOrNull(innerUri)
+        val parent = innerUri.parent
+        if (meta != null && !meta.isDirectory && parent != null) {
+            revealIn(side, parent, innerUri, connectionId = null, label = label)
+            showStatus("已定位到 ${innerUri.name}")
+        } else {
+            open(side, innerUri, connectionId = null, label = label)
+        }
     }
 }
 

@@ -5,9 +5,35 @@ import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.VfsUris
 
 enum class PaneSide { LEFT, RIGHT;
     val other: PaneSide get() = if (this == LEFT) RIGHT else LEFT
+}
+
+/**
+ * 决定一次导航使用哪个连接号。
+ *
+ * 优先级：
+ *  1. `local` / `archive` → null（它们不挂连接）
+ *  2. 显式传入的 [requested]，或目标 URI 自带的 `?c=`（同主机多账号的隔离边界）
+ *  3. 同 scheme + 同 authority → 沿用当前标签页的连接号（普通目录内导航）
+ *  4. 其余 → 按目标 URI 反查（`connectionForUri` 含 S3 bucket 兜底）
+ *
+ * 旧实现只看 scheme：在 SFTP 窗格里输入另一台主机的 `sftp://…` 会沿用当前连接号，
+ * 把 `?c=` 盖到别的存储上，`SessionLocator` 先按连接号命中错误会话。
+ */
+internal fun pickConnectionId(
+    uri: VfsUri,
+    tab: PaneTab,
+    requested: Long?,
+    lookup: (VfsUri) -> Long?,
+): Long? {
+    if (uri.scheme == "local" || uri.scheme == "archive") return null
+    val explicit = requested ?: VfsUris.connectionId(uri)
+    if (explicit != null) return explicit
+    if (uri.scheme == tab.uri.scheme && uri.authority == tab.uri.authority) return tab.connectionId
+    return lookup(uri)
 }
 
 /** 一个窗格标签页 = 独立的浏览位置 + 前进/后退历史栈 */
@@ -62,6 +88,15 @@ data class PaneState(
      * 优先级高于「滚动位置记忆」——定位是显式意图，记忆是隐式恢复。
      */
     val scrollToUri: String? = null,
+    /**
+     * **加载完成后要定位的项**（路径跳转 / 搜索结果点到文件）。
+     *
+     * 为什么不能只设 [scrollToUri]：`open(parent)` 是异步的 —— 先改 URI，列表还是旧目录的。
+     * 旧实现紧接着写 `scrollToUri`，PaneView 拿**旧列表**找不到目标就把请求消费掉了，
+     * 新列表回来时已经没有任何定位请求（表现为「跳过去没选中、也没滚动」）。
+     * 现在先把目标记在这里，[load] 成功后才落成 `selection + scrollToUri`。
+     */
+    val revealUri: String? = null,
     val space: com.u707t.panelfm.core.vfs.SpaceInfo? = null,
     /** 目录内搜索关键字（MT 的「搜索」） */
     val search: String = "",
@@ -101,6 +136,22 @@ data class PaneState(
      */
     fun withSelectionCleared(): PaneState =
         copy(selection = emptySet(), selectionAnchor = null, tapAnchor = null)
+
+    /**
+     * 列表加载完成后，把 [revealUri] 落成「选中 + 滚动到该项」。
+     *
+     * 目标不在当前列表（被过滤 / 已被删除）时只清空请求，不动现有选择。
+     * 纯函数，单测在 `RevealAfterLoadTest`。
+     */
+    fun applyPendingReveal(loaded: List<FileMetadata>): PaneState {
+        val pending = revealUri ?: return this
+        val hit = loaded.any { it.uri.toString() == pending }
+        return copy(
+            revealUri = null,
+            selection = if (hit) setOf(pending) else selection,
+            scrollToUri = if (hit) pending else scrollToUri,
+        )
+    }
 
     /** 处于压缩包内时，压缩包自身的文件名（用于「解压到单独的文件夹」命名）；否则 null */
     val archiveHostName: String?

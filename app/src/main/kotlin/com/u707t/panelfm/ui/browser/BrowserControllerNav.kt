@@ -15,6 +15,8 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
 import com.u707t.panelfm.core.vfs.archive.ArchiveVfs
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -63,7 +65,7 @@ fun BrowserController.load(side: PaneSide) {
             val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
             // loadedUri = 「这批 items 属于哪个目录」：滚动位置记忆按它来记，避免串目录
             updateLoad(side, generation, uri) {
-                it.copy(
+                it.applyPendingReveal(items).copy(
                     items = items,
                     // 未过滤的完整列表：之后改搜索 / 类型过滤只在内存里重算，不再重拉目录
                     unfilteredItems = listed,
@@ -95,6 +97,8 @@ fun BrowserController.load(side: PaneSide) {
                     loadedUri = null,
                     selectionAnchor = null,
                     tapAnchor = null,
+                    // 目录都没加载成功，定位请求不可能落成；留着会在下次加载时误选同名项
+                    revealUri = null,
                 )
             }
         }
@@ -133,14 +137,8 @@ fun BrowserController.open(side: PaneSide, uri: VfsUri, connectionId: Long? = nu
     // 旧实现只在「从主页/抽屉打开连接」时手工拼 c=，书签、最近路径、同步、返回上级都漏了；
     // 这里统一补上，让所有入口一致（已经是同一个连接的 URI 则原样保留）。
     //
-    // 跨协议跳转（如在 SFTP 窗格里输入 s3://…）不能沿用当前 tab 的连接号：
-    // 那会把连接号盖到别的协议 URI 上，SessionLocator 会先按连接号命中错误的会话。
-    // 跨协议时按目标 URI 自己反查连接（connectionForUri 含 S3 bucket 兜底）。
-    val effectiveConnId = when {
-        uri.scheme == "local" || uri.scheme == "archive" -> null
-        uri.scheme == tab.uri.scheme -> connectionId ?: tab.connectionId
-        else -> container.connectionForUri(uri)?.id
-    }
+    // 连接号选择见 [pickConnectionId]：跨协议 / 跨主机 / URI 自带 c= 都不能沿用当前 tab 的连接号。
+    val effectiveConnId = pickConnectionId(uri, tab, connectionId) { container.connectionForUri(it)?.id }
     val stamped = if (effectiveConnId != null) VfsUris.withConnection(uri, effectiveConnId) else uri
     if (tab.uri == stamped) {
         load(side)
@@ -177,7 +175,8 @@ private fun BrowserController.openStamped(
  *
  * 解析规则集中在 [PathInput]（纯函数，单测覆盖）；这里只负责：
  *  1. 记一条路径历史（记解析后的完整路径，换个目录再用历史不会跑偏）；
- *  2. 压缩包目标先确保挂载（复用「打开压缩包」的长操作通道），再进入指定内层目录。
+ *  2. 目标是目录 → 直接进入；是文件 → 打开所在目录并选中（见 [openResolvingFile]）；
+ *  3. 压缩包目标先确保挂载（复用「打开压缩包」的长操作通道），再进入指定内层目录。
  */
 fun BrowserController.jumpToPath(side: PaneSide, input: String) {
     val volumes = com.u707t.panelfm.core.vfs.local.LocalVolumes.volumes(container.app)
@@ -194,13 +193,63 @@ fun BrowserController.jumpToPath(side: PaneSide, input: String) {
             } else {
                 // 跨协议跳转（例如在 SFTP 里输入 dav://…）要把标签页名换成目标连接名，
                 // 否则标签还挂着上一个存储的名字；同协议跳转保持原标签（label = null）。
-                val crossScheme = parsed.uri.scheme != pane(side).uri.scheme
+                val currentTab = pane(side).tab
+                val crossScheme = parsed.uri.scheme != currentTab.uri.scheme
                 val label = parsed.label
                     ?: if (crossScheme) container.connectionForUri(parsed.uri)?.name else null
-                open(side, parsed.uri, connectionId = null, label = label)
+                openResolvingFile(side, parsed.uri, label, currentTab)
             }
         }
     }
+}
+
+/**
+ * 跳转目标可能是目录，也可能是文件：
+ *  - 目录 → 直接打开；
+ *  - 文件 → 打开所在目录并选中它（MT / NP 的「定位到文件」行为）。
+ *
+ * 只在显式路径跳转上做一次 `stat`（远端 = 一次往返），换来「把文件路径粘进来也能落到正确位置」。
+ * `stat` 失败（不存在 / 无权限 / 会话未连）时仍按目录打开，让 `load` 给出原本的错误文案。
+ */
+private fun BrowserController.openResolvingFile(
+    side: PaneSide,
+    target: VfsUri,
+    label: String?,
+    tabAtRequest: PaneTab,
+) {
+    container.scope.launch {
+        val meta = statOrNull(target)
+        // stat 期间用户切走了：不要把人家拽回来
+        if (pane(side).tab.uri != tabAtRequest.uri) return@launch
+        val parent = target.parent
+        if (meta != null && !meta.isDirectory && parent != null) {
+            revealIn(side, parent, target, connectionId = null, label = label ?: tabAtRequest.label)
+            showStatus("已定位到 ${target.name}")
+        } else {
+            open(side, target, connectionId = null, label = label)
+        }
+    }
+}
+
+/**
+ * 显式跳转用的 `stat`：会话不可用 / 不存在 / 协议不支持都返回 null（交给后续 open 报原本的错误）。
+ *
+ * 用 `AppContainer.resolveSession` 而不是 `locator.find`：网络存储空闲回收后，
+ * 从路径栏跳过去仍能自动重连一次（与「打开书签」同口径），而不是直接报「未连接」。
+ *
+ * ⚠️ `runCatching` 会把 [CancellationException] 一起吞掉 —— 取消后还继续导航。
+ * 这里只兜普通异常，取消原样上抛。
+ */
+internal suspend fun BrowserController.statOrNull(uri: VfsUri): FileMetadata? = try {
+    val vfs = container.resolveSession(uri) ?: return null
+    // resolveSession 内部的 runCatching 会吞掉取消；这里补一次检查，避免取消后继续导航
+    currentCoroutineContext().ensureActive()
+    vfs.connect()
+    withContext(container.dispatchers.vfs) { vfs.stat(uri) }
+} catch (e: CancellationException) {
+    throw e
+} catch (e: Exception) {
+    null
 }
 
 /**
@@ -364,9 +413,25 @@ fun BrowserController.closeTab(side: PaneSide, index: Int) {
 fun BrowserController.reveal(side: PaneSide, uri: VfsUri) {
     val parent = uri.parent ?: return
     val tab = pane(side).tab
-    open(side, parent, tab.connectionId, tab.label)
-    // 选中 + 滚动到该项（MT：搜索结果点进去直接定位，不靠用户自己找）
-    updatePane(side) { it.copy(selection = setOf(uri.toString()), scrollToUri = uri.toString()) }
+    revealIn(side, parent, uri, tab.connectionId, tab.label)
+}
+
+/**
+ * 打开 [parent] 并在列表加载完成后选中 / 滚动到 [target]。
+ *
+ * 顺序不能反：`open()` 里的 `load()` 是异步的，旧实现先 open 再写 `selection/scrollToUri`，
+ * PaneView 会拿着**旧目录的列表**去找目标 —— 找不到就把请求消费掉，新列表回来时已经没人要求定位了。
+ * 现在先把目标写进 `revealUri`，[load] 成功后才落成选择与滚动请求（见 [PaneState.applyPendingReveal]）。
+ */
+internal fun BrowserController.revealIn(
+    side: PaneSide,
+    parent: VfsUri,
+    target: VfsUri,
+    connectionId: Long?,
+    label: String?,
+) {
+    updatePane(side) { it.copy(revealUri = target.toString()) }
+    open(side, parent, connectionId, label)
 }
 
 /** PaneView 消费完滚动请求后清空（避免重复滚动） */
