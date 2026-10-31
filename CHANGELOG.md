@@ -10,6 +10,23 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.1.9 — 浮层配色收回主题色：暖纸/陶土橙 → 主题 surface + primary 蓝
+
+> 一句话：v2.1.8 的暖纸 + 陶土橙放到冷白列表、深色顶栏和蓝色进度条旁边，像另一个 App。
+> 这版保留 Claude 的几何与排版，颜色全部改回 `MaterialTheme`：白卡 / 深色 surfaceVariant / primary 蓝 / outlineVariant 细边。
+
+- **配色统一**：`ClaudePalette` 不再写死暖纸色，改为从 `MaterialTheme.colorScheme` 派生 ——
+  浅色 `surface` 白卡、深色 `surfaceVariant` 浮起层、`onSurface` 文字、`onSurfaceVariant` 次文字 / 图标、
+  `outlineVariant` 细边、`primary` 强调（浅 `#1976D2` / 深 `#42A5F5`）。选中底 = primary 8%（深色 16%）。
+- **不再覆盖 MaterialTheme**：菜单行已全部显式用色板，浮层内部少数 `MaterialTheme` 颜色继续跟随应用主题，
+  不再出现「菜单里一套色、菜单外一套色」。
+- **路径面板收紧**：宽度上限 360dp、16dp 圆角、12dp 阴影、顶部间距 64dp（横屏 48dp）；
+  轻遮罩 0.18；列表区按屏幕高度自适应。
+- **18 处菜单 / 41 个原生行**继续使用 `ClaudeDropdownMenu` + `ClaudeMenuItem`（40dp / 18dp / 选中打勾），只换色不换结构。
+- **深色模式**：`surfaceVariant` + 主题 `onSurface` / `primary`，不再用深暖棕。
+- **验证**：`:app:compileDebugKotlin` 干净；全量 **666** 例单测通过（纯呈现变更）。
+- 视觉审计：`docs/AUDIT-2026-10-31-CLAUDE-MENUS.md`。
+
 ## v2.1.8 — 浮层统一 Claude 风格：暖纸卡片 + 顶部居中路径面板
 
 > 一句话：下拉菜单此前是 M3 默认的冷灰 4dp 小圆角；路径菜单还贴着路径文字往下掉、盖住统计行。

@@ -1,35 +1,41 @@
 # 浮层统一 Claude 视觉 · 变更审计（2026-10-31）
 
-范围：v2.1.8「菜单 / 动作面板 / 路径面板」的视觉重构。
+范围：v2.1.8「菜单 / 动作面板 / 路径面板」+ v2.1.9「配色收回主题色」的合并审计。
+
+> v2.1.8 首版用了固定暖纸 `#FAF9F5` + 陶土橙 `#C96442`，实机与冷白列表 / 深色顶栏 / 蓝色进度条割裂明显；
+> v2.1.9 保留 Claude 的几何与排版，颜色全部改回 `MaterialTheme.colorScheme`。下表为 v2.1.9 最终口径。
 
 ## 设计口径
 
-只改**浮层**，不动文件列表的 MT 主题：
+只改**浮层**，不动文件列表的 MT 主题。**颜色全部从应用主题派生**，避免和白色列表 / 蓝色进度条 / 深色顶栏割裂：
 
 | 项 | 浅色 | 深色 |
 |---|---|---|
-| 卡片底 | `#FAF9F5` 暖纸 | `#262624` 深暖灰 |
-| 主文字 | `#1F1E1D` | `#F3F2EC` |
-| 次文字 | `#73726C` | `#A6A49B` |
-| 细边 | `#E6E3D9` | `#3D3C38` |
-| 选中底 | `#F0EEE6` | `#302F2C` |
-| 强调（勾 / 点 / 图标块） | `#C96442` | `#D97757` |
+| 卡片底 | `colorScheme.surface`（白） | `colorScheme.surfaceVariant`（#262626 浮起层） |
+| 主文字 | `onSurface` | `onSurface` |
+| 次文字 / 图标 | `onSurfaceVariant` | `onSurfaceVariant` |
+| 细边 | `outlineVariant` | `outlineVariant` |
+| 分隔线 | `outlineVariant` 65% | `outlineVariant` 65% |
+| 选中底 | `primary` 8% | `primary` 16% |
+| 强调（勾 / 点 / 图标块） | `primary` | `primary` |
 
-- 卡片圆角 16dp（下拉）/ 20dp（路径面板、动作面板），1px 细边，12–18dp 柔和阴影。
-- 行高 ≥40dp，10dp 圆角按压态；图标 18dp、暖灰；正文 14sp 常规，选中行才用强调色。
-- 分组标题 10.5sp、微字距、暖灰。
+- 保留 Claude 的**形状与排版**：16dp（下拉）/ 16dp（路径面板）/ 20dp（动作面板）圆角、
+  1px 细边、8–12dp 柔和阴影、40dp 行、18dp 淡图标、14sp 常规字、10.5sp 分组标题。
+- 不再使用固定的暖纸 `#FAF9F5` / 陶土橙 `#C96442` —— 那套色和本应用的冷白列表、蓝色强调冲突，
+  实机割裂感明显（2026-10-31 反馈）。
 
 ## 组件
 
 - `core/ui/ClaudeMenu.kt`
-  - `ClaudePalette` / `ClaudeLight` / `ClaudeDark` / `LocalClaudePalette`
-  - `ClaudeMenuTheme`：作用域内替换 `MaterialTheme` 的 surface / onSurface / primary，菜单内文字与控件不会回到冷灰。
-  - `ClaudeDropdownMenu`：16dp 圆角、暖纸底、细边、阴影、6dp 内容内边距。
+  - `ClaudePalette` / `LocalClaudePalette`：颜色从 `MaterialTheme.colorScheme` 派生（surface / onSurface /
+    onSurfaceVariant / outlineVariant / primary），浅深色各一套映射，不再写死暖纸色。
+  - `ClaudeMenuTheme`：只提供浮层色板，不再覆盖 `MaterialTheme`（菜单行已全部显式用色板）。
+  - `ClaudeDropdownMenu`：16dp 圆角、主题 surface、细边、8dp 阴影、6dp 内容内边距、宽度上限 360dp。
   - `ClaudeMenuItem`：紧凑菜单行（40dp / 18dp 图标 / 选中打勾 / 可选缩进）；`MtMenuRow` 直接委托它。
   - `ClaudeMenuSection` / `ClaudeMenuDivider`。
-- `BrowserPathBar`：路径菜单从 `DropdownMenu` 改为顶部居中 `Dialog` 面板（20dp 圆角、路径标题、层级/操作分组、关闭按钮；
-  轻遮罩 0.18、横屏/小屏自动收缩高度）。
-- `DialogsActions.MtActionSheet`：长按两列动作面板换同一套卡片/配色/18dp 图标。
+- `BrowserPathBar`：路径菜单从 `DropdownMenu` 改为顶部居中 `Dialog` 面板（16dp 圆角、路径标题、层级/操作分组、关闭按钮；
+  轻遮罩 0.18、横屏/小屏自动收缩高度、宽度上限 360dp）。
+- `DialogsActions.MtActionSheet`：长按两列动作面板换同一套卡片/主题色/18dp 图标。
 
 ## 覆盖
 

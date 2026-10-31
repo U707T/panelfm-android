@@ -171,7 +171,7 @@ private fun PathDialog(
             // 小屏 / 横屏时不要把卡片撑出屏幕：顶部间距与列表高度一起收缩
             val screenHeight = LocalConfiguration.current.screenHeightDp.dp
             val compact = LocalConfiguration.current.screenHeightDp < 600
-            val topGap = if (compact) 48.dp else 72.dp
+            val topGap = if (compact) 48.dp else 64.dp
             val listMaxHeight = (screenHeight - if (compact) 250.dp else 220.dp)
                 .coerceIn(140.dp, 440.dp)
             Box(Modifier.fillMaxSize()) {
@@ -186,13 +186,13 @@ private fun PathDialog(
                         .align(Alignment.TopCenter)
                         .statusBarsPadding()
                         .padding(top = topGap, start = 16.dp, end = 16.dp)
-                        .widthIn(max = 420.dp)
+                        .widthIn(max = 360.dp)
                         .fillMaxWidth()
                         .clickableNoRipple { },
-                    shape = RoundedCornerShape(20.dp),
+                    shape = RoundedCornerShape(16.dp),
                     color = p.surface,
                     border = BorderStroke(1.dp, p.border),
-                    shadowElevation = 18.dp,
+                    shadowElevation = 12.dp,
                 ) {
                     Column(Modifier.padding(8.dp)) {
                         PathDialogHeader(shownPath = shownPath, onDismiss = onDismiss)

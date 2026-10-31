@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.MaterialTheme
@@ -33,14 +34,16 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 
 /**
- * Claude 风格浮层的暖色板。
+ * 浮层的「Claude 几何 + 应用主题色」。
  *
- * 只用于**菜单 / 弹层**，不改变文件列表的 MT 主题：
- *  - 浅色：暖纸底 `#FAF9F5`、暖黑文字 `#1F1E1D`、陶土橙强调 `#C96442`；
- *  - 深色：深暖灰底 `#262624`、米白文字 `#F3F2EC`、亮陶土橙 `#D97757`。
+ * 只保留 Claude 的**形状与排版**：16–20dp 大圆角、1px 细边、柔和阴影、40dp 紧凑行、
+ * 18dp 淡图标、10.5sp 分组标题。
  *
- * 视觉要点：**暖中性色 + 大圆角 + 1px 细边 + 很轻的阴影 + 克制的图标**，
- * 不使用 M3 默认的冷灰容器色与 4dp 小圆角。
+ * 颜色不再写死暖纸 / 陶土橙，而是全部从 [MaterialTheme.colorScheme] 派生：
+ *  - 浅色：`surface` 白卡 + `onSurface` 文字 + `outlineVariant` 细边 + `primary` 强调；
+ *  - 深色：`surfaceVariant` 浮起层 + 主题的 onSurface/outline/primary；
+ *  - 选中底 = primary 的低透明度叠色。
+ * 这样菜单/弹层与文件列表、顶栏、进度条的蓝色强调保持同一套色，不再出现冷暖割裂。
  */
 data class ClaudePalette(
     val surface: Color,
@@ -52,73 +55,45 @@ data class ClaudePalette(
     val hover: Color,
 )
 
-val ClaudeLight = ClaudePalette(
-    surface = Color(0xFFFAF9F5),
-    text = Color(0xFF1F1E1D),
-    muted = Color(0xFF73726C),
-    border = Color(0xFFE6E3D9),
-    divider = Color(0xFFECEAE2),
-    accent = Color(0xFFC96442),
-    hover = Color(0xFFF0EEE6),
-)
-
-val ClaudeDark = ClaudePalette(
-    surface = Color(0xFF262624),
-    text = Color(0xFFF3F2EC),
-    muted = Color(0xFFA6A49B),
-    border = Color(0xFF3D3C38),
-    divider = Color(0xFF353431),
-    accent = Color(0xFFD97757),
-    hover = Color(0xFF302F2C),
-)
-
-/** null = 没有显式包 [ClaudeMenuTheme]，此时按面板明暗自动取色 */
+/** null = 没有显式包 [ClaudeMenuTheme]，此时按当前 Material 主题自动派生 */
 val LocalClaudePalette = staticCompositionLocalOf<ClaudePalette?> { null }
 
 @Composable
+private fun themeClaudePalette(): ClaudePalette {
+    val cs = MaterialTheme.colorScheme
+    val dark = LocalPanelDarkTheme.current
+    return ClaudePalette(
+        surface = if (dark) cs.surfaceVariant else cs.surface,
+        text = cs.onSurface,
+        muted = cs.onSurfaceVariant,
+        border = cs.outlineVariant,
+        divider = cs.outlineVariant.copy(alpha = 0.65f),
+        accent = cs.primary,
+        hover = cs.primary.copy(alpha = if (dark) 0.16f else 0.08f),
+    )
+}
+
+@Composable
 fun currentClaudePalette(): ClaudePalette =
-    LocalClaudePalette.current ?: if (LocalPanelDarkTheme.current) ClaudeDark else ClaudeLight
+    LocalClaudePalette.current ?: themeClaudePalette()
 
 /**
- * 给一块浮层内容套上 Claude 色板 + 菜单排版。
+ * 给一块浮层内容提供浮层色板。
  *
- * 只影响内部：`MaterialTheme` 的 surface / onSurface / primary 会被替换成暖色，
- * 这样即使内部用了原生 `DropdownMenuItem`，也不会忽然回到冷灰 M3 配色。
+ * 不再覆盖 `MaterialTheme`：菜单行已经全部换成 [ClaudeMenuItem]/[MtMenuRow]，
+ * 内部少数 `MaterialTheme` 颜色应当继续跟随应用主题（而不是被浮层强行改色）。
  */
 @Composable
 fun ClaudeMenuTheme(content: @Composable () -> Unit) {
-    val p = currentClaudePalette()
-    CompositionLocalProvider(LocalClaudePalette provides p) {
-        MaterialTheme(
-            colorScheme = MaterialTheme.colorScheme.copy(
-                surface = p.surface,
-                surfaceContainer = p.surface,
-                surfaceContainerHigh = p.surface,
-                surfaceContainerHighest = p.surface,
-                surfaceContainerLow = p.surface,
-                surfaceContainerLowest = p.surface,
-                onSurface = p.text,
-                onSurfaceVariant = p.muted,
-                outline = p.border,
-                outlineVariant = p.divider,
-                primary = p.accent,
-                onPrimary = Color.White,
-                secondary = p.accent,
-            ),
-            typography = MaterialTheme.typography.copy(
-                bodyLarge = MaterialTheme.typography.bodyLarge.copy(fontSize = 14.sp),
-                bodyMedium = MaterialTheme.typography.bodyMedium.copy(fontSize = 14.sp),
-                labelLarge = MaterialTheme.typography.labelLarge.copy(fontSize = 14.sp),
-            ),
-            content = content,
-        )
-    }
+    val p = themeClaudePalette()
+    CompositionLocalProvider(LocalClaudePalette provides p, content = content)
 }
 
 /**
  * 统一菜单浮层（替换 `DropdownMenu`）：
- *  - 16dp 大圆角、暖纸底、1px 细边、12dp 柔和阴影；
+ *  - 16dp 圆角、主题 surface、1px 细边、8dp 柔和阴影；
  *  - 内容四周 6dp 内边距，行本身再用 10dp 圆角点击态；
+ *  - 宽度上限 360dp，避免长文案把菜单拉成整屏宽的「大白板」；
  *  - 位置仍由 Compose 按锚点自动避让，不会跑出屏幕。
  */
 @Composable
@@ -134,12 +109,12 @@ fun ClaudeDropdownMenu(
         DropdownMenu(
             expanded = expanded,
             onDismissRequest = onDismissRequest,
-            modifier = modifier,
+            modifier = modifier.widthIn(max = 360.dp),
             scrollState = scrollState,
             shape = RoundedCornerShape(16.dp),
             containerColor = p.surface,
             tonalElevation = 0.dp,
-            shadowElevation = 12.dp,
+            shadowElevation = 8.dp,
             border = BorderStroke(1.dp, p.border),
         ) {
             Column(Modifier.padding(6.dp), content = content)
