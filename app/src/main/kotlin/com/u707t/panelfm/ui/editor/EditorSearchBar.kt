@@ -9,9 +9,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.text.BasicTextField
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -30,6 +27,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /** 查找条上的三个选项（对应 sora searcher 的「正则 / 大小写 / 全词」）。 */
 internal data class EditorSearchOptionsState(
@@ -171,7 +170,7 @@ private fun SearchOptionsMenu(
         TextButton(onClick = { onExpandedChange(true) }) {
             Text("⋮", fontWeight = FontWeight.Bold, fontSize = 20.sp)
         }
-        DropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
+        ClaudeDropdownMenu(expanded = expanded, onDismissRequest = { onExpandedChange(false) }) {
             SearchOptionItem("正则表达式", options.regex) {
                 onToggleRegex(!options.regex)
                 onExpandedChange(false)
@@ -190,13 +189,9 @@ private fun SearchOptionsMenu(
 
 @Composable
 private fun SearchOptionItem(label: String, checked: Boolean, onClick: () -> Unit) {
-    DropdownMenuItem(
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Checkbox(checked = checked, onCheckedChange = null)
-                Text(label)
-            }
-        },
+    ClaudeMenuItem(
+        label = label,
+        checked = checked,
         onClick = onClick,
     )
 }
@@ -240,19 +235,17 @@ internal fun EditorField(
                 TextButton(enabled = enabled, onClick = { historyMenu = true }) {
                     Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                DropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
+                ClaudeDropdownMenu(expanded = historyMenu, onDismissRequest = { historyMenu = false }) {
                     if (history.isEmpty()) {
-                        DropdownMenuItem(
-                            text = { Text("（暂无历史）", style = MaterialTheme.typography.labelSmall) },
-                            onClick = { historyMenu = false },
+                        ClaudeMenuItem(
+                            label = "（暂无历史）",
                             enabled = false,
-                        )
+                        ) { historyMenu = false }
                     } else {
                         history.forEach { item ->
-                            DropdownMenuItem(
-                                text = { Text(item, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                onClick = { onChange(item); historyMenu = false },
-                            )
+                            ClaudeMenuItem(
+                                label = item,
+                            ) { onChange(item); historyMenu = false }
                         }
                     }
                 }

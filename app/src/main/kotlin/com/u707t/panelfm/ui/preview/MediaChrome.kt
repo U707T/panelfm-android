@@ -63,8 +63,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -74,6 +72,8 @@ import com.u707t.panelfm.core.ui.MtSpec
 import kotlin.math.PI
 import kotlin.math.abs
 import kotlin.math.sin
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /**
  * 播放进度条（照 IRIS）。
@@ -253,41 +253,35 @@ internal fun MediaTopBar(
                 tint = Color.White,
                 onClick = { onMenuOpenChange(true) },
             )
-            DropdownMenu(expanded = menuOpen, onDismissRequest = { onMenuOpenChange(false) }) {
+            ClaudeDropdownMenu(expanded = menuOpen, onDismissRequest = { onMenuOpenChange(false) }) {
                 listOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f).forEach { s ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                "倍速 ${s}x" + if (userSpeed == s) "  ✓" else "",
-                                color = if (userSpeed == s) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            )
-                        },
-                        onClick = { onSpeedChange(s); onMenuOpenChange(false) },
-                    )
+                    ClaudeMenuItem(
+                        label = "倍速 ${s}x",
+                        icon = MtIcon.BOLT,
+                        checked = userSpeed == s,
+                    ) { onSpeedChange(s); onMenuOpenChange(false) }
                 }
-                DropdownMenuItem(
-                    text = { Text("循环播放" + if (looping) "  ✓" else "") },
-                    onClick = { onToggleLoop(); onMenuOpenChange(false) },
-                )
+                ClaudeMenuItem(
+                    label = "循环播放",
+                    icon = MtIcon.REPEAT,
+                    checked = looping,
+                ) { onToggleLoop(); onMenuOpenChange(false) }
                 listOf(
                     "适应" to AspectRatioFrameLayout.RESIZE_MODE_FIT,
                     "拉伸" to AspectRatioFrameLayout.RESIZE_MODE_FILL,
                     "裁剪" to AspectRatioFrameLayout.RESIZE_MODE_ZOOM,
                 ).forEach { (label, m) ->
-                    DropdownMenuItem(
-                        text = {
-                            Text(
-                                "画面：$label" + if (resizeMode == m) "  ✓" else "",
-                                color = if (resizeMode == m) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                            )
-                        },
-                        onClick = { onResizeModeChange(m); onMenuOpenChange(false) },
-                    )
+                    ClaudeMenuItem(
+                        label = "画面：$label",
+                        icon = MtIcon.IMAGE,
+                        checked = resizeMode == m,
+                    ) { onResizeModeChange(m); onMenuOpenChange(false) }
                 }
-                DropdownMenuItem(
-                    text = { Text("静音" + if (muted) "  ✓" else "") },
-                    onClick = { onToggleMute(); onMenuOpenChange(false) },
-                )
+                ClaudeMenuItem(
+                    label = "静音",
+                    icon = MtIcon.AUDIO,
+                    checked = muted,
+                ) { onToggleMute(); onMenuOpenChange(false) }
             }
         }
     }

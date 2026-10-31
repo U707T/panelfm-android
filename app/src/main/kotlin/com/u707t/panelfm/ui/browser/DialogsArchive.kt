@@ -12,8 +12,6 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -37,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.archive.ArchiveCompressor
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 // ---------------------------------------------------------------------------
 // 压缩包口令输入（第 5 批 🔴1：加密包读侧接线 —— 打开 / 解压 / 完整性测试前的输入框）
@@ -204,19 +204,19 @@ fun MtCompressDialog(
                 Text("格式", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
                 Box {
                     TextButton(onClick = { formatMenu = true }) { Text(format.label + "  ▾") }
-                    DropdownMenu(expanded = formatMenu, onDismissRequest = { formatMenu = false }) {
+                    ClaudeDropdownMenu(expanded = formatMenu, onDismissRequest = { formatMenu = false }) {
                         com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Format.entries.forEach { f ->
-                            DropdownMenuItem(
-                                text = { Text(if (f == format) "☑ ${f.label}" else "☐ ${f.label}") },
-                                onClick = {
-                                    format = f
-                                    formatMenu = false
-                                    // 切到不支持加密的格式时，连密码一起清掉（否则确定后必报「不支持加密」，且用户看不到密码字段）
-                                    if (!f.supportsPassword) {
-                                        password = ""
-                                    }
-                                },
-                            )
+                            ClaudeMenuItem(
+                                label = f.label,
+                                checked = f == format,
+                            ) {
+                                format = f
+                                formatMenu = false
+                                // 切到不支持加密的格式时，连密码一起清掉（否则确定后必报「不支持加密」，且用户看不到密码字段）
+                                if (!f.supportsPassword) {
+                                    password = ""
+                                }
+                            }
                         }
                     }
                 }
@@ -225,12 +225,12 @@ fun MtCompressDialog(
                     Text("压缩级别", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(top = 8.dp))
                     Box {
                         TextButton(onClick = { levelMenu = true }) { Text(level.label + "  ▾") }
-                        DropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
+                        ClaudeDropdownMenu(expanded = levelMenu, onDismissRequest = { levelMenu = false }) {
                             com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level.entries.forEach { l ->
-                                DropdownMenuItem(
-                                    text = { Text(if (l == level) "☑ ${l.label}" else "☐ ${l.label}") },
-                                    onClick = { level = l; levelMenu = false },
-                                )
+                                ClaudeMenuItem(
+                                    label = l.label,
+                                    checked = l == level,
+                                ) { level = l; levelMenu = false }
                             }
                         }
                     }

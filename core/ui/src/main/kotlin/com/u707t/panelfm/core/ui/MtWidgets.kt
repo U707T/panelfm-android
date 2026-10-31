@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -221,10 +220,10 @@ fun MtFab(
 }
 
 /**
- * ⋮ 菜单项（MT 菜单：左图标 + 文字 + 右侧指示）。
+ * 菜单项（Claude 风格：18dp 淡图标 + 14sp 常规字 + 右侧指示）。
  *
- * [trailing] 传 [MtIcon] 时画**矢量箭头**（子菜单用 `CHEVRON_R`），
- * 不再用「▶」字符（字宽/基线随字体漂移，MT 用的是 24dp 线性图标）。
+ * [trailing] 传 [MtIcon] 时画矢量箭头（子菜单用 `CHEVRON_R`）。
+ * 高度 ≥40dp、10dp 圆角按压态；选中行用暖灰底 + 陶土橙勾。
  */
 @Composable
 fun MtMenuRow(
@@ -236,41 +235,13 @@ fun MtMenuRow(
     checked: Boolean = false,
     onClick: () -> Unit,
 ) {
-    DropdownMenuItem(
+    ClaudeMenuItem(
+        label = label,
+        icon = icon,
+        trailing = trailing,
+        trailingText = trailingText,
         enabled = enabled,
-        text = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                MtVectorIcon(
-                    icon = icon,
-                    size = MtSpec.MenuIcon,
-                    tint = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                )
-                Text(
-                    label,
-                    color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(start = 14.dp),
-                )
-                when {
-                    checked -> MtVectorIcon(
-                        icon = MtIcon.CHECK,
-                        size = MtSpec.MenuIcon,
-                        tint = MaterialTheme.colorScheme.primary,
-                    )
-                    trailing != null -> MtVectorIcon(
-                        icon = trailing,
-                        size = 18.dp,
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    trailingText != null -> Text(
-                        trailingText,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        },
+        checked = checked,
         onClick = onClick,
     )
 }

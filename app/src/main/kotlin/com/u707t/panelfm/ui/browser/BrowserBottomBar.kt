@@ -22,12 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -107,6 +103,7 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
 
 // ================================================================================================
 // 从 DualPaneScreen 拆出（重审 🔴1b）：底栏（选择当前目录 / 多选工具栏 / 命令栏）。
@@ -247,25 +244,9 @@ internal fun BrowserBottomBar(
                             onLongClick = { creatingFile = true },
                         ) { showCreateMenu = true }
                         // MT：新建（＋）弹出菜单
-                        DropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        MtVectorIcon(icon = MtIcon.FOLDER, size = 22.dp)
-                                        Text("新建文件夹", modifier = Modifier.padding(start = 12.dp))
-                                    }
-                                },
-                                onClick = { showCreateMenu = false; creatingFolder = true },
-                            )
-                            DropdownMenuItem(
-                                text = {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        MtVectorIcon(icon = MtIcon.FILE, size = 22.dp)
-                                        Text("新建文件", modifier = Modifier.padding(start = 12.dp))
-                                    }
-                                },
-                                onClick = { showCreateMenu = false; creatingFile = true },
-                            )
+                        ClaudeDropdownMenu(expanded = showCreateMenu, onDismissRequest = { showCreateMenu = false }) {
+                            MtMenuRow(MtIcon.FOLDER, "新建文件夹") { showCreateMenu = false; creatingFolder = true }
+                            MtMenuRow(MtIcon.FILE, "新建文件") { showCreateMenu = false; creatingFile = true }
                         }
                     }
                     // MT 底栏第 4 个按钮是「同步」（0x7f11069b）：点击 = 另一窗格跟随本窗格路径；

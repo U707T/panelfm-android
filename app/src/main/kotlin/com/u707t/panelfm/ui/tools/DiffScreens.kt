@@ -11,11 +11,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -47,6 +43,9 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
+import com.u707t.panelfm.core.ui.ClaudeMenuSection
 
 /**
  * 文件对比器（对齐 MT 的「文件对比器」中的文本 / ZIP 部分）：
@@ -163,18 +162,13 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
                 TextButton(onClick = { menu = DiffMenu.IGNORE }) {
                     MtVectorIcon(icon = MtIcon.LOW_PRIORITY, size = 20.dp)
                 }
-                DropdownMenu(expanded = menu == DiffMenu.IGNORE, onDismissRequest = { menu = null }) {
-                    Text("忽略", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
+                ClaudeDropdownMenu(expanded = menu == DiffMenu.IGNORE, onDismissRequest = { menu = null }) {
+                    ClaudeMenuSection("忽略")
                     DiffIgnore.entries.forEach { opt ->
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    RadioButton(selected = opt == ignore, onClick = null)
-                                    Text(opt.label)
-                                }
-                            },
-                            onClick = { ignore = opt; menu = null },
-                        )
+                        ClaudeMenuItem(
+                            label = opt.label,
+                            checked = opt == ignore,
+                        ) { ignore = opt; menu = null }
                     }
                 }
             }
@@ -182,18 +176,13 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
                 TextButton(onClick = { menu = DiffMenu.VIEW }) {
                     MtVectorIcon(icon = MtIcon.LAYERS, size = 20.dp)
                 }
-                DropdownMenu(expanded = menu == DiffMenu.VIEW, onDismissRequest = { menu = null }) {
-                    Text("浏览模式", style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(start = 12.dp, top = 4.dp))
+                ClaudeDropdownMenu(expanded = menu == DiffMenu.VIEW, onDismissRequest = { menu = null }) {
+                    ClaudeMenuSection("浏览模式")
                     DiffViewMode.entries.forEach { mode ->
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    RadioButton(selected = mode == viewMode, onClick = null)
-                                    Text(mode.label)
-                                }
-                            },
-                            onClick = { viewMode = mode; menu = null },
-                        )
+                        ClaudeMenuItem(
+                            label = mode.label,
+                            checked = mode == viewMode,
+                        ) { viewMode = mode; menu = null }
                     }
                 }
             }
@@ -201,16 +190,11 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
                 TextButton(onClick = { menu = DiffMenu.CASE }) {
                     MtVectorIcon(icon = MtIcon.FONT, size = 20.dp)
                 }
-                DropdownMenu(expanded = menu == DiffMenu.CASE, onDismissRequest = { menu = null }) {
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Checkbox(checked = caseSensitive, onCheckedChange = null)
-                                Text("区分大小写")
-                            }
-                        },
-                        onClick = { caseSensitive = !caseSensitive; menu = null },
-                    )
+                ClaudeDropdownMenu(expanded = menu == DiffMenu.CASE, onDismissRequest = { menu = null }) {
+                    ClaudeMenuItem(
+                        label = "区分大小写",
+                        checked = caseSensitive,
+                    ) { caseSensitive = !caseSensitive; menu = null }
                 }
             }
         }

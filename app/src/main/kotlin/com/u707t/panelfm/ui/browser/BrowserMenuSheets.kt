@@ -22,12 +22,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.RadioButton
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
@@ -107,6 +103,7 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
 
 // ================================================================================================
 // 从 DualPaneScreen 拆出（重审 🔴1b）：⋮ 菜单 + 长按动作菜单（共享 BrowserDialogsState）。
@@ -131,7 +128,7 @@ internal fun BrowserMoreMenu(
         //     交换窗口 / 设置 / 退出
         //   PanelFM 的扩展项（粘贴 / 类型过滤 / 浏览模式 / 比较目录 / 网络初始路径 /
         //   压缩包专属）插在同语义位置，不改变 MT 的前几项顺序。
-        DropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
+        ClaudeDropdownMenu(expanded = showMoreMenu, onDismissRequest = { showMoreMenu = false }) {
             if (!hiddenSub) {
                 MtMenuRow(MtIcon.SYNC, "刷新") { showMoreMenu = false; controller.refresh(focusSide) }
                 MtMenuRow(MtIcon.SEARCH, "搜索") { showMoreMenu = false; showSearch = true }
@@ -206,17 +203,13 @@ internal fun BrowserMoreMenu(
                 // 浏览模式（MT 0x7f1101fb/1fc/1fd/1fe：单列 / 双列 / 自动切换）
                 Box {
                     MtMenuRow(MtIcon.LAYERS, "浏览模式（${ui.effectiveBrowseMode.label}）", trailing = MtIcon.CHEVRON_R) { browseSub = true }
-                    DropdownMenu(expanded = browseSub, onDismissRequest = { browseSub = false }) {
+                    ClaudeDropdownMenu(expanded = browseSub, onDismissRequest = { browseSub = false }) {
                         BrowseMode.entries.forEach { mode ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        mode.label + if (mode == ui.browseMode) "  ✓" else "",
-                                        color = if (mode == ui.browseMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    )
-                                },
-                                onClick = { showMoreMenu = false; browseSub = false; controller.setBrowseMode(mode) },
-                            )
+                            MtMenuRow(
+                                icon = MtIcon.LAYERS,
+                                label = mode.label,
+                                checked = mode == ui.browseMode,
+                            ) { showMoreMenu = false; browseSub = false; controller.setBrowseMode(mode) }
                         }
                     }
                 }

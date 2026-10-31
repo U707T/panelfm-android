@@ -15,8 +15,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -50,6 +48,8 @@ import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 // ================================================================================================
 // HTTP 请求
@@ -247,12 +247,12 @@ internal fun HttpPane(container: AppContainer) {
         ) {
             Box {
                 TextButton(onClick = { methodMenu = true }) { Text("$method ▾") }
-                DropdownMenu(expanded = methodMenu, onDismissRequest = { methodMenu = false }) {
+                ClaudeDropdownMenu(expanded = methodMenu, onDismissRequest = { methodMenu = false }) {
                     NetToolboxKit.HttpMethods.forEach { m ->
-                        DropdownMenuItem(
-                            text = { Text(m) },
-                            onClick = { method = m; methodMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = m,
+                            checked = m == method,
+                        ) { method = m; methodMenu = false }
                     }
                 }
             }

@@ -18,8 +18,6 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -47,6 +45,8 @@ import com.u707t.panelfm.core.ui.MtVectorIcon
 import androidx.core.graphics.drawable.toBitmap
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /**
  * 打开方式（复刻 MT 的网格对话框）：
@@ -180,17 +180,12 @@ fun OpenWithDialog(
         dismissButton = {
             Box {
                 TextButton(onClick = { typeMenu = true }) { Text("类型：${filter.label}") }
-                DropdownMenu(expanded = typeMenu, onDismissRequest = { typeMenu = false }) {
+                ClaudeDropdownMenu(expanded = typeMenu, onDismissRequest = { typeMenu = false }) {
                     AppFilter.entries.forEach { f ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(
-                                    f.label,
-                                    color = if (f == filter) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                )
-                            },
-                            onClick = { filter = f; typeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = f.label,
+                            checked = f == filter,
+                        ) { filter = f; typeMenu = false }
                     }
                 }
             }

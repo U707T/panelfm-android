@@ -5,8 +5,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -17,7 +15,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 
 /**
@@ -65,25 +62,18 @@ fun HistoryTextField(
                     ) {
                         Text("▾", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
-                    DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    ClaudeDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                         if (history.isEmpty()) {
-                            DropdownMenuItem(
-                                text = { Text("（暂无历史）", style = MaterialTheme.typography.labelSmall) },
-                                onClick = { menu = false },
+                            ClaudeMenuItem(
+                                label = "（暂无历史）",
                                 enabled = false,
-                            )
+                            ) { menu = false }
                         } else {
                             history.forEach { h ->
-                                DropdownMenuItem(
-                                    text = { Text(h, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                    onClick = { onValueChange(h); menu = false },
-                                )
+                                ClaudeMenuItem(label = h) { onValueChange(h); menu = false }
                             }
                             if (onClearHistory != null) {
-                                DropdownMenuItem(
-                                    text = { Text("清空历史", style = MaterialTheme.typography.labelSmall) },
-                                    onClick = { onClearHistory(); menu = false },
-                                )
+                                ClaudeMenuItem(label = "清空历史") { onClearHistory(); menu = false }
                             }
                         }
                     }
@@ -102,19 +92,15 @@ fun HistoryButton(history: List<String>, modifier: Modifier = Modifier, onPick: 
         TextButton(onClick = { menu = true }) {
             Text("🕘", style = MaterialTheme.typography.titleMedium)
         }
-        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+        ClaudeDropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
             if (history.isEmpty()) {
-                DropdownMenuItem(
-                    text = { Text("（暂无历史）", style = MaterialTheme.typography.labelSmall) },
-                    onClick = { menu = false },
+                ClaudeMenuItem(
+                    label = "（暂无历史）",
                     enabled = false,
-                )
+                ) { menu = false }
             } else {
                 history.forEach { h ->
-                    DropdownMenuItem(
-                        text = { Text(h, maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                        onClick = { onPick(h); menu = false },
-                    )
+                    ClaudeMenuItem(label = h) { onPick(h); menu = false }
                 }
             }
         }

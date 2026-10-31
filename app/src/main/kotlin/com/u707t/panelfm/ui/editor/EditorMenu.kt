@@ -1,6 +1,5 @@
 package com.u707t.panelfm.ui.editor
 
-import androidx.compose.material3.DropdownMenu
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -8,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
 
 /**
  * 编辑器 ⋮ 菜单（v2.0.15 重构：内容由 [editorMenuSections] 纯模型产出，顺序 / 分组对齐
@@ -27,7 +27,7 @@ internal fun EditorMenu(
     var openSubmenu by remember { mutableStateOf<String?>(null) }
     val sections = editorMenuSections(input)
 
-    DropdownMenu(
+    ClaudeDropdownMenu(
         expanded = expanded,
         onDismissRequest = {
             openSubmenu = null

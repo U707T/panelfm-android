@@ -19,8 +19,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,6 +54,8 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.io.File
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /**
  * 预览调度：按 MIME / 扩展名分派到 播放器 / 编辑器 / 字体 / 图片 / 文本。
@@ -181,7 +181,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                     contentDescription = "更多菜单",
                     onClick = { modeMenu = true },
                 )
-                DropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
+                ClaudeDropdownMenu(expanded = modeMenu, onDismissRequest = { modeMenu = false }) {
                     // 菜单按类型给项：文本/代码/未识别 → 只有「编辑文本」（v2.0.17：不再有文本查看器页面）；
                     // 字体/PDF/APK → 各自入口；本地文件才有「外部应用」。
                     // 媒体/图片/压缩包在当前查看器里即可，不再堆无关入口。
@@ -189,53 +189,58 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                     val textLike = kind == null ||
                         kind == MimeTypes.Kind.TEXT || kind == MimeTypes.Kind.CODE || kind == MimeTypes.Kind.OTHER
                     if (textLike) {
-                        DropdownMenuItem(
-                            text = { Text("编辑文本") },
-                            onClick = { effective = PreviewMode.EDITOR; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "编辑文本",
+                            icon = MtIcon.EDIT,
+                            checked = resolved == PreviewMode.EDITOR,
+                        ) { effective = PreviewMode.EDITOR; modeMenu = false }
                     }
                     if (kind == MimeTypes.Kind.DOCUMENT) {
-                        DropdownMenuItem(
-                            text = { Text("文档预览", color = if (resolved == PreviewMode.OFFICE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.OFFICE; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "文档预览",
+                            icon = MtIcon.DESC,
+                            checked = resolved == PreviewMode.OFFICE,
+                        ) { effective = PreviewMode.OFFICE; modeMenu = false }
                     }
                     // Markdown / CSV：渲染预览（marked / SheetJS；默认进编辑器，可在这里或「打开方式」里切）
                     if (item != null && RenderFormats.isRenderable(item.extension)) {
-                        DropdownMenuItem(
-                            text = { Text("渲染预览", color = if (resolved == PreviewMode.RENDER) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.RENDER; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "渲染预览",
+                            icon = MtIcon.WEB,
+                            checked = resolved == PreviewMode.RENDER,
+                        ) { effective = PreviewMode.RENDER; modeMenu = false }
                     }
                     // SQLite 数据库：只读浏览
                     if (item != null && SqliteFormats.isSqlite(item.extension)) {
-                        DropdownMenuItem(
-                            text = { Text("SQLite 浏览", color = if (resolved == PreviewMode.SQLITE) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface) },
-                            onClick = { effective = PreviewMode.SQLITE; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "SQLite 浏览",
+                            icon = MtIcon.FILE,
+                            checked = resolved == PreviewMode.SQLITE,
+                        ) { effective = PreviewMode.SQLITE; modeMenu = false }
                     }
                     if (kind == MimeTypes.Kind.FONT) {
-                        DropdownMenuItem(
-                            text = { Text("字体") },
-                            onClick = { effective = PreviewMode.FONT; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "字体",
+                            icon = MtIcon.FONT,
+                            checked = resolved == PreviewMode.FONT,
+                        ) { effective = PreviewMode.FONT; modeMenu = false }
                     }
                     if (kind == MimeTypes.Kind.PDF) {
-                        DropdownMenuItem(
-                            text = { Text("PDF") },
-                            onClick = { effective = PreviewMode.PDF; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "PDF",
+                            icon = MtIcon.DESC,
+                            checked = resolved == PreviewMode.PDF,
+                        ) { effective = PreviewMode.PDF; modeMenu = false }
                     }
                     if (kind == MimeTypes.Kind.APK) {
-                        DropdownMenuItem(
-                            text = { Text("APK 信息") },
-                            onClick = { effective = PreviewMode.APK_INFO; modeMenu = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "APK 信息",
+                            icon = MtIcon.ANDROID,
+                            checked = resolved == PreviewMode.APK_INFO,
+                        ) { effective = PreviewMode.APK_INFO; modeMenu = false }
                     }
                     if (uri.scheme == "local") {
-                        DropdownMenuItem(
-                            text = { Text("外部应用") },
-                            onClick = {
+                        ClaudeMenuItem(label = "外部应用", icon = MtIcon.SHARE) {
                             modeMenu = false
                             val file = runCatching { File(container.localVfs.absolutePath(uri)) }.getOrNull()
                             if (file == null || !file.exists()) {
@@ -255,8 +260,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                                         .onFailure { error = "没有可用的应用打开该文件类型" }
                                 }
                             }
-                        },
-                        )
+                        }
                     }
                 }
             }

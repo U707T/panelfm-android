@@ -13,8 +13,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -36,6 +34,8 @@ import com.u707t.panelfm.core.ui.FileIcon
 import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /**
  * MT 的「搜索」对话框（截图复刻）：
@@ -109,17 +109,12 @@ fun MtSearchDialog(
                     TextButton(onClick = { fieldMenu = true }) {
                         Text(field.label + "  ▾", color = MaterialTheme.colorScheme.onSurface)
                     }
-                    DropdownMenu(expanded = fieldMenu, onDismissRequest = { fieldMenu = false }) {
+                    ClaudeDropdownMenu(expanded = fieldMenu, onDismissRequest = { fieldMenu = false }) {
                         SearchField.entries.forEach { f ->
-                            DropdownMenuItem(
-                                text = {
-                                    Text(
-                                        f.label,
-                                        color = if (f == field) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
-                                    )
-                                },
-                                onClick = { field = f; fieldMenu = false },
-                            )
+                            ClaudeMenuItem(
+                                label = f.label,
+                                checked = f == field,
+                            ) { field = f; fieldMenu = false }
                         }
                     }
                 }

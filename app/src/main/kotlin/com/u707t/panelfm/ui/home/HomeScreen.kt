@@ -22,8 +22,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
@@ -69,6 +67,8 @@ import com.u707t.panelfm.core.vfs.local.LocalVolumes
 import com.u707t.panelfm.ui.browser.MessageDialog
 import kotlinx.coroutines.launch
 import com.u707t.panelfm.ui.browser.open
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /**
  * 主页（对齐 MT 管理器）：
@@ -228,25 +228,33 @@ fun HomeScreen(
                 }
                 Box {
                     MtIconButton(icon = MtIcon.MORE, contentDescription = "更多菜单") { showTopMenu = true }
-                    DropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text(if (settings.themeMode == ThemeMode.SYSTEM) "主题跟随系统 ✓" else "主题跟随系统") },
-                            onClick = {
-                                showTopMenu = false
-                                scope.launch { container.prefs.setTheme(ThemeMode.SYSTEM) }
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("动态取色：" + if (settings.dynamicColor) "开" else "关") },
-                            onClick = {
-                                showTopMenu = false
-                                scope.launch { container.prefs.setDynamicColor(!settings.dynamicColor) }
-                            },
-                        )
-                        DropdownMenuItem(text = { Text("添加网络存储") }, onClick = { showTopMenu = false; onAddConnection() })
+                    ClaudeDropdownMenu(expanded = showTopMenu, onDismissRequest = { showTopMenu = false }) {
+                        ClaudeMenuItem(
+                            label = "主题跟随系统",
+                            icon = MtIcon.BRIGHTNESS,
+                            checked = settings.themeMode == ThemeMode.SYSTEM,
+                        ) {
+                            showTopMenu = false
+                            scope.launch { container.prefs.setTheme(ThemeMode.SYSTEM) }
+                        }
+                        ClaudeMenuItem(
+                            label = "动态取色",
+                            icon = MtIcon.COLORIZE,
+                            trailingText = if (settings.dynamicColor) "开" else "关",
+                        ) {
+                            showTopMenu = false
+                            scope.launch { container.prefs.setDynamicColor(!settings.dynamicColor) }
+                        }
+                        ClaudeMenuItem(label = "添加网络存储", icon = MtIcon.PLUS) {
+                            showTopMenu = false; onAddConnection()
+                        }
                         // 说明：「添加本地存储」原为死入口（只弹说明），已移除（AUDIT-UX U8）。
-                        DropdownMenuItem(text = { Text("局域网扫描") }, onClick = { showTopMenu = false; onScanLan() })
-                        DropdownMenuItem(text = { Text("设置") }, onClick = { showTopMenu = false; onOpenSettings() })
+                        ClaudeMenuItem(label = "局域网扫描", icon = MtIcon.WIFI) {
+                            showTopMenu = false; onScanLan()
+                        }
+                        ClaudeMenuItem(label = "设置", icon = MtIcon.SETTINGS) {
+                            showTopMenu = false; onOpenSettings()
+                        }
                     }
                 }
             }

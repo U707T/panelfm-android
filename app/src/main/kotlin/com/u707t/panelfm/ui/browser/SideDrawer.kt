@@ -13,9 +13,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -62,6 +59,8 @@ import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.local.LocalVolume
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
+import com.u707t.panelfm.core.ui.ClaudeMenuItem
 
 /**
  * MT 管理器侧边栏（截图复刻）：
@@ -197,63 +196,43 @@ fun MtSideDrawer(
                 ) {
                     MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = MtSpec.TopBarText)
                 }
-                DropdownMenu(expanded = drawerMenu, onDismissRequest = { drawerMenu = false }) {
+                ClaudeDropdownMenu(expanded = drawerMenu, onDismissRequest = { drawerMenu = false }) {
                     if (!protocolSub) {
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("👕", Modifier.padding(end = 12.dp))
-                                    Text("主题跟随系统", Modifier.weight(1f))
-                                    Checkbox(checked = settings.themeMode == ThemeMode.SYSTEM, onCheckedChange = null)
-                                }
-                            },
-                            onClick = {
-                                drawerMenu = false
-                                scope.launch {
-                                    // 勾选 = SYSTEM；取消勾选 = 固定为当前系统生效的亮/暗
-                                    container.prefs.setTheme(
-                                        if (settings.themeMode == ThemeMode.SYSTEM) {
-                                            if (appDark) ThemeMode.DARK else ThemeMode.LIGHT
-                                        } else {
-                                            ThemeMode.SYSTEM
-                                        }
-                                    )
-                                }
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp)
-                                    Text("添加网络存储", Modifier.weight(1f).padding(start = 14.dp))
-                                    MtVectorIcon(icon = MtIcon.CHEVRON_R, size = 18.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            },
-                            onClick = { protocolSub = true },
-                        )
+                        ClaudeMenuItem(
+                            label = "主题跟随系统",
+                            icon = MtIcon.BRIGHTNESS,
+                            checked = settings.themeMode == ThemeMode.SYSTEM,
+                        ) {
+                            drawerMenu = false
+                            scope.launch {
+                                // 勾选 = SYSTEM；取消勾选 = 固定为当前系统生效的亮/暗
+                                container.prefs.setTheme(
+                                    if (settings.themeMode == ThemeMode.SYSTEM) {
+                                        if (appDark) ThemeMode.DARK else ThemeMode.LIGHT
+                                    } else {
+                                        ThemeMode.SYSTEM
+                                    }
+                                )
+                            }
+                        }
+                        ClaudeMenuItem(
+                            label = "添加网络存储",
+                            icon = MtIcon.PLUS,
+                            trailing = MtIcon.CHEVRON_R,
+                        ) { protocolSub = true }
                         // 说明：原「添加本地存储 / 添加网络分组 / 管理工具分组」三个入口只弹一条说明，
                         // 属于「空承诺」死入口 —— 已移除（按 AUDIT-UX U8：要么实现、要么不显示）；
                         // 网络分组仍可在「编辑连接 → 网络分组」里填写，功能不受影响。
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MtVectorIcon(icon = MtIcon.SETTINGS, size = 22.dp)
-                                    Text("设置", Modifier.padding(start = 14.dp))
-                                }
-                            },
-                            onClick = { drawerMenu = false; onOpenSettings() },
-                        )
+                        ClaudeMenuItem(
+                            label = "设置",
+                            icon = MtIcon.SETTINGS,
+                        ) { drawerMenu = false; onOpenSettings() }
                     } else {
                         // 添加网络存储 ▶ 子菜单（协议列表）
-                        DropdownMenuItem(
-                            text = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    MtVectorIcon(icon = MtIcon.CHEVRON_L, size = 22.dp)
-                                    Text("选择协议", Modifier.padding(start = 14.dp))
-                                }
-                            },
-                            onClick = { protocolSub = false },
-                        )
+                        ClaudeMenuItem(
+                            label = "选择协议",
+                            icon = MtIcon.CHEVRON_L,
+                        ) { protocolSub = false }
                         HSeparator()
                         listOf(
                             ConnectionType.SFTP,
@@ -263,13 +242,13 @@ fun MtSideDrawer(
                             ConnectionType.SMB,
                             ConnectionType.S3,
                         ).forEach { type ->
-                            DropdownMenuItem(
-                                text = { Text(type.label, Modifier.padding(start = 28.dp)) },
-                                onClick = {
-                                    drawerMenu = false
-                                    onAddConnection(type)
-                                },
-                            )
+                            ClaudeMenuItem(
+                                label = type.label,
+                                indent = 18.dp,
+                            ) {
+                                drawerMenu = false
+                                onAddConnection(type)
+                            }
                         }
                     }
                 }
