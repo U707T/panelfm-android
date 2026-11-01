@@ -258,21 +258,50 @@ class MediaPlaybackPolicyTest {
         }
     }
 
-    // ------------------------------------------------------------------ bufferPercent
+    // ------------------------------------------------------------------ planStallRecovery
 
     @Test
-    fun `缓冲百分比按剩余可播时长算`() {
-        assertEquals(25, MediaPlaybackPolicy.bufferPercent(positionMs = 0, bufferedMs = 25_000, durationMs = 100_000))
-        assertEquals(0, MediaPlaybackPolicy.bufferPercent(positionMs = 50_000, bufferedMs = 50_000, durationMs = 100_000))
+    fun `卡死恢复必须原地重新装载，不能退化成播放键取反`() {
+        // 卡死态的 playWhenReady 本来就是 true —— 走 planToggle 会得到 pause，
+        // 「继续播放」反而把播放停住。这里锁死恢复动作的语义。
+        val plan = MediaPlaybackPolicy.planStallRecovery(currentPositionMs = 42_000)
+        assertTrue("恢复动作必须是播放", plan.play)
+        assertFalse("不是暂停（取反 playWhenReady 就错成暂停了）", plan.reacquireFocus)
+        assertEquals("必须在当前位置重新发起装载", 42_000L, plan.reseekToMs)
+        assertFalse("不该把用户弹回开头", plan.restartFromStart)
+        assertFalse(plan.prepareFirst)
+    }
+
+    @Test
+    fun `卡死恢复的负位置按 0 处理`() {
+        assertEquals(0L, MediaPlaybackPolicy.planStallRecovery(-1).reseekToMs)
+    }
+
+    @Test
+    fun `普通播放计划不带 reseek（避免每次点播放都多一次 seek）`() {
+        val plan = MediaPlaybackPolicy.planToggle(
+            playWhenReady = false,
+            playbackState = Player.STATE_READY,
+            suppressionReason = none,
+        )
+        assertNull(plan.reseekToMs)
+    }
+
+    // ------------------------------------------------------------------ aheadPercent
+
+    @Test
+    fun `可播放余量按「播放头之后还能播多久」算`() {
+        assertEquals(25, MediaPlaybackPolicy.aheadPercent(positionMs = 0, bufferedMs = 25_000, durationMs = 100_000))
+        assertEquals(0, MediaPlaybackPolicy.aheadPercent(positionMs = 50_000, bufferedMs = 50_000, durationMs = 100_000))
     }
 
     @Test
     fun `已缓冲落后于当前位置时按 0 显示（不出现负缓冲）`() {
-        assertEquals(0, MediaPlaybackPolicy.bufferPercent(positionMs = 60_000, bufferedMs = 10_000, durationMs = 100_000))
+        assertEquals(0, MediaPlaybackPolicy.aheadPercent(positionMs = 60_000, bufferedMs = 10_000, durationMs = 100_000))
     }
 
     @Test
     fun `总时长未知时不给百分比`() {
-        assertNull(MediaPlaybackPolicy.bufferPercent(positionMs = 0, bufferedMs = 1_000, durationMs = 0))
+        assertNull(MediaPlaybackPolicy.aheadPercent(positionMs = 0, bufferedMs = 1_000, durationMs = 0))
     }
 }

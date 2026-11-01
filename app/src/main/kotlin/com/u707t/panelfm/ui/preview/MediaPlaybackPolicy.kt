@@ -45,6 +45,8 @@ internal object MediaPlaybackPolicy {
         val reacquireFocus: Boolean,
         /** `STATE_ENDED`：从头再放一遍（而不是"保持结束态"） */
         val restartFromStart: Boolean,
+        /** 非 null = 先 seek 到该位置再播（卡死恢复用：原地重新发起装载） */
+        val reseekToMs: Long? = null,
     )
 
     /**
@@ -77,6 +79,23 @@ internal object MediaPlaybackPolicy {
             restartFromStart = false,
         )
     }
+
+    /**
+     * 卡死时「继续播放」的真实动作（**不是**播放键的取反）。
+     *
+     * 卡死态的 `playWhenReady` 本来就是 true（用户没暂停），走 [planToggle] 会得到
+     * "pause" —— 于是「继续播放」反而停住，按钮名与行为对不上。
+     * 正确做法是**在当前位置重新发起一次装载**：`seekTo(currentPosition)` 会让
+     * Media3 丢掉旧的 SampleQueue 重新读，是卡在缓冲 / 网络抖动后最有效的自救。
+     */
+    fun planStallRecovery(currentPositionMs: Long): TogglePlan =
+        TogglePlan(
+            play = true,
+            prepareFirst = false,
+            reacquireFocus = false,
+            restartFromStart = false,
+            reseekToMs = currentPositionMs.coerceAtLeast(0),
+        )
 
     /**
      * 播放键图标该显示「暂停」还是「播放」。
@@ -130,8 +149,13 @@ internal object MediaPlaybackPolicy {
         else -> "播放被系统暂停，点「继续播放」重试"
     }
 
-    /** 缓冲进度百分比（0–100，未知长度时返回 null，UI 只显示「缓冲中…」）。 */
-    fun bufferPercent(positionMs: Long, bufferedMs: Long, durationMs: Long): Int? {
+    /**
+     * 可播放余量百分比（0–100）：`(buffered - position) / duration`。
+     *
+     * 注意语义是**播放头之后还有多少可播**（不是"整条缓冲占总长多少"）——
+     * 卡死提示里要回答的问题正是"我还能往前看多久"。总长未知时返回 null。
+     */
+    fun aheadPercent(positionMs: Long, bufferedMs: Long, durationMs: Long): Int? {
         if (durationMs <= 0) return null
         val ahead = (bufferedMs - positionMs).coerceAtLeast(0)
         return ((ahead.toDouble() / durationMs) * 100).toInt().coerceIn(0, 100)

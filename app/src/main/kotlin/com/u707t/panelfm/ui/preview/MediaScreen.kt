@@ -350,6 +350,27 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     }
 
     // ------------------------------------------------------------------ 播放控制
+    /** 执行 [MediaPlaybackPolicy.TogglePlan]（播放键 / 卡死恢复共用） */
+    fun applyPlan(plan: MediaPlaybackPolicy.TogglePlan) {
+        runCatching {
+            if (plan.reacquireFocus) {
+                // 被抑制时 playWhenReady 本来就是 true —— 先撤再申请，
+                // 否则 play() 不产生任何状态变化（音频焦点不会重新申请）
+                player.pause()
+                player.play()
+            } else if (plan.play) {
+                if (plan.prepareFirst) player.prepare()
+                if (plan.restartFromStart) player.seekTo(0)
+                plan.reseekToMs?.let { player.seekTo(it) }
+                player.play()
+            } else {
+                player.pause()
+            }
+        }.onFailure { error = describePlaybackError(it) }
+        // 播放键按下 = 用户明确要求播放，看门狗重新计时
+        if (plan.play) stalled = false
+    }
+
     /**
      * 播放键的唯一实现（底栏 / 双击画面 / 错误面板都走这里）。
      *
@@ -365,22 +386,14 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             suppressionReason = runCatching { player.playbackSuppressionReason }
                 .getOrDefault(Player.PLAYBACK_SUPPRESSION_REASON_NONE),
         )
-        runCatching {
-            if (plan.reacquireFocus) {
-                // 被抑制时 playWhenReady 本来就是 true —— 先撤再申请，
-                // 否则 play() 不产生任何状态变化（音频焦点不会重新申请）
-                player.pause()
-                player.play()
-            } else if (plan.play) {
-                if (plan.prepareFirst) player.prepare()
-                if (plan.restartFromStart) player.seekTo(0)
-                player.play()
-            } else {
-                player.pause()
-            }
-        }.onFailure { error = describePlaybackError(it) }
-        // 播放键按下 = 用户明确要求播放，看门狗重新计时
-        if (plan.play) stalled = false
+        applyPlan(plan)
+    }
+
+    /** 卡死恢复：**原地重新发起一次装载**（不是播放键的取反，见 [MediaPlaybackPolicy.planStallRecovery]） */
+    fun recoverFromStall() {
+        val position = runCatching { player.currentPosition }.getOrDefault(0L)
+        applyPlan(MediaPlaybackPolicy.planStallRecovery(position))
+        stalled = false
     }
 
     LaunchedEffect(ui.speedBoost, userSpeed) { player.setPlaybackSpeed(if (ui.speedBoost) 2f else userSpeed) }
@@ -673,16 +686,18 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             message = MediaPlaybackPolicy.describeSuppression(suppressionReason)
                 ?: when {
                     stalled ->
-                        "画面长时间没有进展（已缓冲 ${MediaPlaybackPolicy.bufferPercent(positionMs, bufferedMs, durationMs) ?: 0}%）"
+                        "画面长时间没有进展（剩余可播 ${MediaPlaybackPolicy.aheadPercent(positionMs, bufferedMs, durationMs) ?: 0}%）"
                     bufferingHint ->
                         "缓冲中…" + (
-                            MediaPlaybackPolicy.bufferPercent(positionMs, bufferedMs, durationMs)
-                                ?.let { "（已缓冲 $it%）" } ?: ""
+                            MediaPlaybackPolicy.aheadPercent(positionMs, bufferedMs, durationMs)
+                                ?.let { "（剩余可播 $it%）" } ?: ""
                             )
                     else -> null
                 },
             actionLabel = if (stalled || suppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) "继续播放" else null,
-            onAction = { togglePlay() },
+            // 卡死走「原地重新装载」，抑制走播放键（重新申请音频焦点）——
+            // 两者的正确动作不同，见 MediaPlaybackPolicy 的注释
+            onAction = { if (stalled) recoverFromStall() else togglePlay() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)
                 .navigationBarsPadding()

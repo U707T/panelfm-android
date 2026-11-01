@@ -69,18 +69,33 @@
 | 2 | 播放键图标与动作同源（`showPauseIcon`），不再出现"显示播放、按下去是暂停/空操作" | `MediaChrome.MediaBottomBar(showPause=…)` |
 | 3 | 轮询开关改为 `isPlaying ∨ playWhenReady ∨ BUFFERING` | `shouldRefreshProgress` |
 | 4 | 订阅 `onPlayWhenReadyChanged` / `onPlaybackSuppressionReasonChanged`，进度条上方的状态条给原因 +「继续播放」 | `MediaStatusBanner` |
-| 5 | 缓冲中显示「缓冲中…（已缓冲 N%）」，卡死（8s 无进展）显示可恢复提示 | `MediaPlaybackPolicy.bufferPercent` / `isStalled` |
+| 5 | 缓冲中显示「缓冲中…（剩余可播 N%）」，卡死（8s 无进展）显示提示 +「继续播放」 | `MediaPlaybackPolicy.aheadPercent` / `isStalled` |
 | 6 | 后台自动暂停 → 回前台续播；用户手动暂停不抢 | `pausedByBackground` |
 | 7 | 拖动续播判定改 `playWhenReady` | `MediaScreen.onSeekStart/onSeekEnd` |
 | 8 | `PlayerView` 缓冲指示改 `SHOW_BUFFERING_ALWAYS`（原 `WHEN_PLAYING` 恰好排除卡住的场景） | `MediaScreen` AndroidView factory |
 | 9 | `AndroidView.update` 里 `view.player` 只挂一次（每 500ms 重组都会跑） | `playerAttached` |
 
-## §3 验证
+## §3 发布前复审（2026-11-02 第二轮，发现并修掉 2 处）
+
+| # | 问题 | 位置 | 修法 |
+|---|---|---|---|
+| A | 🔴 **卡死态「继续播放」会变成"暂停"**：`planToggle` 取反 `playWhenReady`，而卡死时它已是 true → 按钮名与行为对不上 | `MediaPlaybackPolicy.planToggle` 被卡死分支复用 | 新增 `planStallRecovery(position)`：`seekTo(当前位置)` + `play()`，原地重新发起装载（Media3 会丢弃旧 SampleQueue 重读）；卡死时走它，抑制时仍走 `togglePlay` |
+| B | 🟡 **「已缓冲 N%」语义错**：`bufferPercent` 算的是 `(buffered - position) / duration`，即"播放头之后还剩多少"，却标成"已缓冲" | `MediaPlaybackPolicy.bufferPercent` + 状态条文案 | 重命名 `aheadPercent`、文案改「剩余可播 N%」，并把语义写进 KDoc（它回答的是"还能往前看多久"） |
+
+评审同时复核过但**判定无需改**的点：
+
+- `LaunchedEffect(product, isPlaying, playWhenReady, playbackState)` 不会自激：三个输入都是回调写入的
+  `mutableStateOf`，`positionMs` / `bufferedMs` 不在 key 里，轮询里写它们不触发重启。
+- 卡死看门狗每秒一次、仅在 `playWhenReady` 为真时运行，且判到即 `break`；后台不额外唤醒。
+- `pausedByBackground` 只在 `ON_STOP` 且确有播放意图时置位，用户手动暂停后切后台再回来不会被"抢着播"。
+- `applyPlan` 里 `plan.play=false` 的分支不会碰到 `reseekToMs`（`planStallRecovery` 恒为 `play=true`）。
+
+## §4 验证
 
 - `./gradlew :app:compileDebugKotlin --offline` → 干净。
-- `./gradlew :app:testDebugUnitTest --offline` → **696 例全绿**（全仓），其中新增
-  `MediaPlaybackPolicyTest` 23 例（四态播放键 / 抑制原因全覆盖含未知值 / 刷新开关 /
-  卡死阈值边界 / 缓冲百分比边界）。
+- `./gradlew :app:testDebugUnitTest --offline` → 全仓 **699 例全绿**，其中
+  `MediaPlaybackPolicyTest` **26 例**（四态播放键 / 抑制原因全覆盖含未知值 / 刷新开关 /
+  卡死阈值边界 / **卡死恢复语义 3 例** / 剩余可播百分比边界）。
 - `./gradlew :app:lintDebug --offline` → **Error 0**（顺带修掉 v2.1.3 留下的
   `StateFlowValueCalledInComposition`：`MediaScreen` 在组合期读 `settings.value`，
   这条读不会建立订阅，改订阅整个 `StateFlow`）。
@@ -88,4 +103,4 @@
   1. 播放中切到别的 App 再回来 → 自动续播；手动暂停后切走再回来 → 保持暂停。
   2. 打开一首网络视频（SMB/WebDAV），起播缓冲期间拖进度条 → 松手应继续播。
   3. 播放中让另一个 App 抢音频焦点（例如微信语音）→ 顶部出现"音频被其他应用占用" + 「继续播放」。
-  4. 断网播放已缓冲片段 → 8 秒无进展后出现"画面长时间没有进展（已缓冲 N%）"。
+  4. 断网播放已缓冲片段 → 8 秒无进展后出现"画面长时间没有进展（剩余可播 N%）" + 「继续播放」
