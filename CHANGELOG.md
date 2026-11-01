@@ -10,6 +10,35 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.2.2 — 视频「能缓冲、能拖看画面，就是不播」：播放态判定收口 + 播放抑制可见化
+
+> 一句话：播放键、进度条、续播全部按 `isPlaying`（这一帧有没有真的在出）判断，
+> 而「缓冲中」和「被音频焦点抑制」时 `isPlaying` 都是 false、`playWhenReady` 已经是 true ——
+> 于是按钮显示成「播放」、按下去 `play()` 是空操作（进度条也不刷新）。
+> 用户看到的就是「视频播不动，但缓冲在涨、拖动还能看到画面」。
+
+- **🔴 播放键改成按「播放意图」切换**（`MediaPlaybackPolicy.planToggle`）：缓冲中不再变成"暂停"、
+  被抑制时走 `pause()` → `play()` 重新申请音频焦点（直接 `play()` 不产生状态变化）、
+  `STATE_IDLE` 先 `prepare()`、`STATE_ENDED` 从 0 重放。双击画面中间与底栏按钮共用同一实现。
+- **🔴 缓冲/被抑制时进度条不再冻住**：500ms 轮询的开关从 `if (!isPlaying) return` 改成
+  `shouldRefreshProgress`（`isPlaying` ∨ `playWhenReady` ∨ `BUFFERING`）——
+  旧实现让「缓冲中」和「播放失败」在界面上完全一样。
+- **🔴 播放抑制有了 UI 与出口**：新增 `onPlaybackSuppressionReasonChanged` 订阅 + 状态条
+  （`MediaStatusBanner`，位置在进度条正上方）：音频被其他应用占用 / 输出设备不可用 /
+  缓冲中（带已缓冲百分比）/ 卡死（8 秒无进展）+「继续播放」。此前这三种状态**屏幕上什么都不显示**。
+- **🔴 后台暂停后回前台续播**：v2.1.3 起「退到后台即暂停」，但回来不续播 ——
+  画面停在一帧、缓冲条继续涨、拖动能看到画面，和「无法播放」一模一样。
+  现在区分「本页自动暂停」与「用户手动暂停」：只有前者在 `ON_START` 续播。
+  用户自己按的暂停不会被抢回来（原设计意图保留）。
+- **🟡 拖动进度条续播判定改用 `playWhenReady`**：缓冲中拖动（`isPlaying=false`）松手不再"忘了续播"。
+- **🟡 看门狗**：有播放意图、`isPlaying=false`、位置与缓冲连续 8 秒都没前进 → 状态条提示 + 一键恢复。
+- **🟡 `PlayerView` 缓冲指示改 `SHOW_BUFFERING_ALWAYS`**：Media3 自带的转圈只在 `isPlaying=true` 时出现，
+  恰好把这几种卡住的情况排除在外。
+- **优化**：`AndroidView.update` 每 500ms 重组都会跑，`view.player = player` 只挂一次
+  （`PlayerView.setPlayer` 对同实例提前返回，但每次仍是跨模块调用）；`resizeMode` 只在变化时写。
+- **回归**：新增 `MediaPlaybackPolicyTest` 23 例（播放键四态 / 抑制原因全覆盖 / 刷新开关 / 卡死阈值 / 缓冲百分比）；
+  全量 **696** 例通过、lint **Error 0**。详细取证见 `docs/AUDIT-2026-11-02-MEDIA-PLAYBACK.md`。
+
 ## v2.2.1 — 启动图标：标记收进 41%
 
 > 一句话：方块底 + 文件夹标记的整体构图不变，只把标记从 57.6% 收到 41.3%，

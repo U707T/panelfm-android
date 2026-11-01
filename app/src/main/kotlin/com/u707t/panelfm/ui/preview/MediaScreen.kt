@@ -8,6 +8,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
@@ -51,7 +52,6 @@ import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 /**
@@ -94,14 +94,16 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     /**
      * 「自动后台播放」（设置 → 视频播放；**默认关闭**，v2.1.3）。
      *
-     * 只订阅这一个字段：`AppSettings` 里别的设置变动不该把播放器整体重组一遍。
-     * 初值直接取当前快照（`StateFlow.value`），避免首帧用 `false` 覆盖「已开启」的用户。
+     * 直接订阅 `StateFlow<AppSettings>`：`StateFlow` 只在新值 `!=` 旧值时才发射，
+     * 而设置项只可能在设置页变动 —— 那时本页已离开组合，不会因为改了个无关设置就重组。
+     * 旧实现用 `map { it.backgroundPlay }` + `initial = settings.value`，后者在**组合期**
+     * 读 `StateFlow.value`（lint `StateFlowValueCalledInComposition`：读它不会建立订阅）。
      */
-    val backgroundPlay by remember { container.settings.map { it.backgroundPlay } }
-        .collectAsState(initial = container.settings.value.backgroundPlay)
+    val settingsSnapshot by container.settings.collectAsState()
+    val backgroundPlay = settingsSnapshot.backgroundPlay
 
     /**
-     * 退到后台（Home / 最近任务 / 熄屏）时的行为：
+     * 退到后台（Home / 最近任务 / 熄屏 / 系统弹权限页）时的行为：
      *  - **关（默认）→ 暂停**：本应用的播放器是「打开看一眼」的预览场景，
      *    退出应用后声音还在响、又没有媒体通知可以停，属于打扰；
      *  - 开 → 不干预，ExoPlayer 继续出声（音频焦点仍由播放器持有）。
@@ -109,18 +111,36 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
      * 判定用 [ExoPlayer.playWhenReady] 而不是 `isPlaying`：缓冲中（还没真正出声）
      * 时 `isPlaying` 为 false，用它会漏掉「刚点开就按 Home」这一条最常见的路径。
      *
-     * ⚠️ 只暂停、不负责「回前台自动续播」：离开前是什么状态，回来还是什么状态，
-     *    否则「退出去接个电话，回来自己在放」会让人以为播放器失控。
+     * ⚠️ **回前台要续播「我们自己暂停的那次」。** 旧实现只暂停、不记录，回来后
+     *    永远停在暂停态 —— 画面是静止的一帧、缓冲条继续涨、拖动进度条还能看到画面，
+     *    用户看到的就是「视频无法播放」，而且播放键显示的是「播放」（暂停态），
+     *    点了自然也没反应（其实点了会播，但没人知道要去点）。
+     *    现在区分「谁暂停的」：只有**本页因退到后台自动暂停**的那次才在 ON_START 续播；
+     *    用户自己按的暂停不会被抢着恢复。
      * ⚠️ 开关经 [rememberUpdatedState] 读取：设置页改完立即生效，不必重进播放器。
      */
     val backgroundPlayNow = rememberUpdatedState(backgroundPlay)
     val lifecycleOwner = LocalLifecycleOwner.current
+    /** 本次暂停是「退到后台」自动做的（回前台据此续播，用户手动暂停不会被抢回来） */
+    var pausedByBackground by remember { mutableStateOf(false) }
     DisposableEffect(lifecycleOwner, player) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP && !backgroundPlayNow.value &&
-                runCatching { player.playWhenReady }.getOrDefault(false)
-            ) {
-                runCatching { player.pause() }
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    if (!backgroundPlayNow.value &&
+                        runCatching { player.playWhenReady }.getOrDefault(false)
+                    ) {
+                        pausedByBackground = true
+                        runCatching { player.pause() }
+                    }
+                }
+                Lifecycle.Event.ON_START -> {
+                    if (pausedByBackground) {
+                        pausedByBackground = false
+                        runCatching { player.play() }
+                    }
+                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -128,6 +148,20 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     }
 
     var isPlaying by remember { mutableStateOf(false) }
+    /**
+     * **播放意图**（`Player.playWhenReady`）—— 播放键 / 续播 / 后台暂停都以它为准。
+     *
+     * 为什么不能只看 [isPlaying]：缓冲中（还没出第一帧）和被音频焦点抑制时
+     * `isPlaying` 都是 false，但「用户想让它在播」这件事没变。旧实现把两者混用，
+     * 结果就是「点了播放没反应、缓冲条还在涨、拖动能看到画面」——
+     * 见 [MediaPlaybackPolicy] 的状态表。
+     */
+    var playWhenReady by remember { mutableStateOf(false) }
+    var playbackState by remember { mutableStateOf(Player.STATE_IDLE) }
+    /** 播放抑制原因（音频焦点被占 / 输出设备不可用 …）；NONE = 正常 */
+    var suppressionReason by remember { mutableStateOf(Player.PLAYBACK_SUPPRESSION_REASON_NONE) }
+    /** 有播放意图却「位置 + 缓冲都不前进」超过阈值（看门狗判定，给用户出口） */
+    var stalled by remember { mutableStateOf(false) }
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
     /** 页面交互态（显隐之外的瞬时反馈）——见 [MediaUiState] */
@@ -205,11 +239,25 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             // U16：状态级变化改用监听器（旧实现 250ms 无条件轮询一切 → 4Hz 重组）
             override fun onIsPlayingChanged(playing: Boolean) {
                 isPlaying = playing
+                if (playing) stalled = false
                 positionMs = player.currentPosition.coerceAtLeast(0)
                 bufferedMs = player.bufferedPosition.coerceAtLeast(0)
             }
 
+            // 「播放意图」必须单独订阅：缓冲中 / 被抑制时 isPlaying 恒为 false，
+            // 少了这一条，播放键与续播逻辑就永远看不到用户其实已经按下了播放。
+            override fun onPlayWhenReadyChanged(playWhenReadyValue: Boolean, reason: Int) {
+                playWhenReady = playWhenReadyValue
+            }
+
+            // 音频焦点被别的 App 抢走 / 输出设备不可用时，ExoPlayer 会「保持 playWhenReady
+            // 但不推进」。旧实现完全没订阅它 → 用户只看到「点了播放没反应」，没有任何线索。
+            override fun onPlaybackSuppressionReasonChanged(suppressionReasonValue: Int) {
+                suppressionReason = suppressionReasonValue
+            }
+
             override fun onPlaybackStateChanged(state: Int) {
+                playbackState = state
                 val d = player.duration
                 durationMs = if (d in 1..(24L * 3600 * 1000)) d else 0
                 bufferedMs = player.bufferedPosition.coerceAtLeast(0)
@@ -235,11 +283,17 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         }
     }
 
-    // 位置/缓冲轮询：**仅播放中**、500ms 一次（进度条足够顺滑；暂停时不再空转）
-    // 后台（Activity 不可见）跳过刷新：开了「自动后台播放」后可能后台响上一小时，
+    // 位置/缓冲轮询：只要**还有播放意图**（或仍在装载）就刷新，500ms 一次。
+    //
+    // 旧实现用的是 `if (!isPlaying) return`：缓冲中（还没出第一帧）与被音频焦点抑制时
+    // `isPlaying` 都是 false → 进度条 + 缓冲条一起冻住，看着就是「卡死」。
+    // 判定收在 [MediaPlaybackPolicy.shouldRefreshProgress]（纯函数、有回归）。
+    // 后台（Activity 不可见）仍然跳过：开了「自动后台播放」后可能后台响上一小时，
     // 界面一个像素都看不见，每秒两次 setState + 重组纯属白烧电。
-    LaunchedEffect(player, isPlaying) {
-        if (!isPlaying) return@LaunchedEffect
+    LaunchedEffect(player, isPlaying, playWhenReady, playbackState) {
+        if (!MediaPlaybackPolicy.shouldRefreshProgress(playWhenReady, playbackState, isPlaying)) {
+            return@LaunchedEffect
+        }
         while (true) {
             if (lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
                 positionMs = player.currentPosition.coerceAtLeast(0)
@@ -247,6 +301,86 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             }
             delay(500)
         }
+    }
+
+    /**
+     * 卡死看门狗：有播放意图、没在出帧、**位置与缓冲连续 N 秒都没前进** → 给用户出口。
+     *
+     * 只判「没在播」会误伤正常的起播缓冲（SMB / WebDAV 首帧常见 2–4 秒），
+     * 必须叠加「无进展时长」，阈值见 [MediaPlaybackPolicy.StallTimeoutMs]。
+     */
+    LaunchedEffect(player, playWhenReady) {
+        if (!playWhenReady) {
+            stalled = false
+            return@LaunchedEffect
+        }
+        var lastPosition = player.currentPosition
+        var lastBuffered = player.bufferedPosition
+        var noProgressMs = 0L
+        while (true) {
+            delay(1000)
+            if (!player.playWhenReady && !player.isPlaying) break
+            val position = player.currentPosition
+            val buffered = player.bufferedPosition
+            val progressed = position != lastPosition || buffered != lastBuffered
+            lastPosition = position
+            lastBuffered = buffered
+            noProgressMs = if (progressed) 0L else noProgressMs + 1000L
+            val nowStalled = MediaPlaybackPolicy.isStalled(
+                playWhenReady = player.playWhenReady,
+                isPlaying = player.isPlaying,
+                stallMs = noProgressMs,
+            )
+            if (nowStalled != stalled) stalled = nowStalled
+            if (nowStalled) break
+        }
+    }
+
+    /**
+     * 「缓冲中」提示的防抖：起播 / seek 的缓冲常常只有 200ms，
+     * 立刻弹提示会每次切歌都闪一下。超过 700ms 还没出帧才算「真的在等」。
+     */
+    var bufferingHint by remember { mutableStateOf(false) }
+    LaunchedEffect(playWhenReady, isPlaying, playbackState) {
+        bufferingHint = false
+        if (playWhenReady && !isPlaying && playbackState == Player.STATE_BUFFERING) {
+            delay(700)
+            bufferingHint = true
+        }
+    }
+
+    // ------------------------------------------------------------------ 播放控制
+    /**
+     * 播放键的唯一实现（底栏 / 双击画面 / 错误面板都走这里）。
+     *
+     * 旧实现是 `if (player.isPlaying) pause() else play()` ——
+     * 缓冲中与被音频焦点抑制时 `isPlaying == false`，`play()` 又是空操作，
+     * 于是按钮「点不动」，而这正是用户报的「视频无法播放」。
+     * 现在的判定见 [MediaPlaybackPolicy.planToggle]（有回归）。
+     */
+    fun togglePlay() {
+        val plan = MediaPlaybackPolicy.planToggle(
+            playWhenReady = runCatching { player.playWhenReady }.getOrDefault(false),
+            playbackState = runCatching { player.playbackState }.getOrDefault(Player.STATE_IDLE),
+            suppressionReason = runCatching { player.playbackSuppressionReason }
+                .getOrDefault(Player.PLAYBACK_SUPPRESSION_REASON_NONE),
+        )
+        runCatching {
+            if (plan.reacquireFocus) {
+                // 被抑制时 playWhenReady 本来就是 true —— 先撤再申请，
+                // 否则 play() 不产生任何状态变化（音频焦点不会重新申请）
+                player.pause()
+                player.play()
+            } else if (plan.play) {
+                if (plan.prepareFirst) player.prepare()
+                if (plan.restartFromStart) player.seekTo(0)
+                player.play()
+            } else {
+                player.pause()
+            }
+        }.onFailure { error = describePlaybackError(it) }
+        // 播放键按下 = 用户明确要求播放，看门狗重新计时
+        if (plan.play) stalled = false
     }
 
     LaunchedEffect(ui.speedBoost, userSpeed) { player.setPlaybackSpeed(if (ui.speedBoost) 2f else userSpeed) }
@@ -444,6 +578,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         bottomBarHeightPx = { bottomBarHeightPx },
         showControls = { showControls() },
         toggleControls = { toggleControls() },
+        togglePlay = { togglePlay() },
         setSpeedBoost = { ui.speedBoost = it },
         setHud = { ui.hud = it },
         setSeekPreview = { ui.seekPreview = it },
@@ -458,18 +593,34 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     )
     val gestureModifier = rememberMediaPlayerGestures(gestureHooks)
 
+    /**
+     * 视频面。
+     *
+     * `update` 每次重组都会跑（本页每 500ms 刷新位置/缓冲 → 也是重组）。
+     * `PlayerView.setPlayer()` 对**同一个实例**是提前返回的（字节码已核实），所以原来
+     * 每帧赋一次并不会拆 Surface；这里加 `playerAttached` 只是把每帧的无谓调用去掉，
+     * 真正的画面问题不在这一行 —— 见 [MediaPlaybackPolicy] 的播放态判定。
+     */
+    val playerAttached = remember { mutableStateOf(false) }
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         // 视频面（或音频占位）
         AndroidView(
             factory = { ctx ->
                 PlayerView(ctx).apply {
                     useController = false
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
+                    // 缓冲指示改为**看门狗 + 底部文案**表达（见 stalled / 缓冲百分比）：
+                    // Media3 自带的转圈只在 isPlaying 为 true 时出现，而卡住的场景恰恰是
+                    // isPlaying 为 false —— 那时旧实现什么都不显示，看起来就是「黑屏死掉」。
+                    setShowBuffering(PlayerView.SHOW_BUFFERING_ALWAYS)
+                    setShutterBackgroundColor(android.graphics.Color.BLACK)
                 }
             },
             update = { view ->
-                view.player = player
-                view.resizeMode = resizeMode
+                if (!playerAttached.value) {
+                    view.player = player
+                    playerAttached.value = true
+                }
+                if (view.resizeMode != resizeMode) view.resizeMode = resizeMode
             },
             modifier = Modifier.fillMaxSize(),
         )
@@ -506,6 +657,37 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     .background(Color.Black.copy(alpha = (1f - appBrightness) * 0.85f)),
             )
         }
+
+        // ---- 缓冲 / 卡死 / 播放抑制的状态条（旧实现这三种状态完全没有任何提示）
+        //
+        // 位置放在**进度条正上方**：用户判断"在加载还是卡死"看的就是那一行，
+        // 也避开了顶部三个瞬时提示（HUD / 倍速动效 / 顶栏）。
+        // 底栏展开时按实测高度抬起来（`bottomBarHeightPx` 由 onGloballyPositioned 写入），
+        // 收起时不占位。
+        val bottomBarDp = if (controlsVisible && !locked) {
+            with(androidx.compose.ui.platform.LocalDensity.current) { bottomBarHeightPx.toDp() }
+        } else {
+            0.dp
+        }
+        MediaStatusBanner(
+            message = MediaPlaybackPolicy.describeSuppression(suppressionReason)
+                ?: when {
+                    stalled ->
+                        "画面长时间没有进展（已缓冲 ${MediaPlaybackPolicy.bufferPercent(positionMs, bufferedMs, durationMs) ?: 0}%）"
+                    bufferingHint ->
+                        "缓冲中…" + (
+                            MediaPlaybackPolicy.bufferPercent(positionMs, bufferedMs, durationMs)
+                                ?.let { "（已缓冲 $it%）" } ?: ""
+                            )
+                    else -> null
+                },
+            actionLabel = if (stalled || suppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) "继续播放" else null,
+            onAction = { togglePlay() },
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
+                .padding(bottom = bottomBarDp + 8.dp),
+        )
 
         // ---- 顶部：← / 文件名 / ⋮（悬浮，无底条；见 MediaChrome.kt）
         if (controlsVisible && !locked) {
@@ -621,12 +803,19 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 bufferedMs = bufferedMs,
                 seekPreview = ui.seekPreview,
                 sliderDragging = ui.sliderDragging,
-                isPlaying = isPlaying,
+                showPause = MediaPlaybackPolicy.showPauseIcon(
+                    playWhenReady = playWhenReady,
+                    playbackState = playbackState,
+                    isPlaying = isPlaying,
+                ),
                 shuffle = shuffle,
                 playingIndex = playlistIndex,
                 playlistSize = playlist.size,
                 onSeekStart = {
-                    ui.wasPlayingBeforeSeek = player.isPlaying
+                    // 用 playWhenReady（意图）而不是 isPlaying（实况）：
+                    // 缓冲中 isPlaying 恒为 false，旧实现会认为「本来就没在播」，
+                    // 松手后不续播 —— 拖一下就再也放不动了。
+                    ui.wasPlayingBeforeSeek = player.playWhenReady
                     if (ui.wasPlayingBeforeSeek) player.pause()
                     ui.sliderDragging = true
                 },
@@ -643,13 +832,14 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     ui.seekPreview = null
                     ui.sliderDragging = false
                     if (ui.wasPlayingBeforeSeek) player.play()
+                    stalled = false
                 },
                 onToggleShuffle = { toggleShuffle() },
                 onPrev = { playAt(playlistIndex - 1) },
                 onNext = { playAt(playlistIndex + 1) },
                 onSeekBack = { seekPlayerBy(player, durationMs, -10_000) },
                 onSeekForward = { seekPlayerBy(player, durationMs, +15_000) },
-                onTogglePlay = { if (player.isPlaying) player.pause() else player.play() },
+                onTogglePlay = { togglePlay() },
                 onTogglePlaylist = { showPlaylist = !showPlaylist },
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

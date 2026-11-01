@@ -44,6 +44,8 @@ internal class MediaGestureHooks(
     val bottomBarHeightPx: () -> Int,
     val showControls: () -> Unit,
     val toggleControls: () -> Unit,
+    /** 播放 / 暂停（与底栏播放键同一实现，见 `MediaPlaybackPolicy.planToggle`） */
+    val togglePlay: () -> Unit,
     val setSpeedBoost: (Boolean) -> Unit,
     val setHud: (String?) -> Unit,
     val setSeekPreview: (Long?) -> Unit,
@@ -85,7 +87,10 @@ private fun doubleTapSeek(hooks: MediaGestureHooks, x: Float, width: Int) {
             seekPlayerBy(hooks.player, hooks.getDurationMs(), +10_000)
             hooks.setHud("+10s")
         }
-        else -> if (hooks.player.isPlaying) hooks.player.pause() else hooks.player.play()
+        // 与底栏播放键走**同一个**实现：`if (isPlaying) pause() else play()` 在
+        // 缓冲中 / 被音频焦点抑制时是空操作（isPlaying=false 但 playWhenReady 已经是 true），
+        // 用户观感就是「双击中间点了没反应」。
+        else -> hooks.togglePlay()
     }
 }
 

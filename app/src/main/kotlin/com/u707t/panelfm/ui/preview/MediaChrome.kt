@@ -299,7 +299,8 @@ internal fun MediaBottomBar(
     bufferedMs: Long,
     seekPreview: Long?,
     sliderDragging: Boolean,
-    isPlaying: Boolean,
+    /** 播放键显示态：由 [MediaPlaybackPolicy.showPauseIcon] 从「播放意图」推导，不能用 isPlaying */
+    showPause: Boolean,
     shuffle: Boolean,
     playingIndex: Int,
     playlistSize: Int,
@@ -364,8 +365,8 @@ internal fun MediaBottomBar(
             IconButton("后退 10 秒", onClick = onSeekBack) {
                 drawReplay(forward = false, seconds = "10")
             }
-            IconButton(if (isPlaying) "暂停" else "播放", large = true, onClick = onTogglePlay) {
-                if (isPlaying) drawPause() else drawPlay()
+            IconButton(if (showPause) "暂停" else "播放", large = true, onClick = onTogglePlay) {
+                if (showPause) drawPause() else drawPlay()
             }
             IconButton("前进 15 秒", onClick = onSeekForward) {
                 drawReplay(forward = true, seconds = "15")
@@ -513,6 +514,43 @@ private fun SpeedChevrons(modifier: Modifier = Modifier) {
                 lineTo(x, size.height * 0.84f)
             }
             drawPath(chevron, Color.White.copy(alpha = alpha), style = style)
+        }
+    }
+}
+
+/**
+ * 播放状态条（缓冲中 / 卡死 / 被音频焦点抑制）。
+ *
+ * 为什么需要：这三种状态下旧实现**屏幕上什么都不显示** —— 用户只看到黑屏，
+ * 而 `BufferView` 的转圈又只在 `isPlaying == true` 时出现（恰好把这三种情况排除在外）。
+ * 结果「缓冲中」和「播不动」在界面上完全无法区分，只能靠退出去重进。
+ *
+ * [message] 为 null 时不占位（不绘制任何东西，不参与事件消费）。
+ */
+@Composable
+internal fun MediaStatusBanner(
+    message: String?,
+    actionLabel: String?,
+    onAction: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    if (message == null) return
+    Row(
+        modifier
+            .clip(RoundedCornerShape(percent = 50))
+            .background(Color.Black.copy(alpha = 0.62f))
+            .padding(start = 14.dp, end = if (actionLabel != null) 6.dp else 14.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            message,
+            color = Color.White.copy(alpha = 0.92f),
+            style = MaterialTheme.typography.labelMedium,
+        )
+        if (actionLabel != null) {
+            TextButton(onClick = onAction) {
+                Text(actionLabel, color = MtSpec.AccentDark, style = MaterialTheme.typography.labelMedium)
+            }
         }
     }
 }
