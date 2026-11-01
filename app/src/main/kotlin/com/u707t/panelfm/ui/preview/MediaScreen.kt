@@ -87,6 +87,22 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             .build()
         ExoPlayer.Builder(context)
             .setMediaSourceFactory(DefaultMediaSourceFactory(container.vfsDataSourceFactory))
+            /**
+             * ⚠️ **必须关掉**：Media3 默认 `suppressPlaybackOnUnsuitableOutput = true`，
+             * 一旦 `AudioManager` 认为当前音频路由「不适合」（部分 ROM / 蓝牙 / USB / 模拟器上
+             * `getAudioDevicesForAttributes` 会返回空），ExoPlayer 会把**整个播放**抑制掉 ——
+             * `playWhenReady` 保持 true、`STATE_READY`、缓冲继续加载、seek 还能渲染帧，
+             * 唯独时钟不推进。这就是「能缓存、能拖动看画面、就是播不了」的直接成因。
+             * 视频播放器的正确取舍是「宁可静音出画面」，而不是「因为没声音就整段不播」。
+             */
+            .setSuppressPlaybackOnUnsuitableOutput(false)
+            // 拔耳机 / 断开蓝牙时自动暂停，而不是突然外放
+            .setHandleAudioBecomingNoisy(true)
+            .setRenderersFactory(
+                androidx.media3.exoplayer.DefaultRenderersFactory(context)
+                    // 硬解初始化失败时回退软解（部分 HEVC / 高码率片源只有软解能吃下）
+                    .setEnableDecoderFallback(true),
+            )
             .build()
             .apply { setAudioAttributes(audioAttributes, true) }
     }
@@ -162,6 +178,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     var suppressionReason by remember { mutableStateOf(Player.PLAYBACK_SUPPRESSION_REASON_NONE) }
     /** 有播放意图却「位置 + 缓冲都不前进」超过阈值（看门狗判定，给用户出口） */
     var stalled by remember { mutableStateOf(false) }
+    /** 自动恢复重试次数（避免无限 pause/play 抖动；出帧后清零） */
+    var stallRetryCount by remember { mutableStateOf(0) }
     var positionMs by remember { mutableStateOf(0L) }
     var durationMs by remember { mutableStateOf(0L) }
     /** 页面交互态（显隐之外的瞬时反馈）——见 [MediaUiState] */
@@ -304,36 +322,71 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     }
 
     /**
-     * 卡死看门狗：有播放意图、没在出帧、**位置与缓冲连续 N 秒都没前进** → 给用户出口。
+     * 卡死看门狗：**有播放意图、没在出帧** —— 只判这一条，不看缓冲。
      *
-     * 只判「没在播」会误伤正常的起播缓冲（SMB / WebDAV 首帧常见 2–4 秒），
-     * 必须叠加「无进展时长」，阈值见 [MediaPlaybackPolicy.StallTimeoutMs]。
+     * ## 上一版为什么没修好
+     *
+     * 上一版的判据是「位置**和**缓冲都没前进」才叫卡死。但用户报的正是
+     * **缓冲在涨、位置不动**（"可以缓存和拖动查看图像"）—— 缓冲一涨就被判成
+     * "有进展"，看门狗从未触发，提示也从未出现。
+     * 判据必须回到「出没出帧」：`playbackState == READY && playWhenReady && !isPlaying`
+     * 说明 renderer 一个缓冲都没消费，跟缓冲里有几秒数据无关。
+     *
+     * ## 自动恢复（关键）
+     *
+     * `READY + !isPlaying` 在 Media3 里几乎只有一个来源：**音频焦点 / 音频路由被抑制**
+     * （`playbackSuppressionReason != NONE`）。而 ExoPlayer 收到 `AUDIOFOCUS_LOSS`
+     * 之后**不会自己重试申请**，`playWhenReady` 保持 true、位置永远不动 ——
+     * 表现就是"点了播放没反应"，且用户不知道要再点一次。
+     * 这里主动 `pause()` → `play()`（重新申请一次焦点），最多 [MediaPlaybackPolicy.AutoRecoverLimit] 次。
      */
     LaunchedEffect(player, playWhenReady) {
         if (!playWhenReady) {
             stalled = false
             return@LaunchedEffect
         }
-        var lastPosition = player.currentPosition
-        var lastBuffered = player.bufferedPosition
         var noProgressMs = 0L
+        var retries = 0
+        var lastPosition = player.currentPosition
         while (true) {
-            delay(1000)
-            if (!player.playWhenReady && !player.isPlaying) break
+            delay(500)
+            if (!player.playWhenReady) break
             val position = player.currentPosition
-            val buffered = player.bufferedPosition
-            val progressed = position != lastPosition || buffered != lastBuffered
+            val advancing = player.isPlaying && position != lastPosition
             lastPosition = position
-            lastBuffered = buffered
-            noProgressMs = if (progressed) 0L else noProgressMs + 1000L
-            val nowStalled = MediaPlaybackPolicy.isStalled(
+            noProgressMs = if (advancing) 0L else noProgressMs + 500
+
+            // ① 自动恢复：READY 却没有帧在走 → 重新申请音频焦点。
+            //    判定见 shouldAutoRecover（BUFFERING 不算，那是在等数据）。
+            if (MediaPlaybackPolicy.shouldAutoRecover(
+                    playbackState = player.playbackState,
+                    playWhenReady = player.playWhenReady,
+                    isPlaying = player.isPlaying,
+                    stalledMs = noProgressMs,
+                    retries = retries,
+                )
+            ) {
+                retries++
+                stallRetryCount = retries
+                runCatching {
+                    player.pause()
+                    player.play()
+                }
+            }
+
+            // ② 自动重试仍救不回来 → 交给状态条 + 用户
+            val nowStalled = MediaPlaybackPolicy.needsManualRecovery(
+                playbackState = player.playbackState,
                 playWhenReady = player.playWhenReady,
                 isPlaying = player.isPlaying,
-                stallMs = noProgressMs,
+                stalledMs = noProgressMs,
+                retries = retries,
             )
             if (nowStalled != stalled) stalled = nowStalled
             if (nowStalled) break
         }
+        // 正常出帧后把重试计数清掉，避免"几分钟后偶发一次卡顿"就永久失去自动恢复能力
+        if (!stalled) stallRetryCount = 0
     }
 
     /**
@@ -394,6 +447,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         val position = runCatching { player.currentPosition }.getOrDefault(0L)
         applyPlan(MediaPlaybackPolicy.planStallRecovery(position))
         stalled = false
+        stallRetryCount = 0
     }
 
     LaunchedEffect(ui.speedBoost, userSpeed) { player.setPlaybackSpeed(if (ui.speedBoost) 2f else userSpeed) }
@@ -685,8 +739,12 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         MediaStatusBanner(
             message = MediaPlaybackPolicy.describeSuppression(suppressionReason)
                 ?: when {
-                    stalled ->
-                        "画面长时间没有进展（剩余可播 ${MediaPlaybackPolicy.aheadPercent(positionMs, bufferedMs, durationMs) ?: 0}%）"
+                    stalled -> MediaPlaybackPolicy.describeStall(
+                        playbackState = playbackState,
+                        suppressionReason = suppressionReason,
+                        retries = stallRetryCount,
+                        aheadPercent = MediaPlaybackPolicy.aheadPercent(positionMs, bufferedMs, durationMs),
+                    )
                     bufferingHint ->
                         "缓冲中…" + (
                             MediaPlaybackPolicy.aheadPercent(positionMs, bufferedMs, durationMs)
@@ -695,8 +753,6 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     else -> null
                 },
             actionLabel = if (stalled || suppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) "继续播放" else null,
-            // 卡死走「原地重新装载」，抑制走播放键（重新申请音频焦点）——
-            // 两者的正确动作不同，见 MediaPlaybackPolicy 的注释
             onAction = { if (stalled) recoverFromStall() else togglePlay() },
             modifier = Modifier
                 .align(Alignment.BottomCenter)

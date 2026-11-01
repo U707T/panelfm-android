@@ -90,17 +90,74 @@
 - `pausedByBackground` 只在 `ON_STOP` 且确有播放意图时置位，用户手动暂停后切后台再回来不会被"抢着播"。
 - `applyPlan` 里 `plan.play=false` 的分支不会碰到 `reseekToMs`（`planStallRecovery` 恒为 `play=true`）。
 
-## §4 验证
+## §5 第三轮（v2.2.3）：v2.2.2 为什么没修好 + 真因
 
-- `./gradlew :app:compileDebugKotlin --offline` → 干净。
-- `./gradlew :app:testDebugUnitTest --offline` → 全仓 **699 例全绿**，其中
-  `MediaPlaybackPolicyTest` **26 例**（四态播放键 / 抑制原因全覆盖含未知值 / 刷新开关 /
-  卡死阈值边界 / **卡死恢复语义 3 例** / 剩余可播百分比边界）。
-- `./gradlew :app:lintDebug --offline` → **Error 0**（顺带修掉 v2.1.3 留下的
-  `StateFlowValueCalledInComposition`：`MediaScreen` 在组合期读 `settings.value`，
-  这条读不会建立订阅，改订阅整个 `StateFlow`）。
-- 真机复核清单（沙箱无设备）：
-  1. 播放中切到别的 App 再回来 → 自动续播；手动暂停后切走再回来 → 保持暂停。
-  2. 打开一首网络视频（SMB/WebDAV），起播缓冲期间拖进度条 → 松手应继续播。
-  3. 播放中让另一个 App 抢音频焦点（例如微信语音）→ 顶部出现"音频被其他应用占用" + 「继续播放」。
-  4. 断网播放已缓冲片段 → 8 秒无进展后出现"画面长时间没有进展（剩余可播 N%）" + 「继续播放」
+### v2.2.2 的两个错误
+
+1. **看门狗判据写错**。v2.2.2 用「位置**和**缓冲都没前进」判定卡死。但用户的原话是
+   **"可以缓存"** —— 缓冲一直在涨 → 被判成"有进展" → 看门狗从未触发，状态条从未出现。
+   也就是说 v2.2.2 新增的全部 UI 提示在这种场景下都是死代码。
+2. **把"用户要点按钮"当成了方案**。即使提示出来，`READY + !isPlaying` 的根因也不会自己消失；
+   需要的是**自动重试**，不是让用户手动点。
+
+### 真因（代码级）
+
+`Player.isPlaying` 的语义是三者同时成立：`playWhenReady && state==READY && suppressionReason==NONE`。
+只要能缓冲、能 seek 出画面却"不播"，就只能是第三项被置位 —— 也就是**播放抑制**。
+Media3 的抑制来源里，`UNSUITABLE_AUDIO_OUTPUT` 是默认开启的：
+
+```java
+// ExoPlayer.Builder 里 suppressPlaybackOnUnsuitableOutput 默认 true
+// 音频路由被 AudioManager 认为"不适合"（部分 ROM / 蓝牙 / USB / 模拟器上
+// getAudioDevicesForAttributes 返回空）→ 整个播放被抑制
+```
+
+对一个**视频**播放器来说这是错的取舍：没有可用音频输出时应当「静音出画面」，
+而不是「因为没声音就整段不播」。这就是「缓冲照涨、seek 照出帧、时钟不走」的唯一成因。
+
+### 本轮修复
+
+| # | 修复 | 位置 |
+|---|---|---|
+| 1 | `setSuppressPlaybackOnUnsuitableOutput(false)` —— 根因 | `MediaScreen` 播放器构造 |
+| 2 | 看门狗改为只看「出没出帧」，不再被缓冲进度骗过 | `shouldAutoRecover` |
+| 3 | `READY` 无帧 0.9s → 自动 `pause()`→`play()` 重申请焦点，最多 3 次 | `MediaScreen` 看门狗 |
+| 4 | 用尽 3 次才交给用户；「继续播放」= 原地重新装载 | `needsManualRecovery` / `planStallRecovery` |
+| 5 | 拔耳机 / 断蓝牙自动暂停（不再静默外放） | `setHandleAudioBecomingNoisy(true)` |
+| 6 | 硬解失败回退软解 | `DefaultRenderersFactory.setEnableDecoderFallback(true)` |
+| 7 | 卡死文案带 `state=` / `suppression=` / 重试次数 / 剩余可播 | `describeStall` |
+
+### 为什么不直接改「点播放重试」了事
+
+`AUDIOFOCUS_LOSS` 之后 ExoPlayer **不会**自己重新申请焦点（这是刻意的：不抢占其他 App 的音频）。
+用户上一次看到的现象里"点播放也没反应"，正是因为 `playWhenReady` 本来就是 true，
+`play()` 不产生任何状态变化 —— 必须 `pause()` → `play()` 才是"重新申请"。
+
+### 关于「图标变小」
+
+v2.2.1 把标记从 57.6% 收到 41.3%（xxxhdpi 前景 bbox 166px → 119px）。真机上明显偏小，
+本轮把 5 个密度目录 + `gen_launcher_icon.py` 整体回退到 v2.2.0：
+
+```
+git checkout 96eb252 -- app/src/main/res/mipmap-* tools/gen_launcher_icon.py
+# 校验：xxxhdpi fg bbox = (133,136,299,295)，宽 166px / 432 = 38.4%（与 v2.2.0 一致）
+```
+
+### 验证
+
+- 全仓 **711 例单测通过**（`MediaPlaybackPolicyTest` 38 例）；`:app:lintDebug` **Error 0**。
+- 仍需真机确认的前置条件：沙箱无 `/dev/kvm`、无 `adb`，抑制状态在模拟器 / 真机上的
+  具体取值（`suppression=` 后面的数字）只能实机读到 —— 这正是本轮把状态码打进文案的原因。
+
+### 真机复核清单（三轮汇总）
+
+1. **本轮重点**：找一台之前必现"能缓冲、能拖看画面、不播"的设备，直接播放同一条视频。
+   预期：正常出画面（即使音频路由异常也静音出画）。若仍卡，截图状态条上的
+   `state=… / suppression=…` 就能定位到具体抑制原因。
+2. 播放中切到别的 App 再回来 → 自动续播；手动暂停后切走再回来 → 保持暂停。
+3. 起播缓冲期间拖进度条 → 松手应继续播。
+4. 让另一个 App 抢音频焦点（如微信语音）→ 约 1 秒内自动重试恢复；
+   3 次仍失败才出现"音频被其他应用占用" + 「继续播放」。
+5. 断网播放已缓冲片段 → 剩余可播耗尽后出现带状态码的卡死提示。
+6. **图标**：确认桌面图标与 v2.2.0 观感一致（不再偏小）。
+

@@ -10,6 +10,32 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.2.3 — 视频播放重审：关掉 Media3 的「输出不合适就整段不播」+ 失败自愈；启动图标回退 v2.2.0
+
+> 一句话：v2.2.2 的推断没打中真因 —— 它把"卡住"的判据写成「位置**和**缓冲都不前进」，
+> 而用户报的恰恰是**缓冲在涨、位置不动**，于是看门狗从没触发过。
+> 这次改到根上：Media3 默认 `setSuppressPlaybackOnUnsuitableOutput(true)`，
+> 音频路由被认为「不适合」时它会把**整个播放**抑制掉（`STATE_READY` + `playWhenReady=true`
+> + 时钟不走）—— 缓冲照涨、seek 照出帧，正是「能缓存、能拖看画面、就是播不了」。
+
+- **🔴 根因修复**：`ExoPlayer.Builder.setSuppressPlaybackOnUnsuitableOutput(false)` ——
+  视频播放器的正确取舍是「宁可静音出画面」，而不是「没声音就整段不播」。
+  这是「能缓冲 / 能拖动 / 不播放」三者并存**唯一**的代码级成因。
+- **🔴 看门狗判据纠正**：从「位置 + 缓冲都没前进」改为「**出没出帧**」
+  （`READY && playWhenReady && !isPlaying`），不再被"缓冲在涨"骗过。
+- **🔴 失败自愈**：`READY` 却连续 0.9 秒无帧 → 自动 `pause()` → `play()` 重新申请音频焦点
+  （ExoPlayer 收到 `AUDIOFOCUS_LOSS` 后**不会自己重试**），最多 3 次；
+  用尽才交给用户（状态条 +「继续播放」→ 原地重新装载）。
+- **🔴 关掉「拔耳机/断蓝牙」静默**：`setHandleAudioBecomingNoisy(true)`，断开时暂停而不是突然外放。
+- **🟡 硬解失败回退软解**：`DefaultRenderersFactory.setEnableDecoderFallback(true)`
+  （部分 HEVC / 高码率片源只有软解能吃下）。
+- **🟡 卡死文案带真实状态码**：`播放卡住（state=READY / suppression=1 / 已重试 3 / 剩余可播 42%）` ——
+  下次真出问题，一张截图就能定位，不用再靠猜。
+- **启动图标回退 v2.2.0 比例**：v2.2.1 把标记从 57.6% 收到 41.3%，真机上明显偏小；
+  本次 5 个密度 + `gen_launcher_icon.py` 整体回退（xxxhdpi 前景层 bbox 166px / 432 = 38.4%，与 v2.2.0 一致）。
+- **回归**：`MediaPlaybackPolicyTest` **38 例**（新增自动恢复 6 例 / 手动接管 3 例 / 卡死文案 3 例）；
+  全量 **711** 例通过、lint **Error 0**。第三轮取证见 `docs/AUDIT-2026-11-02-MEDIA-PLAYBACK.md` §5。
+
 ## v2.2.2 — 视频「能缓冲、能拖看画面，就是不播」：播放态判定收口 + 播放抑制可见化
 
 > 一句话：播放键、进度条、续播全部按 `isPlaying`（这一帧有没有真的在出）判断，

@@ -246,7 +246,7 @@ class MediaPlaybackPolicyTest {
     fun `每种抑制原因都有可执行文案（不留空白）`() {
         val reasons = listOf(
             Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS,
-            Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_ROUTE,
+            2, // legacy UNSUITABLE_AUDIO_ROUTE（Media3 1.10 已废弃，旧设备仍可能上报）
             Player.PLAYBACK_SUPPRESSION_REASON_UNSUITABLE_AUDIO_OUTPUT,
             Player.PLAYBACK_SUPPRESSION_REASON_SCRUBBING,
             Int.MAX_VALUE, // 未来新增的原因也不能显示空白
@@ -285,6 +285,175 @@ class MediaPlaybackPolicyTest {
             suppressionReason = none,
         )
         assertNull(plan.reseekToMs)
+    }
+
+    // ------------------------------------------------------------------ shouldAutoRecover
+
+    @Test
+    fun `READY 但没有帧在走 → 必须自动重新申请音频焦点`() {
+        // 这就是用户报的状态：缓冲在涨（所以看着像"在缓存"）、位置不动、拖动有画面。
+        // 上一版因为把"缓冲在涨"当成有进展，永远不触发 —— 这里锁死判据只看"出没出帧"。
+        assertTrue(
+            MediaPlaybackPolicy.shouldAutoRecover(
+                playbackState = Player.STATE_READY,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs,
+                retries = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `缓冲中绝不自动重试（会打断正常起播）`() {
+        assertFalse(
+            MediaPlaybackPolicy.shouldAutoRecover(
+                playbackState = Player.STATE_BUFFERING,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
+                retries = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `已经出帧时不重试`() {
+        assertFalse(
+            MediaPlaybackPolicy.shouldAutoRecover(
+                playbackState = Player.STATE_READY,
+                playWhenReady = true,
+                isPlaying = true,
+                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
+                retries = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `用户手动暂停后不重试（否则会自己响起来）`() {
+        assertFalse(
+            MediaPlaybackPolicy.shouldAutoRecover(
+                playbackState = Player.STATE_READY,
+                playWhenReady = false,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
+                retries = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `重试次数用尽后不再抖动`() {
+        assertFalse(
+            MediaPlaybackPolicy.shouldAutoRecover(
+                playbackState = Player.STATE_READY,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
+                retries = MediaPlaybackPolicy.AutoRecoverLimit,
+            ),
+        )
+    }
+
+    @Test
+    fun `重试窗口未到不动作（避免 seek 后的瞬时切换被误判）`() {
+        assertFalse(
+            MediaPlaybackPolicy.shouldAutoRecover(
+                playbackState = Player.STATE_READY,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs - 1,
+                retries = 0,
+            ),
+        )
+    }
+
+    // ------------------------------------------------------------------ needsManualRecovery
+
+    @Test
+    fun `自动重试用尽后才交给用户手动接管`() {
+        // 未用尽：仍由看门狗自动恢复，不打扰用户
+        assertFalse(
+            MediaPlaybackPolicy.needsManualRecovery(
+                playbackState = Player.STATE_READY,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.StallTimeoutMs,
+                retries = 0,
+            ),
+        )
+        // 用尽：弹状态条 + 继续播放
+        assertTrue(
+            MediaPlaybackPolicy.needsManualRecovery(
+                playbackState = Player.STATE_READY,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.StallTimeoutMs,
+                retries = MediaPlaybackPolicy.AutoRecoverLimit,
+            ),
+        )
+    }
+
+    @Test
+    fun `非 READY 状态（如缓冲卡死）到时间就直接交给用户`() {
+        assertTrue(
+            MediaPlaybackPolicy.needsManualRecovery(
+                playbackState = Player.STATE_BUFFERING,
+                playWhenReady = true,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.StallTimeoutMs,
+                retries = 0,
+            ),
+        )
+    }
+
+    @Test
+    fun `手动接管同样尊重「没有播放意图就不打扰」`() {
+        assertFalse(
+            MediaPlaybackPolicy.needsManualRecovery(
+                playbackState = Player.STATE_READY,
+                playWhenReady = false,
+                isPlaying = false,
+                stalledMs = MediaPlaybackPolicy.StallTimeoutMs * 10,
+                retries = 99,
+            ),
+        )
+    }
+
+    // ------------------------------------------------------------------ describeStall
+
+    @Test
+    fun `卡死文案必须带真实状态码（截图即可定位，不用猜）`() {
+        val text = MediaPlaybackPolicy.describeStall(
+            playbackState = Player.STATE_READY,
+            suppressionReason = 0,
+            retries = 0,
+            aheadPercent = 42,
+        )
+        assertTrue("要能看出 READY（时钟不走的那种卡）", text.contains("state=READY"))
+        assertTrue("要能看出抑制原因", text.contains("suppression=0"))
+        assertTrue("要带上剩余可播", text.contains("剩余可播 42%"))
+    }
+
+    @Test
+    fun `卡死文案在重试过之后要标注次数`() {
+        val text = MediaPlaybackPolicy.describeStall(
+            playbackState = Player.STATE_BUFFERING,
+            suppressionReason = 1,
+            retries = 3,
+            aheadPercent = null,
+        )
+        assertTrue(text.contains("state=BUFFERING"))
+        assertTrue(text.contains("suppression=1"))
+        assertTrue(text.contains("已重试 3"))
+        assertFalse("总长未知时不要编造百分比", text.contains("剩余可播"))
+    }
+
+    @Test
+    fun `未知状态码也不能显示成空白`() {
+        val text = MediaPlaybackPolicy.describeStall(99, 0, 0, null)
+        assertTrue(text.contains("STATE_99"))
     }
 
     // ------------------------------------------------------------------ aheadPercent
