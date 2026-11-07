@@ -133,6 +133,20 @@ class MediaPlaybackPolicyTest {
     }
 
     @Test
+    fun `播完后 playWhenReady 仍是 true 时，播放键也必须从头重播`() {
+        // 真实取值：ExoPlayer 播完不会复位 playWhenReady（仍是 true）。
+        // 旧条件 `!playWhenReady && ENDED` 永远不成立 → 落到取反分支变成 pause()，
+        // 用户看到 ▶、按下去没反应，要按两下才重播。
+        val plan = MediaPlaybackPolicy.planToggle(
+            playWhenReady = true,
+            playbackState = Player.STATE_ENDED,
+            suppressionReason = none,
+        )
+        assertTrue(plan.play)
+        assertTrue("结束态不能退化成 pause", plan.restartFromStart)
+    }
+
+    @Test
     fun `用户手动暂停后点播放 = 继续`() {
         val plan = MediaPlaybackPolicy.planToggle(
             playWhenReady = false,
@@ -189,52 +203,6 @@ class MediaPlaybackPolicyTest {
         )
     }
 
-    // ------------------------------------------------------------------ isStalled
-
-    @Test
-    fun `正常起播的缓冲期不算卡死（阈值未到）`() {
-        assertFalse(
-            MediaPlaybackPolicy.isStalled(
-                playWhenReady = true,
-                isPlaying = false,
-                stallMs = MediaPlaybackPolicy.StallTimeoutMs - 1,
-            ),
-        )
-    }
-
-    @Test
-    fun `超过阈值仍无进展才算卡死`() {
-        assertTrue(
-            MediaPlaybackPolicy.isStalled(
-                playWhenReady = true,
-                isPlaying = false,
-                stallMs = MediaPlaybackPolicy.StallTimeoutMs,
-            ),
-        )
-    }
-
-    @Test
-    fun `没有播放意图时不判卡死（用户自己暂停的不该弹提示）`() {
-        assertFalse(
-            MediaPlaybackPolicy.isStalled(
-                playWhenReady = false,
-                isPlaying = false,
-                stallMs = MediaPlaybackPolicy.StallTimeoutMs * 10,
-            ),
-        )
-    }
-
-    @Test
-    fun `正在播时不判卡死`() {
-        assertFalse(
-            MediaPlaybackPolicy.isStalled(
-                playWhenReady = true,
-                isPlaying = true,
-                stallMs = MediaPlaybackPolicy.StallTimeoutMs * 10,
-            ),
-        )
-    }
-
     // ------------------------------------------------------------------ describeSuppression
 
     @Test
@@ -287,138 +255,113 @@ class MediaPlaybackPolicyTest {
         assertNull(plan.reseekToMs)
     }
 
-    // ------------------------------------------------------------------ shouldAutoRecover
+    // ------------------------------------------------------------------ watchdogAction
+
+    /**
+     * 看门狗只看「位置有没有前进」。v2.2.3 的动作是 `pause()` → 每 0.9 秒打断一次，
+     * 慢片源永远起不来；现在只有两种动作：原地重新装载 / 交给用户。
+     */
+    @Test
+    fun `已出过帧后又冻住 → 1 秒多就原地自救（不 pause）`() {
+        val action = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = true,
+            playbackState = Player.STATE_READY,
+            frozenMs = MediaPlaybackPolicy.AutoRecoverDelayMs,
+            retries = 0,
+            everAdvanced = true,
+        )
+        assertTrue("必须自救", action.recoverInPlace)
+        assertFalse("自救不等于交给用户", action.giveUp)
+    }
 
     @Test
-    fun `READY 但没有帧在走 → 必须自动重新申请音频焦点`() {
-        // 这就是用户报的状态：缓冲在涨（所以看着像"在缓存"）、位置不动、拖动有画面。
-        // 上一版因为把"缓冲在涨"当成有进展，永远不触发 —— 这里锁死判据只看"出没出帧"。
-        assertTrue(
-            MediaPlaybackPolicy.shouldAutoRecover(
-                playbackState = Player.STATE_READY,
+    fun `还没出过第一帧时窗口要宽得多（慢片源不能被误杀）`() {
+        // 4K / HEVC / 网络存储的首帧解码 1–3 秒是正常的；这时候 seek 一下
+        // 正好把正在解的首帧丢掉重排，越救越慢。
+        val early = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = true,
+            playbackState = Player.STATE_READY,
+            frozenMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 2,
+            retries = 0,
+            everAdvanced = false,
+        )
+        assertFalse("首帧窗口内不许动", early.recoverInPlace)
+        assertFalse(early.giveUp)
+
+        val late = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = true,
+            playbackState = Player.STATE_READY,
+            frozenMs = MediaPlaybackPolicy.StallTimeoutMs,
+            retries = 0,
+            everAdvanced = false,
+        )
+        assertTrue("超过 8 秒还不出首帧才自救", late.recoverInPlace)
+    }
+
+    @Test
+    fun `缓冲中绝不自动 seek（会打断正常装载）`() {
+        val action = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = true,
+            playbackState = Player.STATE_BUFFERING,
+            frozenMs = MediaPlaybackPolicy.AutoRecoverDelayMs + 500,
+            retries = 0,
+            everAdvanced = true,
+        )
+        assertFalse(action.recoverInPlace)
+        assertFalse("还没到 8 秒，先别打扰用户", action.giveUp)
+    }
+
+    @Test
+    fun `用户手动暂停后完全不动作（不能自己响起来）`() {
+        val action = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = false,
+            playbackState = Player.STATE_READY,
+            frozenMs = MediaPlaybackPolicy.StallTimeoutMs * 10,
+            retries = 0,
+            everAdvanced = true,
+        )
+        assertFalse(action.recoverInPlace)
+        assertFalse(action.giveUp)
+    }
+
+    @Test
+    fun `IDLE 与 ENDED 不判卡死`() {
+        listOf(Player.STATE_IDLE, Player.STATE_ENDED).forEach { state ->
+            val action = MediaPlaybackPolicy.watchdogAction(
                 playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs,
+                playbackState = state,
+                frozenMs = MediaPlaybackPolicy.StallTimeoutMs * 10,
                 retries = 0,
-            ),
-        )
+                everAdvanced = true,
+            )
+            assertFalse("state=$state", action.recoverInPlace || action.giveUp)
+        }
     }
 
     @Test
-    fun `缓冲中绝不自动重试（会打断正常起播）`() {
-        assertFalse(
-            MediaPlaybackPolicy.shouldAutoRecover(
-                playbackState = Player.STATE_BUFFERING,
-                playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
-                retries = 0,
-            ),
+    fun `自救次数用尽后交给用户（不再无限抖动）`() {
+        val action = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = true,
+            playbackState = Player.STATE_READY,
+            frozenMs = MediaPlaybackPolicy.StallTimeoutMs,
+            retries = MediaPlaybackPolicy.AutoRecoverLimit,
+            everAdvanced = true,
         )
+        assertFalse("次数已用尽", action.recoverInPlace)
+        assertTrue(action.giveUp)
     }
 
     @Test
-    fun `已经出帧时不重试`() {
-        assertFalse(
-            MediaPlaybackPolicy.shouldAutoRecover(
-                playbackState = Player.STATE_READY,
-                playWhenReady = true,
-                isPlaying = true,
-                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
-                retries = 0,
-            ),
+    fun `缓冲卡死超过 8 秒直接交给用户（网络存储断了）`() {
+        val action = MediaPlaybackPolicy.watchdogAction(
+            playWhenReady = true,
+            playbackState = Player.STATE_BUFFERING,
+            frozenMs = MediaPlaybackPolicy.StallTimeoutMs,
+            retries = 0,
+            everAdvanced = true,
         )
-    }
-
-    @Test
-    fun `用户手动暂停后不重试（否则会自己响起来）`() {
-        assertFalse(
-            MediaPlaybackPolicy.shouldAutoRecover(
-                playbackState = Player.STATE_READY,
-                playWhenReady = false,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
-                retries = 0,
-            ),
-        )
-    }
-
-    @Test
-    fun `重试次数用尽后不再抖动`() {
-        assertFalse(
-            MediaPlaybackPolicy.shouldAutoRecover(
-                playbackState = Player.STATE_READY,
-                playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs * 10,
-                retries = MediaPlaybackPolicy.AutoRecoverLimit,
-            ),
-        )
-    }
-
-    @Test
-    fun `重试窗口未到不动作（避免 seek 后的瞬时切换被误判）`() {
-        assertFalse(
-            MediaPlaybackPolicy.shouldAutoRecover(
-                playbackState = Player.STATE_READY,
-                playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.AutoRecoverDelayMs - 1,
-                retries = 0,
-            ),
-        )
-    }
-
-    // ------------------------------------------------------------------ needsManualRecovery
-
-    @Test
-    fun `自动重试用尽后才交给用户手动接管`() {
-        // 未用尽：仍由看门狗自动恢复，不打扰用户
-        assertFalse(
-            MediaPlaybackPolicy.needsManualRecovery(
-                playbackState = Player.STATE_READY,
-                playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.StallTimeoutMs,
-                retries = 0,
-            ),
-        )
-        // 用尽：弹状态条 + 继续播放
-        assertTrue(
-            MediaPlaybackPolicy.needsManualRecovery(
-                playbackState = Player.STATE_READY,
-                playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.StallTimeoutMs,
-                retries = MediaPlaybackPolicy.AutoRecoverLimit,
-            ),
-        )
-    }
-
-    @Test
-    fun `非 READY 状态（如缓冲卡死）到时间就直接交给用户`() {
-        assertTrue(
-            MediaPlaybackPolicy.needsManualRecovery(
-                playbackState = Player.STATE_BUFFERING,
-                playWhenReady = true,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.StallTimeoutMs,
-                retries = 0,
-            ),
-        )
-    }
-
-    @Test
-    fun `手动接管同样尊重「没有播放意图就不打扰」`() {
-        assertFalse(
-            MediaPlaybackPolicy.needsManualRecovery(
-                playbackState = Player.STATE_READY,
-                playWhenReady = false,
-                isPlaying = false,
-                stalledMs = MediaPlaybackPolicy.StallTimeoutMs * 10,
-                retries = 99,
-            ),
-        )
+        assertTrue(action.giveUp)
+        assertFalse("BUFFERING 下 seek 只会重排队，不救", action.recoverInPlace)
     }
 
     // ------------------------------------------------------------------ describeStall
@@ -472,5 +415,99 @@ class MediaPlaybackPolicyTest {
     @Test
     fun `总时长未知时不给百分比`() {
         assertNull(MediaPlaybackPolicy.aheadPercent(positionMs = 0, bufferedMs = 1_000, durationMs = 0))
+    }
+
+    // ------------------------------------------------------------------ planToggle：卡住时的语义
+
+    @Test
+    fun `READY 且有意图却没出帧 → 播放键必须是原地重装，不能取反成暂停`() {
+        // 这是「画面上有帧、缓冲在涨、就是不播」时用户按播放键的那一下。
+        // playWhenReady 本来就是 true，取反会得到 pause —— 用户观感就是「按播放反而停住」。
+        val plan = MediaPlaybackPolicy.planToggle(
+            playWhenReady = true,
+            playbackState = Player.STATE_READY,
+            suppressionReason = none,
+            isPlaying = false,
+            currentPositionMs = 12_345,
+        )
+        assertTrue("必须继续播", plan.play)
+        assertEquals("原地重新发起装载，不把用户弹回开头", 12_345L, plan.reseekToMs)
+        assertFalse(plan.restartFromStart)
+        assertFalse(plan.prepareFirst)
+    }
+
+    @Test
+    fun `正常播放时仍是暂停（isPlaying=true 不会被误判成卡住）`() {
+        val plan = MediaPlaybackPolicy.planToggle(
+            playWhenReady = true,
+            playbackState = Player.STATE_READY,
+            suppressionReason = none,
+            isPlaying = true,
+            currentPositionMs = 12_345,
+        )
+        assertFalse(plan.play)
+        assertNull(plan.reseekToMs)
+    }
+
+    @Test
+    fun `卡住时播放键图标必须显示播放（此时按下去是重装，不是暂停）`() {
+        assertFalse(
+            "READY + 有意图 + 没在出帧 = 真卡住，按钮与动作必须一致",
+            MediaPlaybackPolicy.showPauseIcon(
+                playWhenReady = true,
+                playbackState = Player.STATE_READY,
+                isPlaying = false,
+            ),
+        )
+    }
+
+    // ------------------------------------------------------------------ 音频焦点 → 音量
+
+    @Test
+    fun `拿到焦点就正常出声（用户没静音）`() {
+        assertEquals(1f, MediaPlaybackPolicy.volumeForFocus(MediaPlaybackPolicy.FocusGranted, muted = false), 0f)
+    }
+
+    @Test
+    fun `拿不到焦点一律静音，但绝不因此不播`() {
+        // 焦点只影响音量：延迟授予 / 被抢 / 暂时被占 → 都是 0 音量，
+        // 播放器本身照常推进（isPlaying 不会被抑制）。
+        listOf(
+            MediaPlaybackPolicy.FocusNone,
+            MediaPlaybackPolicy.FocusDelayed,
+            MediaPlaybackPolicy.FocusLost,
+            MediaPlaybackPolicy.FocusLostTransient,
+        ).forEach { focus ->
+            assertEquals("focus=$focus 必须静音", 0f, MediaPlaybackPolicy.volumeForFocus(focus, muted = false), 0f)
+        }
+    }
+
+    @Test
+    fun `系统要求压低时给两成音量，而不是静音`() {
+        assertEquals(0.2f, MediaPlaybackPolicy.volumeForFocus(MediaPlaybackPolicy.FocusDuck, muted = false), 0.0001f)
+    }
+
+    @Test
+    fun `申请被系统驳回时照常出声（被拒 ≠ 不许出声）`() {
+        assertEquals(1f, MediaPlaybackPolicy.volumeForFocus(MediaPlaybackPolicy.FocusDenied, muted = false), 0f)
+    }
+
+    @Test
+    fun `用户手动静音优先级最高`() {
+        listOf(
+            MediaPlaybackPolicy.FocusGranted,
+            MediaPlaybackPolicy.FocusDuck,
+            MediaPlaybackPolicy.FocusDenied,
+        ).forEach { focus ->
+            assertEquals(0f, MediaPlaybackPolicy.volumeForFocus(focus, muted = true), 0f)
+        }
+    }
+
+    @Test
+    fun `静音播放要解释原因（用户不知道就会当成没声音的 bug）`() {
+        assertNotNull(MediaPlaybackPolicy.describeFocusAudio(MediaPlaybackPolicy.FocusLost, muted = false))
+        assertNotNull(MediaPlaybackPolicy.describeFocusAudio(MediaPlaybackPolicy.FocusDelayed, muted = false))
+        assertNull("有焦点时不用解释", MediaPlaybackPolicy.describeFocusAudio(MediaPlaybackPolicy.FocusGranted, muted = false))
+        assertNull("用户自己按的静音不用解释", MediaPlaybackPolicy.describeFocusAudio(MediaPlaybackPolicy.FocusLost, muted = true))
     }
 }

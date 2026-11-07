@@ -6,7 +6,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.2.3 (108)
+版本      2.2.4 (109)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -157,3 +157,19 @@ sora-editor（LGPL-2.1）、TextMate 语法（MIT）、docx-preview / SheetJS / 
 
 仅供个人学习与自用。使用时请自行确认符合当地法律法规。
 对 MT 管理器的对齐仅基于交互观察，与 MT 官方无任何关联。
+
+---
+
+## 本地构建缓存（沙箱）
+
+> 沙箱里 `dl.google.com` / `maven.google.com` 基本不通，**Gradle 依赖重下不回来**。删缓存前先看 `/workspace/AI通用说明.md` §2。
+
+| 路径 | 现状（2026-11-04） | 怎么办 |
+|---|---|---|
+| `app/build/intermediates` | 约 356 MB（本工作区最大的一份 Android 增量缓存） | **别删**，删了下次全量重编 |
+| 根目录 `build/` | 151 KB | 空壳，可删 |
+| `~/.gradle/caches/modules-2` / `caches/9.7.0` | 全局共享 | **别删** |
+| `~/.gradle/daemon/9.7.0/*.log` | 每次构建一份 DEBUG 日志 | 可删，只留最近 3 个 |
+
+- 本地验证：`./gradlew testDebugUnitTest --offline`（约 20 s）；`assembleDebug` 增量约 30 s。
+- 发版交 CI，本地不打 release。

@@ -7,19 +7,30 @@ import androidx.media3.common.Player
  *
  * ## 为什么单独抽出来
  *
- * 「视频点开不播、但缓冲条在涨、拖动进度条还能看到画面」这一组现象，
- * 在本项目的代码里只有一条成因链：**播放器的「意图」（`playWhenReady`）与「实况」
- * （`isPlaying`）被混成了一个 `isPlaying`**。于是下面三种状态在界面上长得一模一样：
+ * 「视频点开不播、但缓冲条在涨、拖动进度条还能看到画面」这一组现象，在 Media3 里
+ * **只有一个代码级来源**：`Player.isPlaying` 的语义是
  *
- * | 真实状态 | `playWhenReady` | `isPlaying` | 界面（旧实现） |
- * |---|---|---|---|
- * | 正在播 | true | true | 暂停键 ✓ |
- * | 缓冲中（还没出帧） | true | false | 播放键；点它 `play()` 是空操作 |
- * | 被音频焦点/输出设备抑制 | true | false | 播放键；点它 `play()` 仍是空操作 ✗ |
- * | 用户手动暂停 | false | false | 播放键 ✓ |
+ * ```
+ * isPlaying = playbackState == READY && playWhenReady && playbackSuppressionReason == NONE
+ * ```
  *
- * 后三种里只有最后一种能靠播放键救回来 —— 前两种就是用户说的「无法播放」。
- * 这里把判定收成纯函数，UI 只负责按计划执行，行为可测。
+ * （`BasePlayer.isPlaying()` 字节码已核对，Media3 1.10.1）
+ *
+ * 位置推进要求 `isPlaying` 为真，而 seek / 缓冲 / 解码都不要求。于是只要第三项被置位，
+ * 就必然是「能缓冲、能拖出画面、时钟不走」。而 `playbackSuppressionReason` 只有三个来源：
+ *
+ * | 值 | 来源 | 由谁决定 |
+ * |---|---|---|
+ * | 1 | 音频焦点被占（`AudioFocusManager`） | `setAudioAttributes(attrs, handleAudioFocus)` |
+ * | 3 | 音频输出「不合适」（`SuitableOutputChecker`） | `setSuppressPlaybackOnUnsuitableOutput` |
+ * | 4 | scrubbing（本项目未启用） | — |
+ *
+ * **结论：这两个开关必须在构造播放器时就关掉**（见 `MediaScreen` 的播放器构造）。
+ * 焦点改由 [MediaAudioFocus] 自己管，且只影响**音量**，永远不影响播放。
+ * 这样 `isPlaying` 就恒等于 `READY && playWhenReady`，「有画面不播」在结构上不可能出现。
+ *
+ * 剩下的「真卡死」（位置不动）交给看门狗 [watchdogAction]，动作是**原地重新装载**，
+ * 绝不 `pause()` —— 见该函数 KDoc 里 v2.2.3 的事故复盘。
  */
 internal object MediaPlaybackPolicy {
 
@@ -31,20 +42,31 @@ internal object MediaPlaybackPolicy {
      */
     const val StallTimeoutMs = 8_000L
 
+    /**
+     * **已经出过帧之后**再次冻结的恢复窗口：比 [StallTimeoutMs] 短很多是故意的 ——
+     * 能播的视频突然停住，用户 1 秒内就能察觉，早点自救体验最好；
+     * 而 [StallTimeoutMs] 到了才弹提示（那才是打扰）。
+     */
+    const val AutoRecoverDelayMs = 1_200L
+
+    /**
+     * 自动恢复的最大次数。
+     *
+     * 不能无限重试：真正的解码器停摆 `seekTo(当前)` 也救不回来，无限重试会变成
+     * 每 1.2 秒一次的抖动，比不恢复更糟。用尽后交给状态条 + 用户。
+     */
+    const val AutoRecoverLimit = 2
+
+    // ------------------------------------------------------------------ 播放键
+
     /** 播放键的计划：先执行什么、最后把 `playWhenReady` 置成什么。 */
     internal data class TogglePlan(
-        /** 目标 `playWhenReady` */
-        val play: Boolean,
+        /** 目标 `playWhenReady` */ val play: Boolean,
         /** 播放器还在 `STATE_IDLE`（首次 / 出错后）→ 必须先 `prepare()`，否则 `play()` 不生效 */
         val prepareFirst: Boolean,
-        /**
-         * 处于**播放抑制**（`playbackSuppressionReason != NONE`）：
-         * 此时 `playWhenReady` 已经是 true，直接 `play()` 是空操作，
-         * 必须 `pause()` → `play()` 重新申请一次音频焦点才能恢复。
-         */
+        /** 处于播放抑制（`playbackSuppressionReason != NONE`）→ 先重新申请一次音频焦点 */
         val reacquireFocus: Boolean,
-        /** `STATE_ENDED`：从头再放一遍（而不是"保持结束态"） */
-        val restartFromStart: Boolean,
+        /** `STATE_ENDED`：从头再放一遍（而不是"保持结束态"） */ val restartFromStart: Boolean,
         /** 非 null = 先 seek 到该位置再播（卡死恢复用：原地重新发起装载） */
         val reseekToMs: Long? = null,
     )
@@ -52,16 +74,21 @@ internal object MediaPlaybackPolicy {
     /**
      * 播放键语义：**按「意图」而不是「实况」切换**。
      *
-     * - 抑制中（音频焦点被别的 App 占住 / 输出设备不可用）→ 当作「没在播」，
-     *   但要用 pause→play 重新申请焦点（直接 play() 无效）；
+     * - 抑制中 → 当作「没在播」，重新申请焦点后继续播；
      * - `STATE_IDLE` → 先 prepare（首次装载前点播放、或出错重试后的第一次点击）；
-     * - `STATE_ENDED` → 从 0 重新开始；
+     * - `STATE_ENDED` → 从 0 重新开始（**不管 `playWhenReady` 是什么**：播完后它仍是 true，
+     *   只认它就会落到取反分支变成 `pause()`，表现为「按一下没反应、按两下才重播」）；
+     * - **有意图 + `READY` + 没在出帧** → 原地重新装载（[planStallRecovery]），
+     *   **绝不能取反成 `pause()`** —— 那正是「按了播放反而停住」的来源；
      * - 其余 → 取反 `playWhenReady`。
      */
     fun planToggle(
         playWhenReady: Boolean,
         playbackState: Int,
         suppressionReason: Int,
+        /** 这一帧到底有没有在走（`Player.isPlaying`）。默认 true 表示「没给出实况就别改语义」 */
+        isPlaying: Boolean = true,
+        currentPositionMs: Long = 0L,
     ): TogglePlan {
         if (suppressionReason != Player.PLAYBACK_SUPPRESSION_REASON_NONE) {
             return TogglePlan(play = true, prepareFirst = false, reacquireFocus = true, restartFromStart = false)
@@ -69,8 +96,16 @@ internal object MediaPlaybackPolicy {
         if (playbackState == Player.STATE_IDLE) {
             return TogglePlan(play = true, prepareFirst = true, reacquireFocus = false, restartFromStart = false)
         }
-        if (!playWhenReady && playbackState == Player.STATE_ENDED) {
+        // 结束态：**无论 playWhenReady 是什么**都要从头重播。
+        // ExoPlayer 播完不会把 playWhenReady 复位（仍是 true），旧条件 `!playWhenReady` 因此永远不成立，
+        // 于是落到最后的取反分支 → pause()：用户看到 ▶、按下去没反应（要按两下才重播）。
+        if (playbackState == Player.STATE_ENDED) {
             return TogglePlan(play = true, prepareFirst = false, reacquireFocus = false, restartFromStart = true)
+        }
+        if (playWhenReady && playbackState == Player.STATE_READY && !isPlaying) {
+            // 「有意图、READY、却不出帧」= 卡在起播/解码上。按钮此时显示的是暂停，
+            // 但语义必须是「继续播放」—— 用户按它是想让画面动，不是想让它停。
+            return planStallRecovery(currentPositionMs)
         }
         return TogglePlan(
             play = !playWhenReady,
@@ -83,10 +118,9 @@ internal object MediaPlaybackPolicy {
     /**
      * 卡死时「继续播放」的真实动作（**不是**播放键的取反）。
      *
-     * 卡死态的 `playWhenReady` 本来就是 true（用户没暂停），走 [planToggle] 会得到
-     * "pause" —— 于是「继续播放」反而停住，按钮名与行为对不上。
-     * 正确做法是**在当前位置重新发起一次装载**：`seekTo(currentPosition)` 会让
-     * Media3 丢掉旧的 SampleQueue 重新读，是卡在缓冲 / 网络抖动后最有效的自救。
+     * `seekTo(当前位置)` + `play()` 会让 Media3 丢弃旧的 SampleQueue 重新读，
+     * 是卡在缓冲 / 网络抖动后最有效的自救，而且**不会打断播放意图**
+     * （`pause()` 才是打断：它会撕掉 renderer 的就绪状态，让起播重新排队）。
      */
     fun planStallRecovery(currentPositionMs: Long): TogglePlan =
         TogglePlan(
@@ -97,110 +131,111 @@ internal object MediaPlaybackPolicy {
             reseekToMs = currentPositionMs.coerceAtLeast(0),
         )
 
-    /**
-     * 自动恢复动作的最短等待：`READY` 却没帧，先等这么久再 `pause()→play()`。
-     *
-     * 比 [StallTimeoutMs] 短很多是**故意的**：这里的动作是「无害地重新申请一次音频焦点」，
-     * 早一点试、用户几乎无感；而 [StallTimeoutMs] 到了才弹提示面板（那才是打扰）。
-     * 0.9 秒足以排除 seek 后正常的瞬时 READY→(下一个) 帧切换。
-     */
-    const val AutoRecoverDelayMs = 900L
+    // ------------------------------------------------------------------ 看门狗
+
+    /** 看门狗这一拍的结论：要么原地自救一次，要么交给用户。 */
+    internal data class WatchdogAction(
+        /** 原地重新装载一次（`seekTo(当前位置)`），不打断播放意图 */
+        val recoverInPlace: Boolean = false,
+        /** 自救用尽 / 非 READY 状态久等无进展 → 状态条 + 「继续播放」 */
+        val giveUp: Boolean = false,
+    ) {
+        companion object {
+            val None = WatchdogAction()
+        }
+    }
 
     /**
-     * 自动恢复的最大次数。
+     * 卡死看门狗的判定（纯函数）。
      *
-     * 为什么不能无限重试：某些机型上音频输出会持续不可用（如蓝牙耳机断了又"半连着"），
-     * 无限 `pause()/play()` 会变成每秒一次的抖动，比不恢复更糟。
-     * 3 次仍未出帧 → 交给状态条 + 用户决定（手动 seek / 外放 / 外置应用）。
+     * ## 判据
+     *
+     * **只看「播放位置有没有前进」**，不看 `isPlaying`，也不看缓冲：
+     *  - `isPlaying` 在抑制态本身就是 false —— 用它当判据等于「用病症诊断病症」；
+     *  - 缓冲在涨不代表在播（用户报的正是「缓冲在涨、位置不动」）。
+     *
+     * ## 为什么分两档窗口
+     *
+     * 从没出过帧（`everAdvanced == false`）时，第一帧可能要解码 1–3 秒（4K / HEVC /
+     * 网络存储），这期间**不能动**：一 `seek` 就把正在解码的首帧丢掉，重新排队，
+     * 慢片源会被越救越慢。所以首帧窗口用 [StallTimeoutMs]（8 秒）。
+     * 已经出过帧之后再冻结，1 秒多就能确认是卡死，用 [AutoRecoverDelayMs]。
+     *
+     * ## v2.2.3 的事故复盘（为什么这里不再 `pause()`）
+     *
+     * v2.2.3 的看门狗写成 `LaunchedEffect(player, playWhenReady)` + 自愈动作
+     * `pause()` → `play()`。自愈本身会改 `playWhenReady` → **effect 被取消并重启**
+     * → 局部变量 `retries` / `noProgressMs` 一起清零 → 「最多 3 次」的上限形同虚设，
+     * 实际是**每 0.9 秒 pause 一次的死循环**：起播稍慢的视频永远起不来。
+     *
+     * @param playWhenReady 播放意图（用户暂停时必须完全不动作）
+     * @param playbackState `Player.playbackState`
+     * @param frozenMs 位置没有前进的累计时长
+     * @param retries 已自救次数
+     * @param everAdvanced 本次装载是否**曾经**推进过（区分「首帧慢」与「中途冻住」）
      */
-    const val AutoRecoverLimit = 3
-
-    /**
-     * 是否需要**自动**重新申请音频焦点（[MediaScreen] 的看门狗据此动作）。
-     *
-     * 三种状态要分清：
-     *  - `BUFFERING`：在等数据 —— 重试只会打断正常起播，**不能**动；
-     *  - `READY && isPlaying`：正常出帧；
-     *  - `READY && !isPlaying`：renderer 一个缓冲都没消费 —— 这才是"卡死"，
-     *    且几乎只能来自音频焦点 / 音频路由被抑制（ExoPlayer **不会**自己重试申请）。
-     *
-     * @param stalledMs 已经「有意图但没进展」的累计时长
-     * @param retries 已自动重试次数
-     */
-    fun shouldAutoRecover(
-        playbackState: Int,
+    fun watchdogAction(
         playWhenReady: Boolean,
-        isPlaying: Boolean,
-        stalledMs: Long,
-        retries: Int,
-    ): Boolean =
-        playWhenReady &&
-            playbackState == Player.STATE_READY &&
-            !isPlaying &&
-            stalledMs >= AutoRecoverDelayMs &&
-            retries < AutoRecoverLimit
-
-    /**
-     * 是否需要**手动**接管（状态条 + 「继续播放」按钮）。
-     *
-     * 自动重试用尽了还没出帧，才把决定权交给用户。
-     */
-    fun needsManualRecovery(
         playbackState: Int,
-        playWhenReady: Boolean,
-        isPlaying: Boolean,
-        stalledMs: Long,
+        frozenMs: Long,
         retries: Int,
-    ): Boolean =
-        isStalled(playWhenReady, isPlaying, stalledMs) &&
-            (playbackState != Player.STATE_READY || retries >= AutoRecoverLimit)
+        everAdvanced: Boolean,
+    ): WatchdogAction {
+        if (!playWhenReady) return WatchdogAction.None
+        if (playbackState == Player.STATE_IDLE || playbackState == Player.STATE_ENDED) return WatchdogAction.None
+        val window = if (everAdvanced) AutoRecoverDelayMs else StallTimeoutMs
+        if (frozenMs < window) return WatchdogAction.None
+        if (playbackState == Player.STATE_READY && retries < AutoRecoverLimit) {
+            return WatchdogAction(recoverInPlace = true)
+        }
+        if (frozenMs >= StallTimeoutMs && (playbackState != Player.STATE_READY || retries >= AutoRecoverLimit)) {
+            return WatchdogAction(giveUp = true)
+        }
+        return WatchdogAction.None
+    }
+
+    // ------------------------------------------------------------------ 播放键图标 / 进度刷新
 
     /**
      * 播放键图标该显示「暂停」还是「播放」。
      *
-     * **必须跟着播放意图走**，不能跟 `isPlaying`：缓冲中与被抑制时 `isPlaying == false`，
-     * 按 `isPlaying` 会显示成「播放」，而这时按下去（旧实现 `play()`）没有任何效果 ——
+     * **必须跟着播放意图走**，不能跟 `isPlaying`：缓冲中时 `isPlaying == false`，
+     * 按 `isPlaying` 会显示成「播放」，而这时按下去没有效果 ——
      * 这就是「点了播放没反应」的直接来源。
      *
-     * 两个例外：
+     * 三个例外：
      *  - `STATE_ENDED` 恒显示「播放」（此时按下是重播，不是暂停）；
-     *  - `playWhenReady=false`（用户主动暂停，哪怕仍在后台缓冲）也显示「播放」。
+     *  - `playWhenReady=false`（用户主动暂停）也显示「播放」；
+     *  - **`READY` + 有意图 + 没在出帧**（真卡住）显示「播放」：此时 [planToggle]
+     *    走的是「原地重装」而不是暂停，图标必须和动作一致。
      */
     fun showPauseIcon(playWhenReady: Boolean, playbackState: Int, isPlaying: Boolean): Boolean {
         if (playbackState == Player.STATE_ENDED) return false
+        if (playWhenReady && playbackState == Player.STATE_READY && !isPlaying) return false
         return isPlaying || playWhenReady
     }
 
     /**
      * 进度/缓冲是否该刷新（500ms 轮询的开关）。
      *
-     * 旧实现只看 `isPlaying`，于是**缓冲中与被抑制时两条进度都不动** ——
-     * 恰恰是「看起来卡死」的两个状态。现在只要还有播放意图（或还在装载）就刷新，
-     * 用户能看见缓冲条在涨，也就不会误判成「播不动」。
+     * 旧实现只看 `isPlaying`，于是**缓冲中**两条进度都不动 ——
+     * 恰恰是「看起来卡死」的状态。现在只要还有播放意图（或还在装载）就刷新。
      */
     fun shouldRefreshProgress(playWhenReady: Boolean, playbackState: Int, isPlaying: Boolean): Boolean =
         isPlaying || playWhenReady || playbackState == Player.STATE_BUFFERING
 
-    /**
-     * 卡死判定：**有播放意图、没在出帧**，且持续超过 [stallMs]。
-     *
-     * ⚠️ 判据只有「出没出帧」，**不看缓冲**。上一版错误地要求「位置和缓冲都不前进」，
-     * 于是「缓冲在涨、位置不动」（正是用户报的现象）被判成"有进展" —— 永远不会触发。
-     *
-     * 只看「没在播」不够：正常起播的缓冲期也满足，必须叠加「无进展时长」。
-     */
-    fun isStalled(playWhenReady: Boolean, isPlaying: Boolean, stallMs: Long): Boolean =
-        playWhenReady && !isPlaying && stallMs >= StallTimeoutMs
+    // ------------------------------------------------------------------ 文案
 
     /**
-     * 播放抑制 / 异常态的可执行文案；`NONE` 返回 null（不需要提示）。
+     * 播放抑制的可执行文案；`NONE` 返回 null（不需要提示）。
      *
-     * 这些状态原来**完全没有 UI**：用户只看到"点了播放没反应"，没有任何线索。
+     * 关闭两个抑制开关后这里理论上不会再出现 1 / 3，但保留文案作为兜底：
+     * 真出现就说明设备/框架层另有来源，文案能直接指认。
      */
     fun describeSuppression(reason: Int): String? = when (reason) {
         Player.PLAYBACK_SUPPRESSION_REASON_NONE -> null
         Player.PLAYBACK_SUPPRESSION_REASON_TRANSIENT_AUDIO_FOCUS_LOSS ->
-            "音频被其他应用占用（已自动重试），点「继续播放」再试一次"
+            "音频被其他应用占用（已改为静音播放），点「继续播放」重新申请"
         // UNSUITABLE_AUDIO_ROUTE (=2) 在 Media3 1.10 已废弃，由 UNSUITABLE_AUDIO_OUTPUT (=3) 取代；
         // 旧设备上仍可能上报 2，两个值分别保留一条文案（数值不同，不会重复分支）
         SUPPRESSION_UNSUITABLE_AUDIO_ROUTE_LEGACY ->
@@ -216,13 +251,22 @@ internal object MediaPlaybackPolicy {
     private const val SUPPRESSION_UNSUITABLE_AUDIO_ROUTE_LEGACY = 2
 
     /**
-     * 卡死时的可诊断文案：**带上真实状态码**。
+     * 卡死时的可诊断文案：**带上真实状态**。
      *
-     * 这类问题（"能缓冲、能拖看画面、就是不播"）在代码里只有三种可能，
-     * 光看截图分不出来 —— 把 `state` / `suppression` 直接显示出来，
+     * 这类问题（"能缓冲、能拖看画面、就是不播"）光看截图分不出来，
+     * 把 `state` / 意图 / 实况 / 抑制原因 / 重试次数直接显示出来，
      * 用户截一张图就能定位，不用再靠猜。
      */
-    fun describeStall(playbackState: Int, suppressionReason: Int, retries: Int, aheadPercent: Int?): String {
+    fun describeStall(
+        playbackState: Int,
+        suppressionReason: Int,
+        retries: Int,
+        aheadPercent: Int?,
+        playWhenReady: Boolean = true,
+        isPlaying: Boolean = false,
+        /** 音频焦点状态（[volumeForFocus] 的入参）；null = 不显示 */
+        focus: Int? = null,
+    ): String {
         val state = when (playbackState) {
             Player.STATE_IDLE -> "IDLE"
             Player.STATE_BUFFERING -> "BUFFERING"
@@ -232,9 +276,12 @@ internal object MediaPlaybackPolicy {
         }
         return buildString {
             append("播放卡住（state=").append(state)
-            append(" / suppression=").append(suppressionReason)
-            if (retries > 0) append(" / 已重试 ").append(retries)
-            if (aheadPercent != null) append(" / 剩余可播 ").append(aheadPercent).append('%')
+            append(" · 意图=").append(if (playWhenReady) "播" else "停")
+            append(" · 实况=").append(if (isPlaying) "播" else "停")
+            append(" · suppression=").append(suppressionReason)
+            if (focus != null) append(" · focus=").append(focus)
+            if (retries > 0) append(" · 已重试 ").append(retries)
+            if (aheadPercent != null) append(" · 剩余可播 ").append(aheadPercent).append('%')
             append('）')
         }
     }
@@ -249,5 +296,57 @@ internal object MediaPlaybackPolicy {
         if (durationMs <= 0) return null
         val ahead = (bufferedMs - positionMs).coerceAtLeast(0)
         return ((ahead.toDouble() / durationMs) * 100).toInt().coerceIn(0, 100)
+    }
+
+    // ------------------------------------------------------------------ 音频焦点（只影响音量）
+
+    /** 还没申请 / 已放弃焦点 */
+    const val FocusNone = 0
+
+    /** 拿到焦点 → 正常出声 */
+    const val FocusGranted = 1
+
+    /** 延迟授予（别的应用暂时占着）→ 先静音播，拿到 `AUDIOFOCUS_GAIN` 自动恢复 */
+    const val FocusDelayed = 2
+
+    /** 被永久抢走（别的应用开始放音）→ 静音继续播，不打断画面 */
+    const val FocusLost = 3
+
+    /** 暂时被占（通话 / 语音）→ 静音继续播 */
+    const val FocusLostTransient = 4
+
+    /** 系统要求压低（导航播报等）→ 20% 音量 */
+    const val FocusDuck = 5
+
+    /** 申请被拒（多为请求本身被系统驳回，不代表「不许出声」）→ 照常出声 */
+    const val FocusDenied = 6
+
+    /**
+     * 音频焦点 → 音量的映射。
+     *
+     * **焦点永远只影响音量，不影响播放**：拿不到焦点就静音出画面，而不是整段不播。
+     * 这是本项目对「视频预览」的取舍 —— 没有声音可以接受，没有画面不行。
+     */
+    fun volumeForFocus(focus: Int, muted: Boolean): Float {
+        if (muted) return 0f
+        return when (focus) {
+            FocusGranted, FocusDenied -> 1f
+            FocusDuck -> 0.2f
+            FocusNone, FocusDelayed, FocusLost, FocusLostTransient -> 0f
+            // 未知状态按「有焦点」处理：宁可出声，也不要出现「画面在走但没声音」的哑剧
+            else -> 1f
+        }
+    }
+
+    /**
+     * 「为什么没声音」的解释文案；不需要解释时返回 null。
+     *
+     * 静音播放是刻意取舍，但用户不知道就会以为是 bug —— 明确告诉他画面不受影响。
+     */
+    fun describeFocusAudio(focus: Int, muted: Boolean): String? = when {
+        muted -> null // 用户自己按的静音，不需要解释
+        focus == FocusDelayed || focus == FocusLost || focus == FocusLostTransient ->
+            "音频被其他应用占用，正在静音播放（画面不受影响）"
+        else -> null
     }
 }

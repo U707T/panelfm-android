@@ -161,3 +161,150 @@ git checkout 96eb252 -- app/src/main/res/mipmap-* tools/gen_launcher_icon.py
 5. 断网播放已缓冲片段 → 剩余可播耗尽后出现带状态码的卡死提示。
 6. **图标**：确认桌面图标与 v2.2.0 观感一致（不再偏小）。
 
+
+## §6 第四轮（v2.2.4）：v2.2.3 为什么还没修好 —— 只关了一个抑制源 + 看门狗自我打断
+
+> 用户第四次反馈（v2.2.3 已装）：**「有画面，就是无法播放；可以拖动，就是无法播放。」**
+> 本轮方法：把 `isPlaying` 的**字节码级语义**钉死，再逐个排查能让它「READY + 有意图 + 不出帧」
+> 的来源，最后用「结构上不可能」收尾，而不是再赌一个猜测。
+
+### §6.1 先把语义钉死（Media3 1.10.1 字节码）
+
+```
+// androidx.media3.common.BasePlayer.isPlaying()  ← javap -c 实测
+return getPlaybackState() == STATE_READY
+    && getPlayWhenReady()
+    && getPlaybackSuppressionReason() == PLAYBACK_SUPPRESSION_REASON_NONE;
+```
+
+**位置推进只要求 `isPlaying` 为真；seek / 缓冲 / 解码都不要求。**
+所以「能缓冲、能拖出画面、就是不播」在代码里等价于：
+
+```
+STATE_READY && playWhenReady && suppressionReason != NONE    // ← 症状 A
+```
+
+或者
+
+```
+playWhenReady == false                                       // ← 症状 B（画面停在第一帧 / seek 帧）
+```
+
+### §6.2 🔴 一：v2.2.3 只关了「输出不合适」，没关「音频焦点」
+
+`computePlaybackSuppressionReason(boolean)` 的字节码只有三个返回：
+
+| 值 | 判据（字节码） | 由谁开 |
+|---|---|---|
+| 4 | `scrubbingModeEnabled` | 未启用 |
+| 3 | `suitableOutputChecker != null && !isSelectedOutputSuitableForPlayback()` | `setSuppressPlaybackOnUnsuitableOutput`（v2.2.3 已关） |
+| 1 | `playbackInfo.playbackSuppressionReason == 1 && !playWhenReady` | `AudioFocusManager`（**一直是开的**） |
+
+`androidx.media3.common.audio.AudioFocusManager.updateAudioFocus()` 实测：
+
+```
+LOSS_TRANSIENT        → PLAYER_COMMAND_WAIT_FOR_CALLBACK → suppressionReason = 1（时钟不走）
+LOSS                  → PLAYER_COMMAND_DO_NOT_PLAY       → playWhenReady = false
+requestAudioFocus 失败 → PLAYER_COMMAND_DO_NOT_PLAY       → suppressionReason = 1
+```
+
+而 `requestAudioFocus()` 只在「`audioFocusState == HAVE_FOCUS`」时提前返回 ——
+**收到 LOSS 之后 ExoPlayer 不会自己重试申请**，用户点播放键也没用
+（`playWhenReady` 本来就是 true，`play()` 不产生状态变化）。这正是 v2.2.2 那条
+「点了播放没反应」的 API 层最后一环。
+
+- 位置：`MediaScreen.kt` 播放器构造（旧：`.apply { setAudioAttributes(audioAttributes, true) }`）
+- 修复：`handleAudioFocus = false`，焦点交给新增 `MediaAudioFocus`，且**只映射到音量**：
+  GRANTED → 1.0 / DELAYED·LOST·LOST_TRANSIENT → 0（**静音继续播**）/ DUCK → 0.2 /
+  DENIED → 1.0（被拒不等于不许出声）。音量映射是纯函数 `volumeForFocus`，6 例回归。
+- 效果：`suppressionReason` 从此不可能为 1 或 3 →
+  **`isPlaying ≡ (READY && playWhenReady)`，症状 A 在结构上消失。**
+
+### §6.3 🔴 二：v2.2.3 的看门狗每 0.9 秒 `pause()` 一次，把慢起播打死
+
+```kotlin
+LaunchedEffect(player, playWhenReady) {      // ← key 里有 playWhenReady
+    ...
+    if (shouldAutoRecover(...)) {
+        player.pause(); player.play()        // ← 改的正是 playWhenReady
+    }
+}
+```
+
+自愈 → `playWhenReady` 变 false → **effect 被取消并重启** → `retries` / `noProgressMs`
+全部归零 → 新 effect 里再 `play()` → 再重启…… 上限 `AutoRecoverLimit = 3` 永远到不了。
+净效果：**每 0.9 秒把播放器 pause 一次**。4K / HEVC / 网络存储的首帧本来就要 1–3 秒，
+被这么打断就永远出不了第一帧 —— 「有画面（第一帧 / seek 帧）、就是不播」。
+
+- 位置：`MediaScreen.kt` 看门狗（旧 `LaunchedEffect(player, playWhenReady)`）
+- 修复：effect 只以 `player` 为 key；判据改成**位置有没有前进**；
+  自救动作改成 `seekTo(当前位置)`（`planStallRecovery` 语义，不 pause、不改意图）；
+  首帧窗口 `StallTimeoutMs = 8s`、已出帧后冻结 `AutoRecoverDelayMs = 1.2s`、
+  最多 `AutoRecoverLimit = 2` 次，用尽才弹状态条。判定收进纯函数 `watchdogAction`（7 例回归）。
+
+### §6.4 🔴 三：播放键在「卡住」时取反成 pause（按钮名与动作相反）
+
+`planToggle` 在 `playWhenReady=true && READY && !isPlaying` 时返回 `play = false` ——
+用户看到「暂停」图标、按下却只想让画面动，实际得到 `pause()`。
+
+- 修复：`planToggle` 增加 `isPlaying` / `currentPositionMs` 入参，该状态直接返回
+  `planStallRecovery(当前位置)`；`showPauseIcon` 同步显示「播放」。2 例回归。
+
+### §6.5 🟡 四：起播时机（后台出声 / 后台申请焦点）
+
+`preflightMedia` 是挂起的。打开视频瞬间按 Home / 熄屏时，装载可能在 `ON_STOP` 之后才完成，
+这时 `playWhenReady = true` 会（a）在后台出声，（b）在后台申请焦点（必被拒）。
+修复：`armPlayback()` 只在 `lifecycle >= STARTED` 时置位，否则挂起到 `ON_START` 补发。
+
+### §6.6 🟡 五：`playerAttached` 一次性开关 = 视频面黑屏隐患
+
+旧代码用 `var playerAttached = remember { mutableStateOf(false) }` 只挂一次播放器。
+`AndroidView` 一旦重建（Surface 重建 / 父容器重建），新 `PlayerView` 永远拿不到播放器，
+**整面黑屏而 `player.isPlaying` 仍是 true**。`PlayerView.setPlayer()` 对同一实例是提前返回
+（字节码实测 `if_acmpne → return`），所以直接「不同才赋」既正确又无额外开销。
+
+### §6.7 本轮修复清单
+
+| # | 修复 | 位置 |
+|---|---|---|
+| 1 | `handleAudioFocus = false` + 自管焦点（只改音量） | `MediaScreen` 播放器构造 / `MediaAudioFocus.kt` |
+| 2 | 音量映射纯函数（GRANTED/DELAYED/LOST/DUCK/DENIED） | `MediaPlaybackPolicy.volumeForFocus` |
+| 3 | 看门狗单实例、只判位置、自救改为原地重装 | `MediaScreen` + `watchdogAction` |
+| 4 | 首帧窗口 8s / 冻结窗口 1.2s / 上限 2 次 | `watchdogAction` |
+| 5 | 卡住时播放键 = 原地重装（不再取反成 pause） | `planToggle` / `showPauseIcon` |
+| 6 | 不可见时挂起起播，`ON_START` 补发 | `armPlayback` / lifecycle 观察者 |
+| 7 | `PlayerView` 挂载不再用一次性开关 | `MediaScreen` AndroidView |
+| 8 | 状态条带 意图/实况/suppression/focus/重试/剩余可播 + 静音播放说明 | `describeStall` / `describeFocusAudio` |
+
+### §6.8 验证
+
+- `MediaPlaybackPolicyTest` **41 例**通过（新增：看门狗 7 / 焦点音量 6 / 播放键卡住语义 2 / 图标 1）。
+  （第五轮自查又补 1 例「播完重播」，最终 42 例，见 §6.10。）
+- 全量单测通过；`:app:lintDebug` **Error 0**（72 条既有 warning，无新增）。
+- 仍需真机确认：沙箱无 `/dev/kvm`、无 `adb`，本轮结论来自
+  **Media3 1.10.1 字节码 + 全链路通读**，不是设备日志。
+
+### §6.9 真机复核清单（第四轮）
+
+1. 直接播之前必现「有画面不播」的那条视频 → 应立刻出画面并推进。
+2. 让另一个应用占住音频焦点（音乐 / 语音），再打开视频 →
+   **画面照常播，底部提示「正在静音播放」**；对方放手后自动恢复声音。
+3. 播放中切走再回来 → 自动续播；手动暂停后切走再回来 → 保持暂停。
+4. 4K / HEVC / SMB 上的大文件 → 首帧慢不再被看门狗打断（8 秒内不动作）。
+5. 若仍卡：截图状态条上的 `state= / 意图= / 实况= / suppression= / focus=` —— 能直接指认来源。
+
+### §6.10 第五轮自查（发布前复审，补掉 2 处）
+
+| # | 问题 | 位置 | 修法 |
+|---|---|---|---|
+| A | 🔴 **播完再点播放键要按两下**：`planToggle` 的结束态分支条件写成 `!playWhenReady && ENDED`，而 ExoPlayer 播完**不复位** `playWhenReady`（仍是 true）→ 分支永不命中 → 落到取反分支变 `pause()`。用户看到 ▶、按一下没反应，第二下才重播 | `MediaPlaybackPolicy.planToggle` | 结束态不看 `playWhenReady`，一律 `seekTo(0)` + `play()`；新增 1 例回归（`playWhenReady=true` 时也必须 `restartFromStart`） |
+| B | 🟡 **`AudioManager` 为 null 时永久静音**：`request()` 直接 `return`，一个状态回调都不发 → `focusState` 停在 `FocusNone`，而 `volumeForFocus(FocusNone) = 0f` → 画面在走、永远没声音，状态条也不会解释 | `MediaAudioFocus.request()` | 拿不到服务时 `onState(FocusGranted)`，按「有焦点」处理（与「申请被拒也照常出声」的设计一致） |
+
+复审过但**判定不改**的点：`STATE_ENDED` 时仍持有音频焦点。`AUDIOFOCUS_GAIN` 不是排他锁 ——
+别的应用申请时系统会把焦点转给它（本页收到 `LOSS` → 静音继续画），播完攥着不会挡住别人。
+
+### §6.11 验证（第五轮后）
+
+- `:app:testDebugUnitTest --offline` → **360 例全绿**（`MediaPlaybackPolicyTest` 42 例）。
+- `:app:lintDebug --offline` → **Error 0**（`lint-results-debug.xml` 中 `severity="Error"` 计数为 0）。
+- 仍未做：真机 / 模拟器复核（沙箱无 `/dev/kvm`，`adb` 起不来）。
