@@ -44,6 +44,18 @@ class TransferTask internal constructor(
     private var conflictWaiter: CompletableDeferred<ConflictDecision>? = null
     private var appliedPolicy: ConflictPolicy? = null
 
+    /** 引擎注入：因暂停让出槽位后，恢复时需要重新入队。 */
+    internal var onRequeue: (() -> Unit)? = null
+
+    /** 本次运行是否因暂停而提前返回（决定 `resume()` 要不要重新入队）。 */
+    private var yieldedOnPause = false
+
+    /** 防重入：`resume()` 与 `run()` 收尾可能同时触发重新入队，只能生效一次。 */
+    private val requeuePending = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    /** 取消时已完成的部分（进快照文案，避免「已取消」让用户以为什么都没做）。 */
+    private var cancelledNote: String? = null
+
     val title: String get() = request.describe()
 
     // ------------------------------------------------------------------ 控制
@@ -51,10 +63,9 @@ class TransferTask internal constructor(
     fun pause() {
         // 已取消 / 正在取消的任务不再接受暂停（否则会把 paused 闸门又关回去）。
         //
-        // ⚠️ 已知取舍（第 4 批审计 🟡3 · 轻量修法）：暂停中的任务**占用并发位** —— worker 会先把
-        //    任务从队列取出、占住槽位，再挂进闸门等恢复；并发=2 时暂停两个任务，后续任务会一直
-        //    「排队中」。占用语义已显式化到任务行文案（「已暂停（占用传输位）」+ 见 [toSnapshot]）。
-        //    彻底修法（暂停即退出 run() 释放槽位、resume() 重新入队走断点续传）见总文档 §4 修复记录。
+        // 暂停会让出并发位（v2.2.5）：run() 收到 [PauseSignal] 后收尾返回，worker 释放槽位，
+        // 恢复时由引擎重新入队并从断点继续。旧实现挂在闸门里等 —— 并发 2 时暂停两个任务，
+        // 后续任务永远「排队中」。
         if (gate.isCancelled) return
         val s = _state.value
         if (s is TaskState.Running || s == TaskState.Queued) {
@@ -70,6 +81,8 @@ class TransferTask internal constructor(
             // 「排队中就被暂停」的任务还没有 lastRunning —— 恢复回「排队中」，
             // 等 worker 轮到时正常走「正在统计…」，而不是伪造一条假进度。
             _state.value = lastRunning ?: TaskState.Queued
+            // 已经让出槽位的任务必须重新入队，否则它会永远停在 Paused。
+            if (yieldedOnPause) requestRequeue()
         }
     }
 
@@ -80,6 +93,13 @@ class TransferTask internal constructor(
         val s = _state.value
         if (!s.isFinished && s !is TaskState.Cancelling) _state.value = TaskState.Cancelling
         conflictWaiter?.cancel()
+    }
+
+    /** 重新入队（幂等）：`resume()` 与 `run()` 收尾都可能触发，只有第一次生效。 */
+    private fun requestRequeue() {
+        if (!requeuePending.compareAndSet(false, true)) return
+        yieldedOnPause = false
+        onRequeue?.invoke()
     }
 
     suspend fun resolveConflict(decision: ConflictDecision) {
@@ -99,6 +119,8 @@ class TransferTask internal constructor(
     }
 
     internal suspend fun run() {
+        // 每次真正开跑都清一次：上一轮的「待重新入队」标记不能带进来
+        requeuePending.set(false)
         val startedAt = System.currentTimeMillis()
         var ok = 0
         var skipped = 0
@@ -296,6 +318,9 @@ class TransferTask internal constructor(
                     }
                 } catch (e: VfsException.Cancelled) {
                     throw e
+                } catch (e: PauseSignal) {
+                    // 暂停信号必须穿透单项的「失败继续」处理，交给 run() 收尾并让出槽位
+                    throw e
                 } catch (e: Exception) {
                     Logx.w("TransferTask", "item failed ${item.source}: ${e.message}", e)
                     failed += FailedItem(item.source, (e as? VfsException)?.userMessage ?: e.message ?: "未知错误")
@@ -325,7 +350,17 @@ class TransferTask internal constructor(
             )
         } catch (c: VfsException.Cancelled) {
             // 取消时保留可续传目标的 .part 与断点记录。
+            // 已在快路径 / 已完成项里搬走的内容要写进文案：否则用户看到「已取消」会以为什么都没做。
+            if (ok > 0 || skipped > 0) cancelledNote = "已完成 $ok 项" + if (skipped > 0) "、跳过 $skipped 项" else ""
             _state.value = TaskState.Cancelled
+        } catch (p: PauseSignal) {
+            // 暂停：让出 worker 槽位（不再挂在闸门里占并发位）。断点已由 transferFile 的
+            // 失败路径落盘（可续传目标保留 .part；不可续传目标 abort 半成品）。
+            _state.value = TaskState.Paused
+            yieldedOnPause = true
+            // 暂停与恢复擦肩而过（用户连点）：闸门已经恢复，立即重新入队续跑，
+            // 否则任务会永远停在 Paused —— 那次 resume() 已经执行过了。
+            if (!gate.paused.value) requestRequeue()
         } catch (e: Exception) {
             Logx.e("TransferTask", "task failed: ${e.message}", e)
             _state.value = TaskState.Failed((e as? VfsException)?.userMessage ?: e.message ?: "传输失败")
@@ -357,8 +392,8 @@ class TransferTask internal constructor(
                 s.note?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
             }
             is TaskState.Failed -> s.message
-            is TaskState.Cancelled -> "已取消"
-            is TaskState.Paused -> "已暂停（占用传输位）"
+            is TaskState.Cancelled -> "已取消" + (cancelledNote?.let { "（$it）" } ?: "")
+            is TaskState.Paused -> "已暂停"
             is TaskState.WaitingConflict -> "等待冲突处理"
             is TaskState.Cancelling -> "正在取消操作…"
             TaskState.Queued -> "排队中"
@@ -565,16 +600,17 @@ class TransferTask internal constructor(
         val decided = decideConflict(source, desired, existing, item, item.isDirectory)
         return when (decided) {
             ConflictPolicy.OVERWRITE -> {
-                // 可续传目标（本地 / SFTP / SMB）**不预删**：写入走 `.part`，commit 时由协议侧
-                // 原子替换（本地 ATOMIC_MOVE + REPLACE_EXISTING、SFTP CopyMode.Overwrite、
-                // SMB rename(replace=true)）。旧实现「先删旧文件、再传输」：中途失败 / 取消 =
-                // 旧版本永久丢失，只剩半截 `.part`。
-                // 仍需预删的两类：
-                //  - 目标类型不同（文件覆盖文件夹）：commit 的改名无法把文件替换进目录；
-                //  - 不可续传目标（FTP / WebDAV / S3 / 压缩包）：没有 .part 可回退，替换语义靠预删。
-                if (existing.isDirectory || destVfs.capabilities.resumable == Resumability.NONE) {
-                    deleteForOverwrite(destVfs, desired)
-                }
+                // **不预删文件**：所有协议的 openWrite 都写临时区（本地 `.part` /
+                // SFTP 断点文件 / SMB rename(replace) / FTP `.part`+RNTO / WebDAV
+                // `.part`+MOVE / S3 multipart），提交时才原子替换正式名。
+                //
+                // 旧实现在这里对「不可续传目标」预删，等于把「新旧都没了」的窗口重新
+                // 打开：传输失败 / 取消后目标目录里既没有旧文件也没有新文件。
+                // FtpVfs 的 commit 里明写了「不做先删旧再重试——那会给新旧都没了留窗口」，
+                // 引擎不该在上一层把它做掉。
+                //
+                // 唯一必须预删的是「文件覆盖目录」：commit 的改名无法把文件替换进目录。
+                if (existing.isDirectory) deleteForOverwrite(destVfs, desired)
                 desired
             }
             ConflictPolicy.SKIP -> null

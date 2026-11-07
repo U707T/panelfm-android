@@ -83,7 +83,11 @@ object MimeTypes {
         "jpg", "jpeg", "jpe", "jfif", "png", "gif", "webp", "bmp", "heic", "heif", "svg", "svgz", "ico", "avif" -> Kind.IMAGE
         "mp4", "m4v", "mkv", "webm", "avi", "mov", "ts", "m2ts", "flv", "rmvb", "3gp", "3gpp", "f4v" -> Kind.VIDEO
         "mp3", "m4a", "m4b", "m4r", "aac", "flac", "ogg", "oga", "wav", "opus", "ape", "wma", "amr", "awb", "mka" -> Kind.AUDIO
-        "zip", "7z", "rar", "tar", "gz", "xz", "bz2", "zst", "jar", "lzma", "z", "lz4", "cpio", "ar", "deb",
+        // ⚠️ 这份列表必须与 ArchiveVfs.ArchiveKind.ofFileName 保持一致：
+        // 类型过滤「压缩包」会按它筛选，而「点开」走的是 ArchiveKind。`zst` 曾经只在
+        // 这里、不在 ArchiveKind 里 —— 过滤能筛出来、点开却不是压缩包。一致性由
+        // app 模块的 ArchiveKindConsistencyTest 守住（core/common 不能反向依赖 vfs-archive）。
+        "zip", "7z", "rar", "tar", "gz", "xz", "bz2", "jar", "lzma", "z", "lz4", "cpio", "ar", "deb",
         "tgz", "tbz2", "txz", "xpi",
         "epub", "whl", "nupkg", "vsix", "crx", "kmz", "xapk", "apks", "apkm",
         -> Kind.ARCHIVE
@@ -103,4 +107,12 @@ object MimeTypes {
         "txt", "log", "md", "markdown", "ini", "conf", "properties", "csv", "srt", "ass", "vtt", "lrc" -> Kind.TEXT
         else -> Kind.OTHER
     }
+
+    /**
+     * 某个分类下的全部扩展名（类型过滤与跨模块一致性测试用）。
+     *
+     * 存在的理由：`Kind.ARCHIVE` 与 `ArchiveVfs.ArchiveKind.ofFileName` 是两份注册表，
+     * 漂移过一次（`zst` 只在前者里）。测试用本函数枚举前者、逐个问后者，防止再漂。
+     */
+    fun extensionsOf(kind: Kind): List<String> = map.keys.filter { kindOf(it) == kind }
 }

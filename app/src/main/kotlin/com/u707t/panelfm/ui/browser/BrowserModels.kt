@@ -120,10 +120,30 @@ data class PaneState(
     val filtered: Boolean get() = search.isNotBlank() || filterKind != null
 
     /**
+     * 把选择集夹到「当前列表里真实存在的项」上。
+     *
+     * 为什么必须有：`selection` 是 URI 集合，而 `items` 会因为过滤 / 刷新 / 目录内搜索
+     * 整体换一批。两者一旦脱节，顶栏的「已选: N」（读 `selection.size`）与所有动作
+     * （读 `selectedItems`，与 `items` 取交集）就不是同一个数 —— 用户看到「已选 5」，
+     * 按删除只删 1 个；或者「已选 1」却提示「没有可删除的项」。
+     *
+     * 锚点一起收：指向已消失项的两个 anchor 只会让下一次连选算出莫名其妙的区间。
+     */
+    fun withSelectionPruned(items: List<FileMetadata>): PaneState {
+        if (selection.isEmpty() && selectionAnchor == null && tapAnchor == null) return this
+        val keys = items.mapTo(HashSet(items.size)) { it.uri.toString() }
+        val kept = selection.filterTo(LinkedHashSet()) { it in keys }
+        val keptAnchor = selectionAnchor?.takeIf { it in kept }
+        val keptTap = tapAnchor?.takeIf { it in kept }
+        if (kept.size == selection.size && keptAnchor == selectionAnchor && keptTap == tapAnchor) return this
+        return copy(selection = kept, selectionAnchor = keptAnchor, tapAnchor = keptTap)
+    }
+
+    /**
      * 清除过滤条件（搜索关键字 + 类型过滤）。
      *
-     * 单独抽出来是因为**只清关键字会把类型过滤留下**，用户仍然看到「已过滤」、
-     * 列表也不恢复 —— v1.3.5 起「清除过滤 / 留空确定」都走这里。
+     * 单独抽出来是因为**只清关键字会把类型过滤留下**，用户仍然看到「已过滤」、列表也不恢复 ——
+     * v1.3.5 起「清除过滤 / 留空确定」都走这里。
      */
     fun clearedFilter(): PaneState = if (filtered) copy(search = "", filterKind = null) else this
     val selectedItems: List<FileMetadata> get() = items.filter { selection.contains(it.uri.toString()) }

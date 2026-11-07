@@ -128,6 +128,8 @@ class TransferEngine(
             resumeStore = resumeStore,
         )
         _tasks.update { it + task }
+        // 暂停让出槽位后，恢复要能重新入队（并发限流由 worker 自己控）
+        task.onRequeue = { queue.trySend(task) }
         queue.trySend(task)
         val watcher = scope.launch { watchAutoDismiss(task) }
         watchers[task.id] = watcher

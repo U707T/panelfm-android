@@ -77,7 +77,7 @@ fun BrowserController.load(side: PaneSide) {
                     // 内容换了一批 → 滑动锚点失效（否则下一次滑动会连着旧列表的项算区间）
                     selectionAnchor = null,
                     tapAnchor = null,
-                )
+                ).withSelectionPruned(items)
             }
             if (isCurrentLoad(side, generation, uri)) {
                 runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
@@ -99,7 +99,9 @@ fun BrowserController.load(side: PaneSide) {
                     tapAnchor = null,
                     // 目录都没加载成功，定位请求不可能落成；留着会在下次加载时误选同名项
                     revealUri = null,
-                )
+                    // 列表已经空了：选择集留着就是「已选 N 但一个都点不到」的假状态
+                    selection = emptySet(),
+                ).withSelectionPruned(emptyList())
             }
         }
     }
@@ -166,7 +168,15 @@ private fun BrowserController.openStamped(
         back = newBack,
         forward = if (pushHistory) emptyList() else tab.forward,
     )
-    updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }).withSelectionCleared() }
+    // 换目录 = 新的一屏：过滤条件必须一起清掉。旧实现只清选择 ——「在本地过滤 jpg →
+    // 切到 FTP」时新目录被旧条件静默裁剪，用户看到的是「这个存储是空的」。
+    val hadFilter = pane.filtered
+    updatePane(side) {
+        it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab })
+            .clearedFilter()
+            .withSelectionCleared()
+    }
+    if (hadFilter) showStatus("已清除过滤")
     load(side)
 }
 
@@ -323,9 +333,6 @@ suspend fun BrowserController.openModesSuspend(): List<Pair<String, String>> = w
     runCatching { container.previewPrefDao.all() }.getOrDefault(emptyList())
 }
 
-fun BrowserController.defaultOpenMode(item: FileMetadata): com.u707t.panelfm.ui.preview.PreviewMode? =
-    com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(runCatching { container.previewPrefDao.get(item.extension) }.getOrNull())
-
 suspend fun BrowserController.defaultOpenModeSuspend(item: FileMetadata): com.u707t.panelfm.ui.preview.PreviewMode? =
     withContext(container.dispatchers.io) {
         com.u707t.panelfm.ui.preview.PreviewMode.ofHandler(
@@ -338,9 +345,11 @@ fun BrowserController.startFileDiff(side: PaneSide) {
     val st = _state.value
     val mine = st.pane(side).selectedItems
     val other = st.pane(side.other).selectedItems
-    val candidates = mine + other
+    // 去重：两窗格同步到同一目录时「左右各选中同一个文件」也会凑出 2 个候选，
+    // 结果打开的是「自己和自己对比」——用户只会以为对比功能坏了。
+    val candidates = (mine + other).distinctBy { it.uri.toString() }
     if (candidates.size != 2) {
-        showStatus("请分别在两个窗格各选中 1 个文件（或同一窗格选中恰好 2 个）")
+        showStatus("请分别在两个窗格各选中 1 个文件（或同一窗格选中恰好 2 个不同文件）")
         return
     }
     _diffRequest.value = candidates[0].uri to candidates[1].uri
@@ -396,7 +405,10 @@ fun BrowserController.newTab(side: PaneSide) {
 fun BrowserController.switchTab(side: PaneSide, index: Int) {
     val pane = pane(side)
     if (index !in pane.tabs.indices || index == pane.activeTab) return
-    updatePane(side) { it.copy(activeTab = index).withSelectionCleared() }
+    // 每个标签是独立的一屏：过滤条件不带过去（否则 A 标签的过滤会把 B 标签的目录裁掉）
+    val hadFilter = pane.filtered
+    updatePane(side) { it.copy(activeTab = index).clearedFilter().withSelectionCleared() }
+    if (hadFilter) showStatus("已清除过滤")
     load(side)
 }
 
@@ -405,7 +417,10 @@ fun BrowserController.closeTab(side: PaneSide, index: Int) {
     if (pane.tabs.size <= 1) return
     val tabs = pane.tabs.toMutableList().also { it.removeAt(index) }
     val newActive = closeTabNewActive(pane.activeTab, index, tabs.size)
-    updatePane(side) { it.copy(tabs = tabs, activeTab = newActive).withSelectionCleared() }
+    // 与 switchTab 同口径：落到另一个标签 = 另一屏，过滤条件不带过去
+    val hadFilter = pane.filtered
+    updatePane(side) { it.copy(tabs = tabs, activeTab = newActive).clearedFilter().withSelectionCleared() }
+    if (hadFilter) showStatus("已清除过滤")
     load(side)
 }
 

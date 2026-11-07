@@ -520,14 +520,15 @@ class TransferRegressionTest {
     }
 
     @Test
-    fun `不可续传目标：预删失败时不能继续写入目标`() = runBlocking {
-        // 对照「可续传目标不预删」：不可续传目标（FTP / WebDAV / S3 / 压缩包）保留预删，
-        // 预删失败必须中断写入（旧承诺，不变）。
+    fun `不可续传目标：覆盖失败后旧目标文件仍在（不再预删）`() = runBlocking {
+        // v2.2.5：FTP / WebDAV / S3 的 openWrite 都是「临时区 + 原子落位」，引擎不该预删。
+        // 旧实现覆盖前先 delete 目标：传输中途失败 → 旧文件没了、新文件也没落位
+        //（FtpVfs.commit 的注释明写「不做先删旧再重试——那会给新旧都没了留窗口」）。
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val vfs = FakeVfs(capabilities = VfsCapabilities(resumable = Resumability.NONE))
             .dir("/src").file("/src/a.txt", 3)
             .dir("/dst").file("/dst/a.txt", 2)
-        vfs.failDelete = true
+        vfs.failRead = true
         val locator = FakeLocator(mapOf("one" to vfs))
         val engine = engine(scope, locator)
         val task = engine.enqueue(
@@ -542,7 +543,8 @@ class TransferRegressionTest {
 
         val state = task.state.value as TaskState.Done
         assertEquals(1, state.failed)
-        assertEquals("预删失败后目标保持原样", 2L, vfs.nodes["/dst/a.txt"]?.size)
+        assertEquals("失败后旧目标必须原样保留（不预删）", 2L, vfs.nodes["/dst/a.txt"]?.size)
+        assertTrue("半成品 .part 必须清掉", vfs.nodes.keys.none { it.contains(".panelfm.part") })
         scope.cancel()
     }
 }

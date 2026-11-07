@@ -81,7 +81,9 @@ class TaskStateMachineTest {
     }
 
     @Test
-    fun `暂停中取消不会永远挂在暂停等待里`() = runBlocking {
+    fun `暂停立即让出（抛 PauseSignal），取消优先于暂停`() = runBlocking {
+        // v2.2.5：暂停不再挂在闸门里（那会占着 worker 槽位，并发 2 时两个暂停就把队列锁死）。
+        // checkpoint 遇到暂停立即抛 PauseSignal，任务 run() 收尾返回、引擎释放槽位。
         val gate = TransferGate()
         gate.pause()
         val reached = CopyOnWriteArrayList<String>()
@@ -89,14 +91,30 @@ class TaskStateMachineTest {
             try {
                 gate.checkpoint()
                 reached += "continued"
+            } catch (_: PauseSignal) {
+                reached += "paused"
             } catch (_: VfsException.Cancelled) {
                 reached += "cancelled"
             }
         }
-        delay(200) // 让它进入暂停等待（旧实现会在这里永远循环）
-        gate.cancel()
         withTimeout(3_000) { job.join() }
-        assertEquals(listOf("cancelled"), reached.toList())
+        assertEquals("暂停必须立即返回，不能原地挂起", listOf("paused"), reached.toList())
+
+        // 暂停中取消：取消是第一优先级
+        gate.cancel()
+        val afterCancel = CopyOnWriteArrayList<String>()
+        val job2 = launch(Dispatchers.Default) {
+            try {
+                gate.checkpoint()
+                afterCancel += "continued"
+            } catch (_: PauseSignal) {
+                afterCancel += "paused"
+            } catch (_: VfsException.Cancelled) {
+                afterCancel += "cancelled"
+            }
+        }
+        withTimeout(3_000) { job2.join() }
+        assertEquals("暂停中取消必须报 Cancelled", listOf("cancelled"), afterCancel.toList())
     }
 
     @Test
@@ -121,12 +139,13 @@ class TaskStateMachineTest {
     }
 
     @Test
-    fun `已知语义：暂停的任务占用并发位（后续任务等待，恢复后接上）`() = runBlocking {
-        // 第 4 批审计 🟡3 · 轻量修法：并发位占用语义显式化到任务行文案，本用例把当前行为
-        // 钉死 —— 彻底修法（暂停即退出 run() 释放槽位）落地时，此用例应改为断言
-        // 「并发位被释放，t2 能先跑起来」。
+    fun `暂停让出并发位：后续任务能先跑，恢复后原任务接上`() = runBlocking {
+        // v2.2.5：暂停 → run() 收到 PauseSignal 返回 → worker 释放槽位；resume() 重新入队
+        // 并从断点继续。旧语义是「暂停的任务占着并发位」（并发 2 时暂停两个任务，后续永远排队）。
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val srcVfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000)
+        val srcVfs = FakeVfs().dir("/src")
+            .file("/src/big.bin", 1_000_000)
+            .file("/src/other.bin", 10)
         val dstVfs = FakeVfs().dir("/dst")
         val gate = CompletableDeferred<Unit>()
         srcVfs.readGate = gate
@@ -147,17 +166,18 @@ class TaskStateMachineTest {
         t1.pause()
         assertEquals(TaskState.Paused, t1.state.value)
 
-        val t2 = engine.enqueue(
-            TransferRequest(listOf(uri("srcv", "/src/big.bin")), uri("dstv", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
-        )
+        // 放行被 readGate 卡住的读：任务会在下一个 checkpoint 抛 PauseSignal 并让出槽位
         gate.complete(Unit)
-        delay(400) // 给 t2 充足的「本可开跑」窗口
-        assertTrue("并发位被暂停任务占住，后续任务必须还在排队", t2.state.value is TaskState.Queued)
+
+        val t2 = engine.enqueue(
+            TransferRequest(listOf(uri("srcv", "/src/other.bin")), uri("dstv", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
+        )
+        withTimeout(15_000) { while (t2.state.value !is TaskState.Done) delay(10) }
+        assertTrue("暂停的任务不该占位：后续任务必须能跑完", t2.state.value is TaskState.Done)
+        assertEquals("t1 仍是已暂停", TaskState.Paused, t1.state.value)
 
         t1.resume()
-        withTimeout(15_000) {
-            while (t1.state.value !is TaskState.Done || t2.state.value !is TaskState.Done) delay(10)
-        }
+        withTimeout(15_000) { while (t1.state.value !is TaskState.Done) delay(10) }
         scope.cancel()
     }
 }

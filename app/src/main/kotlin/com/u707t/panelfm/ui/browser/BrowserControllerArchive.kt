@@ -190,7 +190,16 @@ fun BrowserController.extractToOwnFolder(side: PaneSide, parentDir: VfsUri) {
     val folderName = archiveName.substringBeforeLast('.', archiveName)
     container.scope.launch {
         val target = container.uniqueChild(parentDir, folderName)
-        runCatching { container.locator.find(parentDir)?.mkdir(target) }
+        // 建目录失败必须在这里说清楚：吞掉之后 extractTo 会把错误延后成「目标不可用」，
+        // 用户排查方向从「权限 / 只读挂载」被带偏到「传输引擎」。口径与 extractArchiveTo 一致。
+        try {
+            container.locator.find(parentDir)?.mkdir(target)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            showStatus("创建目录失败：${(e as? VfsException)?.userMessage ?: e.message}")
+            return@launch
+        }
         extractTo(side, target)
     }
 }

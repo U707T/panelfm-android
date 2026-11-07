@@ -540,22 +540,48 @@ internal fun BrowserDialogHost(
                         container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_PATTERN, expression)
                         if (find.isNotBlank()) container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_SEARCH, find)
                         if (replace.isNotBlank()) container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_REPLACE, replace)
-                        var ok = 0
-                        items.forEachIndexed { index, fm ->
+                        // 先算全量计划：跳过「名字没变 / 空名 / 拿不到父目录」的项。
+                        val plan = items.mapIndexedNotNull { index, fm ->
                             val newName = BatchRename.newName(expression, fm, index, find, replace, useRegex)
-                            if (newName != fm.name && newName.isNotBlank()) {
-                                val target = fm.uri.parent?.child(newName)
-                                val vfs = container.locator.find(fm.uri)
-                                if (target != null && vfs != null) {
-                                    // 走 VFS 调度器（旧实现直接在 UI 协程里同步调用网络重命名 → 主线程卡顿）
-                                    val done = kotlinx.coroutines.withContext(container.dispatchers.vfs) {
-                                        runCatching { vfs.rename(fm.uri, target) }.getOrDefault(false)
-                                    }
-                                    if (done) ok++
-                                }
+                            val target = fm.uri.parent?.child(newName)
+                            if (newName == fm.name || newName.isBlank() || target == null) null
+                            else Triple(fm, newName, target)
+                        }
+                        if (plan.isEmpty()) {
+                            controller.showStatus("批量重命名：没有需要改名的项")
+                            return@launch
+                        }
+                        val vfs = container.locator.find(plan.first().first.uri)
+                        if (vfs == null) {
+                            controller.showStatus("批量重命名失败：会话不可用")
+                            return@launch
+                        }
+                        // 预检「目录里是否已有同名目标」。单条重命名会弹「交换 / 删除 / 备份」，
+                        // 批量没有交互空间 —— 宁可整批不动，也不能做了半套再报一个分数。
+                        val conflicts = kotlinx.coroutines.withContext(container.dispatchers.vfs) {
+                            plan.mapNotNull { (_, newName, target) ->
+                                if (runCatching { vfs.stat(target) }.getOrNull() != null) newName else null
                             }
                         }
-                        controller.showStatus("批量重命名完成：$ok / ${items.size}")
+                        if (conflicts.isNotEmpty()) {
+                            val shown = conflicts.take(3).joinToString("、") + if (conflicts.size > 3) " 等" else ""
+                            controller.showStatus("未执行：${conflicts.size} 个目标已存在（$shown）")
+                            return@launch
+                        }
+                        var ok = 0
+                        val failed = mutableListOf<String>()
+                        plan.forEach { (fm, newName, target) ->
+                            // 走 VFS 调度器（旧实现直接在 UI 协程里同步调用网络重命名 → 主线程卡顿）
+                            val done = kotlinx.coroutines.withContext(container.dispatchers.vfs) {
+                                runCatching { vfs.rename(fm.uri, target) }.getOrDefault(false)
+                            }
+                            if (done) ok++ else failed += newName
+                        }
+                        controller.showStatus(
+                            if (failed.isEmpty()) "批量重命名完成：$ok / ${plan.size}"
+                            else "批量重命名完成：$ok / ${plan.size}；失败：" +
+                                failed.take(3).joinToString("、") + if (failed.size > 3) " 等" else "",
+                        )
                         controller.clearSelection(focusSide)
                         controller.refreshAll()
                     }

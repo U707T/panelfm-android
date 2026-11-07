@@ -95,8 +95,15 @@ fun BrowserController.swapSelectedNames(side: PaneSide) {
                     try {
                         vfs.rename(tmp, targetA)
                     } catch (e: Exception) {
-                        runCatching { vfs.rename(targetA, b.uri) } // 回滚 b
-                        runCatching { vfs.rename(tmp, a.uri) }     // 回滚 a
+                        // 回滚顺序：b 此刻占着 a 的原名（a.txt），必须**先把它改回 b.txt**
+                        // 腾出位置，再把 a 从临时名改回来。
+                        //
+                        // 旧实现写的是 `rename(targetA, b.uri)` —— targetA 正是刚才失败的目标，
+                        // 根本不存在；接着 `rename(tmp, a.uri)` 也必然失败（a.txt 被 b 占着，
+                        // LocalVfs / WebDAV 都拒绝覆盖已存在目标）。结果 a 永远留在
+                        // `.panelfm.swap.*` 下，用户看到的是「文件消失了」。
+                        runCatching { vfs.rename(targetB, b.uri) } // 回滚 b：a.txt → b.txt
+                        runCatching { vfs.rename(tmp, a.uri) }     // 回滚 a：.swap → a.txt
                         throw e
                     }
                 } catch (e: Exception) {
@@ -108,7 +115,7 @@ fun BrowserController.swapSelectedNames(side: PaneSide) {
             clearSelection(side)
             load(side)
         } catch (e: Exception) {
-            showStatus((e as? VfsException)?.userMessage ?: "交换失败：${e.message}")
+            showStatus((e as? VfsException)?.userMessage ?: "交换失败：${e.message}（若出现 .panelfm.swap.* 文件，改回原名即可）")
         }
     }
 }

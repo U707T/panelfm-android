@@ -117,7 +117,10 @@ fun BrowserController.clearSelection(side: PaneSide) {
  */
 fun BrowserController.setSearch(side: PaneSide, query: String) {
     updatePane(side) { pane ->
-        pane.copy(items = applyPaneFilter(pane.unfilteredItems, query, pane.filterKind), search = query)
+        val items = applyPaneFilter(pane.unfilteredItems, query, pane.filterKind)
+        // 过滤会把部分已选项藏起来：选择集必须跟着夹到可见集合上，否则「已选 N」与
+        // 实际会被操作的文件不是一个数（见 PaneState.withSelectionPruned）。
+        pane.copy(items = items, search = query).withSelectionPruned(items)
     }
 }
 
@@ -134,7 +137,8 @@ fun BrowserController.matchesSearch(name: String, query: String): Boolean =
 /** MT 的「过滤」：按类型筛选当前目录（客户端过滤，立即生效，不重拉目录） */
 fun BrowserController.setFilter(side: PaneSide, kind: String?) {
     updatePane(side) { pane ->
-        pane.copy(items = applyPaneFilter(pane.unfilteredItems, pane.search, kind), filterKind = kind)
+        val items = applyPaneFilter(pane.unfilteredItems, pane.search, kind)
+        pane.copy(items = items, filterKind = kind).withSelectionPruned(items)
     }
 }
 
