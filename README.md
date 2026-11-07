@@ -124,16 +124,21 @@ core/data/                 SQLite + DataStore（连接 / 书签 / 偏好 / 密�
 core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / 文件图标 / 手势）
 ```
 
-规模（不含测试）：14 个模块、约 **180** 个 Kotlin 文件、**4.2 万**行。
+规模（不含测试）：14 个模块、**186** 个 Kotlin 文件、**4.4 万**行（2026-11-07 实测）。
 
 ## 5. 代码质量现状
 
-本节数据来自 2026-10-08 起的全量重审（`docs/AUDIT-2026-10-08-REAUDIT.md`）与后续批次。
+本节数据来自 2026-10-08 起的全量重审（归档于 `docs/archive/AUDIT-2026-10-08-REAUDIT.md`）与后续批次，
+数字于 2026-11-07（v2.2.4）重新实测。
 
-- **单测**：102 个测试文件、**673** 个 `@Test`
-- **巨型文件已清零**：重审时 `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）是两座大山，现已拆成 6 + 8 个文件；`MediaScreen` 1,886 → 655 行；`EditorScreen` 1,064 → 512 行。目前全仓仅 `ArchiveVfs.kt`（1,058 行）略超 1,000 行
+- **单测**：103 个测试文件、**715** 个 `@Test`（`testDebugUnitTest` 实际执行 360 例）
+- **巨型文件**：全仓仅 `ArchiveVfs.kt`（1,058 行）超过 1,000 行。重审时的两座大山
+  `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）已拆成 6 + 8 个文件。
+  两个反弹项要说清楚：`MediaScreen` 655 → 986（v2.2.2–v2.2.4 播放链路增强）、
+  `EditorScreen` 512 → 891（编辑器功能增加）—— 都还没回到 1,000 行，但已不是「随便加个功能」的水平
 - **重审收口**：第 1–10 批共修掉 105 条问题（101 修 + 4 记录在案），含多条静默坏数据路径
-- 审计文档按模块留档：`AUDIT-2026-10-08-REAUDIT.md`（全量总文档）、`-10-11-CHANGESET`、`-10-19-STABILITY`、`-10-21-*`、`-10-23-NETTOOLBOX`、`-10-26-PORTSCAN`
+- 审计文档全部归档在 [`docs/archive/`](docs/archive/README.md)（含索引与「仍未修」清单）；
+  新一轮全量审计写在本目录
 
 设计说明见：
 - [`docs/SELECTION-MODEL.md`](docs/SELECTION-MODEL.md) —— 选择 / 多选交互模型（唯一设计说明）
