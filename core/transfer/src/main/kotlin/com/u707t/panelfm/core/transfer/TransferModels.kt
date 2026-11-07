@@ -93,10 +93,16 @@ val TaskState.isFinished: Boolean
 val TaskState.dismissesAutomatically: Boolean
     get() = this is TaskState.Done || this is TaskState.Cancelled
 
-/** 总体进度 0..1（未知总大小时为 0；「已完成」视为 1） */
+/**
+ * 总体进度 0..1（未知总大小时为 0；「已完成」视为 1）。
+ *
+ * 暂停 / 正在取消时**不再归零**：这两个状态本身不携带字节数，但用户看到的进度条
+ * 不该在按下暂停的瞬间跳回 0 —— 用快照里保留的最后一帧 [TransferTaskSnapshot.retainedProgress]。
+ */
 fun TransferTaskSnapshot.overallProgress(): Float = when (val s = state) {
     is TaskState.Running -> if (s.totalBytes > 0) (s.doneBytes.toFloat() / s.totalBytes).coerceIn(0f, 1f) else 0f
     is TaskState.Done -> 1f
+    is TaskState.Paused, is TaskState.Cancelling -> retainedProgress.coerceIn(0f, 1f)
     else -> 0f
 }
 
@@ -105,6 +111,13 @@ fun TransferTaskSnapshot.itemProgress(): Float = when (val s = state) {
     is TaskState.Running ->
         if (s.itemTotalBytes > 0) (s.itemDoneBytes.toFloat() / s.itemTotalBytes).coerceIn(0f, 1f) else -1f
     else -> -1f
+}
+
+/** 任务行标题用的「当前在传的文件名」：暂停 / 取消中沿用最后一帧，不闪回空串。 */
+fun TransferTaskSnapshot.currentNameOrRetained(): String = when (val s = state) {
+    is TaskState.Running -> s.currentName
+    is TaskState.Paused, is TaskState.Cancelling -> retainedName
+    else -> ""
 }
 
 /**
@@ -145,6 +158,14 @@ data class TransferTaskSnapshot(
     val subtitle: String,
     val state: TaskState,
     val op: TransferOp,
+    /** 源所在目录的显示名（MT 进度块的「从:」；拿不到时为空串） */
+    val fromLabel: String = "",
+    /** 目标目录的显示名（「到:」；拿不到时为空串） */
+    val toLabel: String = "",
+    /** 暂停 / 正在取消时保留的最后一帧总进度（0..1；-1 = 没有可保留的） */
+    val retainedProgress: Float = -1f,
+    /** 暂停 / 正在取消时保留的当前文件名 */
+    val retainedName: String = "",
 )
 
 fun TransferRequest.describe(): String {

@@ -645,6 +645,24 @@ class MtIcon(
         /** @see SYNC */
         val REFRESH get() = SYNC
 
+        /**
+         * 暂停（Material `pause`）。
+         *
+         * MT 的 319 个图标里没有 pause —— 传输块在 MT 里用的是文字按钮。
+         * 内联任务条要收成图标（见 TaskRow），这里补两枚同族字形：
+         * 24dp 视口、实心块，与 MT 的 play/stop 观感一致。
+         */
+        val PAUSE = MtIcon(
+            paths = listOf("M6,19h4V5H6v14zM14,5v14h4V5h-4z"),
+            viewport = 24f,
+        )
+
+        /** 继续 / 播放（Material `play_arrow`） */
+        val PLAY = MtIcon(
+            paths = listOf("M8,5v14l11,-7z"),
+            viewport = 24f,
+        )
+
         /** 展开态箭头（MT `0x7f0800b3` = keyboard_arrow_up） */
         val UNFOLD_UP = MtIcon(
             paths = listOf("M12,8l-6,6 1.41,1.41L12,10.83l4.59,4.58L18,14z"),

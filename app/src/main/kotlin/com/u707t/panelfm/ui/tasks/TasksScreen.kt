@@ -31,9 +31,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.model.TransferOp
+import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
+import com.u707t.panelfm.core.transfer.currentNameOrRetained
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.transfer.isFinished
 import com.u707t.panelfm.core.transfer.itemProgress
@@ -43,15 +44,26 @@ import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.ui.browser.ThinProgressBar
-import kotlin.math.roundToInt
 
 /**
- * 传输任务页（v1.5.0 重构：按 MT 进度块逻辑现代化）：
- *  - 卡片列表：状态徽标 + 标题 + 进度（当前文件 / 总进度）+ 统计（速率 / 剩余 / 用时）；
- *  - 操作按状态给：排队 / 进行中 = 暂停；已暂停 = 继续；进行中、排队、暂停、等待冲突 = 取消；
- *    失败与已结束 = 移除；
- *  - 已完成 / 已取消的任务在保留期（引擎默认 8 秒）后自动收走，不再常驻；
- *  - 「清空」只清已结束的任务；失败刻意保留到用户处理（错误必须留痕）。
+ * 传输任务页（v2.3.0：明细按 MT 进度块的键值结构重排）：
+ *
+ * ```
+ * [进行中]  复制 1 项                        23%
+ * 名称    ez122814.mp4
+ * 从      Vedios
+ * 到      一键另存
+ * 进度    221.18 M / 950.58 M
+ * 速度    66.05 M/s · 剩 0:11
+ * ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+ * 暂停   取消
+ * ```
+ *
+ * 旧卡片把「当前文件名 / 统计行」写成两行自由文本、进度条夹在标题与文件名之间，
+ * 与 MT 的「名称: / 从: / 到: / 剩余项: / 速度:」逐行键值对不上。现在标签固定 40dp
+ * 对齐，值左缘成一条竖线；进度条统一贴到卡片底边（MT `0x7f0c00b8` 也是贴底）。
+ *
+ * 行为不变：完成 / 取消在保留期（引擎默认 8 秒）后自动收走；失败刻意保留到用户处理。
  */
 @Composable
 fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
@@ -143,16 +155,18 @@ private fun TaskCard(
     val state = snapshot.state
     val overall = snapshot.overallProgress()
     val item = snapshot.itemProgress()
+    val accent = state.accentColor()
+    val name = snapshot.currentNameOrRetained()
 
     Column(
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(MtSpec.CornerMedium))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
-            .padding(12.dp),
-        verticalArrangement = Arrangement.spacedBy(6.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        // 标题行：状态徽标 + 标题 +（进行中）总百分比
+        // 标题行：状态徽标 + 任务名 + 一眼进度
         Row(verticalAlignment = Alignment.CenterVertically) {
             StateBadge(state)
             Spacer(Modifier.width(8.dp))
@@ -164,63 +178,61 @@ private fun TaskCard(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (state is TaskState.Running) {
-                Text(
-                    "${(overall * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.primary,
-                )
+            Text(
+                snapshot.trailingLabel(),
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = accent,
+            )
+        }
+
+        // MT 进度块的键值明细（`0x7f0c0093`：名称 / 从 / 到 / 统计 / 速度）
+        Column(Modifier.padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            if (name.isNotBlank()) TaskField("名称", name)
+            if (snapshot.fromLabel.isNotBlank()) TaskField("从", snapshot.fromLabel)
+            if (snapshot.toLabel.isNotBlank()) TaskField("到", snapshot.toLabel)
+            when (state) {
+                is TaskState.Running -> {
+                    TaskField("进度", Fmt.transferred(state.doneBytes, state.totalBytes))
+                    TaskField(
+                        "速度",
+                        listOfNotNull(
+                            Fmt.speed(state.speedBps).takeIf { it.isNotBlank() },
+                            if (state.etaSeconds > 0) "剩 ${Fmt.eta(state.etaSeconds)}" else null,
+                            if (state.total > 1) "${state.index}/${state.total} 项" else null,
+                        ).joinToString(" · ").ifBlank { "—" },
+                    )
+                }
+                is TaskState.Done -> TaskField("结果", snapshot.subtitle)
+                is TaskState.Failed -> TaskField("失败", state.message, MaterialTheme.colorScheme.error)
+                is TaskState.Paused -> TaskField("状态", "已暂停 · 断点已保留，点「继续」接着传")
+                is TaskState.Cancelling -> TaskField("状态", "正在取消操作…")
+                is TaskState.WaitingConflict -> TaskField("状态", "等待选择冲突处理方式…")
+                TaskState.Queued -> TaskField("状态", "排队中，等待空闲传输位")
+                is TaskState.Cancelled -> TaskField("状态", snapshot.subtitle)
             }
         }
 
-        // 进度：多文件进行中 = 当前文件（细条）+「总进度」；单文件 = 一条；已完成 = 满条
-        when {
-            state is TaskState.Running && state.total > 1 && item >= 0f -> {
-                ThinProgressBar(item, height = 3.dp, color = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f))
-                Text(
-                    "总进度 ${(overall * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                ThinProgressBar(overall, height = 4.dp)
-            }
-            state is TaskState.Running -> ThinProgressBar(overall, height = 4.dp)
-            state is TaskState.Done -> ThinProgressBar(1f, height = 4.dp)
-            else -> {}
+        // 进度条贴底：批量传输 = 当前文件（细）+ 总进度（粗），单文件只留一条
+        if (state is TaskState.Running && state.total > 1 && item >= 0f) {
+            ThinProgressBar(
+                progress = item,
+                modifier = Modifier.padding(top = 4.dp),
+                color = accent.copy(alpha = 0.55f),
+                height = 2.dp,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
+            )
         }
-
-        // 细节行
-        when (state) {
-            is TaskState.Running -> {
-                Text(
-                    state.currentName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    snapshot.subtitle,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            is TaskState.Done -> Text(
-                snapshot.subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+        if (state is TaskState.Running || state is TaskState.Paused ||
+            state is TaskState.Cancelling || state is TaskState.Done
+        ) {
+            ThinProgressBar(
+                progress = overall,
+                modifier = Modifier.padding(top = if (state is TaskState.Running && item >= 0f) 2.dp else 4.dp),
+                color = accent,
+                height = 4.dp,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
             )
-            is TaskState.Failed -> Text(
-                state.message,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-            )
-            is TaskState.WaitingConflict -> DetailText("等待选择冲突处理方式…")
-            is TaskState.Cancelling -> DetailText("正在取消操作…")
-            is TaskState.Paused -> DetailText("已暂停 · 点「继续」接着传（断点已保留）")
-            is TaskState.Cancelled -> DetailText("已取消 · 未传完的文件可在下次复制时断点续传")
-            TaskState.Queued -> DetailText("排队中，等待空闲传输位")
         }
 
         // 操作行
@@ -240,56 +252,32 @@ private fun TaskCard(
     }
 }
 
+/** 键值行：标签固定宽度，值左缘对齐成一条竖线（MT 进度块的 `名称:` / `从:` / `到:` 排法）。 */
 @Composable
-private fun DetailText(text: String) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelSmall,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
+private fun TaskField(label: String, value: String, valueColor: Color = Color.Unspecified) {
+    Row(verticalAlignment = Alignment.Top) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(40.dp),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (valueColor == Color.Unspecified) MaterialTheme.colorScheme.onSurface else valueColor,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
 }
 
 /** 状态徽标：文案与配色按状态分档（进行中 = 主色，失败 = 错误色，等待冲突 = 警示）。 */
 @Composable
 private fun StateBadge(state: TaskState) {
-    val label: String
-    val color: Color
-    when (state) {
-        TaskState.Queued -> {
-            label = "排队中"
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        }
-        is TaskState.Running -> {
-            label = "进行中"
-            color = MaterialTheme.colorScheme.primary
-        }
-        is TaskState.Paused -> {
-            label = "已暂停"
-            color = MaterialTheme.colorScheme.tertiary
-        }
-        is TaskState.WaitingConflict -> {
-            label = "等待冲突"
-            color = MaterialTheme.colorScheme.error
-        }
-        is TaskState.Cancelling -> {
-            label = "正在取消…"
-            color = MaterialTheme.colorScheme.tertiary
-        }
-        is TaskState.Done -> {
-            label = "已完成"
-            color = MaterialTheme.colorScheme.primary
-        }
-        is TaskState.Failed -> {
-            label = "失败"
-            color = MaterialTheme.colorScheme.error
-        }
-        is TaskState.Cancelled -> {
-            label = "已取消"
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        }
-    }
+    val color = state.accentColor()
     Text(
-        label,
+        state.statusLabel(),
         style = MaterialTheme.typography.labelSmall,
         color = color,
         modifier = Modifier

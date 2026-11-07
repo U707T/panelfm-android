@@ -13,20 +13,26 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
-/** 自绘进度条：避免 M3 版本间 LinearProgressIndicator 签名差异。 */
+/**
+ * 自绘进度条：避免 M3 版本间 LinearProgressIndicator 签名差异。
+ *
+ * [trackColor] 给「卡片内」的进度条用：卡片本身已经是 surfaceVariant 底色，
+ * 轨道再用 surfaceVariant 就看不见了（v2.3.0 内联任务条）。
+ */
 @Composable
 fun ThinProgressBar(
     progress: Float,
     modifier: Modifier = Modifier,
     color: Color = MaterialTheme.colorScheme.primary,
     height: Dp = 4.dp,
+    trackColor: Color = MaterialTheme.colorScheme.surfaceVariant,
 ) {
     Box(
         modifier
             .fillMaxWidth()
             .height(height)
             .clip(RoundedCornerShape(height / 2))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .background(trackColor),
     ) {
         Box(
             Modifier

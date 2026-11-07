@@ -44,6 +44,8 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -52,6 +54,8 @@ import androidx.compose.foundation.layout.Spacer
 import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.DividerSideShadow
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
@@ -356,26 +360,45 @@ fun DualPaneScreen(
                 }
 
                 // ---------------- 任务条（只显示进行中 / 失败；完成、已取消立即消失，不再常驻）
+                //
+                // v2.3.0：整块改成「surface 底 + 顶部 1px 分隔线 + 卡片式任务行」。
+                // 旧实现是 surfaceVariant 0.75 的灰条，与下方底栏（surface + 分隔线）直接叠在
+                // 一起，中间没有分界，看起来像底栏被拉高了 —— 这是「下端不和谐」的主因之一。
                 if (ui.tasks.isNotEmpty()) {
                     Column(
                         Modifier
                             .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.75f))
-                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                            .background(MaterialTheme.colorScheme.surface),
                     ) {
-                        ui.tasks.take(2).forEach { snapshot -> TaskRow(snapshot, controller, onOpenTasks) }
-                        val rest = ui.tasks.size - 2
-                        if (rest > 0) {
-                            Text(
-                                "还有 $rest 个任务…（点此查看全部）",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickableNoRipple { onOpenTasks() }
-                                    .padding(vertical = 2.dp),
-                            )
+                        DividerPx()
+                        Column(
+                            Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            ui.tasks.take(2).forEach { snapshot -> TaskRow(snapshot, controller, onOpenTasks) }
+                            val rest = ui.tasks.size - 2
+                            if (rest > 0) {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickableNoRipple { onOpenTasks() }
+                                        .padding(vertical = 4.dp),
+                                    horizontalArrangement = Arrangement.Center,
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Text(
+                                        "还有 $rest 个任务",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                    MtVectorIcon(
+                                        icon = MtIcon.CHEVRON_R,
+                                        size = 12.dp,
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                     }
                 }

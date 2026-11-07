@@ -1,17 +1,19 @@
 package com.u707t.panelfm.ui.browser
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
@@ -31,12 +33,15 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.MtActionButton
 import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
+import com.u707t.panelfm.core.transfer.currentNameOrRetained
 import com.u707t.panelfm.core.transfer.overallProgress
 import com.u707t.panelfm.core.vfs.FileMetadata
-import kotlin.math.roundToInt
+import com.u707t.panelfm.ui.tasks.accentColor
+import com.u707t.panelfm.ui.tasks.trailingLabel
 
 // ================================================================================================
 // 从 DualPaneScreen 拆出（重审 🔴1b）：顶栏动作条项 / 底栏文字按钮 / 任务条行。
@@ -162,75 +167,138 @@ internal fun BottomTextCommand(label: String, onLongClick: (() -> Unit)? = null,
     }
 }
 /**
- * 任务条行 —— 只显示进行中 / 失败的任务（完成即从任务条消失，引擎稍后把列表项一起收走）。
- * 结构照 MT 的进度块简化：`操作 · 当前文件/状态` + 百分比 + 操作按钮，下面统计行与总进度。
+ * 内联任务条（v2.3.0 重做）—— 按 MT 传输进度块（`0x7f0c00b8`）的信息顺序压成两行：
+ *
+ * ```
+ * ● 复制 · 兄弟三人行.mp4              30%   ⏸  ✕
+ *   282.82 M / 949.47 M · 49.81 M/s · 剩 0:13
+ *   ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬
+ * ```
+ *
+ * 旧实现把「复制 · 文件」「30%」「暂停」「取消」「详情」五个元素平铺在同一行：右侧三个
+ * 同色同重的文字按钮与左侧文件名挤在一起，进度条又夹在两行字中间，整块读起来像三行
+ * 散字叠着，和下面的底栏也分不开。现在：
+ *  - 文字按钮换图标（暂停 / 继续、取消 / 移除），「详情」由整块点击承担；
+ *  - 进度条移到卡片底边（MT 的进度块同样是贴底）；
+ *  - 卡片化 + 状态点，与任务页同一套视觉。
+ *
+ * 只显示进行中 / 失败的任务（完成即消失，见 [forBrowserBar]）。
  */
 @Composable
 internal fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserController, onOpenTasks: () -> Unit) {
     val state = snapshot.state
     val opLabel = if (snapshot.op == TransferOp.COPY) "复制" else "移动"
     val progress = snapshot.overallProgress()
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    val accent = state.accentColor()
+    val name = snapshot.currentNameOrRetained()
+    // 第二行：进行中给统计，失败给原因，等待冲突给提示；暂停 / 排队不再重复右侧状态词。
+    val detail = when (state) {
+        is TaskState.Running -> snapshot.subtitle
+        is TaskState.Failed -> state.message
+        is TaskState.WaitingConflict -> "等待选择冲突处理方式…"
+        else -> ""
+    }
+    val showBar = state is TaskState.Running || state is TaskState.Paused ||
+        state is TaskState.Cancelling || state is TaskState.Done
+
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f))
+            .clickableNoRipple { onOpenTasks() },
+    ) {
+        Row(
+            Modifier.padding(start = 10.dp, end = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(6.dp).clip(CircleShape).background(accent))
+            Spacer(Modifier.width(7.dp))
             Text(
-                buildString {
-                    append(opLabel)
-                    when (state) {
-                        is TaskState.Running -> append(" · ${state.currentName.ifBlank { "…" }}")
-                        is TaskState.Cancelling -> append(" · 正在取消…")
-                        is TaskState.Paused -> append(" · 已暂停")
-                        is TaskState.WaitingConflict -> append(" · 等待冲突处理")
-                        is TaskState.Failed -> append(" · 失败")
-                        TaskState.Queued -> append(" · 排队中")
-                        else -> {}
-                    }
-                },
-                style = MaterialTheme.typography.labelSmall,
+                if (name.isBlank()) snapshot.title else "$opLabel · $name",
+                style = MaterialTheme.typography.bodySmall,
                 fontWeight = FontWeight.Medium,
                 modifier = Modifier.weight(1f),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            if (state is TaskState.Running) {
-                Text(
-                    "${(progress * 100).roundToInt()}%",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.primary,
-                )
-            }
-            when (state) {
-                is TaskState.Running, TaskState.Queued ->
-                    TextButton(onClick = { controller.pauseTask(snapshot.id) }) { Text("暂停", style = MaterialTheme.typography.labelSmall) }
-                TaskState.Paused ->
-                    TextButton(onClick = { controller.resumeTask(snapshot.id) }) { Text("继续", style = MaterialTheme.typography.labelSmall) }
-                else -> {}
-            }
-            when (state) {
-                is TaskState.Failed, is TaskState.Done, TaskState.Cancelled ->
-                    TextButton(onClick = { controller.removeTask(snapshot.id) }) { Text("移除", style = MaterialTheme.typography.labelSmall) }
-                TaskState.Cancelling -> {} // 已在收尾，不再提供操作
-                else ->
-                    TextButton(onClick = { controller.cancelTask(snapshot.id) }) { Text("取消", style = MaterialTheme.typography.labelSmall) }
-            }
-            TextButton(onClick = onOpenTasks) { Text("详情", style = MaterialTheme.typography.labelSmall) }
+            Spacer(Modifier.width(6.dp))
+            Text(
+                snapshot.trailingLabel(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Medium,
+                color = accent,
+                maxLines = 1,
+            )
+            Spacer(Modifier.width(2.dp))
+            TaskRowActions(snapshot, controller)
         }
-        if (state is TaskState.Running) ThinProgressBar(progress)
-        when (state) {
-            is TaskState.Running -> Text(
-                snapshot.subtitle,
+        if (detail.isNotBlank()) {
+            Text(
+                detail,
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (state is TaskState.Failed) MaterialTheme.colorScheme.error
+                else MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = 23.dp, end = 10.dp),
             )
-            is TaskState.Failed -> Text(
-                state.message,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
+        }
+        if (showBar) {
+            ThinProgressBar(
+                progress = progress,
+                modifier = Modifier.padding(start = 23.dp, end = 10.dp, top = 5.dp, bottom = 6.dp),
+                color = accent,
+                height = 2.dp,
+                trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f),
+            )
+        } else {
+            Spacer(Modifier.size(6.dp))
+        }
+    }
+}
+
+/** 任务行右侧的图标操作（暂停/继续 + 取消/移除）；正在取消时不给操作。 */
+@Composable
+private fun TaskRowActions(snapshot: TransferTaskSnapshot, controller: BrowserController) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        when (snapshot.state) {
+            is TaskState.Running, TaskState.Queued -> MtIconButton(
+                icon = MtIcon.PAUSE,
+                contentDescription = "暂停",
+                buttonSize = 28.dp,
+                iconSize = 14.dp,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                onClick = { controller.pauseTask(snapshot.id) },
+            )
+            is TaskState.Paused -> MtIconButton(
+                icon = MtIcon.PLAY,
+                contentDescription = "继续",
+                buttonSize = 28.dp,
+                iconSize = 14.dp,
+                tint = MaterialTheme.colorScheme.primary,
+                onClick = { controller.resumeTask(snapshot.id) },
             )
             else -> {}
+        }
+        when (snapshot.state) {
+            is TaskState.Failed, is TaskState.Done, is TaskState.Cancelled -> MtIconButton(
+                icon = MtIcon.CLOSE,
+                contentDescription = "移除",
+                buttonSize = 28.dp,
+                iconSize = 14.dp,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                onClick = { controller.removeTask(snapshot.id) },
+            )
+            is TaskState.Cancelling -> {} // 已在收尾，不再提供操作
+            else -> MtIconButton(
+                icon = MtIcon.CLOSE,
+                contentDescription = "取消",
+                buttonSize = 28.dp,
+                iconSize = 14.dp,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                onClick = { controller.cancelTask(snapshot.id) },
+            )
         }
     }
 }

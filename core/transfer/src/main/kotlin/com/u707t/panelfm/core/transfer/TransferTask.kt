@@ -420,7 +420,24 @@ class TransferTask internal constructor(
             is TaskState.Cancelling -> "正在取消操作…"
             TaskState.Queued -> "排队中"
         }
-        return TransferTaskSnapshot(id = id, title = title, subtitle = subtitle, state = s, op = request.op)
+
+        // 暂停 / 取消中：状态本身不带字节数，但进度条不该在按下暂停的瞬间跳回 0。
+        // 沿用最后一次 Running 快照（lastRunning 由 running() 维护，暂停期间仍在更新）。
+        val retained = if (s is TaskState.Paused || s is TaskState.Cancelling) lastRunning else null
+
+        return TransferTaskSnapshot(
+            id = id,
+            title = title,
+            subtitle = subtitle,
+            state = s,
+            op = request.op,
+            fromLabel = request.sources.firstOrNull()?.let { it.parent?.dirLabel() ?: "/" } ?: "",
+            toLabel = request.destDir.dirLabel(),
+            retainedProgress = retained?.let {
+                if (it.totalBytes > 0) (it.doneBytes.toFloat() / it.totalBytes).coerceIn(0f, 1f) else -1f
+            } ?: -1f,
+            retainedName = retained?.currentName.orEmpty(),
+        )
     }
 
     private sealed interface FastPathTarget {
@@ -896,3 +913,9 @@ class TransferTask internal constructor(
         private const val MAX_EMPTY_READS = 3
     }
 }
+
+/**
+ * 目录短名 —— MT 进度块的「从: / 到:」只显示末级目录名（截图里是 `Vedios` / `一键另存`）。
+ * 根目录没有名字，退回 `displayPath`（`/`）。
+ */
+private fun VfsUri.dirLabel(): String = name.ifBlank { displayPath }
