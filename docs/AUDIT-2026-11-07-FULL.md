@@ -86,10 +86,17 @@
 
 ## 验证
 
-- `./gradlew testDebugUnitTest --offline`：**720 例全绿**（app 365 + core 355；新增 5 例，
+- `./gradlew testDebugUnitTest --offline`：**721 例全绿**（app 365 + core 356；新增 6 例，
   改写 3 例旧语义用例）。
 - `./gradlew :app:lintDebug --offline`：**Error 0**。
 - 仍未做真机验证：沙箱无 `/dev/kvm`、`adb` 起不来。建议真机重点验：
   ① 覆盖传输中途断网/取消 → 目标旧文件仍在；
-  ② 暂停两个任务后新建任务能跑；
+  ② 暂停两个任务后新建任务能跑；暂停后取消要落到「已取消」；
   ③ 过滤后换目录 → 条件已清。
+
+## 附：v2.2.6（本轮修复的回归）
+
+暂停让出槽位后，`cancel()` 仍按「run() 会在 checkpoint 收尾」处理，而任务已经不在 `run()` 里 ——
+状态停在「正在取消操作…」。修法：`yieldedOnPause` 为真时直接落 `Cancelled`，并让 `run()` 的
+暂停收尾在写状态前后双检 `gate.isCancelled`。回归 1 例。
+

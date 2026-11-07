@@ -180,4 +180,36 @@ class TaskStateMachineTest {
         withTimeout(15_000) { while (t1.state.value !is TaskState.Done) delay(10) }
         scope.cancel()
     }
+
+    @Test
+    fun `暂停让出槽位后再取消，必须直接落到已取消（不能停在正在取消）`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+            val srcVfs = FakeVfs().dir("/src").file("/src/big.bin", 1_000_000)
+            val dstVfs = FakeVfs().dir("/dst")
+            val gate = CompletableDeferred<Unit>()
+            srcVfs.readGate = gate
+            val locator = FakeLocator(mapOf("srcv" to srcVfs, "dstv" to dstVfs))
+            val engine = TransferEngine(
+                planner = FileOperationPlanner(locator),
+                locator = locator,
+                resumeStore = InMemoryResumeStore(),
+                dispatchers = PanelDispatchers(main = Dispatchers.Default),
+                scope = scope,
+                maxConcurrent = 1,
+            )
+            val t = engine.enqueue(
+                TransferRequest(listOf(uri("srcv", "/src/big.bin")), uri("dstv", "/dst"), TransferOp.COPY, ConflictPolicy.OVERWRITE)
+            )
+            withTimeout(15_000) { while (srcVfs.readsStarted.get() == 0) delay(5) }
+            t.pause()
+            gate.complete(Unit)
+            // 等它真的让出槽位（run() 返回、状态停在 Paused）
+            withTimeout(15_000) { while (t.state.value !is TaskState.Paused) delay(5) }
+            delay(120)
+
+            t.cancel()
+            assertEquals("让出槽位的任务没有 run() 收尾，取消必须直接落终态", TaskState.Cancelled, t.state.value)
+            scope.cancel()
+        }
 }

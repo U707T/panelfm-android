@@ -93,10 +93,18 @@ class TransferTask internal constructor(
         val s = _state.value
         if (!s.isFinished && s !is TaskState.Cancelling) _state.value = TaskState.Cancelling
         conflictWaiter?.cancel()
+        // 已经因暂停让出槽位的任务没有 run() 在跑 —— 不会有人把它收尾成 Cancelled，
+        // 这里直接落终态。半成品 .part / 断点记录保持不动（与运行中取消同口径）。
+        if (yieldedOnPause) {
+            yieldedOnPause = false
+            requeuePending.set(true)   // 防止 resume 再把它塞回队列
+            _state.value = TaskState.Cancelled
+        }
     }
 
     /** 重新入队（幂等）：`resume()` 与 `run()` 收尾都可能触发，只有第一次生效。 */
     private fun requestRequeue() {
+        if (gate.isCancelled) return
         if (!requeuePending.compareAndSet(false, true)) return
         yieldedOnPause = false
         onRequeue?.invoke()
@@ -356,8 +364,22 @@ class TransferTask internal constructor(
         } catch (p: PauseSignal) {
             // 暂停：让出 worker 槽位（不再挂在闸门里占并发位）。断点已由 transferFile 的
             // 失败路径落盘（可续传目标保留 .part；不可续传目标 abort 半成品）。
-            _state.value = TaskState.Paused
+            //
+            // 顺序很重要：先立标志再写状态 —— cancel() 靠 yieldedOnPause 判断
+            // 「这个任务已经不在 run() 里了」，需要自己落终态。
             yieldedOnPause = true
+            if (gate.isCancelled) {
+                // 暂停与取消擦肩而过：取消优先
+                yieldedOnPause = false
+                _state.value = TaskState.Cancelled
+                return
+            }
+            _state.value = TaskState.Paused
+            if (gate.isCancelled) {
+                yieldedOnPause = false
+                _state.value = TaskState.Cancelled
+                return
+            }
             // 暂停与恢复擦肩而过（用户连点）：闸门已经恢复，立即重新入队续跑，
             // 否则任务会永远停在 Paused —— 那次 resume() 已经执行过了。
             if (!gate.paused.value) requestRequeue()
