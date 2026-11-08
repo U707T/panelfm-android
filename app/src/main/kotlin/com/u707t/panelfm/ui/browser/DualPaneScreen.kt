@@ -44,18 +44,16 @@ import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.draw.clip
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.compose.foundation.layout.Spacer
+import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.DividerSideShadow
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
-import com.u707t.panelfm.core.ui.MtIcon
-import com.u707t.panelfm.core.ui.MtVectorIcon
+import com.u707t.panelfm.core.ui.ThinProgressBar
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.AppContainer
@@ -66,6 +64,9 @@ import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.local.LocalVolume
 import com.u707t.panelfm.core.vfs.local.LocalVolumes
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.ui.tasks.TransferCapsule
+import com.u707t.panelfm.ui.tasks.TransferTaskDialog
+import com.u707t.panelfm.ui.tasks.dialogFocus
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
 
@@ -359,46 +360,60 @@ fun DualPaneScreen(
                     }
                 }
 
-                // ---------------- 任务条（只显示进行中 / 失败；完成、已取消立即消失，不再常驻）
+                // ---------------- 传输任务：模态对话框（v2.3.2）
                 //
-                // v2.3.0：整块改成「surface 底 + 顶部 1px 分隔线 + 卡片式任务行」。
-                // 旧实现是 surfaceVariant 0.75 的灰条，与下方底栏（surface + 分隔线）直接叠在
-                // 一起，中间没有分界，看起来像底栏被拉高了 —— 这是「下端不和谐」的主因之一。
-                if (ui.tasks.isNotEmpty()) {
+                // 按需求改成 MT 那样的「带进度条的自定义模态对话框」，取代 v2.3.0 底部的常驻
+                // 内联任务条（两行卡片 + 图标按钮，最多占掉两块屏幕高度，和底栏抢空间）。
+                // 对话框关掉后底部只留一行胶囊（[TransferCapsule]）当重开入口。
+                //
+                // 自动弹出规则：
+                //  - 只对**新出现**的在传任务弹（[BrowserDialogsState.autoOpenedTaskIds] 记账），
+                //    否则用户点「后台运行」之后每 200ms 的快照都会把它重新弹出来；
+                //  - 暂停 / 失败 / 等待冲突不主动打断：冲突有专门的冲突框，暂停和失败等用户自己叫；
+                //  - 任务列表清空时收起重开入口并清空记账。
+                val focus = ui.tasks.dialogFocus()
+                val newRunning = ui.tasks.firstOrNull {
+                    it.state is TaskState.Running && it.id !in ds.autoOpenedTaskIds
+                }
+                LaunchedEffect(newRunning?.id, ui.tasks.isEmpty()) {
+                    if (ui.tasks.isEmpty()) {
+                        ds.transferDialogOpen = false
+                        ds.autoOpenedTaskIds = emptySet()
+                        ds.pendingAutoOpen = false
+                    } else if (newRunning != null) {
+                        // 记账时顺手裁掉已经不在列表里的 id：失败任务会长期留在列表，
+                        // 列表可能很久都不清空，不裁就会无限增长。
+                        val live = ui.tasks.mapTo(HashSet()) { it.id }
+                        ds.autoOpenedTaskIds = (ds.autoOpenedTaskIds + newRunning.id) intersect live
+                        // 冲突框优先：必须让用户先做选择，进度框等它解决后再弹（见下一个 effect）。
+                        if (ui.conflict == null) ds.transferDialogOpen = true else ds.pendingAutoOpen = true
+                    }
+                }
+                // 被冲突挡下的那次自动弹出，在冲突解决后补上（只补一次，不打断用户手动关闭）。
+                LaunchedEffect(ui.conflict) {
+                    if (ui.conflict == null && ds.pendingAutoOpen) {
+                        ds.pendingAutoOpen = false
+                        if (ui.tasks.isNotEmpty()) ds.transferDialogOpen = true
+                    }
+                }
+                if (focus != null) {
                     Column(
                         Modifier
                             .fillMaxWidth()
                             .background(MaterialTheme.colorScheme.surface),
                     ) {
                         DividerPx()
-                        Column(
-                            Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 8.dp, vertical = 6.dp),
+                            horizontalArrangement = Arrangement.Center,
                         ) {
-                            ui.tasks.take(2).forEach { snapshot -> TaskRow(snapshot, controller, onOpenTasks) }
-                            val rest = ui.tasks.size - 2
-                            if (rest > 0) {
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .clickableNoRipple { onOpenTasks() }
-                                        .padding(vertical = 4.dp),
-                                    horizontalArrangement = Arrangement.Center,
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
-                                    Text(
-                                        "还有 $rest 个任务",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                    MtVectorIcon(
-                                        icon = MtIcon.CHEVRON_R,
-                                        size = 12.dp,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                    )
-                                }
-                            }
+                            TransferCapsule(
+                                snapshot = focus,
+                                otherCount = ui.tasks.size - 1,
+                                onClick = { ds.transferDialogOpen = true },
+                            )
                         }
                     }
                 }
@@ -490,5 +505,32 @@ fun DualPaneScreen(
     BrowserActionSheets(container, controller, ui, ds)
 
     BrowserDialogHost(container, controller, ui, ds)
+
+    // ---------------- 传输进度模态对话框（v2.3.2）
+    //
+    // 放在对话框宿主之后：它是「模态」的，压在所有浏览页浮层上面。
+    // ⚠️ 冲突没解决时不显示 —— 冲突框（BrowserDialogHost 内的 AlertDialog）是另一个窗口，
+    // 谁后组合谁在上面；进度框盖住冲突框等于让用户看不见必须做选择的那一项。
+    if (ds.transferDialogOpen && ui.conflict == null) {
+        val focus = ui.tasks.dialogFocus()
+        if (focus == null) {
+            // 任务在对话框打开期间被清空：收起，避免留下一个空壳
+            LaunchedEffect(Unit) { ds.transferDialogOpen = false }
+        } else {
+            TransferTaskDialog(
+                focus = focus,
+                otherCount = ui.tasks.size - 1,
+                onPause = { controller.pauseTask(focus.id) },
+                onResume = { controller.resumeTask(focus.id) },
+                onCancel = { controller.cancelTask(focus.id) },
+                onRemove = { controller.removeTask(focus.id) },
+                onDismiss = { ds.transferDialogOpen = false },
+                onOpenTasks = {
+                    ds.transferDialogOpen = false
+                    onOpenTasks()
+                },
+            )
+        }
+    }
 }
 

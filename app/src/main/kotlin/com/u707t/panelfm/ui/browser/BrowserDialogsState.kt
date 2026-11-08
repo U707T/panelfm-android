@@ -82,4 +82,24 @@ internal class BrowserDialogsState {
     var extractDirPicker by mutableStateOf(false)
     var extractDialogFor by mutableStateOf<FileMetadata?>(null)
     var archiveRename by mutableStateOf<FileMetadata?>(null)
+
+    /**
+     * 传输进度模态对话框是否打开（v2.3.2）。
+     *
+     * 传输入队 / 有任务在跑时自动置 true，用户点「后台运行」或按返回置 false；
+     * 底部胶囊点回来再置 true。任务列表清空时由 [DualPaneScreen] 重置。
+     */
+    var transferDialogOpen by mutableStateOf(false)
+
+    /**
+     * 已经自动弹过对话框的任务 id。
+     *
+     * 为什么需要它：只看「有没有在传」不行 —— 用户点「后台运行」关掉对话框后，任务仍在传，
+     * 条件恒为真，每 200ms 一次的快照发射会把对话框重新弹出来（等于关不掉）。
+     * 记住弹过的 id，就只有**新任务**才会再次自动弹出；列表清空时重置。
+     */
+    var autoOpenedTaskIds by mutableStateOf<Set<String>>(emptySet())
+
+    /** 新任务被冲突框挡下的那次自动弹出（冲突解决后补弹一次，见 DualPaneScreen）。 */
+    var pendingAutoOpen by mutableStateOf(false)
 }

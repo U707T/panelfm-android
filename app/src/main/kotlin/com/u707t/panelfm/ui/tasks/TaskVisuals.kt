@@ -48,24 +48,3 @@ fun TransferTaskSnapshot.trailingLabel(): String = when (val s = state) {
         if (retainedProgress > 0f) "${(retainedProgress * 100).roundToInt()}%" else s.statusLabel()
     else -> state.statusLabel()
 }
-
-/**
- * 内联任务条的第二行文案（纯函数，可单测）。
- *
- * - 进行中：统计行；失败：错误原因；等待冲突：提示；
- * - **暂停 / 取消中：状态词 + 保留的最后一帧统计**。v2.3.0 把「暂停 / 取消」从文字按钮换成
- *   图标后，行尾只剩百分比 —— 暂停的任务看起来仍在跑，正在取消的任务完全没有提示。
- *   状态词必须留在这一行（MT 的进度块也是「已暂停」+ 字节数并排）。
- * - 排队中：留空 —— 行尾已经写着「排队中」，重复一遍只是噪音。
- */
-fun TransferTaskSnapshot.barDetail(): String = when (val s = state) {
-    is TaskState.Running -> subtitle
-    is TaskState.Failed -> s.message
-    is TaskState.WaitingConflict -> "等待选择冲突处理方式…"
-    is TaskState.Paused -> joinDetail("已暂停", retainedStats)
-    is TaskState.Cancelling -> joinDetail("正在取消操作…", retainedStats)
-    else -> ""
-}
-
-private fun joinDetail(vararg parts: String): String =
-    parts.filter { it.isNotBlank() }.joinToString(" · ")
