@@ -118,14 +118,19 @@ def draw_new():
     img, d = phone("PanelFM · v2.3.2")
     bottom_bar(d)
 
-    # 底部胶囊（单行，32dp）
-    cap_w = 150
+    # 悬浮胶囊（单行 32dp）：直接压在文件列表上，没有底板 / 分隔线
+    cap_w = 152
     cx = (W - cap_w) / 2
-    rect(d, (cx, 620, cx + cap_w, 650), SURFACE_VARIANT, radius=15)
-    rect(d, (cx + 10, 632, cx + 16, 638), PRIMARY, radius=3)
-    text(d, (cx + 23, 628), "进行中 · 共 2 个", 10, ON_SURFACE, bold=True)
-    text(d, (cx + 103, 628), "30%", 10, PRIMARY, bold=True)
-    bar(d, (cx + 126, 632, cx + 140, 635), 0.30, PRIMARY, 3, track=(250, 250, 252))
+    cy = 618
+    for i in range(6, 0, -1):   # 伪投影
+        a = 10 + i * 3
+        rect(d, (cx - i * 0.4, cy + i * 0.9, cx + cap_w + i * 0.4, cy + 32 + i * 0.9),
+             (247 - a, 248 - a, 250 - a), radius=16)
+    rect(d, (cx, cy, cx + cap_w, cy + 32), (233, 235, 241), radius=16)
+    rect(d, (cx + 10, cy + 13, cx + 16, cy + 19), PRIMARY, radius=3)
+    text(d, (cx + 23, cy + 9), "进行中 · 共 2 个", 10, ON_SURFACE, bold=True)
+    text(d, (cx + 106, cy + 9), "30%", 10, PRIMARY, bold=True)
+    bar(d, (cx + 129, cy + 14, cx + 143, cy + 17), 0.30, PRIMARY, 3, track=(250, 250, 252))
 
     # 遮罩
     overlay = Image.new("RGBA", img.size, (0, 0, 0, 90))
@@ -167,7 +172,7 @@ def draw_new():
     text(d, (x1 - 16, ay), "后台运行", 12, PRIMARY, anchor="ra")
 
     text(d, (W / 2, 500), "● 一次只说一件事：一个任务 + 贴底进度条", 9, TERTIARY, anchor="ma")
-    text(d, (W / 2, 660), "● 关掉后底部只留一行胶囊（32dp），点它回来", 9, TERTIARY, anchor="ma")
+    text(d, (W / 2, 660), "● 关掉后只剩一枚悬浮胶囊，压在列表上，无底框无分隔线", 9, TERTIARY, anchor="ma")
     return img
 
 
