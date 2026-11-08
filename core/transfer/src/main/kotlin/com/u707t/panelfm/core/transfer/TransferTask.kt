@@ -1,5 +1,6 @@
 package com.u707t.panelfm.core.transfer
 
+import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.Throttle
 import com.u707t.panelfm.core.model.ConflictDecision
@@ -400,12 +401,7 @@ class TransferTask internal constructor(
          *  - 其余状态：一句话说明。
          */
         val subtitle = when (s) {
-            is TaskState.Running -> listOfNotNull(
-                "${s.index}/${s.total} 项",
-                com.u707t.panelfm.core.common.Fmt.transferred(s.doneBytes, s.totalBytes),
-                com.u707t.panelfm.core.common.Fmt.speed(s.speedBps).takeIf { it.isNotBlank() },
-                if (s.etaSeconds > 0) "剩 ${com.u707t.panelfm.core.common.Fmt.eta(s.etaSeconds)}" else null,
-            ).joinToString(" · ")
+            is TaskState.Running -> statsLine(s, withSpeed = true)
             is TaskState.Done -> buildString {
                 append("成功 ${s.ok}")
                 if (s.skipped > 0) append(" · 跳过 ${s.skipped}")
@@ -437,8 +433,23 @@ class TransferTask internal constructor(
                 if (it.totalBytes > 0) (it.doneBytes.toFloat() / it.totalBytes).coerceIn(0f, 1f) else -1f
             } ?: -1f,
             retainedName = retained?.currentName.orEmpty(),
+            retainedStats = retained?.let { statsLine(it, withSpeed = false) }.orEmpty(),
         )
     }
+
+    /**
+     * 统计行：`1/3 项 · 282.82 M / 949.47 M · 49.81 M/s · 剩 0:13`。
+     *
+     * 两处共用（运行中 / 暂停时保留的最后一帧），避免各拼一套格式：
+     *  - `总项数未知`（还在统计）时不写 `0/0 项` —— 旧实现在「正在统计…」阶段会显示这个假值；
+     *  - [withSpeed] 关闭时不给速度 / 剩余时间：暂停后这两个数都是上一帧的残影，留着会误导。
+     */
+    private fun statsLine(s: TaskState.Running, withSpeed: Boolean): String = listOfNotNull(
+        if (s.total > 0) "${s.index}/${s.total} 项" else null,
+        Fmt.transferred(s.doneBytes, s.totalBytes).ifBlank { null },
+        if (withSpeed) Fmt.speed(s.speedBps).takeIf { it.isNotBlank() } else null,
+        if (withSpeed && s.etaSeconds > 0) "剩 ${Fmt.eta(s.etaSeconds)}" else null,
+    ).joinToString(" · ")
 
     private sealed interface FastPathTarget {
         data object Skip : FastPathTarget

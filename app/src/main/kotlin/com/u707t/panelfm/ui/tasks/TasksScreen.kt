@@ -70,6 +70,9 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
     val tasks by container.engine.snapshots.collectAsState(initial = emptyList())
     val ordered = tasks.sortedForDisplay()
     val activeCount = ordered.count { it.state.isActive }
+    // 「进行中」只数真正在传的：isActive 还含排队 / 暂停 / 等待冲突 / 正在取消，
+    // 全算进去会让「暂停全部」之后标题仍写着「2 个进行中」。
+    val runningCount = ordered.count { it.state is TaskState.Running }
     val finishedCount = ordered.count { it.state.isFinished }
     val failedCount = ordered.count { it.state is TaskState.Failed }
     var confirmClear by remember { mutableStateOf(false) }
@@ -79,7 +82,8 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
             title = "传输任务",
             subtitle = when {
                 ordered.isEmpty() -> "暂无任务"
-                activeCount > 0 -> "${ordered.size} 个任务 · $activeCount 个进行中"
+                runningCount > 0 -> "${ordered.size} 个任务 · $runningCount 个进行中"
+                activeCount > 0 -> "${ordered.size} 个任务 · 已暂停 / 等待中"
                 else -> "${ordered.size} 个任务 · 已全部结束"
             },
             onBack = onBack,
@@ -205,8 +209,16 @@ private fun TaskCard(
                 }
                 is TaskState.Done -> TaskField("结果", snapshot.subtitle)
                 is TaskState.Failed -> TaskField("失败", state.message, MaterialTheme.colorScheme.error)
-                is TaskState.Paused -> TaskField("状态", "已暂停 · 断点已保留，点「继续」接着传")
-                is TaskState.Cancelling -> TaskField("状态", "正在取消操作…")
+                is TaskState.Paused -> {
+                    // 暂停时把最后一帧的字节数留在「进度」行：否则卡片只剩「已暂停」，
+                    // 用户看不出停在哪（v2.2.x 的副标题里还有统计，v2.3.0 重排后丢了）。
+                    if (snapshot.retainedStats.isNotBlank()) TaskField("进度", snapshot.retainedStats)
+                    TaskField("状态", "已暂停 · 断点已保留，点「继续」接着传")
+                }
+                is TaskState.Cancelling -> {
+                    if (snapshot.retainedStats.isNotBlank()) TaskField("进度", snapshot.retainedStats)
+                    TaskField("状态", "正在取消操作…")
+                }
                 is TaskState.WaitingConflict -> TaskField("状态", "等待选择冲突处理方式…")
                 TaskState.Queued -> TaskField("状态", "排队中，等待空闲传输位")
                 is TaskState.Cancelled -> TaskField("状态", snapshot.subtitle)
@@ -223,8 +235,8 @@ private fun TaskCard(
                 trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f),
             )
         }
-        if (state is TaskState.Running || state is TaskState.Paused ||
-            state is TaskState.Cancelling || state is TaskState.Done
+        if (state is TaskState.Running || state is TaskState.Done ||
+            ((state is TaskState.Paused || state is TaskState.Cancelling) && snapshot.retainedProgress >= 0f)
         ) {
             ThinProgressBar(
                 progress = overall,

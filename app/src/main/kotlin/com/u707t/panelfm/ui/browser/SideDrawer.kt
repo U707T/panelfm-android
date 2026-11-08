@@ -41,6 +41,7 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.ThemeMode
 import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.ConnectionType
+import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.transfer.overallProgress
 import com.u707t.panelfm.core.ui.HSeparator
@@ -362,7 +363,9 @@ fun MtSideDrawer(
             //        终端模拟器 / … / 更多工具；标题右侧 ︿ 可折叠，默认展开）
             SectionHeader("工具", expanded = expandTools, onToggle = { expandTools = !expandTools })
             if (expandTools) {
-                val active = tasks.count { it.state.isActive }
+                // 「进行中」只数真正在传的任务：isActive 还包含排队 / 已暂停 / 等待冲突 /
+                // 正在取消，全算进去会让一个暂停的任务在抽屉里永远显示「1 进行中」。
+                val running = tasks.count { it.state is TaskState.Running }
                 DrawerTool("回收站", MtIcon.DELETE, onOpenTrash)
                 DrawerTool("已安装应用", MtIcon.EXTENSION, onOpenApps)
                 DrawerTool("文本编辑器", MtIcon.CODE, onOpenEditor)
@@ -375,7 +378,7 @@ fun MtSideDrawer(
                     ?.average()
                     ?.toFloat()
                 DrawerTool(
-                    "传输任务" + if (active > 0) "（$active 进行中）" else "",
+                    "传输任务" + if (running > 0) "（$running 进行中）" else "",
                     MtIcon.GET_APP,
                     onOpenTasks,
                     progress = activeProgress,

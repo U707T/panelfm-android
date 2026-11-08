@@ -41,6 +41,7 @@ import com.u707t.panelfm.core.transfer.currentNameOrRetained
 import com.u707t.panelfm.core.transfer.overallProgress
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.ui.tasks.accentColor
+import com.u707t.panelfm.ui.tasks.barDetail
 import com.u707t.panelfm.ui.tasks.trailingLabel
 
 // ================================================================================================
@@ -191,15 +192,15 @@ internal fun TaskRow(snapshot: TransferTaskSnapshot, controller: BrowserControll
     val progress = snapshot.overallProgress()
     val accent = state.accentColor()
     val name = snapshot.currentNameOrRetained()
-    // 第二行：进行中给统计，失败给原因，等待冲突给提示；暂停 / 排队不再重复右侧状态词。
-    val detail = when (state) {
-        is TaskState.Running -> snapshot.subtitle
-        is TaskState.Failed -> state.message
-        is TaskState.WaitingConflict -> "等待选择冲突处理方式…"
-        else -> ""
+    // 第二行：进行中给统计，失败给原因，等待冲突给提示，暂停 / 取消中给「状态词 + 最后一帧」。
+    val detail = snapshot.barDetail()
+    // 进度条只在「有真实进度」时画：排队中就被暂停的任务没有保留帧，画一条 0% 的空槽
+    // 会让人以为传输被重置了（旧实现无条件画）。
+    val showBar = when (state) {
+        is TaskState.Running, is TaskState.Done -> true
+        is TaskState.Paused, is TaskState.Cancelling -> snapshot.retainedProgress >= 0f
+        else -> false
     }
-    val showBar = state is TaskState.Running || state is TaskState.Paused ||
-        state is TaskState.Cancelling || state is TaskState.Done
 
     Column(
         Modifier

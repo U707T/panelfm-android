@@ -166,6 +166,8 @@ data class TransferTaskSnapshot(
     val retainedProgress: Float = -1f,
     /** 暂停 / 正在取消时保留的当前文件名 */
     val retainedName: String = "",
+    /** 暂停 / 正在取消时保留的统计行（`1/3 项 · 282.82 M / 949.47 M`；不带速度 / 剩余时间） */
+    val retainedStats: String = "",
 )
 
 fun TransferRequest.describe(): String {

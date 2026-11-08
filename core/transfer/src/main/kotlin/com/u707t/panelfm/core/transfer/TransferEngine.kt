@@ -95,9 +95,9 @@ class TransferEngine(
                     }
                 }
                 try {
-                    // ⚠️ 槽位在 `run()` 返回后才释放：暂停 / 等待冲突的任务会一直占着并发位
-                    //（run() 挂在闸门里不返回）。占用语义已显式化到任务行文案「已暂停（占用传输位）」；
-                    //  彻底修法见 TransferTask.pause() 注释与总文档 §4 修复记录（留档）。
+                    // 槽位在 `run()` 返回后释放。v2.2.5 起暂停**不再挂闸门**：checkpoint()
+                    // 抛 PauseSignal → run() 收尾返回 → 槽位立刻空出来，恢复时由 onRequeue 重新入队。
+                    // 唯一会长期占位的状态是「等待冲突」—— 那是等用户做选择，不是空转。
                     runCatching { task.run() }
                         .onFailure { Logx.e("TransferEngine", "worker crashed: ${it.message}", it) }
                 } finally {
