@@ -371,7 +371,6 @@ fun DualPaneScreen(
                 //    否则用户点「后台运行」之后每 200ms 的快照都会把它重新弹出来；
                 //  - 暂停 / 失败 / 等待冲突不主动打断：冲突有专门的冲突框，暂停和失败等用户自己叫；
                 //  - 任务列表清空时收起重开入口并清空记账。
-                val focus = ui.tasks.dialogFocus()
                 val newRunning = ui.tasks.firstOrNull {
                     it.state is TaskState.Running && it.id !in ds.autoOpenedTaskIds
                 }
@@ -396,30 +395,10 @@ fun DualPaneScreen(
                         if (ui.tasks.isNotEmpty()) ds.transferDialogOpen = true
                     }
                 }
-                if (focus != null) {
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surface),
-                    ) {
-                        DividerPx()
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            horizontalArrangement = Arrangement.Center,
-                        ) {
-                            TransferCapsule(
-                                snapshot = focus,
-                                otherCount = ui.tasks.size - 1,
-                                onClick = { ds.transferDialogOpen = true },
-                            )
-                        }
-                    }
-                }
 
                 // ---------------- 长操作状态条（审计 U4：压缩 / 校验 / 对比 / 完整性测试 / 远程包下载）
                 // 不可消失（没有关闭按钮），一律带「取消」；点过取消后转为「正在取消…」直到作业收尾。
+                // v2.3.2.1：传输胶囊已改成真正的悬浮层（见下方 BoxScope），不再在布局流里占一条底框。
                 ui.busy?.let { op ->
                     Column(
                         Modifier
@@ -505,6 +484,26 @@ fun DualPaneScreen(
     BrowserActionSheets(container, controller, ui, ds)
 
     BrowserDialogHost(container, controller, ui, ds)
+
+    // ---------------- 传输胶囊：真正的悬浮层（v2.3.2.1）
+    //
+    // 真机截图指出的问题：胶囊之前放在 Column 的布局流里、外面还包了一条
+    // 「surface 底 + 1px 分隔线」的底框 —— 看起来像胶囊被钉在一块灰板上。
+    // 按需求改成悬浮：胶囊盖在文件列表上（BottomCenter），不给任何底板与分隔线；
+    // 位置在底栏上方 8dp，不遮底栏本身的按钮。
+    val capsule = ui.tasks.dialogFocus()
+    if (capsule != null) {
+        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            TransferCapsule(
+                snapshot = capsule,
+                otherCount = ui.tasks.size - 1,
+                onClick = { ds.transferDialogOpen = true },
+                modifier = Modifier.windowInsetsPadding(
+                    WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)
+                ).padding(bottom = 66.dp),
+            )
+        }
+    }
 
     // ---------------- 传输进度模态对话框（v2.3.2）
     //

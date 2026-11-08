@@ -22,6 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.semantics
@@ -181,6 +182,10 @@ fun TransferTaskDialog(
 /**
  * 关闭对话框之后、底部保留的**一行极简重开入口**（悬浮胶囊）。
  *
+ * v2.3.2.1：真机截图指出「胶囊旁边还有个底框」—— 之前它被包在布局流里的一条
+ * surface 底条里。现在由调用方挂到悬浮层（`BoxScope` + `BottomCenter`），这里只负责
+ * 胶囊本身：一层浅投影让它「浮」在文件列表上，不再有任何底板 / 分隔线。
+ *
  * 尺寸刻意压到 32dp 高、单行、只带一个进度点：它是「回去看进度」的快捷方式，
  * 不该重新变成 v2.3.0 那种两行卡片 + 图标按钮的常驻任务条。
  */
@@ -200,8 +205,9 @@ fun TransferCapsule(
     }
     Row(
         modifier
+            .shadow(3.dp, RoundedCornerShape(percent = 50), ambientColor = Color.Black.copy(alpha = 0.25f), spotColor = Color.Black.copy(alpha = 0.25f))
             .clip(RoundedCornerShape(percent = 50))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.92f))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.97f))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
