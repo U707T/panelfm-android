@@ -13,6 +13,9 @@ import androidx.compose.ui.graphics.asImageBitmap
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.vfs.FileMetadata
+import com.u707t.panelfm.core.vfs.VfsMediaDataSource
+import com.u707t.panelfm.core.vfs.VfsReader
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.withContext
@@ -24,12 +27,12 @@ import java.security.MessageDigest
  * 缩略图管线（M9）：
  *  - 内存 LRU + 磁盘缓存（cache/thumbs/<sha1>.png|jpg）
  *  - 本地图片直接采样解码；网络图片按设置（默认仅 Wi-Fi / 小于 3 MB）才加载
- *  - **本地视频取首帧**（v2.3.3）：MediaMetadataRetriever，2 并发，独立 2 秒超时
+ *  - 视频取首帧：本地走文件路径，**网络走 `VfsMediaDataSource`**（Range 随机读，不下载整片）
  *  - 快速滚动时由调用方传入 skip，跳过加载（MT 同款手感）
  *
- * 为什么视频只做**本地**：远端（SFTP / WebDAV / SMB / S3）解一个 moov 在尾部的 mp4
- * 是十几次随机读，加上每个文件要付超时，一屏 NAS 视频能把首屏拖到十几秒并吃满带宽；
- * 收益（远端多是按文件名找东西）远低于成本。要做也应做成默认关的独立开关。
+ * 视频的成本控制写死在 [ThumbCache] 里而不是设置项里：窗口 512 KB、单张预算 8 MB、
+ * 单次读 4 秒、整张 2 秒（本地）/ 8 秒（网络）。压缩包内仍然不取帧 —— 随机读要先解包，
+ * `readFullyAt` 在压缩包实现上是「从头解到该位置」，比顺序读完还贵。
  */
 object ThumbCache {
 
@@ -50,6 +53,16 @@ object ThumbCache {
      */
     @OptIn(ExperimentalCoroutinesApi::class)
     private val videoDispatcher = Dispatchers.IO.limitedParallelism(2)
+
+    /**
+     * 近失败过的视频（key → 失败时刻）。
+     *
+     * 为什么需要：坏文件 / 半写的文件 / 服务器不支持 Range 的源，取帧会稳定失败；
+     * 没有这层记忆，每次滚动停下都把同一批文件重试一遍（远端还要付网络）。
+     * key 里带 mtime + size，所以「传输刚写完」会自然变成新 key，不会被误拉黑。
+     */
+    private val videoFailures = android.util.LruCache<String, Long>(64)
+    private const val VIDEO_FAILURE_TTL_MS = 5L * 60_000L
 
     /**
      * 磁盘缓存上限（默认 128 MB）。
@@ -164,7 +177,8 @@ object ThumbCache {
     }
 
     /**
-     * 本地视频首帧。不可用（格式不支持 / 文件损坏 / 非本地）返回 null，由调用方回退类型图标。
+     * 视频首帧。不可用（格式不支持 / 文件损坏 / 服务器不给 Range / 超预算）返回 null，
+     * 由调用方回退类型图标；失败会记进 [videoFailures]，5 分钟内不再重试同一版本的文件。
      *
      * 只取 **t=0 的同步帧**：`OPTION_CLOSEST_SYNC` 配中间时间点会从上一个大关键帧开始追帧，
      * 实测 1080p / GOP 250 时贵 20 倍（2.2 s CPU vs 0.09 s），而换来「更好看的封面」在
@@ -172,8 +186,8 @@ object ThumbCache {
      * 避免 4K 整帧（33 MB）进内存。
      */
     suspend fun loadVideo(container: AppContainer, item: FileMetadata, targetPx: Int): Bitmap? {
-        if (item.uri.scheme != "local") return null
         val key = keyOf(item)
+        if (recentlyFailed(key)) return null
         memory.get(key)?.let { return it }
         fileOf(key, jpeg = true)?.takeIf { it.exists() }?.let { cached ->
             val bm = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(cached.absolutePath) }
@@ -183,28 +197,63 @@ object ThumbCache {
             }
         }
         val bitmap = withContext(videoDispatcher) {
-            runCatching {
-                val path = container.localVfs.absolutePath(item.uri)
-                val retriever = MediaMetadataRetriever()
-                try {
-                    retriever.setDataSource(path)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
-                        retriever.getScaledFrameAtTime(
-                            0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, targetPx, targetPx,
-                        )
-                    } else {
-                        retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
-                            ?.let { fitInto(it, targetPx) }
-                    }
-                } finally {
-                    // 漏掉 release 就是 native 泄漏（单帧 2–8 MB），并且一直占着一个 codec 实例
-                    runCatching { retriever.release() }
-                }
-            }.getOrNull()
-        } ?: return null
+            // 取消（滚走 / 超时）不是「坏文件」：必须抛出去，别记进失败表
+            runCatching { firstFrame(container, item, targetPx) }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                null
+            }
+        }
+        if (bitmap == null) {
+            markFailed(key)
+            return null
+        }
+        videoFailures.remove(key)
         memory.put(key, bitmap)
         writeDisk(key, bitmap, jpeg = true)
         return bitmap
+    }
+
+    /** 取首帧。[firstFrame] 里所有资源都在 finally 释放 —— 漏一处就泄漏一个 codec 或一条连接。 */
+    private fun firstFrame(container: AppContainer, item: FileMetadata, targetPx: Int): Bitmap? {
+        val retriever = MediaMetadataRetriever()
+        var source: VfsMediaDataSource? = null
+        var reader: VfsReader? = null
+        try {
+            if (item.uri.scheme == "local") {
+                retriever.setDataSource(container.localVfs.absolutePath(item.uri))
+            } else {
+                val vfs = container.locator.find(item.uri) ?: return null
+                val r = vfs.openRead(item.uri)
+                reader = r
+                // 目录列表里的 size 才是现成的：WebDAV 的 reader.size 要读过一次才有值
+                val size = r.size?.takeIf { it > 0 } ?: item.size
+                if (size <= 0) return null
+                val src = VfsMediaDataSource(r, size)
+                source = src
+                retriever.setDataSource(src)
+            }
+            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                retriever.getScaledFrameAtTime(
+                    0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC, targetPx, targetPx,
+                )
+            } else {
+                retriever.getFrameAtTime(0L, MediaMetadataRetriever.OPTION_CLOSEST_SYNC)
+                    ?.let { fitInto(it, targetPx) }
+            }
+        } finally {
+            runCatching { retriever.release() }
+            runCatching { source?.close() }
+            runCatching { reader?.close() }
+        }
+    }
+
+    private fun recentlyFailed(key: String): Boolean {
+        val at = videoFailures.get(key) ?: return false
+        return System.currentTimeMillis() - at < VIDEO_FAILURE_TTL_MS
+    }
+
+    private fun markFailed(key: String) {
+        videoFailures.put(key, System.currentTimeMillis())
     }
 
     /** 写磁盘缓存，并每 64 张检查一次上限（都在 IO 上做，不阻塞缩略图返回） */
@@ -272,31 +321,55 @@ data class ThumbPolicy(
 private const val IMAGE_LOAD_TIMEOUT_MS = 5_000L
 
 /**
- * 单张**视频**首帧的加载上限（2 秒）。
+ * 单张**本地视频**首帧的加载上限（2 秒）。
  *
  * 本机取帧正常是 30–100 ms，2 秒已经是 20 倍冗余；而 [ThumbCache] 的视频取帧只有
  * **2 个并发槽**，沿用图片的 5 秒意味着一个坏文件能把半条流水线按住 5 秒 ——
  * 一屏里两三个坏视频，用户看到的就是「缩略图半天不冒出来」。
  */
-private const val VIDEO_LOAD_TIMEOUT_MS = 2_000L
+private const val VIDEO_LOCAL_TIMEOUT_MS = 2_000L
 
-/** 列表行缩略图的来源：不加载 / 图片 / 本地视频首帧 */
-internal enum class ThumbSource { NONE, IMAGE, VIDEO }
+/**
+ * 单张**网络视频**首帧的加载上限（8 秒）。
+ *
+ * 网络比本地多两件事：解 moov 要几发 Range 请求（WebDAV 正常 100–300 ms 一发），
+ * 慢速 NAS / 跨公网 WebDAV 会再慢一个量级。8 秒覆盖「3–4 发请求 + 一次解码」的余量，
+ * 又短到不会让一屏 NAS 视频把流水线按几分钟 —— 配合 [ThumbCache] 的 5 分钟失败记忆，
+ * 坏源只会付一次代价。
+ */
+private const val REMOTE_VIDEO_TIMEOUT_MS = 8_000L
+
+/** 列表行缩略图的来源：不加载 / 图片 / 本地视频首帧 / 网络视频首帧 */
+internal enum class ThumbSource { NONE, IMAGE, VIDEO_LOCAL, VIDEO_REMOTE }
+
+/**
+ * 允许给视频取首帧的协议。
+ *
+ * 不含 `ftp` / `ftps`：FTP 在这套 VFS 里是**顺序流** —— `seek` 只接受原位，
+ * `readFullyAt` 只允许「从 0 起、流未被消费、≤64 KB」的预读。解复用器要的随机读它给不了，
+ * 放进白名单只会让每个 FTP 视频白失败一次再进 5 分钟失败表。
+ *
+ * 不含 `archive`：压缩包内的随机读要先解包，`readFullyAt` 在压缩包实现上是
+ * 「从头解到该位置」，比顺序读完整段还贵 —— 一屏 zip 里的视频会把 CPU 打满。
+ */
+private val VIDEO_SCHEMES = setOf("local", "dav", "sftp", "smb", "s3")
 
 /**
  * 某一行该不该取缩略图（纯函数，便于单测）。
  *
- * 视频只对**本地**文件取帧：远端（WebDAV / FTP / SFTP / SMB / S3）解一个 moov 在尾部的
- * mp4 是十几次随机读 + 每文件超时，一屏 NAS 视频能把首屏拖到十几秒；压缩包里的视频
- * 要先解包才能读，同样不做。两者都回退类型图标。
+ * 图片：本地 + 所有远端协议（远端另有「连接开关 / 仅 Wi-Fi / 大小上限」三道闸）。
+ * 视频：本地 + 上面 [VIDEO_SCHEMES] 里的网络协议；远端视频走 `VfsMediaDataSource`
+ * 按 Range 随机读首帧，窗口 512 KB、预算 8 MB，不下载整片。
  */
-internal fun thumbSourceOf(extension: String, isDirectory: Boolean, scheme: String): ThumbSource =
-    when {
-        isDirectory -> ThumbSource.NONE
-        MimeTypes.kindOf(extension) == MimeTypes.Kind.IMAGE -> ThumbSource.IMAGE
-        MimeTypes.kindOf(extension) == MimeTypes.Kind.VIDEO && scheme == "local" -> ThumbSource.VIDEO
-        else -> ThumbSource.NONE
+internal fun thumbSourceOf(extension: String, isDirectory: Boolean, scheme: String): ThumbSource {
+    if (isDirectory) return ThumbSource.NONE
+    val kind = MimeTypes.kindOf(extension)
+    if (kind == MimeTypes.Kind.IMAGE) return ThumbSource.IMAGE
+    if (kind == MimeTypes.Kind.VIDEO && scheme in VIDEO_SCHEMES) {
+        return if (scheme == "local") ThumbSource.VIDEO_LOCAL else ThumbSource.VIDEO_REMOTE
     }
+    return ThumbSource.NONE
+}
 
 /** 列表行里的缩略图（不可用/未加载时返回 null，由调用方回退到类型图标） */
 @Composable
@@ -309,8 +382,8 @@ fun rememberThumb(
 ): ImageBitmap? {
     val source = thumbSourceOf(item.extension, item.isDirectory, item.uri.scheme)
     if (source == ThumbSource.NONE || skip) return null
-    // 连接级开关：编辑连接 → 缩略图选项 → 关闭后该连接不加载缩略图（视频恒为本地，不走这里）
-    if (source == ThumbSource.IMAGE && item.uri.scheme != "local") {
+    // 连接级开关：编辑连接 → 缩略图选项 → 关闭后该连接不加载缩略图（本地视频恒为本地，不走这里）
+    if (source != ThumbSource.VIDEO_LOCAL && item.uri.scheme != "local") {
         val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(item.uri))
             ?: container.connectionByAuthority(item.uri.scheme, item.uri.authority)
         if (cfg?.option(com.u707t.panelfm.core.model.ConnectionConfig.OPT_LOAD_THUMBS) == "false") return null
@@ -324,12 +397,20 @@ fun rememberThumb(
     ) {
         // Wi-Fi 默认加载；移动数据下按「移动数据下加载缩略图」设置（切换设置会刷新加载行为）
         val allowRemote = com.u707t.panelfm.LocalNetwork.isOnWifi(context) || policy.onMobileData
-        val timeoutMs = if (source == ThumbSource.VIDEO) VIDEO_LOAD_TIMEOUT_MS else IMAGE_LOAD_TIMEOUT_MS
-        val bitmap = kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
-            if (source == ThumbSource.VIDEO) {
-                ThumbCache.loadVideo(container, item, targetPx)
-            } else {
-                ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
+        val timeoutMs = when (source) {
+            ThumbSource.VIDEO_LOCAL -> VIDEO_LOCAL_TIMEOUT_MS
+            ThumbSource.VIDEO_REMOTE -> REMOTE_VIDEO_TIMEOUT_MS
+            else -> IMAGE_LOAD_TIMEOUT_MS
+        }
+        val bitmap = if (source == ThumbSource.VIDEO_REMOTE && !allowRemote) {
+            null
+        } else {
+            kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
+                if (source == ThumbSource.VIDEO_LOCAL || source == ThumbSource.VIDEO_REMOTE) {
+                    ThumbCache.loadVideo(container, item, targetPx)
+                } else {
+                    ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
+                }
             }
         }
         value = bitmap?.asImageBitmap()

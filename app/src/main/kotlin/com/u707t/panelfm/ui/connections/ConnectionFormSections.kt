@@ -381,7 +381,7 @@ internal fun ThumbnailOptions(state: ConnectionEditState, expanded: Boolean, onT
         if (expanded) {
             SwitchRow("加载缩略图", state.loadThumbs) { state.loadThumbs = it }
             Text(
-                "关闭后该连接中的网络图片不再加载列表缩略图（点开仍可正常预览）。",
+                "关闭后该连接中的网络图片与视频不再加载列表缩略图（点开仍可正常预览）。",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

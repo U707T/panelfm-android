@@ -4,11 +4,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 /**
- * 列表缩略图的**资格判定**回归（v2.3.3 加视频首帧时补上）。
+ * 列表缩略图的**资格判定**回归（v2.3.3 加本地视频、v2.3.4 加网络视频时补上）。
  *
- * 这里锁的是两条产品决策，不是实现细节：
- *  1. 视频只对**本地**文件取帧（远端 / 压缩包内一律回退类型图标）；
- *  2. 目录永远不取（目录名可能长得像 `xxx.mp4`）。
+ * 这里锁的是产品决策，不是实现细节：
+ *  1. 视频对**本地 + 网络协议**取首帧，压缩包内不取（要解包才能随机读）；
+ *  2. 目录永远不取（目录名可能长得像 `xxx.mp4`）；
+ *  3. 未知协议不取 —— 新增协议时要显式加进 `VIDEO_SCHEMES`，不能默默生效。
  */
 class ThumbSourceTest {
 
@@ -16,21 +17,34 @@ class ThumbSourceTest {
     fun `图片本地与远端都取`() {
         assertEquals(ThumbSource.IMAGE, thumbSourceOf("jpg", isDirectory = false, scheme = "local"))
         assertEquals(ThumbSource.IMAGE, thumbSourceOf("PNG", isDirectory = false, scheme = "sftp"))
-        assertEquals(ThumbSource.IMAGE, thumbSourceOf("heic", isDirectory = false, scheme = "webdav"))
+        assertEquals(ThumbSource.IMAGE, thumbSourceOf("heic", isDirectory = false, scheme = "dav"))
         assertEquals(ThumbSource.IMAGE, thumbSourceOf("webp", isDirectory = false, scheme = "smb"))
     }
 
     @Test
-    fun `视频只对本地取首帧`() {
-        assertEquals(ThumbSource.VIDEO, thumbSourceOf("mp4", isDirectory = false, scheme = "local"))
-        assertEquals(ThumbSource.VIDEO, thumbSourceOf("MKV", isDirectory = false, scheme = "local"))
-        assertEquals(ThumbSource.VIDEO, thumbSourceOf("rmvb", isDirectory = false, scheme = "local"))
-        // 远端取帧要解 moov（十几次随机读）+ 每文件超时，收益不抵成本
-        assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "sftp"))
-        assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "webdav"))
-        assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "s3"))
-        // 压缩包内要先解包才能读 → 不做
+    fun `本地视频走本地取帧`() {
+        assertEquals(ThumbSource.VIDEO_LOCAL, thumbSourceOf("mp4", isDirectory = false, scheme = "local"))
+        assertEquals(ThumbSource.VIDEO_LOCAL, thumbSourceOf("MKV", isDirectory = false, scheme = "local"))
+        assertEquals(ThumbSource.VIDEO_LOCAL, thumbSourceOf("rmvb", isDirectory = false, scheme = "local"))
+    }
+
+    @Test
+    fun `网络视频走 Range 取帧`() {
+        // WebDAV 是主要场景；SFTP / SMB / S3 的 readFullyAt 都是真随机读
+        assertEquals(ThumbSource.VIDEO_REMOTE, thumbSourceOf("mp4", isDirectory = false, scheme = "dav"))
+        assertEquals(ThumbSource.VIDEO_REMOTE, thumbSourceOf("mkv", isDirectory = false, scheme = "sftp"))
+        assertEquals(ThumbSource.VIDEO_REMOTE, thumbSourceOf("mp4", isDirectory = false, scheme = "smb"))
+        assertEquals(ThumbSource.VIDEO_REMOTE, thumbSourceOf("mov", isDirectory = false, scheme = "s3"))
+    }
+
+    @Test
+    fun `FTP 与压缩包内、未知协议都不取帧`() {
+        // FTP 在这套 VFS 里是顺序流：seek 只接受原位、readFullyAt 只允许从 0 起 ≤64 KB 预读
+        assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "ftp"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "ftps"))
+        // 压缩包内随机读 = 从头解到该位置，比顺序读完整段还贵
         assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "archive"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = false, scheme = "content"))
     }
 
     @Test
@@ -46,6 +60,7 @@ class ThumbSourceTest {
     fun `音频不取首帧`() {
         // 音频没有画面；封面内嵌图（ID3 APIC）是另一条管线，不在缩略图里做
         assertEquals(ThumbSource.NONE, thumbSourceOf("mp3", isDirectory = false, scheme = "local"))
-        assertEquals(ThumbSource.NONE, thumbSourceOf("flac", isDirectory = false, scheme = "local"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("flac", isDirectory = false, scheme = "dav"))
     }
 }
+
