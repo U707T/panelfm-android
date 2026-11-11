@@ -10,7 +10,8 @@ import org.junit.Test
  * 播放器手势的统一判定（v1.3.6）：
  *  - 死区 8dp：位移不够**什么都不触发**（进度 / 音量 / 亮度都不灵）；
  *  - 主轴优势比 1.4：斜滑（dx≈dy）保持未定态，避免在功能之间跳变；
- *  - 灵敏度固定：3px = 1 秒、200px = 满量程（与屏幕尺寸无关）。
+ *  - 灵敏度：进度 3px = 1 秒；音量 / 亮度满量程 = 手势区高度的 45%（v2.3.3 起按 dp 换算，
+ *    原来误把 IRIS 的逻辑像素当物理 px，2.75x 屏上过灵 2.75 倍）。
  */
 class MtGesturePlayerTest {
 
@@ -59,11 +60,29 @@ class MtGesturePlayerTest {
     }
 
     @Test
-    fun `音量亮度灵敏度固定为 200px 满量程`() {
-        assertEquals(1f, MtGesture.levelDelta(-200f), 0.001f)
-        assertEquals(-1f, MtGesture.levelDelta(200f), 0.001f)
-        assertEquals(0.5f, MtGesture.levelDelta(-100f), 0.001f)
-        assertEquals(0f, MtGesture.levelDelta(0f), 0.001f)
+    fun `音量亮度满量程按手势区高度换算`() {
+        // 800dp 高的机身：0.45 × 800 = 360dp 走完 0 → 100%
+        assertEquals(360f, MtGesture.levelFullScaleDp(800f), 0.001f)
+        // 小屏按比例缩小，但不少于下限（再小就「一碰到底」）
+        assertEquals(260f, MtGesture.levelFullScaleDp(500f), 0.001f)
+        // 平板封顶，不至于要滑半屏
+        assertEquals(480f, MtGesture.levelFullScaleDp(1600f), 0.001f)
+    }
+
+    @Test
+    fun `音量增量按满量程比例换算`() {
+        assertEquals(1f, MtGesture.levelDelta(-360f, 360f), 0.001f)
+        assertEquals(-1f, MtGesture.levelDelta(360f, 360f), 0.001f)
+        assertEquals(0.5f, MtGesture.levelDelta(-180f, 360f), 0.001f)
+        assertEquals(0f, MtGesture.levelDelta(0f, 360f), 0.001f)
+    }
+
+    @Test
+    fun `轻滑 24dp 只走几个百分点`() {
+        // 回归：旧实现把 IRIS 的「200 逻辑像素」当成物理 px，2.75x 屏上 200px ≈ 73dp，
+        // 24dp（约 6mm）滑一下 = 33% 音量 —— 真机反馈的「轻滑幅度太大」。
+        // 现在同样的位移是 6.7%（25 档机型约 1.7 档）。
+        assertEquals(0.067f, MtGesture.levelDelta(-24f, 360f), 0.001f)
     }
 
     @Test

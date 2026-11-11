@@ -270,8 +270,14 @@ object MtGesture {
     //  · 灵敏度：进度按「一屏宽 = 全长」，音量 / 亮度按「一屏高 = 满量程」，
     //    同一段手指位移在三者上的效果差得很远（割裂感的来源）。
     //
-    // 现在照 IRIS `use_gesture.dart` 的口径统一为**与屏幕尺寸无关的固定物理量**，
-    // 并加一条死区 + 主轴优势比，保证「什么方向就是什么功能」。
+    // 现在照 IRIS 的口径统一了**进入判定**（死区 + 主轴优势比），保证「什么方向就是什么功能」；
+    // 灵敏度则各自校准到物理可感量。
+    //
+    // ⚠️ v1.3.6 移植 IRIS 时把数字照抄、单位换了：IRIS 的 `dy` 是 Flutter **逻辑像素**
+    //    （= dp），Android 这边拿到的是**物理 px**。2.75x 屏上等于把所有灵敏度放大 2.75 倍
+    //    —— 真机反馈「音量轻滑一下掉半格」就是这条（200px ≈ 73dp 走完 0→100%）。
+    //    音量 / 亮度已按 dp 重算（见 [levelFullScaleDp]）；进度保留 px，理由见
+    //    [PlayerSeekPxPerSecond]。
 
     /** 播放器手势的进入死区（dp，IRIS 用 8）：位移超过它才开始判定方向 */
     const val PlayerDeadZoneDp = 8f
@@ -285,11 +291,35 @@ object MtGesture {
      */
     const val PlayerAxisBias = 1.4f
 
-    /** 进度灵敏度：每滑动多少 px 代表 1 秒（IRIS = 3） */
+    /**
+     * 进度灵敏度：每滑动多少 **px** 代表 1 秒（IRIS = 3 逻辑像素）。
+     *
+     * 这里**故意保留物理 px**（与 IRIS 的单位不一致，是唯一一处）：
+     * IRIS 的 3 逻辑像素 = 3dp/秒，一屏宽（约 390dp）只跳 130 秒，长视频要反复倒手；
+     * 按物理 px 在 2.75x 屏上约 1.1dp/秒，一屏宽 ≈ 6 分钟，长片拖起来才顺手。
+     * 想改回 dp 口径就改这里 + [seekDeltaSeconds] 的入参，别再只换数字不换单位。
+     */
     const val PlayerSeekPxPerSecond = 3f
 
-    /** 音量 / 亮度灵敏度：滑动多少 px 走完满量程（IRIS = 200） */
-    const val PlayerLevelPxFullScale = 200f
+    /**
+     * 音量 / 亮度灵敏度：走完满量程（0 → 100%）需要的纵向位移 = **手势区高度的这个比例**。
+     *
+     * 为什么不用固定物理量：固定 200px（= 73dp @2.75x）轻滑即掉半格；固定 200dp 在小屏上
+     * 又偏钝。按高度取比例后，800dp 的机身约 360dp 走完满量程（一次舒服的拇指滑动），
+     * 与 MX / VLC 这类播放器的习惯一致；上下再封顶，避免小屏太钝、平板太灵。
+     */
+    const val PlayerLevelFullScaleRatio = 0.45f
+
+    /** 满量程位移下限（dp）：再小就变成「一碰到底」 */
+    const val PlayerLevelMinFullScaleDp = 260f
+
+    /** 满量程位移上限（dp）：平板上不至于要滑半屏 */
+    const val PlayerLevelMaxFullScaleDp = 480f
+
+    /** 当前机型的音量 / 亮度满量程位移（dp）。[gestureHeightDp] = 手势区高度 */
+    fun levelFullScaleDp(gestureHeightDp: Float): Float =
+        (gestureHeightDp * PlayerLevelFullScaleRatio)
+            .coerceIn(PlayerLevelMinFullScaleDp, PlayerLevelMaxFullScaleDp)
 
     /**
      * 判定播放器手势方向：横滑返回 true（进度），竖滑返回 false（音量 / 亮度）。
@@ -309,6 +339,6 @@ object MtGesture {
     /** 进度增量：按固定灵敏度换算（横向位移 px → 秒）。 */
     fun seekDeltaSeconds(dxPx: Float): Long = (dxPx / PlayerSeekPxPerSecond).toLong()
 
-    /** 音量 / 亮度增量（0..1）：按固定灵敏度换算（纵向位移 px → 比例，向上为正）。 */
-    fun levelDelta(dyPx: Float): Float = -dyPx / PlayerLevelPxFullScale
+    /** 音量 / 亮度增量（0..1）：纵向位移 dp → 比例（向上为正），[fullScaleDp] 见 [levelFullScaleDp] */
+    fun levelDelta(dyDp: Float, fullScaleDp: Float): Float = -dyDp / fullScaleDp
 }

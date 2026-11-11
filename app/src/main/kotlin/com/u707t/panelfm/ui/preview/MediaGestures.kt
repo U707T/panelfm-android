@@ -7,6 +7,8 @@ package com.u707t.panelfm.ui.preview
 //  - 本次修复：① 进度基准改为「按下时的位置快照」（原实时基准会重复计入拖动时长）；
 //              ② 横滑进行中标记 gestureSeeking（控制层自动隐藏据此避让，不再落定中途值）；
 //              ③ 屏幕左右边缘 48dp 避让（系统返回手势区，照 IRIS）
+//  - v2.3.3：音量 / 亮度灵敏度按 dp 重算（原来把 IRIS 的「逻辑像素」当物理 px，
+//            2.75x 屏上过灵 2.75 倍）；进入手势时位移重新对零，死区不再吃进增量
 // ================================================================================================
 
 import android.media.AudioManager
@@ -25,6 +27,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlin.math.roundToInt
 
 /**
  * 播放器手势层的对外依赖：全部是「读当前值 / 写目标状态」的回调。
@@ -160,17 +163,26 @@ internal fun rememberMediaPlayerGestures(hooks: MediaGestureHooks): Modifier {
                 return@awaitEachGesture
             }
             val startPos = down.position
-            // 手势判定与灵敏度统一走 MtGesture（照 IRIS：死区 8dp、主轴优势比、3px/秒、200px 满量程），
-            // 三个手势（进度 / 音量 / 亮度）用同一套阈值与增益 —— 消除「进入难易不一、手感割裂」
+            // 手势判定统一走 MtGesture（死区 8dp、主轴优势比、3px/秒、满量程按手势区高度），
+            // 三个手势用同一套进入判定 —— 消除「进入难易不一、手感割裂」
             val density = this@pointerInput.density
+            // 音量 / 亮度满量程对应的纵向位移（dp）。按手势区高度换算而不是写死：
+            // 写死一律在密度高 / 屏幕小的机器上过灵（见 MtGesture.PlayerLevelFullScaleRatio）
+            val levelFullScaleDp = MtGesture.levelFullScaleDp(with(density) { size.height.toDp().value })
             var mode = 0   // 0=未定 1=进度 2=右侧音量 3=左侧亮度
             var seekTarget = 0L
             // 进度基准：**按下那一刻的位置快照**（照 IRIS 的 startSeekPosition）。
             // 旧实现每帧以实时 currentPosition 作基准叠加累计位移，而拖动期间播放未暂停、
             // 位置持续推进 → 拖动时长被重复计入，慢拖时落点越拖越偏。
             var seekBase = 0L
+            // 死区之后重新对零的基准点：手指从按下点到「判定通过」那段位移不再计入。
+            // 否则一进手势就先跳一下（8dp 在音量上是 4% ≈ 一格，进度上是 7 秒）。
+            var anchor = startPos
             val maxVolume = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
             val startVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            // 已下发给系统的音量档：只有档位真的变了才再调一次 setStreamVolume，
+            // 否则一次拖动会打几十次系统调用（部分 ROM 会跟着闪音量条）
+            var appliedVolume = startVolume
             val startBrightness = hooks.getBrightness()
             try {
                 while (true) {
@@ -195,6 +207,8 @@ internal fun rememberMediaPlayerGestures(hooks: MediaGestureHooks): Modifier {
                                 startPos.x > size.width / 2f -> 2
                                 else -> 3
                             }
+                            // 进入手势的这一刻把位移基准挪到当前点（死区不吃进增量）
+                            anchor = change.position
                             if (mode == 1) {
                                 seekBase = hooks.player.currentPosition
                                 seekTarget = seekBase
@@ -204,26 +218,37 @@ internal fun rememberMediaPlayerGestures(hooks: MediaGestureHooks): Modifier {
                     }
                     when (mode) {
                         1 -> if (hooks.getDurationMs() > 0) {
-                            // 固定灵敏度（3px = 1 秒），与屏幕宽度无关
-                            val delta = MtGesture.seekDeltaSeconds(dx) * 1000L
+                            // 固定灵敏度（3px = 1 秒），与屏幕宽度无关；位移从 anchor 起算
+                            val delta = MtGesture.seekDeltaSeconds(change.position.x - anchor.x) * 1000L
                             seekTarget = (seekBase + delta).coerceIn(0, hooks.getDurationMs())
                             hooks.setSeekPreview(seekTarget)
                             hooks.setHud("${clock(hooks.player.currentPosition)} → ${clock(seekTarget)} / ${clock(hooks.getDurationMs())}")
                             change.consume()
                         }
                         2 -> {
-                            // 固定灵敏度（200px = 满量程）
-                            val delta = MtGesture.levelDelta(dy)
-                            val target = (startVolume + delta * maxVolume).toInt().coerceIn(0, maxVolume)
-                            audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
-                            hooks.setVolumeRatio(target.toFloat() / maxVolume)
+                            // 灵敏度按 dp：满量程 = 手势区高度的 45%（见 MtGesture.levelFullScaleDp）
+                            val dyDp = with(density) { (change.position.y - anchor.y).toDp().value }
+                            val raw = startVolume + MtGesture.levelDelta(dyDp, levelFullScaleDp) * maxVolume
+                            val target = raw.roundToInt().coerceIn(0, maxVolume)
+                            // 只有档位真的变了才下发：拖动一次几十个事件，逐个 setStreamVolume 是浪费，
+                            // 部分 ROM 还会跟着闪系统音量条。
+                            // runCatching：固定音量策略 / 免打扰下这里会抛 SecurityException，
+                            // 手势不该把播放器带崩（吞掉后浮层照常跟手，松手就是「调不动」而已）
+                            if (target != appliedVolume) {
+                                appliedVolume = target
+                                runCatching { audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0) }
+                                hooks.setMuted(target == 0)
+                            }
+                            // 浮层按**未取整**的比例走：系统音量只有 15/25 档，直接显示档位会让
+                            // 手指匀速滑动时进度条「一格一格跳」，看起来像卡顿
+                            hooks.setVolumeRatio((raw / maxVolume).coerceIn(0f, 1f))
                             hooks.setBrightnessRatio(null) // 两端浮层共用中央位置：清掉对面残留，避免叠两层
-                            hooks.setMuted(target == 0)
                             change.consume()
                         }
                         3 -> {
-                            val delta = MtGesture.levelDelta(dy)
-                            val target = (startBrightness + delta).coerceIn(0.05f, 1f)
+                            val dyDp = with(density) { (change.position.y - anchor.y).toDp().value }
+                            val target = (startBrightness + MtGesture.levelDelta(dyDp, levelFullScaleDp))
+                                .coerceIn(0.05f, 1f)
                             hooks.setBrightness(target)
                             hooks.setBrightnessRatio(target)
                             hooks.setVolumeRatio(null) // 同上：只留当前手势这一个浮层
