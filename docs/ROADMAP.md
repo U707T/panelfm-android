@@ -30,7 +30,7 @@
 | ✅ | `.apks` 安装（PackageInstaller） | `BrowserFileActions.kt`、`TypeActions.kt`、Manifest | M |
 | ✅ | APKS/XAPK/APKM 转 APK（合并 + 内置测试证书重签） | `core/apk/`、`DialogsApkConvert.kt` | L |
 | ✅ | APK 信息补全（ABI / 安装位置 / 可调试） | `ApkInfoScreen.kt` | S |
-| ✅ | 目录大小（懒计算 + LRU + 上限） | `ui/browser/DirSize.kt`、`PaneView.kt` | M |
+| ~~✅~~ | ~~目录大小（懒计算 + LRU + 上限）~~ **v2.4.2 已废止** | ~~`ui/browser/DirSize.kt`、`PaneView.kt`~~ | M |
 | ⬜ | 媒体字幕 / PiP | `MediaScreen.kt` | M |
 | ⬜ | PDF / EPUB 纵深 | `PdfScreen.kt`、`EpubScreen.kt` | M |
 | ⬜ | DocumentsProvider | 新增 `provider/` | L |
@@ -227,7 +227,16 @@ Manifest 目前没有 `REQUEST_INSTALL_PACKAGES`。
 
 ---
 
-## 3. 批次三 · v2.6.0「目录大小」
+## 3. 批次三 · v2.6.0「目录大小」——**v2.4.2 已废止（用户决定：大小只在「属性」里看）**
+
+> **2026-11-14 结论**：v2.4.0 上线、v2.4.1 补闸门之后，用户明确要求「文件大小只在手动点开属性时看，
+> 不需要一直显示」。于是列表副标题去掉体积文本、`DirSize.kt` 整个删除、「网络目录也计算文件夹大小」
+> 设置项一并下线；`MtListSubtitle` 从三档（时间 / 权限+大小 / 时间+大小）收成两档（时间 / 权限）。
+> 文件夹递归统计只保留在「属性」对话框里（`DialogsProperties.folderSummary`，5 万项上限，用户显式触发）。
+> 下面这段留作历史记录 —— **不要再按它去恢复列表内统计**，除非用户重新提出。
+>
+> 另外：`按大小排序`不受影响（读的是 `FileMetadata.size`，与列表显示无关）；
+> 目录仍不参与大小排序（目录的 `size` 依旧未知）。
 
 **现状**：列表里目录的 `sizeText` 直接为空；按大小排序时目录等于不可比；
 没有任何缓存。
@@ -290,6 +299,7 @@ Manifest 目前没有 `REQUEST_INSTALL_PACKAGES`。
 
 - **1.5 与 1.6 同批**：都要改 `TransferRequest` / `Done` 模型，分两批会改两次。
 - **1.3 与 3 独立**：快速滚动条是手势，目录大小是后台计算，互不阻塞。
+  （v2.4.2 起「3」已废止，本条只剩历史意义：快速滚动条仍在，列表内统计没了。）
 - **4.1–4.3 各自一版**：都动 `MediaScreen` / `PdfScreen` / `EpubScreen`，
   三件事挤一版会让真机回归面失控。
 - **4.4 最后**：会话生命周期（idle 回收 / pin）是它最大的坑，放在主线稳定后。
@@ -336,7 +346,7 @@ Manifest 目前没有 `REQUEST_INSTALL_PACKAGES`。
 | 图片 EXIF / 旋转 / 设为壁纸 | 查看器收尾项；**重启条件**：图片场景用得多时 |
 | 桌面快捷方式 | 小功能；**重启条件**：与 Intent 同批做 |
 | 应用锁（BiometricPrompt） | 安全底座，但非高频；**重启条件**：存敏感连接变多 |
-| 空间分析 Top N | 依赖目录大小的扫描底座；**重启条件**：目录大小上线后 |
+| 空间分析 Top N | 需要自己的扫描底座（v2.4.2 已删掉列表内目录统计，没有现成扫描器了）；**重启条件**：用户提出「找出占空间最多的目录」 |
 | 全局搜索（跨连接） | 工作量大、搜索已有「当前目录 + 递归」；**重启条件**：文件量上来后 |
 | 压缩包内视频缩略图 | 随机读要先解包（`ArchiveVfs.readFullyAt` 是从头解到该位置），比顺序读完还贵；**重启条件**：压缩包实现真随机读（建索引） |
 | 任务持久化 + 冷启动恢复 | 依赖失败重试的模型；**重启条件**：传输中断投诉变多 |

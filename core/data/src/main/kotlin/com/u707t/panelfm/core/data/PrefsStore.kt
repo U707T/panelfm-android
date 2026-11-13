@@ -87,20 +87,16 @@ data class AppSettings(
     val trashRetentionDays: Int = 0,
     /** 回收站容量上限（字节；0 = 不限） */
     val trashMaxBytes: Long = 0L,
-    /**
-     * 网络目录也计算文件夹大小（默认关）。
-     * 本地目录默认开启；远端递归 list 可能很贵（S3/WebDAV 每个目录一次请求），必须用户显式打开。
-     */
-    val dirSizeOnNetwork: Boolean = false,
     /** MT「启动路径 - 左/右窗口」：true = 首页，false = 上次路径 */
     val startAtHome: Boolean = false,
     /**
-     * MT「文件列表显示」三档（文案 `0x7f110200/201/202`）：
-     *   0 不显示权限（只有时间）/ 1 非存储目录显示「权限+大小」/ 2 全部目录显示「时间+大小」
+     * MT「文件列表显示」两档（文案 `0x7f110200/201`）：
+     *   0 只显示时间（默认）/ 1 只显示权限
      *
-     * **默认 2**：MT 截图实测列表副标题是时间（`26-10-04 13:16`）而不是权限位。
+     * **大小不进列表**（v2.4.2）：体积只在「属性」里看，所以 MT 的第三档「时间+大小」已废止。
+     * 旧值 2 在读取时归一到 0（时间），见 [Settings] 的映射。
      */
-    val listDisplayMode: Int = 2,
+    val listDisplayMode: Int = 0,
     /** MT「超过 X 大小的图片文件不加载缩略图」（字节，0 = 不限制） */
     val thumbnailMaxBytes: Long = 3L * 1024 * 1024,
     /** MT「退出前双次确认」 */
@@ -185,7 +181,6 @@ class PrefsStore(private val context: Context) {
         val verifyMode = stringPreferencesKey("verify_mode")
         val trashRetentionDays = intPreferencesKey("trash_retention_days")
         val trashMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("trash_max_bytes")
-        val dirSizeOnNetwork = booleanPreferencesKey("dir_size_on_network")
         val startAtHome = booleanPreferencesKey("start_at_home")
         val listDisplayMode = intPreferencesKey("list_display_mode")
         val thumbMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("thumb_max_bytes")
@@ -274,9 +269,9 @@ class PrefsStore(private val context: Context) {
             }.getOrDefault(VerifyMode.SIZE),
             trashRetentionDays = (p[Keys.trashRetentionDays] ?: 0).coerceIn(0, 3650),
             trashMaxBytes = (p[Keys.trashMaxBytes] ?: 0L).coerceAtLeast(0L),
-            dirSizeOnNetwork = p[Keys.dirSizeOnNetwork] ?: false,
             startAtHome = p[Keys.startAtHome] ?: false,
-            listDisplayMode = (p[Keys.listDisplayMode] ?: 2).coerceIn(0, 2),
+            // 旧三档 → 新两档：只有旧值 1（权限+大小）保留为「权限」，其余（含旧默认 2）归到「时间」
+            listDisplayMode = if ((p[Keys.listDisplayMode] ?: 0) == 1) 1 else 0,
             thumbnailMaxBytes = p[Keys.thumbMaxBytes] ?: (3L * 1024 * 1024),
             confirmExit = p[Keys.confirmExit] ?: false,
             backupOnSave = p[Keys.backupOnSave] ?: false,
@@ -356,10 +351,8 @@ class PrefsStore(private val context: Context) {
     suspend fun setTrashMaxBytes(bytes: Long) =
         context.panelDataStore.edit { it[Keys.trashMaxBytes] = bytes.coerceAtLeast(0L) }
 
-    /** 网络目录是否计算文件夹大小（默认关：远端递归列举很贵） */
-    suspend fun setDirSizeOnNetwork(on: Boolean) = context.panelDataStore.edit { it[Keys.dirSizeOnNetwork] = on }
     suspend fun setStartAtHome(on: Boolean) = context.panelDataStore.edit { it[Keys.startAtHome] = on }
-    suspend fun setListDisplayMode(mode: Int) = context.panelDataStore.edit { it[Keys.listDisplayMode] = mode.coerceIn(0, 2) }
+    suspend fun setListDisplayMode(mode: Int) = context.panelDataStore.edit { it[Keys.listDisplayMode] = mode.coerceIn(0, 1) }
     suspend fun setThumbnailMaxBytes(bytes: Long) = context.panelDataStore.edit { it[Keys.thumbMaxBytes] = bytes.coerceAtLeast(0) }
     suspend fun setConfirmExit(on: Boolean) = context.panelDataStore.edit { it[Keys.confirmExit] = on }
     suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }

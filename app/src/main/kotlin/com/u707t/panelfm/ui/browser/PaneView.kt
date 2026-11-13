@@ -132,10 +132,7 @@ fun PaneView(
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
     val settings by container.settings.collectAsState()
     // 缩略图策略 / 副标题档位在这里算一次，下传给每一行（行内不再订阅 settings）
-    // 目录大小：本地默认算；远端默认不算（递归 list 可能是几十次网络请求）
-    val dirSizeEnabled = remember(pane.uri.scheme, settings.dirSizeOnNetwork) {
-        pane.uri.scheme == "local" || pane.uri.scheme == "archive" || settings.dirSizeOnNetwork
-    }
+    // 列表不显示大小（v2.4.2）：体积只在「属性」里看，行内不再触发任何目录递归统计
     val thumbPolicy = remember(
         settings.thumbnailsOnMobile,
         settings.thumbnailMaxBytes,
@@ -399,8 +396,6 @@ fun PaneView(
                             // 见 ThumbPolicy 的 KDoc 里同一条结论。
                             thumbPolicy = thumbPolicy,
                             listDisplayMode = settings.listDisplayMode,
-                            dirSizeEnabled = dirSizeEnabled,
-                            dirSizeSkip = listState.isScrollInProgress,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
                             // 行动效预览：只有被滑动的那一行读这个位移（其余行传 null，不参与重组）
@@ -603,10 +598,6 @@ private fun MtFileRow(
     thumbPolicy: ThumbPolicy,
     /** 列表副标题档位（同上，按值下传） */
     listDisplayMode: Int,
-    /** 是否允许为该行（目录）计算大小 */
-    dirSizeEnabled: Boolean,
-    /** 滚动中：不启动新的目录统计（进入可视区先等等，停下再算） */
-    dirSizeSkip: Boolean,
     item: FileMetadata,
     selected: Boolean,
     /** 滑动选中的行动效：非 null = 这一行刚被滑动选中（值 = 目标横向位移 px），随后弹回 0 */
@@ -697,14 +688,10 @@ private fun MtFileRow(
                 else MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
-                rowSubtitle(
-                    listDisplayMode,
-                    item,
-                    dirSizeText = if (item.isDirectory) {
-                        dirSizeLabel(container, item, dirSizeEnabled, dirSizeSkip)
-                    } else null,
-                ),
+                // MT「文件列表显示」两档（`0x7f110200/201`）：时间 / 权限。
+                // 大小**不进列表**（v2.4.2 用户决定）：体积只在「属性」里看，
+                // 行内也不再触发目录递归统计（见 docs/ROADMAP.md「目录大小」条目的废止说明）。
+                rowSubtitle(listDisplayMode, item),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize, lineHeight = 13.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -723,57 +710,17 @@ private fun MtFileRow(
 }
 
 /**
- * 列表副标题（MT「文件列表显示」三档，文案 `0x7f110200/201/202`）：
+ * 列表副标题（MT「文件列表显示」两档，文案 `0x7f110200/201`）：时间 / 权限。
  * 纯函数在 [com.u707t.panelfm.core.common.MtListSubtitle]（可单测），这里只负责取字段。
+ *
+ * **不含大小**（v2.4.2）：文件体积、文件夹递归统计都只在「属性」里看。
  */
-private fun rowSubtitle(mode: Int, item: FileMetadata, dirSizeText: String? = null): String =
+private fun rowSubtitle(mode: Int, item: FileMetadata): String =
     com.u707t.panelfm.core.common.MtListSubtitle.render(
         mode = mode,
         permissionText = item.permissions?.let { Fmt.modeLong(it, item.isDirectory, item.isSymlink) },
         timeText = Fmt.time(item.lastModified),
-        sizeText = when {
-            item.isDirectory -> dirSizeText.orEmpty()
-            item.size >= 0 -> Fmt.size(item.size)
-            else -> ""
-        },
     )
-
-/**
- * 目录大小文字：缓存命中直接用；未命中则在行进入组合后**延迟 220ms** 再算
- * （快速滑动时行会不断进出组合，延迟能把这一批抖动吃掉）。
- *
- * 结果写进 [DirSizeCache]，key 带 mtime —— 目录内容变了 key 就变，不会显示旧值。
- */
-@Composable
-private fun dirSizeLabel(
-    container: com.u707t.panelfm.AppContainer,
-    item: FileMetadata,
-    enabled: Boolean,
-    skip: Boolean,
-): String? {
-    if (!enabled) return null
-    val key = remember(item.uri, item.lastModified) { DirSizeCache.key(item.uri, item.lastModified) }
-    var value by remember(key) { mutableStateOf(DirSizeCache.get(key)) }
-    var running by remember(key) { mutableStateOf(false) }
-    LaunchedEffect(key, skip) {
-        if (skip || value != null) return@LaunchedEffect
-        kotlinx.coroutines.delay(220)
-        val vfs = container.locator.find(item.uri) ?: return@LaunchedEffect
-        running = true
-        val result = runCatching { computeDirSize(vfs, item.uri) }.getOrNull()
-        running = false
-        if (result != null) {
-            DirSizeCache.put(key, result)
-            value = result
-        }
-    }
-    val v = value
-    return when {
-        v == null -> if (running) "计算中…" else null
-        v.complete -> Fmt.size(v.bytes)
-        else -> "> ${Fmt.size(v.bytes)}"
-    }
-}
 
 /** 路径中间省略（MT 的 `/storage/emula.../0/Download/` 观感） */
 fun middleEllipsis(path: String, maxChars: Int = 34): String {

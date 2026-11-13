@@ -166,15 +166,13 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
             scope.launch { container.prefs.setStartAtHome(it) }
         }
         Text(
-            // MT 0x7f110200/201/202「文件列表显示策略」三档（按钮用短名，完整语义看上一行）
+            // MT 0x7f110200/201「文件列表显示策略」两档（按钮用短名，完整语义看上一行）
             "文件列表显示：" + com.u707t.panelfm.core.common.MtListSubtitle.MODE_LABELS[settings.listDisplayMode],
             style = MaterialTheme.typography.bodyMedium,
             modifier = Modifier.padding(top = 4.dp),
         )
         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            // ⚠️ 按钮文案必须短：三档全名加起来 40+ 汉字，一行放不下（旧实现直接塞 MODE_LABELS，
-            //    真机上三枚按钮互相挤压换行）
-            listOf("时间", "权限+大小", "时间+大小").forEachIndexed { mode, short ->
+            listOf("时间", "权限").forEachIndexed { mode, short ->
                 TextButton(onClick = { scope.launch { container.prefs.setListDisplayMode(mode) } }) {
                     Text(
                         short,
@@ -184,10 +182,13 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 }
             }
         }
-        // 目录大小属于「列表显示」，不属于缩略图 —— 放错分组会让人找不到
-        SettingSwitch("网络目录也计算文件夹大小（远端递归列举较慢，默认关闭）", settings.dirSizeOnNetwork) {
-            scope.launch { container.prefs.setDirSizeOnNetwork(it) }
-        }
+        Text(
+            // 大小不常驻列表（v2.4.2）：告诉用户去哪儿看，免得以为功能被砍了
+            "文件大小 / 文件夹总大小在「属性」里查看（列表不显示，打开大目录时也不再后台统计）",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
+        )
         SettingSwitch("保存文件时自动生成 .bak 备份", settings.backupOnSave) {
             scope.launch { container.prefs.setBackupOnSave(it) }
         }

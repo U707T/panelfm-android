@@ -5,7 +5,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
- * MT「文件列表显示策略」三档（文案 `0x7f110200 / 201 / 202`）的渲染回归。
+ * MT「文件列表显示策略」两档（文案 `0x7f110200 / 201`）的渲染回归。
+ *
+ * v2.4.2 起列表**不再显示大小**（体积只在「属性」里看），第三档「时间+大小」随之下线，
+ * 所以这里不再有 sizeText 参数 —— 这一条本身就是回归断言：接口里没有「大小」这个输入。
  */
 class MtListSubtitleTest {
 
@@ -15,74 +18,51 @@ class MtListSubtitleTest {
             mode = 0,
             permissionText = "drwxr-xr-x",
             timeText = "2026-10-04 12:00",
-            sizeText = "1.2 MB",
         )
         assertEquals("2026-10-04 12:00", out)
     }
 
     @Test
-    fun `档位 2 显示时间加大小`() {
-        val out = MtListSubtitle.render(
-            mode = 2,
-            permissionText = "drwxr-xr-x",
-            timeText = "2026-10-04 12:00",
-            sizeText = "1.2 MB",
-        )
-        assertEquals("2026-10-04 12:00  ·  1.2 MB", out)
-    }
-
-    @Test
-    fun `档位 1 显示权限加大小`() {
+    fun `档位 1 只显示权限`() {
         val out = MtListSubtitle.render(
             mode = 1,
             permissionText = "-rw-r--r--",
             timeText = "2026-10-04 12:00",
-            sizeText = "1.2 MB",
         )
-        assertEquals("-rw-r--r--  ·  1.2 MB", out)
-    }
-
-    @Test
-    fun `档位 1 目录无大小时只有权限`() {
-        val out = MtListSubtitle.render(
-            mode = 1,
-            permissionText = "drwxr-xr-x",
-            timeText = "2026-10-04 12:00",
-            sizeText = "",
-        )
-        assertEquals("drwxr-xr-x", out)
+        assertEquals("-rw-r--r--", out)
     }
 
     @Test
     fun `档位 1 拿不到权限时退回时间`() {
-        val out = MtListSubtitle.render(
-            mode = 1,
-            permissionText = null,
-            timeText = "2026-10-04 12:00",
-            sizeText = "",
+        // 远端协议（WebDAV / S3 等）不给权限位：副标题不能空着
+        assertEquals(
+            "2026-10-04 12:00",
+            MtListSubtitle.render(1, permissionText = null, timeText = "2026-10-04 12:00"),
         )
-        assertEquals("2026-10-04 12:00", out)
+        assertEquals(
+            "2026-10-04 12:00",
+            MtListSubtitle.render(1, permissionText = "   ", timeText = "2026-10-04 12:00"),
+        )
     }
 
     @Test
     fun `越界档位被夹到合法范围`() {
-        // 大于 2 按最高档（时间+大小）处理
+        // 旧版本存下来的 2（时间+大小）→ 按最高档 1（权限）夹；这里只保证不崩、落在两档之内
         assertEquals(
-            MtListSubtitle.render(2, "-rw-r--r--", "t", "s"),
-            MtListSubtitle.render(9, "-rw-r--r--", "t", "s"),
+            MtListSubtitle.render(1, "-rw-r--r--", "t"),
+            MtListSubtitle.render(9, "-rw-r--r--", "t"),
         )
-        // 小于 0 按最低档（只显示时间）处理
         assertEquals(
-            MtListSubtitle.render(0, "-rw-r--r--", "t", "s"),
-            MtListSubtitle.render(-3, "-rw-r--r--", "t", "s"),
+            MtListSubtitle.render(0, "-rw-r--r--", "t"),
+            MtListSubtitle.render(-3, "-rw-r--r--", "t"),
         )
     }
 
     @Test
-    fun `档位名与 MT 文案一致`() {
-        assertEquals(3, MtListSubtitle.MODE_LABELS.size)
-        assertTrue(MtListSubtitle.MODE_LABELS[0].contains("不显示权限"))
-        assertTrue(MtListSubtitle.MODE_LABELS[1].contains("权限+大小"))
-        assertTrue(MtListSubtitle.MODE_LABELS[2].contains("时间+大小"))
+    fun `档位名只有两档且不再提大小`() {
+        assertEquals(2, MtListSubtitle.MODE_LABELS.size)
+        assertTrue(MtListSubtitle.MODE_LABELS[0].contains("时间"))
+        assertTrue(MtListSubtitle.MODE_LABELS[1].contains("权限"))
+        assertTrue(MtListSubtitle.MODE_LABELS.none { it.contains("大小") })
     }
 }

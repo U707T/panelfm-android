@@ -151,47 +151,38 @@ object Fmt {
 }
 
 /**
- * MT「文件列表显示策略」三档的副标题渲染（文案 `0x7f110200 / 201 / 202`）：
- *  - 0 = 文件列表不显示权限 → 只有时间
- *  - 1 = 非存储目录下的文件显示「权限+大小」（默认档）
- *  - 2 = 全部目录下的文件显示「时间+大小」
+ * MT「文件列表显示策略」两档的副标题渲染（文案 `0x7f110200 / 201`）：
+ *  - 0 = 只有时间（默认档）
+ *  - 1 = 只有权限（协议不提供权限时退回时间）
+ *
+ * **大小不进列表**（v2.4.2 用户决定）：文件体积 / 文件夹递归统计都只在「属性」对话框里看。
+ * 因此 MT 的第三档「时间+大小」与第二档里的「+大小」一并废止 —— 列表里不再有体积文本，
+ * 也就没有「打开 /sdcard 时一屏 10 个文件夹同时递归统计」那类开销（原 `DirSize.kt` 已删除）。
  *
  * 抽成纯函数是为了可单测（原实现内联在 PaneView 里，改档位只能靠肉眼验证）。
  */
 object MtListSubtitle {
 
-    /** 与 MT 一致的档位名（设置页展示用） */
+    /** 档位名（设置页展示用） */
     val MODE_LABELS = listOf(
-        "文件列表不显示权限",
-        "非存储目录下的文件显示「权限+大小」",
-        "全部目录下的文件显示「时间+大小」",
+        "只显示时间",
+        "只显示权限",
     )
 
     /**
      * 组装一行副标题。
      *
-     * @param mode 0/1/2，越界按默认档 1 处理
+     * @param mode 0/1，越界按最近合法档处理
      * @param permissionText 权限串（如 `drwxrws---`），null = 该协议不提供
      * @param timeText 时间串（已格式化），空串 = 无时间
-     * @param sizeText 大小串（已格式化），空串 = 无大小（目录/未知）
      */
     fun render(
         mode: Int,
         permissionText: String?,
         timeText: String,
-        sizeText: String,
-    ): String {
-        fun join(vararg parts: String?): String =
-            parts.filter { !it.isNullOrBlank() }.joinToString("  ·  ")
-
-        return when (mode.coerceIn(0, 2)) {
-            0 -> timeText
-            2 -> join(timeText, sizeText)
-            else -> {
-                val withPerm = join(permissionText, sizeText)
-                // 权限与大小都拿不到时退回时间（MT 的列表不会出现空副标题）
-                if (withPerm.isBlank()) timeText else withPerm
-            }
-        }
+    ): String = when (mode.coerceIn(0, 1)) {
+        0 -> timeText
+        // 权限拿不到时退回时间（列表不会出现空副标题）
+        else -> permissionText?.takeIf { it.isNotBlank() } ?: timeText
     }
 }
