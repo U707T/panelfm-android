@@ -17,6 +17,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -414,7 +415,7 @@ fun PaneView(
             }
 
             // ---- 快速滚动条（长目录）：只在滚动 / 拖动时淡入，静止 900ms 后淡出。
-            //      放在列表之上、FAB 之下；窄条 14dp 只吃这一条区域的触摸，不影响行手势。
+            //      放在列表之上、FAB 之下；窄条 10dp 只在滑块可见时接管触摸，纯点击不跳转。
             FastScroller(
                 listState = listState,
                 modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 1.dp),
@@ -795,7 +796,7 @@ fun Modifier.clickableNoRipple(enabled: Boolean = true, onClick: () -> Unit): Mo
 }
 
 /**
- * 快速滚动条：右侧 14dp 触摸带 + 自绘滑块。
+ * 快速滚动条：右侧 10dp 触摸带 + 自绘滑块。
  *
  * 设计约束：
  *  - **只在滚动 / 拖动时出现**（Tinder 式的常驻滚动条会与 MT 观感冲突，也挡文件名）；
@@ -846,7 +847,6 @@ private fun FastScroller(
     val gesture = Modifier.pointerInput(total, visible) {
         awaitEachGesture {
             val down = awaitFirstDown(requireUnconsumed = false)
-            dragging = true
             val h = size.height.toFloat()
             val thumbH = (h * (visible.toFloat() / total)).coerceAtLeast(minThumbPx)
             val track = (h - thumbH).coerceAtLeast(1f)
@@ -855,16 +855,25 @@ private fun FastScroller(
                 val index = (t * maxFirst).toInt().coerceIn(0, maxFirst)
                 scope.launch { listState.scrollToItem(index) }
             }
-            jumpTo(down.position.y)
-            down.consume()
-            while (true) {
-                val event = awaitPointerEvent()
-                val change = event.changes.firstOrNull { it.id == down.id } ?: break
-                if (!change.pressed) break
-                jumpTo(change.position.y)
-                change.consume()
+            // 「按下就跳」会把右侧一点的普通点击变成列表跳转 —— 刚滚完 900ms 内尤其容易误触。
+            // 超过 touch slop 才算真的在拖滑块；纯点击不改位置。
+            val moved = awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                ?: return@awaitEachGesture
+            dragging = true
+            try {
+                jumpTo(moved.position.y)
+                var change = moved
+                while (change.pressed) {
+                    val next = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                    if (!next.pressed) break
+                    jumpTo(next.position.y)
+                    next.consume()
+                    change = next
+                }
+            } finally {
+                // 手势被取消（重组 / 父级拦截）时也必须复位，否则滑块常亮
+                dragging = false
             }
-            dragging = false
         }
     }
 

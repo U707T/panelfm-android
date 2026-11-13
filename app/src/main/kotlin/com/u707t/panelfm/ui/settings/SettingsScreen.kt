@@ -184,6 +184,10 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 }
             }
         }
+        // 目录大小属于「列表显示」，不属于缩略图 —— 放错分组会让人找不到
+        SettingSwitch("网络目录也计算文件夹大小（远端递归列举较慢，默认关闭）", settings.dirSizeOnNetwork) {
+            scope.launch { container.prefs.setDirSizeOnNetwork(it) }
+        }
         SettingSwitch("保存文件时自动生成 .bak 备份", settings.backupOnSave) {
             scope.launch { container.prefs.setBackupOnSave(it) }
         }
@@ -194,9 +198,6 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SectionLabel("缩略图")
         SettingSwitch("移动数据下加载缩略图", settings.thumbnailsOnMobile) {
             scope.launch { container.prefs.setThumbsOnMobile(it) }
-        }
-        SettingSwitch("网络目录也计算文件夹大小（远端递归列举较慢，默认关闭）", settings.dirSizeOnNetwork) {
-            scope.launch { container.prefs.setDirSizeOnNetwork(it) }
         }
         Text(
             "超过该大小的图片不加载缩略图：" + com.u707t.panelfm.core.common.Fmt.size(settings.thumbnailMaxBytes),

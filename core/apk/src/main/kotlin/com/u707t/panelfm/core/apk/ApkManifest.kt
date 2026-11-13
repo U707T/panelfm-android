@@ -69,6 +69,9 @@ object ApkManifestPatcher {
 
     data class PatchResult(val bytes: ByteArray, val changes: List<String>)
 
+    private const val USES_SPLIT = "uses-split"
+    private const val USES_SPLIT_RENAMED = "x-uses-split"
+
     fun patchForStandalone(bytes: ByteArray): PatchResult {
         val xml = AxmlFile.parse(bytes)
         val changes = LinkedHashSet<String>()
@@ -85,10 +88,10 @@ object ApkManifestPatcher {
                     }
                 }
             }
-            if (element.name == "uses-split") {
-                element.renameTo("x-uses-split")
-                changes += "移除 uses-split 声明"
-            }
+        }
+        // 开始标签与结束标签一起改：只改一半会留下错配的 XML（见 AxmlFile.renameElement）
+        if (xml.renameElement(USES_SPLIT, USES_SPLIT_RENAMED) > 0) {
+            changes += "移除 uses-split 声明"
         }
         return PatchResult(xml.toBytes(), changes.toList())
     }

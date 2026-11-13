@@ -311,12 +311,13 @@ internal fun installApkBundle(
                         val pending = android.app.PendingIntent.getBroadcast(
                             context,
                             sessionId,
-                            android.content.Intent("com.u707t.panelfm.INSTALL_RESULT").setPackage(context.packageName),
+                            android.content.Intent(com.u707t.panelfm.service.ACTION_INSTALL_RESULT)
+                                .setPackage(context.packageName),
                             android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
                         )
                         session.commit(pending.intentSender)
                     }
-                    "已提交安装：${item.name}"
+                    "已提交安装：${item.name}（请在系统弹窗里确认）"
                 } catch (t: Throwable) {
                     // 没走到 commit 就失败：会话必须弃掉，否则 installer 里留一个永不完成的会话
                     runCatching { if (sessionId >= 0) installer.abandonSession(sessionId) }

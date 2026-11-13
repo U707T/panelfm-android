@@ -431,6 +431,32 @@ class BrowserController(internal val container: AppContainer) {
 
     fun dismissProperties() = update { it.copy(property = null, propertyMulti = null) }
 
+    // ------------------------------------------------------------------ 空间预检队列
+
+    /**
+     * 待确认的「空间不足」请求队列。
+     *
+     * 不能只有一个槽位：两次「空间不足」的入队在 100 ms 内先后发生时，后一个会把前一个
+     * 静默覆盖掉 —— 那笔传输从此不会发生，用户也看不到任何提示。这里保证「先到先问」。
+     */
+    private val spaceQueueLock = Any()
+    private val spaceQueue = ArrayDeque<SpaceWarning>()
+
+    /** 预检 + 入队串行化：否则两次操作可能倒序入队（先移 A 后移 B，实际 B 先跑） */
+    internal val spaceGate = kotlinx.coroutines.sync.Mutex()
+
+    internal fun pushSpaceWarning(warning: SpaceWarning) = synchronized(spaceQueueLock) {
+        spaceQueue.addLast(warning)
+        update { it.copy(spaceWarning = spaceQueue.firstOrNull()) }
+    }
+
+    /** 弹出队首（确认 / 取消都走这里），返回被弹出的请求 */
+    internal fun popSpaceWarning(): SpaceWarning? = synchronized(spaceQueueLock) {
+        val popped = spaceQueue.removeFirstOrNull()
+        update { it.copy(spaceWarning = spaceQueue.firstOrNull()) }
+        popped
+    }
+
     // ------------------------------------------------------------------ 跨窗格操作
 
     // ------------------------------------------------------------------ 路径

@@ -134,6 +134,13 @@ class TransferTask internal constructor(
         var ok = 0
         var skipped = 0
         val failed = mutableListOf<FailedItem>()
+        // 快照只留 FAILURES_KEPT 条，但**计数**必须是全量：大任务失败几十万项时，
+        // 既不能让内存跟着涨，也不能让「失败 N 项」变成「失败 200 项」。
+        var failedCount = 0
+        fun recordFailure(source: VfsUri, reason: String, sourceCopied: Boolean = false) {
+            failedCount++
+            if (failed.size < FAILURES_KEPT) failed += FailedItem(source, reason, sourceCopied)
+        }
         var doneBytes = 0L
         val progressThrottle = Throttle(200)
 
@@ -149,10 +156,17 @@ class TransferTask internal constructor(
             var slowPlan: OperationPlan? = null
 
             // 有校验要求时必须逐文件读取；否则服务端快路径无法证明内容一致。
-            // 快路径返回 false 的含义是「当前协议不支持服务端操作」，必须降级到统一的
-            // 流式慢路径（VirtualFileSystem.serverSideCopy 的契约明确要求引擎降级），
+            // **唯一例外是 SERVER_MOVE**：rename 不搬字节，目标就是源本身，大小/哈希校验对它
+            // 没有意义；把它一起拦掉会让「同卷移动 4 GB」退化成全量复制 + 删源（耗时、双倍
+            // 空间、非原子）。快路径返回 false 的含义是「当前协议不支持服务端操作」，必须降级
+            // 到统一的流式慢路径（VirtualFileSystem.serverSideCopy 的契约明确要求引擎降级），
             // 不能把一个可传输任务错误地终结为失败。
-            if (plan.fastPath != FastPath.NONE && request.verify == VerifyMode.NONE) {
+            val fastPathUsable = when (plan.fastPath) {
+                FastPath.NONE -> false
+                FastPath.SERVER_MOVE -> true
+                FastPath.SERVER_COPY -> request.verify == VerifyMode.NONE
+            }
+            if (fastPathUsable) {
                 val roots = rootItems()
                 val fallbackRoots = mutableListOf<FallbackRoot>()
                 roots.forEachIndexed { i, (src, dst) ->
@@ -223,12 +237,12 @@ class TransferTask internal constructor(
                     _state.value = TaskState.Done(
                         ok = ok,
                         skipped = skipped,
-                        failed = failed.size,
+                        failed = failedCount,
                         bytes = doneBytes,
                         elapsedMs = System.currentTimeMillis() - startedAt,
                         note = "服务端完成",
-                        failures = failed.take(FAILURES_KEPT),
-                        failureTotal = failed.size,
+                        failures = failed,
+                        failureTotal = failedCount,
                     )
                     return
                 }
@@ -321,7 +335,7 @@ class TransferTask internal constructor(
                                 if (request.op == TransferOp.MOVE) {
                                     runCatching { vfsSrc.delete(listOf(item.source)) }
                                         .onFailure {
-                                            failed += FailedItem(item.source, "已复制但删除源失败：${it.message}", sourceCopied = true)
+                                            recordFailure(item.source, "已复制但删除源失败：${it.message}", sourceCopied = true)
                                         }
                                 }
                             } else {
@@ -336,7 +350,7 @@ class TransferTask internal constructor(
                     throw e
                 } catch (e: Exception) {
                     Logx.w("TransferTask", "item failed ${item.source}: ${e.message}", e)
-                    failed += FailedItem(item.source, (e as? VfsException)?.userMessage ?: e.message ?: "未知错误")
+                    recordFailure(item.source, (e as? VfsException)?.userMessage ?: e.message ?: "未知错误")
                 }
             }
 
@@ -356,12 +370,12 @@ class TransferTask internal constructor(
             _state.value = TaskState.Done(
                 ok = ok,
                 skipped = skipped,
-                failed = failed.size,
+                failed = failedCount,
                 bytes = doneBytes,
                 elapsedMs = System.currentTimeMillis() - startedAt,
-                note = if (failed.isEmpty()) null else "失败 ${failed.size} 项",
-                failures = failed.take(FAILURES_KEPT),
-                failureTotal = failed.size,
+                note = if (failedCount == 0) null else "失败 $failedCount 项",
+                failures = failed,
+                failureTotal = failedCount,
             )
         } catch (c: VfsException.Cancelled) {
             // 取消时保留可续传目标的 .part 与断点记录。

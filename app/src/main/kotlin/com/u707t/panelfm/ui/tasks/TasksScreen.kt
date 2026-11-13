@@ -30,9 +30,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.transfer.TaskState
-import com.u707t.panelfm.core.transfer.TransferRequest
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.transfer.isFinished
@@ -43,6 +42,11 @@ import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.ui.ThinProgressBar
+import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.ui.browser.transferRequest
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 传输任务页（v2.3.0：明细按 MT 进度块的键值结构重排）：
@@ -128,27 +132,40 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                         onRetry = {
                             val done = snapshot.state as? TaskState.Done
                             val dest = snapshot.destDir
-                            // 「已复制但删源失败」不能重跑复制（会二次覆盖），只重试真正没搬的项
-                            val retryable = done?.failures
-                                ?.filterNot { it.sourceCopied }
-                                ?.map { it.source }
-                                .orEmpty()
+                            // MOVE 的失败分两种：没搬的可以重投；「已复制但删源失败」的只能补删源
+                            // （重跑复制会二次覆盖目标）。
+                            val redo = done?.failures?.filterNot { it.sourceCopied }?.map { it.source }.orEmpty()
+                            val deleteOnly = done?.failures?.filter { it.sourceCopied }?.map { it.source }.orEmpty()
                             when {
-                                dest == null -> container.browser.showStatus("无法重试：目标目录未知")
-                                retryable.isEmpty() -> container.browser.showStatus("没有可重试的项（已复制但删源失败的项不重复复制）")
+                                done == null || (redo.isEmpty() && deleteOnly.isEmpty()) ->
+                                    container.browser.showStatus("没有可重试的项")
                                 else -> {
-                                    val settings = container.settings.value
-                                    container.engine.enqueue(
-                                        TransferRequest(
-                                            sources = retryable,
-                                            destDir = dest,
-                                            op = snapshot.op,
-                                            conflict = ConflictPolicy.ASK,
-                                            verify = settings.verifyMode,
-                                            preserveModifiedTime = settings.preserveModifiedTime,
+                                    if (redo.isNotEmpty()) {
+                                        if (dest == null) {
+                                            container.browser.showStatus("无法重试复制：目标目录未知（仍会补删源）")
+                                        } else {
+                                            container.engine.enqueue(
+                                                container.browser.transferRequest(redo, dest, snapshot.op),
+                                            )
+                                        }
+                                    }
+                                    if (deleteOnly.isNotEmpty()) {
+                                        container.scope.launch {
+                                            val stillFailed = retryDeleteSources(container, deleteOnly)
+                                            container.browser.showStatus(
+                                                "已重试删除 ${deleteOnly.size - stillFailed} 项" +
+                                                    if (stillFailed > 0) "，$stillFailed 项仍失败" else "",
+                                            )
+                                        }
+                                    }
+                                    if (redo.isNotEmpty() && dest != null) {
+                                        container.browser.showStatus(
+                                            buildString {
+                                                append("已重试 ${redo.size} 项")
+                                                if (deleteOnly.isNotEmpty()) append("，补删源 ${deleteOnly.size} 项")
+                                            },
                                         )
-                                    )
-                                    container.browser.showStatus("已重试 ${retryable.size} 项")
+                                    }
                                 }
                             }
                         },
@@ -261,3 +278,27 @@ private fun TaskCard(
         }
     }
 }
+
+/**
+ * 只补「已复制但删源失败」的删除（MOVE 专用）。
+ *
+ * 直接删、不进回收站 —— 源内容已经搬到目标了，进回收站等于白占一份空间。
+ * 返回仍然失败的项数（逐项容错，不整批中止）。
+ */
+private suspend fun retryDeleteSources(container: AppContainer, sources: List<VfsUri>): Int =
+    withContext(Dispatchers.IO) {
+        var failed = 0
+        for (uri in sources) {
+            val vfs = container.locator.find(uri)
+            if (vfs == null) {
+                failed++
+                continue
+            }
+            runCatching { vfs.delete(listOf(uri)) }
+                .onFailure {
+                    Logx.w("Tasks", "retry delete failed: $uri: ${it.message}", it)
+                    failed++
+                }
+        }
+        failed
+    }

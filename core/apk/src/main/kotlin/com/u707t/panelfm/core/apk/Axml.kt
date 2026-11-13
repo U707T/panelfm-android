@@ -36,6 +36,7 @@ internal class AxmlFile private constructor(
         private const val TYPE_STRING_POOL = 0x0001
         private const val TYPE_RESOURCE_MAP = 0x0180
         private const val TYPE_START_ELEMENT = 0x0102
+        private const val TYPE_END_ELEMENT = 0x0103
 
         private const val TYPE_STRING = 0x03
         private const val TYPE_INT_BOOLEAN = 0x12
@@ -123,6 +124,37 @@ internal class AxmlFile private constructor(
         val attrSize = u16(chunk, 26).coerceAtLeast(20)
         val attrCount = u16(chunk, 28)
         AxmlElement(this, chunk, 16 + attrStart, attrSize, attrCount)
+    }
+
+    /** 文档顺序的全部结束元素名（只给测试与自检用：改名后开始/结束标签必须一致） */
+    internal fun endElementNames(): List<String> = nodes.mapNotNull { chunk ->
+        if (u16(chunk, 0) != TYPE_END_ELEMENT) return@mapNotNull null
+        stringAt(u32(chunk, 20))
+    }
+
+    /**
+     * 整段改掉一个元素名：**开始标签与结束标签一起改**。
+     *
+     * 只改名字下标，不动结构（不增删元素、不重排）。只改开始标签会留下一份
+     * `<x-uses-split>…</uses-split>` 的错配 XML —— Android 的 PackageParser 不看结束标签，
+     * 但任何走严格 XML 的第三方（分析工具 / 其它安装器）都会拒。
+     *
+     * @return 实际改动的节点数（0 = 没有这个元素）
+     */
+    fun renameElement(from: String, to: String): Int {
+        val fromIndex = strings.indexOf(from)
+        if (fromIndex < 0) return 0
+        val toIndex = intern(to)
+        var changed = 0
+        for (chunk in nodes) {
+            val type = u16(chunk, 0)
+            if (type != TYPE_START_ELEMENT && type != TYPE_END_ELEMENT) continue
+            if (u32(chunk, 20) == fromIndex) {
+                putU32(chunk, 20, toIndex)
+                changed++
+            }
+        }
+        return changed
     }
 
     fun firstElement(name: String): AxmlElement? = elements().firstOrNull { it.name == name }
@@ -248,11 +280,6 @@ internal class AxmlFile private constructor(
         fun intAttr(name: String): Long? = attr(name)?.intValue
 
         fun boolAttr(name: String): Boolean? = attr(name)?.boolValue
-
-        /** 改元素名（等于「删掉」这条声明：改成不认识的标签后系统解析器会整段跳过） */
-        fun renameTo(newName: String) {
-            putU32(chunk, 20, file.intern(newName))
-        }
     }
 
     internal class AxmlAttribute(

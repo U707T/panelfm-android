@@ -43,26 +43,55 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * 入队前的空间预检：只处理「所有源都是已知大小的文件」的情况。
  *
+ * - **同卷 MOVE → 跳过**：rename 不占额外空间，预检只会误报（`docs/ROADMAP.md` §1.2 验收条目）；
  * - 任一源是目录 → 不预估（目录大小未知，宁可跳过也不误报）；
  * - 目标 VFS 不提供 `space()`（SFTP / WebDAV / S3 / 压缩包）→ 直接入队；
- * - 空间足够 → 直接入队；不够 → 挂起成一个确认框（[SpaceWarning]），由 UI 二选一。
+ * - 空间足够 → 直接入队；不够 → 进「待确认」队列（[SpaceWarning]），由 UI 二选一。
+ *
+ * 整段串行在一个 Mutex 里：空间检查是异步的，不串行化会让连续两次操作倒序入队。
  */
 internal fun BrowserController.enqueueChecked(request: TransferRequest) {
     container.scope.launch {
-        val free = withContext(container.dispatchers.vfs) {
-            runCatching { container.locator.find(request.destDir)?.space(request.destDir) }.getOrNull()
-        }?.free ?: -1L
-        if (free <= 0L) {
-            container.engine.enqueue(request)
-            return@launch
+        spaceGate.lock()
+        try {
+            val destVfs = container.locator.find(request.destDir)
+            val sameVfsMove = request.op == TransferOp.MOVE && destVfs != null &&
+                request.sources.isNotEmpty() && request.sources.all { container.locator.find(it) === destVfs }
+            if (skipsSpacePrecheck(request.op, sameVfsMove)) {
+                container.engine.enqueue(request)
+                return@launch
+            }
+            val free = withContext(container.dispatchers.vfs) {
+                runCatching { destVfs?.space(request.destDir) }.getOrNull()
+            }?.free ?: -1L
+            val need = if (free > 0L) knownFileBytes(request.sources) else -1L
+            when (spaceCheckOutcome(request.op, sameVfsMove, need, free)) {
+                SpaceCheck.Enqueue -> container.engine.enqueue(request)
+                SpaceCheck.Warn -> pushSpaceWarning(SpaceWarning(request, need, free))
+            }
+        } finally {
+            spaceGate.unlock()
         }
-        val need = knownFileBytes(request.sources)
-        if (need < 0L || need <= free) {
-            container.engine.enqueue(request)
-            return@launch
-        }
-        update { it.copy(spaceWarning = SpaceWarning(request, need, free)) }
     }
+}
+
+/** 预检结论（纯函数，便于单测）。 */
+internal enum class SpaceCheck { Enqueue, Warn }
+
+internal fun skipsSpacePrecheck(op: TransferOp, sameVfsMove: Boolean): Boolean =
+    op == TransferOp.MOVE && sameVfsMove
+
+internal fun spaceCheckOutcome(
+    op: TransferOp,
+    sameVfsMove: Boolean,
+    needBytes: Long,
+    freeBytes: Long,
+): SpaceCheck = when {
+    skipsSpacePrecheck(op, sameVfsMove) -> SpaceCheck.Enqueue
+    freeBytes <= 0L -> SpaceCheck.Enqueue          // 未知 / 已满但拿不到可信可用空间：不拦
+    needBytes < 0L -> SpaceCheck.Enqueue           // 含目录或大小未知：不预估
+    needBytes <= freeBytes -> SpaceCheck.Enqueue
+    else -> SpaceCheck.Warn
 }
 
 /** 已知文件字节和；任一源是目录或大小未知 → -1（表示「不预估」）。最多看 200 项，避免网络狂 stat。 */
@@ -82,16 +111,14 @@ private suspend fun BrowserController.knownFileBytes(sources: List<VfsUri>): Lon
 
 /** 用户选「仍然继续」：原请求入队。 */
 fun BrowserController.confirmSpaceWarning() {
-    val warn = _state.value.spaceWarning ?: return
-    update { it.copy(spaceWarning = null) }
+    val warn = popSpaceWarning() ?: return
     container.engine.enqueue(warn.request)
 }
 
 /** 用户选「取消」：丢弃请求（源文件与目标都不动）。 */
 fun BrowserController.dismissSpaceWarning() {
-    if (_state.value.spaceWarning == null) return
-    update { it.copy(spaceWarning = null) }
-    showStatus("已取消：目标空间不足")
+    val warn = popSpaceWarning() ?: return
+    showStatus("已取消：目标空间不足（${warn.request.sources.size} 项未传输）")
 }
 
 /**

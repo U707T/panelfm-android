@@ -38,6 +38,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
@@ -221,14 +222,31 @@ class AppContainer(val app: Application) {
         }
         // 回收站自动清理：启动 5 秒后在后台跑一次（幂等；没有过期条目时几乎零成本）。
         // 不放在主线程：统计容量要遍历索引，大回收站可能几十毫秒。
+        //
+        // 必须读 prefs.settings.first()，不能读 _settings.value：后者是内存镜像，冷启动
+        // 5 秒内可能还停在默认值 (0,0)，那会让「保留 N 天」这一次启动**静默失效**。
         scope.launch {
             kotlinx.coroutines.delay(5_000)
             runCatching {
-                val s = _settings.value
+                val s = prefs.settings.first()
                 val (removed, freed) = trash.autoPurge(s.trashRetentionDays, s.trashMaxBytes)
                 if (removed > 0) {
                     Logx.i("Trash", "auto purge $removed item(s), freed ${com.u707t.panelfm.core.common.Fmt.size(freed)}")
                 }
+            }
+            // 顺带清掉上次转换 / 导出被中断留下的临时产物（进程被杀时 finally 不会执行）。
+            // 只删 24 小时前的：正在跑的转换绝不能碰。
+            runCatching {
+                val cutoff = System.currentTimeMillis() - 24L * 3600 * 1000
+                fun sweep(dir: String, vararg prefixes: String) {
+                    java.io.File(dir).listFiles()?.forEach { f ->
+                        if (prefixes.any { f.name.startsWith(it) } && f.lastModified() < cutoff) {
+                            runCatching { f.deleteRecursively() }
+                        }
+                    }
+                }
+                sweep(appDirs.tmpDir, "convert-", "apk-convert-")
+                sweep(appDirs.cacheDir, "panelfm-export-")
             }
         }
         // 定期回收空闲网络会话

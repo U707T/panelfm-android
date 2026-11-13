@@ -40,11 +40,30 @@ class ApkSigningKey(val privateKey: PrivateKey, val certificate: X509Certificate
 class ApkSigningKeyStore(private val dir: File) {
 
     private val lock = Any()
+    private var warning: String? = null
     private val file: File get() = File(dir, "panelfm-test.p12")
 
+    /**
+     * 最近一次 [loadOrCreate] 的告警（null = 一切正常）。
+     *
+     * 两条路径都必须让用户看见：① p12 存在但读不出来 → 会**换一张新证书**（已装过的转换包
+     * 从此「签名不一致」）；② 新证书落盘失败 → 下次转换又是另一张，等于每次都换签名。
+     * 旧实现把两者都吞在 runCatching 里，用户只会看到「装不上」。
+     */
+    val lastWarning: String? get() = synchronized(lock) { warning }
+
     fun loadOrCreate(): ApkSigningKey = synchronized(lock) {
+        warning = null
         dir.mkdirs()
-        read() ?: generate().also { write(it) }
+        read()?.let { return it }
+        if (file.isFile) {
+            warning = "内置签名材料读取失败，已重新生成：之前转换出的 APK 需要先卸载才能覆盖安装"
+        }
+        val fresh = generate()
+        if (!write(fresh)) {
+            warning = "签名材料未能保存（磁盘空间不足？）：本次签名只对这一个文件有效，下次转换会换签名"
+        }
+        fresh
     }
 
     private fun read(): ApkSigningKey? = runCatching {
@@ -56,14 +75,14 @@ class ApkSigningKeyStore(private val dir: File) {
         ApkSigningKey(key, cert)
     }.getOrNull()
 
-    private fun write(key: ApkSigningKey) {
-        runCatching {
-            val store = KeyStore.getInstance("PKCS12")
-            store.load(null, null)
-            store.setKeyEntry(ALIAS, key.privateKey, PASSWORD, arrayOf(key.certificate))
-            FileOutputStream(file).use { store.store(it, PASSWORD) }
-        }
-    }
+    /** @return false = 落盘失败（调用方要把告警带给用户） */
+    private fun write(key: ApkSigningKey): Boolean = runCatching {
+        val store = KeyStore.getInstance("PKCS12")
+        store.load(null, null)
+        store.setKeyEntry(ALIAS, key.privateKey, PASSWORD, arrayOf(key.certificate))
+        FileOutputStream(file).use { store.store(it, PASSWORD) }
+        true
+    }.getOrDefault(false)
 
     private fun generate(): ApkSigningKey {
         val generator = KeyPairGenerator.getInstance("RSA")

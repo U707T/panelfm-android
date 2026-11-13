@@ -4,6 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.zip.ZipFile
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -130,6 +131,21 @@ class ApkBundleTest {
         val bundle = ApkBundleReader.inspect(file)
         assertEquals(1, bundle.splits.size)
         assertEquals("config.xxhdpi", bundle.splits.first().splitName)
+    }
+
+    @Test
+    fun `ABI 按完整分词匹配 x86 不会命中 x86_64`() {
+        // 子串匹配的经典坑：x86 是 x86_64 的前缀
+        assertTrue(ApkBundleReader.pathMatchesAbi("standalone-x86_64_xxhdpi.apk", "x86_64"))
+        assertTrue(ApkBundleReader.pathMatchesAbi("standalone-x86_mdpi.apk", "x86"))
+        assertTrue(ApkBundleReader.pathMatchesAbi("standalone-arm64_v8a_xxhdpi.apk", "arm64_v8a"))
+        assertFalse(ApkBundleReader.pathMatchesAbi("standalone-x86_64_xxhdpi.apk", "x86"))
+        assertFalse(ApkBundleReader.pathMatchesAbi("standalone-armeabi_v7a_mdpi.apk", "armeabi"))
+        assertFalse(ApkBundleReader.pathMatchesAbi("standalone-x86_mdpi.apk", "x86_64"))
+        // 只有一份时也必须按同一规则判，不能退回「反正只有一个」直接放行
+        val only = BundleApk("standalones/standalone-x86_64_xxhdpi.apk", 0, null)
+        assertNull(ApkBundleReader.pickStandalone(listOf(only), "x86", 480, requireAbiMatch = true))
+        assertEquals(only, ApkBundleReader.pickStandalone(listOf(only), "x86_64", 480, requireAbiMatch = true))
     }
 
     @Test

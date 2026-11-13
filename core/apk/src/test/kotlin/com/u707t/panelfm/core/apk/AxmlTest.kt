@@ -64,6 +64,9 @@ class AxmlTest {
         val xml = AxmlFile.parse(patched.bytes)
         assertNull(xml.firstElement("uses-split"))
         assertNotNull(xml.firstElement("x-uses-split"))
+        // 开始标签与结束标签必须一起改：只改一半会留下 <x-uses-split>…</uses-split> 的错配 XML
+        assertTrue(xml.endElementNames().contains("x-uses-split"))
+        assertFalse(xml.endElementNames().contains("uses-split"))
 
         // 其它字段必须原样保留
         assertEquals("com.example.app", info.packageName)

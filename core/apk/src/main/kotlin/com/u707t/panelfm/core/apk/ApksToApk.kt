@@ -23,6 +23,8 @@ data class ConvertResult(
     val skippedFeatureSplits: Int,
     val skippedAbiSplits: Int,
     val manifestChanges: List<String>,
+    /** 非致命告警（签名材料读取 / 落盘失败等），需要原样展示给用户 */
+    val warnings: List<String> = emptyList(),
 )
 
 /**
@@ -48,10 +50,11 @@ class ApksToApk(private val workRoot: File, signingKeyDir: File) {
         output: File,
         onProgress: (ConvertProgress) -> Unit = {},
     ): ConvertResult {
+        // 先拒绝，不要「存在就先删」：这是 core 的公共入口，调用方传错路径就是静默删用户文件
+        require(!output.exists()) { "输出文件已存在：${output.name}" }
         val work = File(workRoot, "convert-${System.currentTimeMillis()}").apply { mkdirs() }
         try {
             output.parentFile?.mkdirs()
-            if (output.exists()) output.delete()
             plan.direct?.let { direct ->
                 extract(plan.source, direct.path, output) { done, total ->
                     onProgress(ConvertProgress(ConvertStage.EXTRACT, done, total))
@@ -91,7 +94,8 @@ class ApksToApk(private val workRoot: File, signingKeyDir: File) {
             }
 
             onProgress(ConvertProgress(ConvertStage.SIGN, 0, 1))
-            ApkSignerService.sign(merged, output, keys.loadOrCreate(), base.manifest?.minSdk ?: 26)
+            val key = keys.loadOrCreate()
+            ApkSignerService.sign(merged, output, key, base.manifest?.minSdk ?: 26)
             onProgress(ConvertProgress(ConvertStage.SIGN, 1, 1))
 
             return ConvertResult(
@@ -106,6 +110,7 @@ class ApksToApk(private val workRoot: File, signingKeyDir: File) {
                 skippedFeatureSplits = plan.skippedFeature.size,
                 skippedAbiSplits = plan.skippedAbi.size,
                 manifestChanges = stats.manifestChanges,
+                warnings = listOfNotNull(keys.lastWarning),
             )
         } catch (t: Throwable) {
             // 失败时不要留半个 APK（会出现在列表里，看着像成功）

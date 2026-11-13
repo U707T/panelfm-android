@@ -169,7 +169,13 @@ internal fun ApkConvertDialog(
                         throw t
                     }
                 }
-                controller.showStatus("已生成 ${target.name}（${Fmt.size(result.outputBytes)}）")
+                controller.showStatus(
+                    buildString {
+                        append("已生成 ").append(target.name)
+                        append("（").append(Fmt.size(result.outputBytes)).append("）")
+                        result.warnings.firstOrNull()?.let { append(" · ").append(it) }
+                    },
+                )
                 container.browser.refreshAll()
                 onDismiss()
             } catch (c: CancellationException) {

@@ -12,6 +12,13 @@ data class TransferRequest(
     val destDir: VfsUri,
     val op: TransferOp,
     val conflict: ConflictPolicy = ConflictPolicy.ASK,
+    /**
+     * 传输后校验档位（默认 NONE = 不校验；UI 从设置注入 SIZE / HASH）。
+     *
+     * ⚠️ 与快路径的关系：`HASH` / `SIZE` 会让 **`SERVER_COPY` 降级**到逐字节慢路径
+     * （不读内容就无法证明一致）；但 **`SERVER_MOVE` 不受影响** —— rename 不搬字节，
+     * 目标就是源本身，校验对它没有意义（拦掉只会把「同卷移动」退化成全量复制）。
+     */
     val verify: VerifyMode = VerifyMode.NONE,
     /** MT「保留文件时间」：复制/解压/下载完成后把源 mtime 写回目标（默认开，设置可关） */
     val preserveModifiedTime: Boolean = true,

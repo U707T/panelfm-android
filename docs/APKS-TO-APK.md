@@ -12,6 +12,9 @@
 |---|---|
 | `.apks` | bundletool 产物：`splits/base-master.apk`、`splits/base-arm64_v8a.apk`、`splits/base-xxhdpi.apk`…（也可能是 `universal.apk` 或 `standalones/`） |
 | `.xapk` | 根目录 `com.foo.apk` + `split_config.*.apk` + `manifest.json`、`icon.png` |
+
+> 「提取安装包」导出的 `.apks` 是 **PanelFM 自有布局**（根目录平铺 base + 各 split，无 `toc.pb` / `splits/`），
+> 本应用能装能转；bundletool / SAI 等外部工具不认这种包。
 | `.apkm` | 根目录 `base.apk` + `split_config.*.apk` + `info.json`、`meta.sai_v2.json` |
 
 转换走哪条路**由包内容决定**，不由后缀决定：
@@ -45,7 +48,9 @@
 | `android:requiredSplitTypes` / `android:splitTypes` | 置空（XML 里等于没写） | Android 12+ 按分包类型校验，同样缺分包即失败 |
 | `<uses-split android:name="…"/>` 元素 | 改名成 `x-uses-split`（不认识的标签，系统解析器整段跳过） | 上面声明了「依赖某个功能模块」，模块不存在 → 安装失败 |
 
-做法是**最小 AXML 补丁**（`Axml.kt`）：定位属性 → 改类型化值 / 置空 / 元素改名。
+做法是**最小 AXML 补丁**（`Axml.kt`）：定位属性 → 改类型化值 / 置空 / 元素改名
+（**开始标签与结束标签一起改**：只改一半会留下 `<x-uses-split>…</uses-split>` 的错配 XML，
+Android 的解析器不看结束标签，但严格 XML 的第三方工具会拒）。
 只在需要追加新字符串（`x-uses-split`）时重建字符串池，其余字节原样保留；
 不增删元素、不动资源表。「不改任何东西时序列化与原文件逐字节相同」有单测锁着。
 
@@ -100,11 +105,11 @@ app/ui/browser/
 
 ## 7. 验证
 
-单测（`core/apk`，16 例；`src/test/resources/manifest-*.bin` 是 `aapt2 link` 的真实产物，
+单测（`core/apk`，18 例；`src/test/resources/manifest-*.bin` 是 `aapt2 link` 的真实产物，
 保证解析器面对的是真实的 AXML 布局而不是手搓的玩具字节）：
 
-- `AxmlTest`：真实 aapt2 产物 + 手搓 UTF-8 池；「不改即逐字节相同」；三处补丁；其它字段不丢；
-- `ApkBundleTest`：base / ABI / 密度 / feature 分类、universal、standalones 按 ABI 挑、`.xapk` 扁平结构、
+- `AxmlTest`：真实 aapt2 产物 + 手搓 UTF-8 池；「不改即逐字节相同」；三处补丁；开始/结束标签一致；其它字段不丢；
+- `ApkBundleTest`：base / ABI / 密度 / feature 分类、universal、standalones 按 ABI 挑（完整分词：`x86` 不命中 `x86_64`）、`.xapk` 扁平结构、
   同一分包在多个 ABI 变体里的副本去重（真实 `.apks` 里 `base-af.apk` / `base-af_2.apk` 内容相同）；
 - `ApkConvertTest`：端到端合并 + **apksig 校验签名**（v2）+ `.so` 保持 STORED + 密度分包的 `res/`
   不进来 + 旧签名文件被丢掉 + ABI 白名单同时过滤 base 自带的多余 ABI + universal 直接取出逐字节相同

@@ -67,5 +67,14 @@
             android:name=".service.TransferService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- PackageInstaller 会话结果（.apks 安装）：PendingIntent 由本应用发出，不需要导出 -->
+        <receiver
+            android:name=".service.InstallResultReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.u707t.panelfm.INSTALL_RESULT" />
+            </intent-filter>
+        </receiver>
     </application>
 </manifest>
