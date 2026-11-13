@@ -245,6 +245,13 @@ internal fun BrowserTopBar(
                                     TypeActions.ACTION_APK_INFO -> controller.openWith(
                                         it, com.u707t.panelfm.ui.preview.PreviewMode.APK_INFO,
                                     )
+                                    TypeActions.ACTION_CONVERT_APK -> {
+                                        if (it.uri.scheme != "local") {
+                                            controller.showStatus("网络 / 压缩包内的安装包请先复制到本地再转换")
+                                        } else {
+                                            apkConvertFor = it
+                                        }
+                                    }
                                     TypeActions.ACTION_OPEN_INTERNAL -> controller.openWith(
                                         it, com.u707t.panelfm.ui.preview.PreviewMode.AUTO,
                                     )

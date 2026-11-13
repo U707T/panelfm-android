@@ -44,8 +44,8 @@ android {
         applicationId = "com.u707t.panelfm"
         minSdk = 26
         targetSdk = 37
-        versionCode = 117
-        versionName = "2.3.4"
+        versionCode = 118
+        versionName = "2.4.0"
     }
 
     // 单元测试里 call android.util.Log / org.json 桩不抛「not mocked」；
@@ -127,6 +127,7 @@ dependencies {
     implementation(project(":core:vfs-smb"))
     implementation(project(":core:vfs-s3"))
     implementation(project(":core:vfs-archive"))
+    implementation(project(":core:apk"))
     implementation(project(":core:transfer"))
     implementation(project(":core:data"))
     implementation(project(":core:ui"))

@@ -202,21 +202,112 @@ class TrashService(
 
     suspend fun purge(entry: Entry) = withContext(Dispatchers.IO) {
         indexMutex.withLock {
-            val deleted = runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
-            if (deleted && !save(list().filterNot { it.id == entry.id })) {
-                Logx.w("TrashService", "purge index update failed: ${entry.name}")
+            when (removeEntryFile(entry)) {
+                Removal.FAILED -> Logx.w("TrashService", "purge failed: ${entry.name}")
+                // DELETED / MISSING 都要把条目从索引摘掉：MISSING 是「盘上已经没了」的死条目，
+                // 旧实现只在删除成功时更新索引 → 死条目永远留在列表里、还占着容量统计。
+                else -> if (!save(list().filterNot { it.id == entry.id })) {
+                    Logx.w("TrashService", "purge index update failed: ${entry.name}")
+                }
             }
         }
     }
 
     suspend fun purgeAll() = withContext(Dispatchers.IO) {
         indexMutex.withLock {
-            val remaining = list().filterNot { entry ->
-                runCatching { File(dir, entry.trashName).deleteRecursively() }.getOrDefault(false)
-            }
+            // 只保留「真的删不掉」的（权限 / 占用）；已经不存在的条目直接摘掉
+            val remaining = list().filter { removeEntryFile(it) == Removal.FAILED }
             if (!save(remaining)) Logx.w("TrashService", "purgeAll index update failed")
         }
     }
+
+    /**
+     * 自动清理：先按时间（[retentionDays] > 0），再按容量（[maxBytes] > 0，最旧优先）。
+     *
+     * 与手动 purge 共用同一把锁：清理过程中用户新删的条目不会被旧快照覆盖。
+     * 返回 (删除数量, 释放字节)。
+     *
+     * 索引里已经对不上磁盘的「死条目」会顺手摘掉（不计入删除数），避免列表与容量长期虚高。
+     */
+    suspend fun autoPurge(retentionDays: Int, maxBytes: Long, now: Long = System.currentTimeMillis()): Pair<Int, Long> =
+        withContext(Dispatchers.IO) {
+            if (retentionDays <= 0 && maxBytes <= 0) return@withContext 0 to 0L
+            indexMutex.withLock {
+                val entries = list()
+                if (entries.isEmpty()) return@withLock 0 to 0L
+                val keep = ArrayList<Entry>(entries.size)
+                var removed = 0
+                var dropped = 0
+                var freed = 0L
+                val cutoff = if (retentionDays > 0) now - retentionDays * 24L * 60 * 60 * 1000 else Long.MIN_VALUE
+                // 1) 按时间
+                entries.forEach { e ->
+                    if (e.deletedAt !in 1..cutoff) {
+                        keep += e
+                        return@forEach
+                    }
+                    when (removeEntryFile(e)) {
+                        Removal.DELETED -> {
+                            removed++
+                            freed += e.size.coerceAtLeast(0)
+                        }
+                        // 盘上已经没了：从索引摘掉（不计数、不计释放空间）
+                        Removal.MISSING -> dropped++
+                        Removal.FAILED -> keep += e
+                    }
+                }
+                // 2) 按容量（最旧优先）
+                if (maxBytes > 0) {
+                    var total = keep.sumOf { it.size.coerceAtLeast(0) }
+                    if (total > maxBytes) {
+                        // 最旧优先删，直到回到上限以内
+                        val victims = mutableSetOf<String>()
+                        for (e in keep.sortedBy { it.deletedAt }) {
+                            if (total <= maxBytes) break
+                            val size = e.size.coerceAtLeast(0)
+                            when (removeEntryFile(e)) {
+                                Removal.DELETED -> {
+                                    victims += e.id
+                                    total -= size
+                                    freed += size
+                                    removed++
+                                }
+                                Removal.MISSING -> {
+                                    // 死条目：也要从容量里扣掉，否则它会一直占着名额
+                                    victims += e.id
+                                    total -= size
+                                    dropped++
+                                }
+                                Removal.FAILED -> Unit
+                            }
+                        }
+                        keep.removeAll { it.id in victims }
+                    }
+                }
+                if ((removed > 0 || dropped > 0) && !save(keep)) {
+                    Logx.w("TrashService", "autoPurge index save failed (removed=$removed dropped=$dropped)")
+                }
+                removed to freed
+            }
+        }
+
+    /** 删除结果：真的删掉了 / 盘上本来就没有（死条目）/ 删不掉（权限、占用） */
+    private enum class Removal { DELETED, MISSING, FAILED }
+
+    /**
+     * 删除一个回收站条目对应的磁盘文件。
+     *
+     * 必须区分「已经不存在」和「删不掉」：前者是索引里的死条目（要摘掉，否则容量统计永远偏高），
+     * 后者要保留索引，下次再试。
+     */
+    private fun removeEntryFile(entry: Entry): Removal = runCatching {
+        val file = File(dir, entry.trashName)
+        when {
+            !file.exists() -> Removal.MISSING
+            file.deleteRecursively() -> Removal.DELETED
+            else -> Removal.FAILED
+        }
+    }.getOrDefault(Removal.FAILED)
 
     fun describe(entry: Entry): String = "${entry.name} · ${Fmt.size(entry.size)}"
 }

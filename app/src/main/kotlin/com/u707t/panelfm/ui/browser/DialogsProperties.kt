@@ -165,3 +165,66 @@ private suspend fun folderSummary(
     }
     FolderSummary(files, dirs, bytes, seen >= 50_000 && queue.isNotEmpty())
 }
+
+/**
+ * 多选属性：只汇总列表里已有的 metadata（**不递归目录、不额外 stat**）。
+ *
+ * 旧实现 `properties` 在 `multi > 1` 时直接禁用 —— 选 20 个文件想知道总共多大，
+ * 只能一个个点。这里给的是「已知大小的文件之和 + 目录数 + 未知项数」，
+ * 明确区分「统计值」与「没算的部分」，不把目录硬算成 0。
+ */
+@Composable
+fun MultiPropertiesDialog(items: List<FileMetadata>, onDismiss: () -> Unit) {
+    val clipboard = LocalClipboardManager.current
+    var more by remember(items) { mutableStateOf(false) }
+
+    val files = items.filter { !it.isDirectory }
+    val dirs = items.size - files.size
+    val known = files.filter { it.size >= 0 }
+    val knownBytes = known.sumOf { it.size }
+    val unknown = files.size - known.size
+    val parents = items.mapNotNull { it.uri.parent }.distinct()
+    val dirText = if (parents.size == 1) {
+        (parents.first().displayPath).let { if (it.endsWith("/")) it else "$it/" }
+    } else {
+        "多个位置（${parents.size} 个目录）"
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                DialogIcon(MtIcon.INFO)
+                Text("属性", modifier = Modifier.padding(start = 10.dp))
+            }
+        },
+        text = {
+            Column(Modifier.verticalScroll(rememberScrollState())) {
+                InfoRow("项目", "${items.size} 项（文件 ${files.size} / 文件夹 $dirs）")
+                InfoRow("目录", dirText)
+                InfoRow(
+                    "总大小",
+                    buildString {
+                        append(Fmt.size(knownBytes)).append(" (").append(knownBytes).append(")")
+                        if (dirs > 0) append(" · 不含 $dirs 个文件夹")
+                        if (unknown > 0) append(" · 另 $unknown 项大小未知")
+                    },
+                )
+                if (more) {
+                    InfoRow("说明", "文件夹不递归统计；大小未知项（远程 / 无元数据）不参与合计。")
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = {
+                            clipboard.setText(
+                                AnnotatedString(items.joinToString("\n") { it.uri.toString() })
+                            )
+                        }) { Text("复制路径（${items.size} 行）") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
+        dismissButton = {
+            TextButton(onClick = { more = !more }) { Text(if (more) "收起" else "更多") }
+        },
+    )
+}

@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.FileSearch
+import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.model.TransferOp
@@ -463,6 +464,15 @@ internal fun BrowserDialogHost(
                 onDismiss = { archiveRename = null },
             )
         }
+        // 「转为 APK」（.apks / .xapk / .apkm）：合并 + 重签，见 core:apk
+        apkConvertFor?.let { target ->
+            ApkConvertDialog(
+                container = container,
+                controller = controller,
+                item = target,
+                onDismiss = { apkConvertFor = null },
+            )
+        }
         message?.let { (title, body) ->
             MessageDialog(title, body) { message = null }
         }
@@ -721,6 +731,29 @@ internal fun BrowserDialogHost(
             PropertiesDialog(container, item) {
                 controller.dismissProperties()
             }
+        }
+        ui.propertyMulti?.let { items ->
+            MultiPropertiesDialog(items) {
+                controller.dismissProperties()
+            }
+        }
+        ui.spaceWarning?.let { warn ->
+            AlertDialog(
+                onDismissRequest = { controller.dismissSpaceWarning() },
+                title = { Text("目标空间不足") },
+                text = {
+                    Text(
+                        "需要 ${Fmt.size(warn.needBytes)}，目标可用 ${Fmt.size(warn.freeBytes)}。\n" +
+                            "继续可能在中途失败，并留下未完成的临时文件。",
+                    )
+                },
+                confirmButton = {
+                    TextButton(onClick = { controller.dismissSpaceWarning() }) { Text("取消") }
+                },
+                dismissButton = {
+                    TextButton(onClick = { controller.confirmSpaceWarning() }) { Text("仍然继续") }
+                },
+            )
         }
     }
 }

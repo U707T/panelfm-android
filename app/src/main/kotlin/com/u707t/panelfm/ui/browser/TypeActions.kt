@@ -10,6 +10,7 @@ import com.u707t.panelfm.core.common.SqliteFormats
  * MT 语义（对照 `mt_strings_zh.txt`）：
  *  - 压缩包：`解压到当前目录`(0x7f110251) / `解压到单独的文件夹`(0x7f110252) /
  *    `解压到文件夹…`(0x7f110250)、`浏览压缩包`(0x7f1100ed)
+ *  - `.apks` / `.xapk` / `.apkm`：`安装`（仅 .apks）、`转为 APK`（MT 的 split 包合并成单 APK）
  *  - APK：`安装`(0x7f110044)、`Apk信息`(0x7f1100e8)、`提取安装包`(0x7f110248)
  *  - 图片：`查看图片`(0x7f1100f2) · 音频：`播放音乐`(0x7f1100eb) ·
  *    字体：`查看字体`(0x7f1100f0) · 文本/代码：`编辑文本`(0x7f1100f9)
@@ -29,6 +30,12 @@ object TypeActions {
     const val ACTION_INSTALL = "install_apk"
     const val ACTION_APK_INFO = "apk_info"
     const val ACTION_EXTRACT_APK_ICON = "extract_apk_icon"
+
+    /**
+     * `.apks` / `.xapk` / `.apkm` → 单个可安装 APK（MT 的「转为 APK」）。
+     * 实现在 `core:apk`：合并分包 + 清单补丁 + 内置测试证书重签。
+     */
+    const val ACTION_CONVERT_APK = "convert_apk"
     const val ACTION_OPEN_INTERNAL = "open_internal"
     /** 直接用内置编辑器打开（文本 / 代码 / 未识别类型都可手动选） */
     const val ACTION_EDIT_TEXT = "edit_text"
@@ -42,6 +49,9 @@ object TypeActions {
     /** .epub 电子书阅读 */
     const val ACTION_READ_EPUB = "read_epub"
     const val ACTION_OPEN_WITH = "open_with"
+
+    /** split 安装包的三种外壳（结构都是 zip，里面装 base + 分包） */
+    private val APK_BUNDLE_EXTENSIONS = setOf("apks", "xapk", "apkm")
 
     fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
 
@@ -99,6 +109,9 @@ object TypeActions {
         return buildList {
             when (kind) {
                 MimeTypes.Kind.ARCHIVE -> {
+                    // .apks / .xapk / .apkm 是 split 安装包（本质是 zip）：既能解压浏览，也能直接装
+                    if (!inArchive && extension.equals("apks", ignoreCase = true)) add(ACTION_INSTALL)
+                    if (!inArchive && extension.lowercase() in APK_BUNDLE_EXTENSIONS) add(ACTION_CONVERT_APK)
                     if (!inArchive) {
                         add(ACTION_EXTRACT_HERE)
                         add(ACTION_EXTRACT_OWN_FOLDER)
@@ -139,6 +152,7 @@ object TypeActions {
         ACTION_INSTALL -> "安装"
         ACTION_APK_INFO -> "APK 信息"
         ACTION_EXTRACT_APK_ICON -> "提取图标"
+        ACTION_CONVERT_APK -> "转为 APK"
         ACTION_OPEN_INTERNAL -> viewerLabel(kind) ?: "查看"
         ACTION_EDIT_TEXT -> "编辑文本"
         ACTION_RENDER -> "渲染预览"

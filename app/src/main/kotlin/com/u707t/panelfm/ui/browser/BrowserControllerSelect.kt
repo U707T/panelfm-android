@@ -484,8 +484,16 @@ suspend fun BrowserController.searchTree(
 
     /** 结果快照：rank 在命中时就算好，排序不再重复匹配（旧实现每次比较都重算 rank + 编译正则）。 */
     fun snapshot(): List<FileMetadata> =
-        if (!ranked) out.sortedBy { it.lowerName }.map { it.item }
-        else out.sortedWith(compareBy({ it.rank }, { it.lowerName })).map { it.item }
+        if (!ranked) {
+            out.sortedWith { x, y -> com.u707t.panelfm.core.common.NaturalOrder.compare(x.item.name, y.item.name) }
+                .map { it.item }
+        } else {
+            out.sortedWith(
+                compareBy<SearchHit> { it.rank }.thenComparator { x, y ->
+                    com.u707t.panelfm.core.common.NaturalOrder.compare(x.item.name, y.item.name)
+                },
+            ).map { it.item }
+        }
 
     /**
      * 结果预算控制：预算未到放行；到了就先问，确认后按步长扩容。

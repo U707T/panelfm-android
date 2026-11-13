@@ -31,6 +31,10 @@ soraEditor = "0.24.6"
 # AndroidSVG：SVG / SVGZ 只读渲染（Apache-2.0，纯 Java、无原生依赖，jar 约 200KB）。
 # 用途：图片查看器里的 .svg / .svgz（BitmapFactory 不支持 SVG，见 SvgDecode.kt）
 androidsvg = "1.4"
+# apksig：APK 签名（Apache-2.0，纯 Java、零传递依赖，jar 约 500KB）。
+# 「APKS/XAPK 转 APK」合并后必须重签才能安装（见 core/apk）。版本跟 AGP 走：
+# 沙箱离线缓存里现成有 9.3.1（AGP 9.3.1 自带），换 AGP 大版本时一起看，别单独升级。
+apksig = "9.3.1"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -70,6 +74,8 @@ xz = { module = "org.tukaani:xz", version.ref = "xz" }
 sora-editor = { module = "io.github.rosemoe:editor", version.ref = "soraEditor" }
 sora-language-textmate = { module = "io.github.rosemoe:language-textmate", version.ref = "soraEditor" }
 androidsvg = { module = "com.caverock:androidsvg-aar", version.ref = "androidsvg" }
+# APK 签名（core/apk：APKS/XAPK 转 APK 的最后一步）
+apksig = { module = "com.android.tools.build:apksig", version.ref = "apksig" }
 
 junit = { module = "junit:junit", version = "4.13.2" }
 # 测试专用：真实 XmlPullParser 实现（Android 内置 KXmlParser 的上游同源代码），驱动解析层样例测试

@@ -220,8 +220,12 @@ internal fun installApk(
     item: FileMetadata,
     onMessage: (String) -> Unit,
 ) {
+    if (item.name.lowercase().endsWith(".apks")) {
+        installApkBundle(container, context, item, onMessage)
+        return
+    }
     if (!item.name.lowercase().endsWith(".apk")) {
-        onMessage("只有 APK 文件可以安装")
+        onMessage("只有 APK / .apks 文件可以安装")
         return
     }
     if (item.uri.scheme != "local") {
@@ -245,6 +249,84 @@ internal fun installApk(
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
     runCatching { context.startActivity(intent) }
         .onFailure { onMessage("没有可用的安装器") }
+}
+
+
+/**
+ * 安装 `.apks`（split 安装包）：用 [android.content.pm.PackageInstaller] 建一个
+ * `MODE_FULL_INSTALL` 会话，把 zip 里的 base + 各 split 逐个写进去再 commit。
+ *
+ * 为什么不用 `ACTION_VIEW`：系统安装器不接受 `.apks`（它不是 APK），
+ * 只认单个 APK；split 必须走 session 才能被 PackageManager 合并安装。
+ *
+ * 注意：需要 `REQUEST_INSTALL_PACKAGES`（manifest 已声明）。系统仍会弹「是否安装」确认，
+ * 这里只负责把包交给它。
+ */
+internal fun installApkBundle(
+    container: AppContainer,
+    context: android.content.Context,
+    item: FileMetadata,
+    onMessage: (String) -> Unit,
+) {
+    if (item.uri.scheme != "local") {
+        onMessage("网络 / 压缩包内的 .apks 请先复制到本地再安装")
+        return
+    }
+    container.scope.launch {
+        val result = runCatching {
+            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val file = java.io.File(container.localVfs.absolutePath(item.uri))
+                if (!file.exists()) error("文件不存在")
+                val installer = context.packageManager.packageInstaller
+                val params = android.content.pm.PackageInstaller.SessionParams(
+                    android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL,
+                )
+                var sessionId = -1
+                try {
+                    sessionId = installer.createSession(params)
+                    installer.openSession(sessionId).use { session ->
+                        java.util.zip.ZipFile(file).use { zip ->
+                            // 标准 bundletool 的 .apks（toc.pb + splits/ + 每套 ABI 各一份分包副本）
+                            // 不能直接装：PackageInstaller 只接受「一套」分包，多套会互相冲突。
+                            if (zip.getEntry("toc.pb") != null) {
+                                error("标准 bundletool 的 .apks 不能直接安装：请先用「转为 APK」合并后再装")
+                            }
+                            // 只写 APK 条目：会话目录里混进 toc.pb / icon.png 会被当成坏 APK 整包失败
+                            val entries = zip.entries().toList().filter {
+                                !it.isDirectory && it.name.endsWith(".apk", ignoreCase = true)
+                            }
+                            if (entries.isEmpty()) error("安装包里没有 APK")
+                            val seen = HashSet<String>()
+                            entries.forEach { entry ->
+                                // 会话里的文件名 = 分包文件名（系统按清单里的 split 属性合并），不能带目录
+                                val name = entry.name.substringAfterLast('/')
+                                if (!seen.add(name)) error("安装包里有重名分包：$name")
+                                zip.getInputStream(entry).use { input ->
+                                    session.openWrite(name, 0, entry.size).use { out ->
+                                        input.copyTo(out, 256 * 1024)
+                                    }
+                                }
+                            }
+                        }
+                        val pending = android.app.PendingIntent.getBroadcast(
+                            context,
+                            sessionId,
+                            android.content.Intent("com.u707t.panelfm.INSTALL_RESULT").setPackage(context.packageName),
+                            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                        )
+                        session.commit(pending.intentSender)
+                    }
+                    "已提交安装：${item.name}"
+                } catch (t: Throwable) {
+                    // 没走到 commit 就失败：会话必须弃掉，否则 installer 里留一个永不完成的会话
+                    runCatching { if (sessionId >= 0) installer.abandonSession(sessionId) }
+                    throw t
+                }
+            }
+        }
+        result.onSuccess { onMessage(it) }
+            .onFailure { onMessage("安装失败：${it.message ?: it::class.java.simpleName}") }
+    }
 }
 
 /**

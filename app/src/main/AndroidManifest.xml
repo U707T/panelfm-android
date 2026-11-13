@@ -4,6 +4,8 @@
 
     <!-- 网络协议 -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- .apks / split 安装：PackageInstaller 会话需要它（系统仍会弹确认） -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <!-- Android 17 (API 37)：访问局域网（NAS / Alist / SMB）必须授权，否则连接超时 -->

@@ -2,11 +2,13 @@
 
 MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原生实现。
 
-只做「文件管理 + 查看预览」这一半：**不含任何逆向工程能力**（不做 DEX / Arsc / AXML 编辑、不签名、不加固、不注入）。
+只做「文件管理 + 查看预览」这一半：**不含逆向工程能力** —— 不提供 DEX / Arsc / AXML 编辑、不加固、不注入。
+唯一碰「安装包内部」的功能是 **APKS / XAPK / APKM → APK**（MT 的「转为 APK」）：
+它要改三处清单属性并用内置测试证书重签，边界与理由见 [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md)。
 
 ```
 包名      com.u707t.panelfm
-版本      2.3.4 (117)
+版本      2.4.0 (118)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -27,6 +29,9 @@ targetSdk 37
 - **列表缩略图**：图片本地采样解码，远端图片受「连接开关 / 仅 Wi-Fi / 大小上限」控制；
   **视频取首帧**（本地直接读，网络按 Range 随机读解 moov，单张预算 8 MB；压缩包内不取帧）
 - 复制 / 移动 / 删除（**带回收站**）/ 重命名 / 批量重命名 / 新建 / 压缩 / 解压 / 修改权限
+- **APKS / XAPK / APKM → APK**（长按「转为 APK」）：合并 base 与 ABI 分包、补清单、
+  内置测试证书重签；包内已有 `universal.apk` / 匹配本机的 `standalones/` 时直接取出（保留官方签名）。
+  高密度图片与其它语言不并（资源表不重写，见 [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md)）
 - 文件过滤（通配符）+ 搜索（通配符 / 正则 / 按名或内容 / 结果排序 / 相对路径展示）
 - 传输任务：开始传输自动弹出**带进度条的模态对话框**（暂停 / 取消 / 后台运行），
   关掉后底部留一行胶囊可随时点回；另有独立任务页（多任务总览、暂停全部、清空）
@@ -57,7 +62,7 @@ targetSdk 37
 | Markdown / CSV | 与 Office 同一页面渲染（marked + DOMPurify 清洗） |
 | EPUB | 只读阅读 |
 | SQLite | 表列表 + 前 200 行浏览（只读，不提供 SQL 控制台） |
-| APK | 包名 / 版本 / 权限 / 签名摘要 |
+| APK | 包名 / 版本 / 权限 / 签名摘要 / ABI / 安装位置 / 可调试 |
 | 压缩包 | 列表浏览 + 解压 |
 | 文本 | sora-editor，22 种语言 TextMate 语法着色 |
 
@@ -122,23 +127,25 @@ core/vfs-sftp/             SFTP（含 SSH 密钥处理）
 core/vfs-smb/              SMB
 core/vfs-s3/               S3（自实现 SigV4）
 core/vfs-archive/          压缩包（读挂载 + zip 编辑 + 加密 zip）
+core/apk/                  APKS/XAPK/APKM 转 APK（AXML 补丁 + zip 合并 + apksig 重签）
 core/transfer/             任务引擎（进度 / 暂停 / 冲突 / 续传）
 core/data/                 SQLite + DataStore（连接 / 书签 / 偏好 / 密钥）
 core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / 文件图标 / 手势）
 ```
 
-规模（不含测试）：14 个模块、**186** 个 Kotlin 文件、**4.4 万**行（2026-11-07 实测）。
+规模（不含测试）：15 个模块、**201** 个 Kotlin 文件、**4.76 万**行（2026-11-13 实测）。
 
 ## 5. 代码质量现状
 
 本节数据来自 2026-10-08 起的全量重审（归档于 `docs/archive/AUDIT-2026-10-08-REAUDIT.md`）与后续批次，
-数字于 2026-11-07（v2.2.4）重新实测。
+数字于 2026-11-13（v2.4.0）重新实测。
 
-- **单测**：109 个测试文件、**755** 个 `@Test`（全模块 `testDebugUnitTest` 实际执行 755 例，2026-11-11 实测）
+- **单测**：115 个测试文件、**781** 个 `@Test`（全模块 `testDebugUnitTest` 实际执行 781 例，2026-11-13 实测）
 - **巨型文件**：全仓仅 `ArchiveVfs.kt`（1,058 行）超过 1,000 行。重审时的两座大山
   `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）已拆成 6 + 8 个文件。
   两个反弹项要说清楚：`MediaScreen` 655 → 986（v2.2.2–v2.2.4 播放链路增强）、
-  `EditorScreen` 512 → 891（编辑器功能增加）—— 都还没回到 1,000 行，但已不是「随便加个功能」的水平
+  `EditorScreen` 512 → 923（编辑器功能增加）、`TransferTask` 940、`PaneView` 894（快速滚动条 + 目录大小）
+  —— 都还没回到 1,000 行，但已不是「随便加个功能」的水平
 - **重审收口**：第 1–10 批共修掉 105 条问题（101 修 + 4 记录在案），含多条静默坏数据路径
 - 审计文档全部归档在 [`docs/archive/`](docs/archive/README.md)（含索引与「仍未修」清单）；
   新一轮全量审计写在本目录
@@ -148,12 +155,14 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 - [`docs/EDITOR-ENGINE.md`](docs/EDITOR-ENGINE.md) —— 编辑器架构与维护
 - [`docs/OFFICE-PREVIEW.md`](docs/OFFICE-PREVIEW.md) —— Office / Markdown / CSV 预览
 - [`docs/READERS.md`](docs/READERS.md) —— SQLite 与 EPUB 阅读器
+- [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md) —— APKS / XAPK / APKM 转 APK（合并口径、清单补丁、签名、已知限制）
 
 ## 6. 与 MT 管理器的关系
 
 只对齐**交互与观感**：布局结构、尺寸色值、图标 pathData、手势阈值、交互文案。
 
-**不搬功能**：不含 Dex / Arsc / AXML 编辑、签名、加固、插件、账号 VIP、Root / Shizuku 注入。
+**不搬功能**：不含 Dex / Arsc 编辑、AXML 编辑器、加固、插件、账号 VIP、Root / Shizuku 注入。
+签名只保留一处 —— 「转 APK」后必须重签（内置测试证书，`docs/APKS-TO-APK.md` §5），不做独立签名工具。
 回收站是 PanelFM 自加能力（MT 没有）。
 
 ## 7. 第三方组件

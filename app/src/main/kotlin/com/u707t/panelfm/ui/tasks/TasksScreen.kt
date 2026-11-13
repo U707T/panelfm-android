@@ -30,7 +30,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.core.model.ConflictPolicy
 import com.u707t.panelfm.core.transfer.TaskState
+import com.u707t.panelfm.core.transfer.TransferRequest
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.transfer.isFinished
@@ -123,6 +125,33 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
                         onResume = { container.engine.findTask(snapshot.id)?.resume() },
                         onCancel = { container.engine.findTask(snapshot.id)?.cancel() },
                         onRemove = { container.engine.findTask(snapshot.id)?.let { container.engine.remove(it) } },
+                        onRetry = {
+                            val done = snapshot.state as? TaskState.Done
+                            val dest = snapshot.destDir
+                            // 「已复制但删源失败」不能重跑复制（会二次覆盖），只重试真正没搬的项
+                            val retryable = done?.failures
+                                ?.filterNot { it.sourceCopied }
+                                ?.map { it.source }
+                                .orEmpty()
+                            when {
+                                dest == null -> container.browser.showStatus("无法重试：目标目录未知")
+                                retryable.isEmpty() -> container.browser.showStatus("没有可重试的项（已复制但删源失败的项不重复复制）")
+                                else -> {
+                                    val settings = container.settings.value
+                                    container.engine.enqueue(
+                                        TransferRequest(
+                                            sources = retryable,
+                                            destDir = dest,
+                                            op = snapshot.op,
+                                            conflict = ConflictPolicy.ASK,
+                                            verify = settings.verifyMode,
+                                            preserveModifiedTime = settings.preserveModifiedTime,
+                                        )
+                                    )
+                                    container.browser.showStatus("已重试 ${retryable.size} 项")
+                                }
+                            }
+                        },
                     )
                 }
             }
@@ -152,6 +181,7 @@ private fun TaskCard(
     onResume: () -> Unit,
     onCancel: () -> Unit,
     onRemove: () -> Unit,
+    onRetry: () -> Unit = {},
 ) {
     val state = snapshot.state
     val overall = snapshot.overallProgress()
@@ -217,6 +247,10 @@ private fun TaskCard(
                 is TaskState.Running, TaskState.Queued -> TextButton(onClick = onPause) { Text("暂停") }
                 is TaskState.Paused -> TextButton(onClick = onResume) { Text("继续") }
                 else -> {}
+            }
+            // 有失败项时才出现「重试失败项」：全成功的任务不显示这个按钮
+            if (state is TaskState.Done && state.failures.any { !it.sourceCopied }) {
+                TextButton(onClick = onRetry) { Text("重试失败项") }
             }
             when (state) {
                 is TaskState.Failed, is TaskState.Done, is TaskState.Cancelled ->

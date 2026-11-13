@@ -89,6 +89,17 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
                     permissions = pkg.requestedPermissions?.toList() ?: emptyList(),
                     size = file.length(),
                     signer = signerSummary(pkg),
+                    abis = runCatching {
+                        java.util.zip.ZipFile(file).use { z ->
+                            z.entries().asSequence().mapNotNull { e ->
+                                val parts = e.name.split('/')
+                                if (parts.size >= 3 && parts[0] == "lib") parts[1] else null
+                            }.distinct().sorted().toList()
+                        }
+                    }.getOrDefault(emptyList()),
+                    installLocation = pkg.installLocation,
+                    debuggable = (pkg.applicationInfo?.flags ?: 0) and
+                        android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0,
                 )
             }
         }.onSuccess { info = it }.onFailure { error = it.message ?: "读取 APK 失败" }
@@ -127,6 +138,22 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
                     item { InfoRow("版本", "${s.versionName}（versionCode ${s.versionCode}）") }
                     item { InfoRow("SDK", "最低 ${s.minSdk} · 目标 ${s.targetSdk}" + if (s.compileSdk > 0) " · 编译 ${s.compileSdk}" else "") }
                     item { InfoRow("大小", Fmt.size(s.size)) }
+                    item {
+                        InfoRow(
+                            "ABI",
+                            if (s.abis.isEmpty()) "无 native 库" else s.abis.joinToString(" / "),
+                        )
+                    }
+                    item {
+                        InfoRow(
+                            "安装位置",
+                            when (s.installLocation) {
+                                1 -> "内部存储"
+                                2 -> "外部存储"
+                                else -> "自动"
+                            } + if (s.debuggable) " · 可调试" else "",
+                        )
+                    }
                     item { InfoRow("签名", s.signer) }
                     checksums?.let { (md5, sha) ->
                         md5?.let { item { InfoRow("MD5", it) } }
@@ -179,6 +206,11 @@ private data class ApkSummary(
     val permissions: List<String>,
     val size: Long,
     val signer: String,
+    /** APK 内含的 ABI（`lib/<abi>/` 目录）；空 = 纯 Java / 未打包 native */
+    val abis: List<String>,
+    /** 0 自动 / 1 内部存储 / 2 外部存储（PackageInfo.installLocation） */
+    val installLocation: Int,
+    val debuggable: Boolean,
 )
 
 @Composable

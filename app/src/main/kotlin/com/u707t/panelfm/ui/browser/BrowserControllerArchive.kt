@@ -212,9 +212,7 @@ fun BrowserController.extractTo(side: PaneSide, destDir: VfsUri) {
         return
     }
     showStatus("解压 ${sources.size} 项 → ${destDir.displayPath}")
-    container.engine.enqueue(
-        TransferRequest(sources = sources, destDir = destDir, op = TransferOp.COPY, conflict = ConflictPolicy.ASK)
-    )
+    container.engine.enqueue(transferRequest(sources, destDir, TransferOp.COPY))
     clearSelection(side)
 }
 
@@ -274,14 +272,7 @@ fun BrowserController.extractArchiveTo(item: FileMetadata, destDir: VfsUri, ownF
             // 压缩包挂载的**根 URI**（整包内容都在它下面）
             val root = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(item.uri, vfs.kind)
             showStatus("解压 ${item.name} → ${target.displayPath}")
-            container.engine.enqueue(
-                TransferRequest(
-                    sources = listOf(root),
-                    destDir = target,
-                    op = TransferOp.COPY,
-                    conflict = ConflictPolicy.ASK,
-                )
-            )
+            container.engine.enqueue(transferRequest(listOf(root), target, TransferOp.COPY))
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {

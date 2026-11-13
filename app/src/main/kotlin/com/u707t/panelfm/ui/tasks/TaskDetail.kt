@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.model.VerifyMode
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.transfer.currentNameOrRetained
@@ -51,7 +52,16 @@ fun taskDetailRows(snapshot: TransferTaskSnapshot): List<TaskDetailRow> {
                 ).joinToString(" · ").ifBlank { "—" },
             )
         }
-        is TaskState.Done -> rows += TaskDetailRow("结果", snapshot.subtitle)
+        is TaskState.Done -> {
+            rows += TaskDetailRow("结果", snapshot.subtitle)
+            // 失败明细：最多列 3 条，其余只给总数（任务页可以「重试失败项」）
+            state.failures.take(3).forEach { f ->
+                rows += TaskDetailRow("失败", "${f.source.name}：${f.reason}", isError = true)
+            }
+            if (state.failureTotal > 3) {
+                rows += TaskDetailRow("", "另有 ${state.failureTotal - 3} 项失败", isError = true)
+            }
+        }
         is TaskState.Failed -> rows += TaskDetailRow("失败", state.message, isError = true)
         is TaskState.Paused -> {
             // 暂停时把最后一帧的字节数留在「进度」行：否则卡片只剩「已暂停」，
@@ -66,6 +76,12 @@ fun taskDetailRows(snapshot: TransferTaskSnapshot): List<TaskDetailRow> {
         is TaskState.WaitingConflict -> rows += TaskDetailRow("状态", "等待选择冲突处理方式…")
         TaskState.Queued -> rows += TaskDetailRow("状态", "排队中，等待空闲传输位")
         is TaskState.Cancelled -> rows += TaskDetailRow("状态", snapshot.subtitle)
+    }
+    // 校验档位：不校验时不出这一行，避免每张卡都多一条「未校验」噪音
+    when (snapshot.verify) {
+        VerifyMode.NONE -> {}
+        VerifyMode.SIZE -> rows += TaskDetailRow("校验", "仅大小")
+        VerifyMode.HASH -> rows += TaskDetailRow("校验", "SHA-256")
     }
     return rows
 }

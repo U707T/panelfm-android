@@ -12,3 +12,4 @@ key.properties
 *.keystore
 .kotlin/
 dist/
+*.p12

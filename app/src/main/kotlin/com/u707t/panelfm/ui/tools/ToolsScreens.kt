@@ -305,41 +305,72 @@ private suspend fun exportApk(
     onProgress: (done: Long, total: Long) -> Unit = { _, _ -> },
 ): String = withContext(Dispatchers.IO) {
     runCatching {
-        val src = info.sourceDir ?: return@runCatching "无 APK 路径"
-        val pane = container.browser.state.value.pane(side)
-        val label = context.packageManager.getApplicationLabel(info).toString().replace('/', '_')
-        // 目标名不能固定成 `$label.apk`：`VfsWriter.commit()`（本地实现）是「先删同名再改名」，
-        // 直接写会**静默覆盖**已存在的同名 APK。改用统一的重名策略 `名称 (1).apk`。
-        val dest = container.uniqueChild(pane.uri, "$label.apk")
-        val vfs = container.locator.find(pane.uri) ?: return@runCatching "当前窗格不可写"
-        val total = File(src).length()
-        val writer = vfs.openWrite(dest, size = total, offset = 0L)
-        try {
-            File(src).inputStream().use { input ->
-                val buf = ByteArray(256 * 1024)
-                var done = 0L
-                var lastTick = 0L
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    writer.write(buf, 0, n)
-                    done += n
-                    val now = System.currentTimeMillis()
-                    // 250ms 节流：进度可见但不刷爆重组
-                    if (now - lastTick >= 250) {
-                        lastTick = now
-                        onProgress(done, total)
-                    }
+        val pm = context.packageManager
+        val label = pm.getApplicationLabel(info).toString().replace('/', '_')
+        val version = runCatching { pm.getPackageInfo(info.packageName, 0).versionName }.getOrNull().orEmpty()
+        // split 应用：base + 各 split 一起打成 .apks，否则导出的 base.apk 装不上
+        val parts = buildList {
+            info.sourceDir?.let { add(File(it)) }
+            info.splitSourceDirs?.forEach { add(File(it)) }
+        }.filter { it.exists() }
+        val isBundle = parts.size > 1
+        val suffix = if (isBundle) ".apks" else ".apk"
+        val baseName = if (version.isBlank()) label else "${label}_$version"
+
+        // 打包先落缓存（ZipOutputStream 需要随机写；VfsWriter 只有顺序写）
+        val source: File = if (isBundle) {
+            val tmp = File(context.cacheDir, "panelfm-export-${System.currentTimeMillis()}.apks")
+            java.util.zip.ZipOutputStream(tmp.outputStream().buffered(256 * 1024)).use { zos ->
+                parts.forEach { part ->
+                    zos.putNextEntry(java.util.zip.ZipEntry(part.name))
+                    part.inputStream().use { it.copyTo(zos, 256 * 1024) }
+                    zos.closeEntry()
                 }
             }
-            writer.commit()
-        } catch (e: Exception) {
-            runCatching { writer.abort() }
-            throw e
+            tmp
+        } else {
+            parts.firstOrNull() ?: return@runCatching "无 APK 路径"
         }
-        onProgress(total, total)
-        container.browser.refresh(side)
-        "已导出 ${dest.name} 到 ${pane.uri.displayPath}"
+
+        try {
+            val pane = container.browser.state.value.pane(side)
+            val dest = container.uniqueChild(pane.uri, "$baseName$suffix")
+            val vfs = container.locator.find(pane.uri) ?: return@runCatching "当前窗格不可写"
+            val total = source.length()
+            val writer = vfs.openWrite(dest, size = total, offset = 0L)
+            try {
+                source.inputStream().use { input ->
+                    val buf = ByteArray(256 * 1024)
+                    var done = 0L
+                    var lastTick = 0L
+                    while (true) {
+                        val n = input.read(buf)
+                        if (n < 0) break
+                        writer.write(buf, 0, n)
+                        done += n
+                        val now = System.currentTimeMillis()
+                        // 250ms 节流：进度可见但不刷爆重组
+                        if (now - lastTick >= 250) {
+                            lastTick = now
+                            onProgress(done, total)
+                        }
+                    }
+                }
+                writer.commit()
+            } catch (e: Exception) {
+                runCatching { writer.abort() }
+                throw e
+            }
+            onProgress(total, total)
+            container.browser.refresh(side)
+            if (isBundle) {
+                "已导出 ${dest.name}（base + ${parts.size - 1} 个 split）到 ${pane.uri.displayPath}"
+            } else {
+                "已导出 ${dest.name} 到 ${pane.uri.displayPath}"
+            }
+        } finally {
+            if (isBundle) runCatching { source.delete() }
+        }
     }.getOrElse { "导出失败：${it.message}" }
 }
 

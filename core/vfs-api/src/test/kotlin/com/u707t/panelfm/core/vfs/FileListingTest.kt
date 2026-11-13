@@ -44,4 +44,22 @@ class FileListingTest {
         val byTime = sortFileItems(items, SortSpec(by = SortBy.TIME, ascending = false, dirsFirst = true))
         assertEquals(listOf("dirA", "dirB", "b.txt", "a.txt"), byTime.map { it.name })
     }
+
+    @Test
+    fun `名称排序是自然序`() {
+        val files = listOf(f("10.txt"), f("2.txt"), f("1.txt"), f("a10.txt"), f("a2.txt"))
+        val out = sortFileItems(files, SortSpec(by = SortBy.NAME, ascending = true, dirsFirst = false))
+        assertEquals(listOf("1.txt", "2.txt", "10.txt", "a2.txt", "a10.txt"), out.map { it.name })
+    }
+
+    @Test
+    fun `同扩展名按名称自然序`() {
+        val files = listOf(
+            f("b10.zip"), f("b2.zip"), f("a1.zip"),
+            f("noext10"), f("noext2"),
+        )
+        val out = sortFileItems(files, SortSpec(by = SortBy.TYPE, ascending = true, dirsFirst = false))
+        // 无扩展名的排在前面（扩展名为空串），同扩展名内按名称自然序
+        assertEquals(listOf("noext2", "noext10", "a1.zip", "b2.zip", "b10.zip"), out.map { it.name })
+    }
 }

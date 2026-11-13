@@ -116,6 +116,7 @@ private fun actionIcon(action: EditorMenuAction): MtIcon = when (action) {
     EditorMenuAction.LANGUAGE -> MtIcon.TERMINAL
     EditorMenuAction.THEME -> MtIcon.COLORIZE
     EditorMenuAction.WORDWRAP -> MtIcon.WRAP
+    EditorMenuAction.EOL_LF, EditorMenuAction.EOL_CRLF -> MtIcon.SWAP
     EditorMenuAction.FLUENT_MODE -> MtIcon.BRIGHTNESS
     EditorMenuAction.FLUENT_AUTO -> MtIcon.SYNC
     EditorMenuAction.CHARSET_RELOAD -> MtIcon.SYNC

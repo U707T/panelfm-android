@@ -84,6 +84,9 @@ internal fun TopActionItems(
         if (typedIds.contains(TypeActions.ACTION_INSTALL)) {
             MtActionButton(MtIcon.GET_APP, "安装") { onTypedAction(TypeActions.ACTION_INSTALL, typedSingle) }
         }
+        if (typedIds.contains(TypeActions.ACTION_CONVERT_APK)) {
+            MtActionButton(MtIcon.SAVE_ALT, "转为 APK") { onTypedAction(TypeActions.ACTION_CONVERT_APK, typedSingle) }
+        }
         if (typedIds.contains(TypeActions.ACTION_APK_INFO)) {
             MtActionButton(MtIcon.ANDROID, "APK 信息") { onTypedAction(TypeActions.ACTION_APK_INFO, typedSingle) }
         }

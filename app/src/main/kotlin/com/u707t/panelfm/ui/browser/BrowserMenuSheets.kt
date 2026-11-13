@@ -256,7 +256,6 @@ internal fun BrowserActionSheets(
             // 长按弹的是「这一项」的菜单：它若在当前选择集里 → 作用于整个选择集，否则只作用于这一项。
             // （不能让下游退化成 targetSources()：没有选择时那会指向**整个目录**，见 menuTargets 注释）
             val picked = menuTargets(focused.selectedItems, item)
-            val multi = picked.size
             val pickedUris = picked.map { it.uri }
             // MT 置灰规则：选中项含文件夹时，分享 / 打开方式 不可用（系统不支持分享文件夹）
             val anyDirectory = picked.any { it.isDirectory }
@@ -272,7 +271,7 @@ internal fun BrowserActionSheets(
                     add(MtAction("tools", "工具", MtIcon.BUILD))
                     add(MtAction("compress", "压缩", MtIcon.ARCHIVE))
                     if (twoFiles) add(MtAction("diff", "文件对比", MtIcon.COMPARE))
-                    add(MtAction("properties", "属性", MtIcon.INFO, enabled = multi <= 1))
+                    add(MtAction("properties", "属性", MtIcon.INFO))
                     add(MtAction("share", "分享", MtIcon.SHARE, enabled = !anyDirectory))
                     add(MtAction("open_with", "打开方式…", MtIcon.CHECK, enabled = !anyDirectory))
                     add(MtAction("clipboard", "复制到剪贴板", MtIcon.PASTE))
@@ -301,6 +300,7 @@ internal fun BrowserActionSheets(
                                     TypeActions.ACTION_INSTALL -> MtIcon.GET_APP
                                     TypeActions.ACTION_APK_INFO -> MtIcon.ANDROID
                                     TypeActions.ACTION_EXTRACT_APK_ICON -> MtIcon.IMAGE
+                                    TypeActions.ACTION_CONVERT_APK -> MtIcon.SAVE_ALT
                                     TypeActions.ACTION_OPEN_INTERNAL -> MtIcon.EYE
                                     TypeActions.ACTION_EDIT_TEXT -> MtIcon.EDIT
                                     TypeActions.ACTION_RENDER -> MtIcon.DESC
@@ -338,7 +338,7 @@ internal fun BrowserActionSheets(
                             compressTargets = picked
                             compressFormatPicker = true
                         }
-                        "properties" -> controller.showProperties(picked.first())
+                        "properties" -> controller.showProperties(picked)
                         "share" -> shareItems(container, context, picked) { msg -> controller.showStatus(msg) }
                         "open_with" -> openWithFor = picked.first()
                         "clipboard" -> controller.copySelectionToClipboard(focusSide, overrideSources = pickedUris)
@@ -375,6 +375,13 @@ internal fun BrowserActionSheets(
                         }
                         TypeActions.ACTION_EXTRACT_APK_ICON -> extractApkIcon(container, context, item) { msg ->
                             controller.showStatus(msg)
+                        }
+                        TypeActions.ACTION_CONVERT_APK -> {
+                            if (item.uri.scheme != "local") {
+                                controller.showStatus("网络 / 压缩包内的安装包请先复制到本地再转换")
+                            } else {
+                                apkConvertFor = item
+                            }
                         }
                         TypeActions.ACTION_OPEN_INTERNAL -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.AUTO)
                         TypeActions.ACTION_EDIT_TEXT -> controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.EDITOR)

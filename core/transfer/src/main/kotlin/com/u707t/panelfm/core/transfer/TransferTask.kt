@@ -227,6 +227,8 @@ class TransferTask internal constructor(
                         bytes = doneBytes,
                         elapsedMs = System.currentTimeMillis() - startedAt,
                         note = "服务端完成",
+                        failures = failed.take(FAILURES_KEPT),
+                        failureTotal = failed.size,
                     )
                     return
                 }
@@ -318,7 +320,9 @@ class TransferTask internal constructor(
                                 ok++
                                 if (request.op == TransferOp.MOVE) {
                                     runCatching { vfsSrc.delete(listOf(item.source)) }
-                                        .onFailure { failed += FailedItem(item.source, "已复制但删除源失败：${it.message}") }
+                                        .onFailure {
+                                            failed += FailedItem(item.source, "已复制但删除源失败：${it.message}", sourceCopied = true)
+                                        }
                                 }
                             } else {
                                 skipped++
@@ -356,6 +360,8 @@ class TransferTask internal constructor(
                 bytes = doneBytes,
                 elapsedMs = System.currentTimeMillis() - startedAt,
                 note = if (failed.isEmpty()) null else "失败 ${failed.size} 项",
+                failures = failed.take(FAILURES_KEPT),
+                failureTotal = failed.size,
             )
         } catch (c: VfsException.Cancelled) {
             // 取消时保留可续传目标的 .part 与断点记录。
@@ -434,6 +440,8 @@ class TransferTask internal constructor(
             } ?: -1f,
             retainedName = retained?.currentName.orEmpty(),
             retainedStats = retained?.let { statsLine(it, withSpeed = false) }.orEmpty(),
+            verify = request.verify,
+            destDir = request.destDir,
         )
     }
 

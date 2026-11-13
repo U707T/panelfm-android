@@ -81,6 +81,9 @@ internal class BrowserDialogsState {
     var compressFormatPicker by mutableStateOf(false)
     var extractDirPicker by mutableStateOf(false)
     var extractDialogFor by mutableStateOf<FileMetadata?>(null)
+
+    /** 「转为 APK」（.apks / .xapk / .apkm）对话框 */
+    var apkConvertFor by mutableStateOf<FileMetadata?>(null)
     var archiveRename by mutableStateOf<FileMetadata?>(null)
 
     /**

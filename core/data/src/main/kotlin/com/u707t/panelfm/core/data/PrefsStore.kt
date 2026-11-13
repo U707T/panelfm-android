@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
 import com.u707t.panelfm.core.model.SortBy
+import com.u707t.panelfm.core.model.VerifyMode
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
@@ -74,6 +75,23 @@ data class AppSettings(
     val fontScaleLevel: Int = 1,
     /** MT「保留文件时间」：复制/解压/下载完成后把源 mtime 写回目标 */
     val preserveModifiedTime: Boolean = true,
+    /**
+     * 传输校验档位（引擎 `TransferTask.verifyFile` 已实现三档，过去 UI 从不传值 = 永远 NONE）。
+     * 默认 **SIZE**：HASH 会把源与目标各完整读一遍，远端 / 大文件代价翻倍，必须显式选。
+     */
+    val verifyMode: VerifyMode = VerifyMode.SIZE,
+    /**
+     * 回收站保留天数（0 = 不按时间清理）。
+     * **默认 0**：自动删除用户数据必须是显式选择，装上就悄悄清掉 30 天前的条目不可接受。
+     */
+    val trashRetentionDays: Int = 0,
+    /** 回收站容量上限（字节；0 = 不限） */
+    val trashMaxBytes: Long = 0L,
+    /**
+     * 网络目录也计算文件夹大小（默认关）。
+     * 本地目录默认开启；远端递归 list 可能很贵（S3/WebDAV 每个目录一次请求），必须用户显式打开。
+     */
+    val dirSizeOnNetwork: Boolean = false,
     /** MT「启动路径 - 左/右窗口」：true = 首页，false = 上次路径 */
     val startAtHome: Boolean = false,
     /**
@@ -164,6 +182,10 @@ class PrefsStore(private val context: Context) {
         val fontScaleLevel = intPreferencesKey("font_scale_level")
         // MT 对齐批次（v0.14.0）：保留文件时间 / 启动路径 / 列表显示 / 退出确认 / .bak
         val preserveMtime = booleanPreferencesKey("preserve_mtime")
+        val verifyMode = stringPreferencesKey("verify_mode")
+        val trashRetentionDays = intPreferencesKey("trash_retention_days")
+        val trashMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("trash_max_bytes")
+        val dirSizeOnNetwork = booleanPreferencesKey("dir_size_on_network")
         val startAtHome = booleanPreferencesKey("start_at_home")
         val listDisplayMode = intPreferencesKey("list_display_mode")
         val thumbMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("thumb_max_bytes")
@@ -247,6 +269,12 @@ class PrefsStore(private val context: Context) {
             searchHistory = (p[Keys.searchHistory] ?: "").split('\n').filter { it.isNotBlank() },
             fontScaleLevel = p[Keys.fontScaleLevel] ?: 1,
             preserveModifiedTime = p[Keys.preserveMtime] ?: true,
+            verifyMode = runCatching {
+                VerifyMode.valueOf(p[Keys.verifyMode] ?: VerifyMode.SIZE.name)
+            }.getOrDefault(VerifyMode.SIZE),
+            trashRetentionDays = (p[Keys.trashRetentionDays] ?: 0).coerceIn(0, 3650),
+            trashMaxBytes = (p[Keys.trashMaxBytes] ?: 0L).coerceAtLeast(0L),
+            dirSizeOnNetwork = p[Keys.dirSizeOnNetwork] ?: false,
             startAtHome = p[Keys.startAtHome] ?: false,
             listDisplayMode = (p[Keys.listDisplayMode] ?: 2).coerceIn(0, 2),
             thumbnailMaxBytes = p[Keys.thumbMaxBytes] ?: (3L * 1024 * 1024),
@@ -316,6 +344,20 @@ class PrefsStore(private val context: Context) {
 
     suspend fun setFontScaleLevel(level: Int) = context.panelDataStore.edit { it[Keys.fontScaleLevel] = level.coerceIn(0, 2) }
     suspend fun setPreserveModifiedTime(on: Boolean) = context.panelDataStore.edit { it[Keys.preserveMtime] = on }
+
+    /** 传输校验档位：NONE / SIZE / HASH */
+    suspend fun setVerifyMode(mode: VerifyMode) = context.panelDataStore.edit { it[Keys.verifyMode] = mode.name }
+
+    /** 回收站保留天数（0 = 不按时间清理） */
+    suspend fun setTrashRetentionDays(days: Int) =
+        context.panelDataStore.edit { it[Keys.trashRetentionDays] = days.coerceIn(0, 3650) }
+
+    /** 回收站容量上限（0 = 不限） */
+    suspend fun setTrashMaxBytes(bytes: Long) =
+        context.panelDataStore.edit { it[Keys.trashMaxBytes] = bytes.coerceAtLeast(0L) }
+
+    /** 网络目录是否计算文件夹大小（默认关：远端递归列举很贵） */
+    suspend fun setDirSizeOnNetwork(on: Boolean) = context.panelDataStore.edit { it[Keys.dirSizeOnNetwork] = on }
     suspend fun setStartAtHome(on: Boolean) = context.panelDataStore.edit { it[Keys.startAtHome] = on }
     suspend fun setListDisplayMode(mode: Int) = context.panelDataStore.edit { it[Keys.listDisplayMode] = mode.coerceIn(0, 2) }
     suspend fun setThumbnailMaxBytes(bytes: Long) = context.panelDataStore.edit { it[Keys.thumbMaxBytes] = bytes.coerceAtLeast(0) }

@@ -39,6 +39,7 @@ include(
     ":core:vfs-smb",
     ":core:vfs-s3",
     ":core:vfs-archive",
+    ":core:apk",
     ":core:transfer",
     ":core:data",
     ":core:ui",

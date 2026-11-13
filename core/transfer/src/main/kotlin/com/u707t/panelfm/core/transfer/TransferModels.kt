@@ -68,6 +68,13 @@ sealed interface TaskState {
         val bytes: Long,
         val elapsedMs: Long,
         val note: String? = null,
+        /**
+         * 失败明细（最多 [FAILURES_KEPT] 条，避免大任务把快照撑爆）。
+         * 任务详情用它列「哪个文件、为什么失败」，也用它做「重试失败项」。
+         */
+        val failures: List<FailedItem> = emptyList(),
+        /** 失败总数（可能大于 [failures].size） */
+        val failureTotal: Int = failures.size,
     ) : TaskState
 
     data class Failed(val message: String) : TaskState
@@ -149,7 +156,18 @@ private fun TaskState.displayRank(): Int = when (this) {
 fun List<TransferTaskSnapshot>.forBrowserBar(): List<TransferTaskSnapshot> =
     sortedForDisplay().filter { it.state.isActive || it.state is TaskState.Failed }
 
-data class FailedItem(val source: VfsUri, val reason: String)
+data class FailedItem(
+    val source: VfsUri,
+    val reason: String,
+    /**
+     * true = 源已经复制成功、只有「删除源」失败（MOVE 专用）。
+     * 重试时不能重跑复制（会二次覆盖），只能重试删除。
+     */
+    val sourceCopied: Boolean = false,
+)
+
+/** 任务详情最多保留的失败明细条数（超出只计数，避免快照过大）。 */
+const val FAILURES_KEPT = 200
 
 /** UI 用的任务快照 */
 data class TransferTaskSnapshot(
@@ -168,6 +186,10 @@ data class TransferTaskSnapshot(
     val retainedName: String = "",
     /** 暂停 / 正在取消时保留的统计行（`1/3 项 · 282.82 M / 949.47 M`；不带速度 / 剩余时间） */
     val retainedStats: String = "",
+    /** 本次传输的校验档位（任务详情「校验」行；旧任务 / 未传时 = NONE） */
+    val verify: VerifyMode = VerifyMode.NONE,
+    /** 目标目录 —— 「重试失败项」需要它重建请求（拿不到时为 null，重试按钮不出现） */
+    val destDir: VfsUri? = null,
 )
 
 fun TransferRequest.describe(): String {

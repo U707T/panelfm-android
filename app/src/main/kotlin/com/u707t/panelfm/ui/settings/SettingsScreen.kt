@@ -195,6 +195,9 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("移动数据下加载缩略图", settings.thumbnailsOnMobile) {
             scope.launch { container.prefs.setThumbsOnMobile(it) }
         }
+        SettingSwitch("网络目录也计算文件夹大小（远端递归列举较慢，默认关闭）", settings.dirSizeOnNetwork) {
+            scope.launch { container.prefs.setDirSizeOnNetwork(it) }
+        }
         Text(
             "超过该大小的图片不加载缩略图：" + com.u707t.panelfm.core.common.Fmt.size(settings.thumbnailMaxBytes),
             style = MaterialTheme.typography.bodyMedium,
@@ -247,6 +250,38 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         SettingSwitch("默认信任自签证书（新建的 WebDAV / FTP / FTPS / S3 连接）", settings.trustSelfSigned) {
             scope.launch { container.prefs.setTrustSelfSigned(it) }
         }
+        // 传输校验：引擎已实现三档（大小 / 双向 SHA-256），默认只校验大小 ——
+        // HASH 会把源与目标各完整读一遍，远端或大文件代价翻倍，必须显式选。
+        Text(
+            "传输校验：" + when (settings.verifyMode) {
+                com.u707t.panelfm.core.model.VerifyMode.NONE -> "不校验"
+                com.u707t.panelfm.core.model.VerifyMode.SIZE -> "仅大小（默认）"
+                com.u707t.panelfm.core.model.VerifyMode.HASH -> "SHA-256（最慢）"
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(
+                com.u707t.panelfm.core.model.VerifyMode.NONE to "不校验",
+                com.u707t.panelfm.core.model.VerifyMode.SIZE to "大小",
+                com.u707t.panelfm.core.model.VerifyMode.HASH to "SHA-256",
+            ).forEach { (mode, label) ->
+                TextButton(onClick = { scope.launch { container.prefs.setVerifyMode(mode) } }) {
+                    Text(
+                        label,
+                        color = if (settings.verifyMode == mode) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "SHA-256 会把源与目标各完整读一遍：大文件或网络存储会明显变慢，失败时任务直接判失败。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+        )
         Text("任务并发：${settings.maxConcurrentTasks}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             (1..4).forEach { n ->
@@ -264,6 +299,48 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                 }
             }
         }
+
+        SectionLabel("回收站")
+        Text(
+            "保留天数：" + if (settings.trashRetentionDays == 0) "不自动清理" else "${settings.trashRetentionDays} 天",
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0, 7, 30, 90).forEach { days ->
+                TextButton(onClick = { scope.launch { container.prefs.setTrashRetentionDays(days) } }) {
+                    Text(
+                        if (days == 0) "不清理" else "$days 天",
+                        color = if (settings.trashRetentionDays == days) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "容量上限：" + com.u707t.panelfm.core.common.Fmt.size(settings.trashMaxBytes).let {
+                if (settings.trashMaxBytes <= 0L) "不限" else it
+            },
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            listOf(0L, 512L, 1024L, 4096L).forEach { mb ->
+                TextButton(onClick = { scope.launch { container.prefs.setTrashMaxBytes(mb * 1024 * 1024) } }) {
+                    Text(
+                        if (mb == 0L) "不限" else "${mb}MB",
+                        color = if (settings.trashMaxBytes == mb * 1024 * 1024) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        Text(
+            "启动后 5 秒在后台清理一次（幂等）；只删回收站里的旧条目，不碰当前目录。默认不自动清理。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
+        )
 
         SectionLabel("网络")
         Row(verticalAlignment = Alignment.CenterVertically) {

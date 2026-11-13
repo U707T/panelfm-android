@@ -27,6 +27,9 @@ internal enum class EditorMenuAction {
     /** NP `menu_language` / `menu_colors_style` / `menu_text_wordwrap` / `menu_fluent_mode` */
     LANGUAGE, THEME, WORDWRAP, FLUENT_MODE, FLUENT_AUTO,
 
+    /** 换行符转换：LF（Unix）/ CRLF（Windows）；CR 仅作为读取时的归一化，不单独提供目标 */
+    EOL_LF, EOL_CRLF,
+
     /** NP `menu_file_charset` → `load_reset_charset` / `save_reset_charset` */
     CHARSET_RELOAD, CHARSET_SAVE,
 
@@ -154,6 +157,8 @@ internal fun editorMenuSections(input: EditorMenuInput): List<EditorMenuSection>
                 )
                 add(entry(EditorMenuAction.THEME, "配色风格：${input.themeLabel}"))
                 add(entry(EditorMenuAction.WORDWRAP, "自动换行", checked = input.wordwrap))
+                add(entry(EditorMenuAction.EOL_LF, "换行符：转为 LF（Unix）"))
+                add(entry(EditorMenuAction.EOL_CRLF, "换行符：转为 CRLF（Windows）"))
                 add(
                     entry(
                         EditorMenuAction.FLUENT_MODE,

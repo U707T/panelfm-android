@@ -241,6 +241,36 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         status = label
     }
 
+    /**
+     * 换行符转换（LF / CRLF）。与 [applyWholeTextOp] 的区别：那个会**保持**原文件的 CRLF，
+     * 这个就是要把 EOL 改掉，所以不能复用它的「还原」步骤。
+     *
+     * CR 单独出现（老 Mac 文件）先归一成 LF 再转目标：sora 的行模型以 LF 为准，
+     * 直接把 `\r` 留在文本里会让行号 / 跳转全错。
+     */
+    fun applyEol(ed: CodeEditor, crlf: Boolean) {
+        val before = ed.text.toString()
+        val hadCrlf = before.contains("\r\n")
+        val hadCr = !hadCrlf && before.contains('\r')
+        val normalized = before.replace("\r\n", "\n").replace('\r', '\n')
+        val out = if (crlf) normalized.replace("\n", "\r\n") else normalized
+        if (out == before) {
+            status = "换行符已经是 " + if (crlf) "CRLF" else "LF"
+            return
+        }
+        val cursorLine = ed.cursor.leftLine
+        val lastLine = ed.lineCount - 1
+        ed.text.replace(0, 0, lastLine, ed.text.getColumnCount(lastLine), out)
+        ed.setSelection(cursorLine.coerceIn(0, (ed.lineCount - 1).coerceAtLeast(0)), 0, true)
+        syncUndoState(ed)
+        val from = when {
+            hadCrlf -> "CRLF"
+            hadCr -> "CR"
+            else -> "LF"
+        }
+        status = "换行符：$from → ${if (crlf) "CRLF" else "LF"}（${ed.lineCount} 行）"
+    }
+
     /** 光标移到某行行首 / 行尾（NP `jump2header` / `jump2end`）；行号越界自动夹取。 */
     fun moveCaret(ed: CodeEditor, line: Int, toLineEnd: Boolean) {
         val target = line.coerceIn(0, (ed.lineCount - 1).coerceAtLeast(0))
@@ -416,6 +446,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             }
             EditorMenuAction.LANGUAGE -> languageDialog = true
             EditorMenuAction.THEME -> themeDialog = true
+            EditorMenuAction.EOL_LF -> ed?.let { applyEol(it, crlf = false) }
+            EditorMenuAction.EOL_CRLF -> ed?.let { applyEol(it, crlf = true) }
             EditorMenuAction.WORDWRAP -> {
                 wordwrap = !wordwrap
                 scope.launch { container.prefs.setEditorWordwrap(wordwrap) }

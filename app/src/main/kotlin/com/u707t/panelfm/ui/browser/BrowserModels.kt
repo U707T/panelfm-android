@@ -2,6 +2,7 @@ package com.u707t.panelfm.ui.browser
 
 import com.u707t.panelfm.core.model.ConflictInfo
 import com.u707t.panelfm.core.model.SortSpec
+import com.u707t.panelfm.core.transfer.TransferRequest
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
@@ -243,6 +244,8 @@ data class BrowserUiState(
     val pendingMove: PendingMove? = null,
     val conflict: ConflictInfo? = null,
     val property: FileMetadata? = null,
+    /** 多选属性（2 项以上）；与 [property] 互斥，谁非空就弹哪个 */
+    val propertyMulti: List<FileMetadata>? = null,
     val tasks: List<TransferTaskSnapshot> = emptyList(),
     /**
      * 浏览模式三档（MT「单列 / 双列 / 自动切换」）。
@@ -264,6 +267,11 @@ data class BrowserUiState(
     val pickDirFor: PickDirPurpose? = null,
     /** 「输入压缩包口令」对话框（加密包读侧接线，第 5 批 🔴1）；null = 未在等待输入 */
     val archivePassword: ArchivePasswordAsk? = null,
+    /**
+     * 目标空间不足的确认框：**只对「已知大小的文件」预估**，任一源是目录就不猜
+     * （目录大小未知，猜小了会误报、猜大了会白等一次扫描）。
+     */
+    val spaceWarning: SpaceWarning? = null,
 ) {
     fun pane(side: PaneSide): PaneState = if (side == PaneSide.LEFT) left else right
     val focusedPane: PaneState get() = pane(focused)
@@ -433,3 +441,15 @@ internal fun applyPaneFilter(
 /** 一条状态提示该显示多久（纯函数，便于单测）：错误类 6s、普通 2.6s。 */
 internal fun statusDurationMs(message: String): Long =
     if (STATUS_ERROR_HINTS.any { message.contains(it) }) 6_000L else 2_600L
+
+/**
+ * 目标空间不足时的待确认请求。
+ *
+ * [needBytes] 是**已知文件大小之和**（不含目录）；[freeBytes] 是 `Vfs.space()` 的可用空间。
+ * 确认后原样入队 —— 这里不改请求本身，只是把「必失败」提前成一次选择。
+ */
+data class SpaceWarning(
+    val request: TransferRequest,
+    val needBytes: Long,
+    val freeBytes: Long,
+)

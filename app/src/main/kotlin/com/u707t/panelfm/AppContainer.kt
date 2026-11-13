@@ -157,6 +157,18 @@ class AppContainer(val app: Application) {
 
     val browser = BrowserController(this)
 
+    /**
+     * 「APKS / XAPK / APKM → APK」：合并分包 + 清单补丁 + 内置测试证书重签（见 core:apk）。
+     *
+     * 签名材料放 **noBackupFilesDir**：① 放 cache 会被系统清掉，清一次签名就换一次，
+     * 装过的包全变成「签名不一致」；② 放 filesDir 会进云备份 —— 私钥跟着备份跑到别的设备上，
+     * 既没用也不安全。工作目录放 cache/tmp，转换结束即删。
+     */
+    val apkConvert = com.u707t.panelfm.core.apk.ApksToApk(
+        workRoot = java.io.File(appDirs.tmpDir),
+        signingKeyDir = java.io.File(app.noBackupFilesDir, "apk-signing"),
+    )
+
     /** 本地回收站（删除 → 回收站，可还原） */
     val trash = TrashService(appDirs, localVfs)
 
@@ -206,6 +218,18 @@ class AppContainer(val app: Application) {
         // 清理过期断点续传记录（取消/失败留下的记录超过 7 天即丢弃）
         scope.launch {
             runCatching { resumeDao.purgeStale(System.currentTimeMillis() - 7L * 24 * 3600 * 1000) }
+        }
+        // 回收站自动清理：启动 5 秒后在后台跑一次（幂等；没有过期条目时几乎零成本）。
+        // 不放在主线程：统计容量要遍历索引，大回收站可能几十毫秒。
+        scope.launch {
+            kotlinx.coroutines.delay(5_000)
+            runCatching {
+                val s = _settings.value
+                val (removed, freed) = trash.autoPurge(s.trashRetentionDays, s.trashMaxBytes)
+                if (removed > 0) {
+                    Logx.i("Trash", "auto purge $removed item(s), freed ${com.u707t.panelfm.core.common.Fmt.size(freed)}")
+                }
+            }
         }
         // 定期回收空闲网络会话
         scope.launch {

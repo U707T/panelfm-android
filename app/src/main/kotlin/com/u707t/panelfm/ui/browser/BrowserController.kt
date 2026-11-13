@@ -418,9 +418,18 @@ class BrowserController(internal val container: AppContainer) {
      */
     internal val scrollSavers = java.util.concurrent.ConcurrentHashMap<PaneSide, () -> Unit>()
 
-    fun showProperties(item: FileMetadata) = update { it.copy(property = item) }
+    fun showProperties(item: FileMetadata) = update { it.copy(property = item, propertyMulti = null) }
 
-    fun dismissProperties() = update { it.copy(property = null) }
+    /** 多选属性：只汇总列表里已有的 metadata，不再逐项 stat（网络目录不能因此发请求） */
+    fun showProperties(items: List<FileMetadata>) {
+        if (items.size <= 1) {
+            items.firstOrNull()?.let { showProperties(it) }
+            return
+        }
+        update { it.copy(property = null, propertyMulti = items) }
+    }
+
+    fun dismissProperties() = update { it.copy(property = null, propertyMulti = null) }
 
     // ------------------------------------------------------------------ 跨窗格操作
 

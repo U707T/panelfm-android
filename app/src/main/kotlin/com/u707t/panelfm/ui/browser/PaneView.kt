@@ -21,11 +21,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -129,6 +131,10 @@ fun PaneView(
     val canGoUp = pane.uri.parent != null || pane.uri.scheme == "archive"
     val settings by container.settings.collectAsState()
     // 缩略图策略 / 副标题档位在这里算一次，下传给每一行（行内不再订阅 settings）
+    // 目录大小：本地默认算；远端默认不算（递归 list 可能是几十次网络请求）
+    val dirSizeEnabled = remember(pane.uri.scheme, settings.dirSizeOnNetwork) {
+        pane.uri.scheme == "local" || pane.uri.scheme == "archive" || settings.dirSizeOnNetwork
+    }
     val thumbPolicy = remember(
         settings.thumbnailsOnMobile,
         settings.thumbnailMaxBytes,
@@ -392,6 +398,8 @@ fun PaneView(
                             // 见 ThumbPolicy 的 KDoc 里同一条结论。
                             thumbPolicy = thumbPolicy,
                             listDisplayMode = settings.listDisplayMode,
+                            dirSizeEnabled = dirSizeEnabled,
+                            dirSizeSkip = listState.isScrollInProgress,
                             item = item,
                             selected = pane.selection.contains(item.uri.toString()),
                             // 行动效预览：只有被滑动的那一行读这个位移（其余行传 null，不参与重组）
@@ -404,6 +412,13 @@ fun PaneView(
                     }
                 }
             }
+
+            // ---- 快速滚动条（长目录）：只在滚动 / 拖动时淡入，静止 900ms 后淡出。
+            //      放在列表之上、FAB 之下；窄条 14dp 只吃这一条区域的触摸，不影响行手势。
+            FastScroller(
+                listState = listState,
+                modifier = Modifier.align(Alignment.CenterEnd).fillMaxHeight().padding(end = 1.dp),
+            )
 
             // ---- 每窗格 FAB（复刻 MT 0x7f0c0033 的 090166/09016A，附录 A.2）：
             //   剪贴板（粘贴，bottom|end 12dp，MT 规格 50dp 红色）；
@@ -587,6 +602,10 @@ private fun MtFileRow(
     thumbPolicy: ThumbPolicy,
     /** 列表副标题档位（同上，按值下传） */
     listDisplayMode: Int,
+    /** 是否允许为该行（目录）计算大小 */
+    dirSizeEnabled: Boolean,
+    /** 滚动中：不启动新的目录统计（进入可视区先等等，停下再算） */
+    dirSizeSkip: Boolean,
     item: FileMetadata,
     selected: Boolean,
     /** 滑动选中的行动效：非 null = 这一行刚被滑动选中（值 = 目标横向位移 px），随后弹回 0 */
@@ -678,7 +697,13 @@ private fun MtFileRow(
             )
             Text(
                 // MT「文件列表显示」三档（`0x7f110200/201/202`）：不显示权限 / 权限+大小 / 时间+大小
-                rowSubtitle(listDisplayMode, item),
+                rowSubtitle(
+                    listDisplayMode,
+                    item,
+                    dirSizeText = if (item.isDirectory) {
+                        dirSizeLabel(container, item, dirSizeEnabled, dirSizeSkip)
+                    } else null,
+                ),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize, lineHeight = 13.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
@@ -700,13 +725,54 @@ private fun MtFileRow(
  * 列表副标题（MT「文件列表显示」三档，文案 `0x7f110200/201/202`）：
  * 纯函数在 [com.u707t.panelfm.core.common.MtListSubtitle]（可单测），这里只负责取字段。
  */
-private fun rowSubtitle(mode: Int, item: FileMetadata): String =
+private fun rowSubtitle(mode: Int, item: FileMetadata, dirSizeText: String? = null): String =
     com.u707t.panelfm.core.common.MtListSubtitle.render(
         mode = mode,
         permissionText = item.permissions?.let { Fmt.modeLong(it, item.isDirectory, item.isSymlink) },
         timeText = Fmt.time(item.lastModified),
-        sizeText = if (!item.isDirectory && item.size >= 0) Fmt.size(item.size) else "",
+        sizeText = when {
+            item.isDirectory -> dirSizeText.orEmpty()
+            item.size >= 0 -> Fmt.size(item.size)
+            else -> ""
+        },
     )
+
+/**
+ * 目录大小文字：缓存命中直接用；未命中则在行进入组合后**延迟 220ms** 再算
+ * （快速滑动时行会不断进出组合，延迟能把这一批抖动吃掉）。
+ *
+ * 结果写进 [DirSizeCache]，key 带 mtime —— 目录内容变了 key 就变，不会显示旧值。
+ */
+@Composable
+private fun dirSizeLabel(
+    container: com.u707t.panelfm.AppContainer,
+    item: FileMetadata,
+    enabled: Boolean,
+    skip: Boolean,
+): String? {
+    if (!enabled) return null
+    val key = remember(item.uri, item.lastModified) { DirSizeCache.key(item.uri, item.lastModified) }
+    var value by remember(key) { mutableStateOf(DirSizeCache.get(key)) }
+    var running by remember(key) { mutableStateOf(false) }
+    LaunchedEffect(key, skip) {
+        if (skip || value != null) return@LaunchedEffect
+        kotlinx.coroutines.delay(220)
+        val vfs = container.locator.find(item.uri) ?: return@LaunchedEffect
+        running = true
+        val result = runCatching { computeDirSize(vfs, item.uri) }.getOrNull()
+        running = false
+        if (result != null) {
+            DirSizeCache.put(key, result)
+            value = result
+        }
+    }
+    val v = value
+    return when {
+        v == null -> if (running) "计算中…" else null
+        v.complete -> Fmt.size(v.bytes)
+        else -> "> ${Fmt.size(v.bytes)}"
+    }
+}
 
 /** 路径中间省略（MT 的 `/storage/emula.../0/Download/` 观感） */
 fun middleEllipsis(path: String, maxChars: Int = 34): String {
@@ -726,4 +792,103 @@ fun Modifier.clickableNoRipple(enabled: Boolean = true, onClick: () -> Unit): Mo
         enabled = enabled,
         onClick = onClick,
     )
+}
+
+/**
+ * 快速滚动条：右侧 14dp 触摸带 + 自绘滑块。
+ *
+ * 设计约束：
+ *  - **只在滚动 / 拖动时出现**（Tinder 式的常驻滚动条会与 MT 观感冲突，也挡文件名）；
+ *  - 滑块高度 = 可视比例（最小 32dp），位置由 `firstVisibleItemIndex / (total - visible)` 映射；
+ *  - 拖动时用 `scrollToItem`（不带动画），松手立刻停在目标位置，不做 fling 惯性；
+ *  - 总项数不足一屏 + 8 行时整个组件隐藏 —— 短目录不该出现一条无处可去的滑块。
+ */
+@Composable
+private fun FastScroller(
+    listState: androidx.compose.foundation.lazy.LazyListState,
+    modifier: Modifier = Modifier,
+) {
+    val info = listState.layoutInfo
+    val total = info.totalItemsCount
+    val visible = info.visibleItemsInfo.size
+    // 短列表不显示：滑块会占满整条轨道，既无意义又挡触摸
+    if (total <= 0 || visible <= 0 || total <= visible + 8) return
+
+    val density = LocalDensity.current
+    val minThumbPx = with(density) { 32.dp.toPx() }
+    val scope = rememberCoroutineScope()
+    var dragging by remember { mutableStateOf(false) }
+    var active by remember { mutableStateOf(false) }
+    val alpha by animateFloatAsState(
+        targetValue = if (dragging || active) 1f else 0f,
+        animationSpec = tween(if (dragging) 90 else 220),
+        label = "fast-scroller-alpha",
+    )
+
+    // 滚动中保持可见；停下 900ms 后淡出
+    LaunchedEffect(listState.isScrollInProgress, dragging) {
+        if (listState.isScrollInProgress || dragging) {
+            active = true
+        } else {
+            kotlinx.coroutines.delay(900)
+            active = false
+        }
+    }
+
+    val maxFirst = (total - visible).coerceAtLeast(1)
+    val frac = (listState.firstVisibleItemIndex.toFloat() / maxFirst).coerceIn(0f, 1f)
+    val thumbColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f * alpha)
+    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f * alpha)
+
+    // 静止时滑块是隐形的 —— 这段触摸必须**让**给列表行，否则右侧 10dp 成了「看不见的死区」。
+    // 滚动 / 拖动把 alpha 抬起来之后才接管手势（这时用户就是奔着滑块来的）。
+    val interactive = alpha > 0.01f
+    val gesture = Modifier.pointerInput(total, visible) {
+        awaitEachGesture {
+            val down = awaitFirstDown(requireUnconsumed = false)
+            dragging = true
+            val h = size.height.toFloat()
+            val thumbH = (h * (visible.toFloat() / total)).coerceAtLeast(minThumbPx)
+            val track = (h - thumbH).coerceAtLeast(1f)
+            fun jumpTo(y: Float) {
+                val t = ((y - thumbH / 2f) / track).coerceIn(0f, 1f)
+                val index = (t * maxFirst).toInt().coerceIn(0, maxFirst)
+                scope.launch { listState.scrollToItem(index) }
+            }
+            jumpTo(down.position.y)
+            down.consume()
+            while (true) {
+                val event = awaitPointerEvent()
+                val change = event.changes.firstOrNull { it.id == down.id } ?: break
+                if (!change.pressed) break
+                jumpTo(change.position.y)
+                change.consume()
+            }
+            dragging = false
+        }
+    }
+
+    androidx.compose.foundation.layout.BoxWithConstraints(
+        modifier.width(10.dp).then(if (interactive) gesture else Modifier),
+    ) {
+        val trackHeight = maxHeight
+        androidx.compose.foundation.layout.Box(
+            Modifier
+                .align(Alignment.CenterEnd)
+                .fillMaxHeight()
+                .width(3.dp)
+                .background(trackColor, RoundedCornerShape(2.dp)),
+        )
+        val thumbFraction = (visible.toFloat() / total).coerceIn(0.02f, 1f)
+        val thumbHeight = (trackHeight * thumbFraction).coerceAtLeast(32.dp)
+        val travel = (trackHeight - thumbHeight).coerceAtLeast(0.dp)
+        androidx.compose.foundation.layout.Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = travel * frac)
+                .width(5.dp)
+                .height(thumbHeight)
+                .background(thumbColor, RoundedCornerShape(3.dp)),
+        )
+    }
 }

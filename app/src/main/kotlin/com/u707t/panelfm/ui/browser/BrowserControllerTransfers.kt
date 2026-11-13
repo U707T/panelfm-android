@@ -40,6 +40,84 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * 入队前的空间预检：只处理「所有源都是已知大小的文件」的情况。
+ *
+ * - 任一源是目录 → 不预估（目录大小未知，宁可跳过也不误报）；
+ * - 目标 VFS 不提供 `space()`（SFTP / WebDAV / S3 / 压缩包）→ 直接入队；
+ * - 空间足够 → 直接入队；不够 → 挂起成一个确认框（[SpaceWarning]），由 UI 二选一。
+ */
+internal fun BrowserController.enqueueChecked(request: TransferRequest) {
+    container.scope.launch {
+        val free = withContext(container.dispatchers.vfs) {
+            runCatching { container.locator.find(request.destDir)?.space(request.destDir) }.getOrNull()
+        }?.free ?: -1L
+        if (free <= 0L) {
+            container.engine.enqueue(request)
+            return@launch
+        }
+        val need = knownFileBytes(request.sources)
+        if (need < 0L || need <= free) {
+            container.engine.enqueue(request)
+            return@launch
+        }
+        update { it.copy(spaceWarning = SpaceWarning(request, need, free)) }
+    }
+}
+
+/** 已知文件字节和；任一源是目录或大小未知 → -1（表示「不预估」）。最多看 200 项，避免网络狂 stat。 */
+private suspend fun BrowserController.knownFileBytes(sources: List<VfsUri>): Long {
+    if (sources.size > 200) return -1L
+    var total = 0L
+    for (uri in sources) {
+        val vfs = container.locator.find(uri) ?: return -1L
+        val meta = runCatching {
+            withContext(container.dispatchers.vfs) { vfs.stat(uri) }
+        }.getOrNull() ?: return -1L
+        if (meta.isDirectory || meta.size < 0L) return -1L
+        total += meta.size
+    }
+    return total
+}
+
+/** 用户选「仍然继续」：原请求入队。 */
+fun BrowserController.confirmSpaceWarning() {
+    val warn = _state.value.spaceWarning ?: return
+    update { it.copy(spaceWarning = null) }
+    container.engine.enqueue(warn.request)
+}
+
+/** 用户选「取消」：丢弃请求（源文件与目标都不动）。 */
+fun BrowserController.dismissSpaceWarning() {
+    if (_state.value.spaceWarning == null) return
+    update { it.copy(spaceWarning = null) }
+    showStatus("已取消：目标空间不足")
+}
+
+/**
+ * 统一构造传输请求：把设置里的「校验档位 / 保留文件时间」注入。
+ *
+ * 过去所有调用点都直接用 `TransferRequest(...)` 的默认值 —— 引擎实现了
+ * `VerifyMode.SIZE/HASH` 却永远收到 `NONE`，设置里的「保留文件时间」也没生效。
+ * 以后新增调用点一律走这里，别再各写一遍。
+ */
+internal fun BrowserController.transferRequest(
+    sources: List<VfsUri>,
+    destDir: VfsUri,
+    op: TransferOp,
+    conflict: ConflictPolicy = ConflictPolicy.ASK,
+): TransferRequest {
+    val s = container.settings.value
+    return TransferRequest(
+        sources = sources,
+        destDir = destDir,
+        op = op,
+        conflict = conflict,
+        verify = s.verifyMode,
+        preserveModifiedTime = s.preserveModifiedTime,
+    )
+}
+
 fun BrowserController.copyToOther(
     side: PaneSide = _state.value.focused,
     /** 显式目标（长按菜单按「这一项」复制时传入）；null = 当前选择集 / 当前目录 */
@@ -122,7 +200,7 @@ fun BrowserController.copyDiffOnlyLeft() {
         showStatus("没有仅左侧的项")
         return
     }
-    container.engine.enqueue(TransferRequest(sources, diff.rightDir, TransferOp.COPY, ConflictPolicy.ASK))
+    container.engine.enqueue(transferRequest(sources, diff.rightDir, TransferOp.COPY))
     showStatus("已开始复制 ${sources.size} 项到右侧")
 }
 
@@ -134,7 +212,7 @@ fun BrowserController.copyDiffNewer() {
         showStatus("没有较新的项")
         return
     }
-    container.engine.enqueue(TransferRequest(sources, diff.rightDir, TransferOp.COPY, ConflictPolicy.OVERWRITE))
+    container.engine.enqueue(transferRequest(sources, diff.rightDir, TransferOp.COPY, ConflictPolicy.OVERWRITE))
     showStatus("已开始同步 ${sources.size} 个较新项")
 }
 
@@ -184,9 +262,7 @@ fun BrowserController.pasteFromClipboard(side: PaneSide, move: Boolean = false) 
         kotlinx.coroutines.delay(1600)
         update { it.copy(highlight = false) }
     }
-    container.engine.enqueue(
-        TransferRequest(sources = reachable, destDir = dest, op = op, conflict = ConflictPolicy.ASK)
-    )
+    enqueueChecked(transferRequest(reachable, dest, op))
     if (move) clearClipboard()
     clearSelection(side)
 }
@@ -211,9 +287,7 @@ private fun BrowserController.enqueueWithinPane(side: PaneSide, op: TransferOp, 
     }
     val opText = if (op == TransferOp.COPY) "复制" else "移动"
     showStatus("$opText ${sources.size} 项 → ${destDir.displayPath}")
-    container.engine.enqueue(
-        TransferRequest(sources = sources, destDir = destDir, op = op, conflict = ConflictPolicy.ASK)
-    )
+    enqueueChecked(transferRequest(sources, destDir, op))
     clearSelection(side)
 }
 
@@ -250,14 +324,7 @@ private fun BrowserController.startCrossPane(
     }
 
     // ② 入队
-    container.engine.enqueue(
-        TransferRequest(
-            sources = sources,
-            destDir = destDir,
-            op = op,
-            conflict = ConflictPolicy.ASK,
-        )
-    )
+    enqueueChecked(transferRequest(sources, destDir, op))
     clearSelection(side)
 }
 

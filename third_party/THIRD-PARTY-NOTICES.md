@@ -81,3 +81,21 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 > WebView 方案，是为了复用现有的「缩放 / 翻页 / 双击放大」图片查看器，且启动更快、无 JS 引擎成本。
 
 
+## 6. apksig —— APK 重签（核心库 `core/apk`）
+
+| 项 | 值 |
+|---|---|
+| 来源 | https://android.googlesource.com/platform/tools/apksig（AOSP） |
+| 版本 | `com.android.tools.build:apksig:9.3.1`（Maven Central；jar 约 500 KB，纯 Java、**零传递依赖**，只用 `java.base`） |
+| 许可证 | **Apache-2.0**（全文同 `third_party/androidsvg/LICENSE-Apache-2.0.txt`） |
+| 使用范围 | 「APKS / XAPK / APKM → APK」合并后的重签：v2 + v3（`minSdk < 24` 时补 v1），并把 `.so` 按 16 KB 页对齐 |
+| 备注 | 只做签名，不做验签之外的任何解析；签名材料是本机生成的自签测试证书（见 `docs/APKS-TO-APK.md` §5），仓库里没有任何 keystore |
+
+## 7. Bouncy Castle（bcprov）—— 自签证书与 SSH / SMB 加密
+
+| 项 | 值 |
+|---|---|
+| 来源 | https://www.bouncycastle.org/java.html |
+| 版本 | `org.bouncycastle:bcprov-jdk18on:1.85`（Maven Central；纯 Java） |
+| 许可证 | **Bouncy Castle License**（MIT 式宽松许可，允许商用与再分发） |
+| 使用范围 | ① `core/vfs-sftp` / `core/vfs-smb` 的加密与密钥处理（既有）；② `core/apk` 里用其 ASN.1 API 直接产出 X.509 自签证书（避免再引 1 MB 的 bcpkix） |
