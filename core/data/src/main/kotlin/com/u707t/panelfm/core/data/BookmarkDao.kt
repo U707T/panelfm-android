@@ -50,6 +50,15 @@ class BookmarkDao(private val db: PanelDb) {
     }
 
     /**
+     * 清空全部书签（书签抽屉 ⋮ →「清空书签」；MT 的批量删除语义 `0x7f1105a8`）。
+     *
+     * 只删 `bookmark` 表，不动路径历史 —— 「最近」是另一份数据，清书签不该顺带清历史。
+     */
+    fun clear() {
+        db.writableDatabase.delete("bookmark", null, null)
+    }
+
+    /**
      * 路径历史：记录访问过的目录（用于「最近使用」与书签建议）。
      *
      * 不用 UPSERT（`ON CONFLICT ... DO UPDATE` 需要 SQLite ≥ 3.24；API 26–29 的设备只有
@@ -96,6 +105,20 @@ class BookmarkDao(private val db: PanelDb) {
             }
         }
         return out
+    }
+
+    /**
+     * 从「最近」里移除一条（书签抽屉里长按行 →「从最近中移除」）。
+     *
+     * 按 uri 精确匹配：`recordVisit` 对同一路径是 update，不会留重复行。
+     */
+    fun forgetPath(uri: VfsUri) {
+        db.writableDatabase.delete("path_history", "uri = ?", arrayOf(uri.toString()))
+    }
+
+    /** 清空路径历史（书签抽屉「最近」页 ⋮ →「清空最近记录」，MT `0x7f110120`） */
+    fun clearHistory() {
+        db.writableDatabase.delete("path_history", null, null)
     }
 
     private fun Cursor.toBookmark(): Bookmark {

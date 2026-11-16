@@ -123,7 +123,8 @@ internal fun BrowserBottomBar(
     controller: BrowserController,
     ui: BrowserUiState,
     ds: BrowserDialogsState,
-    onOpenBookmarks: () -> Unit,
+    /** 底栏上滑 = 拉出书签底部抽屉（MT 0x7f1107ca；不再跳独立页） */
+    onPullUpBookmarks: () -> Unit,
 ) {
     val settings by container.settings.collectAsState()
     val focused = ui.focusedPane
@@ -204,7 +205,7 @@ internal fun BrowserBottomBar(
                         .padding(bottom = bottomExtra)
                         .background(MaterialTheme.colorScheme.surface)
                         .pointerInput(Unit) {
-                            // 底栏上滑 → 书签（MT 0x7f1107ca「从底部工具栏上滑即可打开书签」）。
+                            // 底栏上滑 → 书签抽屉（MT 0x7f1107ca「从底部工具栏上滑即可打开书签」）。
                             // 文档 G.1.3 提醒：热区要在底栏上边缘之上、并与全面屏手势错开；
                             // 阈值取 MtGesture.SwipeBookmarkDp（32dp，文档 G.5），且本次手势只触发一次。
                             val threshold = MtGesture.SwipeBookmarkDp.dp.toPx()
@@ -218,7 +219,7 @@ internal fun BrowserBottomBar(
                                 accumulated += dragAmount
                                 if (!fired && accumulated < -threshold && settings.bookmarkSwipe) {
                                     fired = true
-                                    onOpenBookmarks()
+                                    onPullUpBookmarks()
                                 }
                             }
                         }

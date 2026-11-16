@@ -76,7 +76,8 @@ import kotlinx.coroutines.launch
  *  - 侧边栏：本地（占用条）/ 网络 / 工具，点击在活动窗口打开；右上 ⋮ = 主题跟随系统 / 添加存储 / 分组 / 设置
  *  - 列表首行 `..`，行高固定；**左右滑动任意项 = 进入多选并选中该行**（再滑动另一项 = 连选闭区间）
  *  - 长按松手 = 动作菜单（跨窗格复制/移动走动作菜单「复制 -> / 移动 ->」或 ⇄；长按拖动已移除）
- *  - 底部 `← → ＋ ⇄ ↑`：＋弹新建菜单；**⇄ 点击 = 交换窗口**（长按 = 过滤）；长按 ↑ = 路径跳转；底栏上滑 = 书签
+ *  - 底部 `← → ＋ ⇄ ↑`：＋弹新建菜单；**⇄ 点击 = 交换窗口**（长按 = 过滤）；长按 ↑ = 路径跳转；
+ *    **底栏上滑 = 书签底部抽屉**（「最近 / 书签」两个标签页，见 `MtBookmarkDrawer`）
  *  - 长按文件 → MT 动作菜单（`复制 ->` / `移动 ->`，**箭头指向另一窗口**；带 ● 支持长按单窗口操作）
  */
 @Composable
@@ -453,7 +454,11 @@ fun DualPaneScreen(
                     }
                 }
 
-                BrowserBottomBar(container, controller, ui, ds, onOpenBookmarks = onOpenBookmarks)
+                BrowserBottomBar(
+                    container, controller, ui, ds,
+                    // MT：底栏上滑 = 拉出书签底部抽屉（不再跳独立书签页）
+                    onPullUpBookmarks = { closeDrawer(); ds.showBookmarks = true },
+                )
             }
         }
 
@@ -503,6 +508,20 @@ fun DualPaneScreen(
                 ).padding(bottom = 66.dp),
             )
         }
+    }
+
+    // ---------------- 书签底部抽屉（MT 0x7f1107ca：底栏上滑拉出「最近 / 书签」）
+    //
+    // 放在传输胶囊之后、模态对话框之前：抽屉要盖住胶囊，但不能盖住必须做选择的冲突框。
+    if (ds.showBookmarks) {
+        MtBookmarkDrawer(
+            container = container,
+            controller = controller,
+            tab = ds.bookmarkTab,
+            onTabChange = { ds.bookmarkTab = it },
+            pathOf = { pathDisplayOf(it, volumes) },
+            onClose = { ds.showBookmarks = false },
+        )
     }
 
     // ---------------- 传输进度模态对话框（v2.3.2）

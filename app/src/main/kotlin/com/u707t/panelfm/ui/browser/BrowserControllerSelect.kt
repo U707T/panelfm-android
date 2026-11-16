@@ -210,11 +210,38 @@ fun BrowserController.reorderBookmarks(orderedIds: List<Long>) {
 }
 
 /** 打开书签：网络路径若未挂载则自动重连 */
-fun BrowserController.openBookmark(bookmark: com.u707t.panelfm.core.data.Bookmark) {
+fun BrowserController.openBookmark(bookmark: com.u707t.panelfm.core.data.Bookmark) =
+    openStoredPath(bookmark.uri, bookmark.connectionId, bookmark.name, "打开书签失败")
+
+/**
+ * 打开「最近」里的一条路径（书签抽屉的「最近」页）。
+ *
+ * 与书签共用 [openStoredPath]：网络挂载未连接时先重连 —— 「最近」里同样会留下上次会话的
+ * 网络路径，不重连就只能报「未连接」。
+ */
+fun BrowserController.openRecentPath(uri: VfsUri) {
+    val conn = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
+        ?: container.connectionByAuthority(uri.scheme, uri.authority)
+    openStoredPath(
+        uri = uri,
+        connectionId = conn?.id ?: com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri),
+        // 根目录没有末级名：留空会让标签页变成一片空白，直接不传（沿用当前标签）
+        label = conn?.name ?: uri.name.takeIf { it.isNotBlank() },
+        failPrefix = "打开路径失败",
+    )
+}
+
+/**
+ * 书签 / 最近路径的统一打开路径（在**活动窗格**打开）。
+ *
+ * @param connectionId 落库时的连接号（同主机多账号时用于选对挂载）
+ * @param label        标签页显示名（书签用自己的名字，最近路径用连接名；null = 沿用当前标签）
+ * @param failPrefix   失败提示前缀
+ */
+private fun BrowserController.openStoredPath(uri: VfsUri, connectionId: Long?, label: String?, failPrefix: String) {
     val side = _state.value.focused
     container.scope.launch {
         try {
-            val uri = bookmark.uri
             if (uri.scheme != "local" && container.locator.find(uri) == null) {
                 val config = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
                     ?: container.connectionByAuthority(uri.scheme, uri.authority)
@@ -222,12 +249,30 @@ fun BrowserController.openBookmark(bookmark: com.u707t.panelfm.core.data.Bookmar
                 container.openConnection(config)
                 open(side, uri, config.id, config.name)
             } else {
-                open(side, uri, bookmark.connectionId, bookmark.name)
+                open(side, uri, connectionId, label)
             }
         } catch (e: Exception) {
-            showStatus((e as? VfsException)?.userMessage ?: "打开书签失败：${e.message}")
+            showStatus((e as? VfsException)?.userMessage ?: "$failPrefix：${e.message}")
         }
     }
+}
+
+/** 清空全部书签（书签抽屉 ⋮ →「清空书签」） */
+fun BrowserController.clearBookmarks() {
+    runCatching { container.bookmarkDao.clear() }
+    showStatus("已清空书签")
+}
+
+/** 从「最近」里移除一条记录（书签抽屉长按行 →「从最近中移除」） */
+fun BrowserController.forgetRecentPath(uri: VfsUri) {
+    runCatching { container.bookmarkDao.forgetPath(uri) }
+    showStatus("已从最近中移除")
+}
+
+/** 清空「最近」记录（书签抽屉「最近」页 ⋮ →「清空最近记录」） */
+fun BrowserController.clearRecentPaths() {
+    runCatching { container.bookmarkDao.clearHistory() }
+    showStatus("已清空最近记录")
 }
 
 /** MT 的「设为首页」 */

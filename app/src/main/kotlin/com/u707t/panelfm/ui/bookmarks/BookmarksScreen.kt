@@ -1,190 +1,49 @@
 package com.u707t.panelfm.ui.bookmarks
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.layout.boundsInRoot
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.platform.LocalHapticFeedback
-import androidx.compose.ui.unit.dp
+import androidx.compose.ui.platform.LocalContext
 import com.u707t.panelfm.AppContainer
-import com.u707t.panelfm.core.data.Bookmark
-import com.u707t.panelfm.core.ui.EmptyState
 import com.u707t.panelfm.core.ui.MtScreenTopBar
-import com.u707t.panelfm.core.ui.FileIcon
-import com.u707t.panelfm.core.ui.MtIcon
-import com.u707t.panelfm.core.ui.MtListRow
-import com.u707t.panelfm.core.ui.MtSpec
-import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.safeAreaPadding
-import com.u707t.panelfm.ui.browser.bookmarks
-import com.u707t.panelfm.ui.browser.openBookmark
-import com.u707t.panelfm.ui.browser.removeBookmark
-import com.u707t.panelfm.ui.browser.reorderBookmarks
+import com.u707t.panelfm.core.vfs.local.LocalVolumes
+import com.u707t.panelfm.ui.browser.BookmarkPanel
+import com.u707t.panelfm.ui.browser.BookmarkTab
+import com.u707t.panelfm.ui.browser.pathDisplayOf
 
 /**
- * 书签管理（复刻 MT 的书签面板）：
- *  - 点开跳到对应目录；**长按后拖动排序**（MT `0x7f110140`「长按后拖动排序」）
- *  - 行尾 ✕ 删除
+ * 书签页（从侧边栏 / 主页「书签」进入的独立页）。
  *
- * MT 的完整书签面板是从**底栏上滑**调出的（`0x7f1107ca`），这里作为独立页呈现同一份数据。
+ * MT 的完整书签面板本来是**从底栏上滑拉出的底部抽屉**（`0x7f1107ca`），抽屉里是
+ * 「最近」（`0x7f1106a6`）与「书签」（`0x7f1100da`）两个标签页 —— 抽屉本身是
+ * `ui.browser.BookmarkDrawer`（和双列页同处一层，所以放在 `ui.browser` 里，避免两个
+ * feature 包互相 import）。这个独立页只是同一份内容（`ui.browser.BookmarkPanel`）的
+ * 全屏外壳，两个入口共用一套标签页 / 列表 / 长按排序 / 行菜单，不各写一份。
  */
 @Composable
 fun BookmarksScreen(container: AppContainer, onBack: () -> Unit, onOpen: () -> Unit) {
-    var version by remember { mutableStateOf(0) }
-    var order by remember { mutableStateOf<List<Long>>(emptyList()) }
-    // 书签列表要查 SQLite：组合期同步查（remember { browser.bookmarks() }）会在
-    // 进页面时白卡一帧，条目多 / 库被别处写锁时更明显 —— 改到 IO 上读。
-    val raw by produceState(initialValue = emptyList<Bookmark>(), version) {
-        value = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            container.browser.bookmarks()
-        }
-    }
-    // 拖动排序的本地顺序（优先于创建时间序；拖动结束写回数据库）
-    val bookmarks: List<Bookmark> = remember(raw, order) {
-        if (order.isEmpty()) raw else {
-            val index = order.withIndex().associate { (i, id) -> id to i }
-            raw.sortedBy { index[it.id] ?: Int.MAX_VALUE }
-        }
-    }
-
-    val listState = rememberLazyListState()
-    val haptic = LocalHapticFeedback.current
-    var draggingId by remember { mutableStateOf<Long?>(null) }
-    var dragOffset by remember { mutableStateOf(0f) }
-    var rowHeightPx by remember { mutableStateOf(0f) }
+    val context = LocalContext.current
+    val volumes = remember { LocalVolumes.volumes(context) }
+    var tab by remember { mutableStateOf(BookmarkTab.BOOKMARK) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
             title = "书签",
-            subtitle = "${bookmarks.size} 条",
             onBack = onBack,
         )
-        if (bookmarks.isNotEmpty()) {
-            // MT 0x7f110140：长按后拖动排序（提示文案与 MT 一致）
-            Text(
-                "长按后拖动排序",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(start = 18.dp, bottom = 4.dp),
-            )
-        }
-
-        if (bookmarks.isEmpty()) {
-            EmptyState("还没有书签", "在双列页 ⋮ 菜单里「添加书签」，或长按列表项选「添加书签」")
-        } else {
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.fillMaxSize(),
-            ) {
-                items(bookmarks, key = { it.id }) { bookmark ->
-                    val isDragging = draggingId == bookmark.id
-                    Box(
-                        Modifier
-                            .graphicsLayer {
-                                if (isDragging) translationY = dragOffset
-                            }
-                            .background(
-                                if (isDragging) MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
-                                else Color.Transparent
-                            )
-                            .onGloballyPositioned { rowHeightPx = it.size.height.toFloat() }
-                            .pointerInput(bookmark.id, bookmarks.size) {
-                                // MT 0x7f110140：**长按后**才进入拖动（与「长按打开菜单」区分：
-                                // 长按后不松手并移动 = 排序；长按后松手 = 保持原位）
-                                detectDragGesturesAfterLongPress(
-                                    onDragStart = {
-                                        draggingId = bookmark.id
-                                        dragOffset = 0f
-                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                                    },
-                                    onDragEnd = {
-                                        val id = draggingId
-                                        draggingId = null
-                                        if (id != null) {
-                                            // 落点 = 当前行 + 拖动行数 → 生成新顺序并持久化
-                                            val step = rowHeightPx.coerceAtLeast(1f)
-                                            val moved = (dragOffset / step).toInt()
-                                            if (moved != 0) {
-                                                val ids = bookmarks.map { it.id }.toMutableList()
-                                                val from = ids.indexOf(id)
-                                                if (from >= 0) {
-                                                    val to = (from + moved).coerceIn(0, ids.lastIndex)
-                                                    if (to != from) {
-                                                        ids.removeAt(from)
-                                                        ids.add(to, id)
-                                                        order = ids
-                                                        container.browser.reorderBookmarks(ids)
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        dragOffset = 0f
-                                    },
-                                    onDragCancel = {
-                                        draggingId = null
-                                        dragOffset = 0f
-                                    },
-                                ) { change, amount ->
-                                    change.consume()
-                                    dragOffset += amount.y
-                                }
-                            },
-                    ) {
-                        MtListRow(
-                            title = bookmark.name.ifEmpty { bookmark.uri.name.ifEmpty { "/" } },
-                            subtitle = bookmark.uri.toString(),
-                            icon = { FileIcon(name = bookmark.name, isDirectory = true, size = 38.dp) },
-                            onClick = {
-                                container.browser.openBookmark(bookmark)
-                                onOpen()
-                            },
-                            trailing = {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    // 拖动把手（MT 的排序手柄）
-                                    MtVectorIcon(
-                                        icon = MtIcon.EXPAND,
-                                        size = MtSpec.MenuIcon,
-                                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
-                                        modifier = Modifier
-                                            .size(28.dp)
-                                            .padding(end = 4.dp),
-                                    )
-                                    TextButton(onClick = {
-                                        container.browser.removeBookmark(bookmark.id)
-                                        version++
-                                    }) { Text("删除", style = MaterialTheme.typography.labelSmall) }
-                                }
-                            },
-                            titleColor = MaterialTheme.colorScheme.onSurface,
-                        )
-                    }
-                }
-            }
-        }
+        BookmarkPanel(
+            container = container,
+            controller = container.browser,
+            tab = tab,
+            onTabChange = { tab = it },
+            onOpened = onOpen,
+            pathOf = { pathDisplayOf(it, volumes) },
+        )
     }
 }

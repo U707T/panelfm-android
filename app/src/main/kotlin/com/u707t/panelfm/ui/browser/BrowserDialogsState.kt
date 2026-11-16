@@ -105,4 +105,10 @@ internal class BrowserDialogsState {
 
     /** 新任务被冲突框挡下的那次自动弹出（冲突解决后补弹一次，见 DualPaneScreen）。 */
     var pendingAutoOpen by mutableStateOf(false)
+
+    // ---------------- 书签底部抽屉（MT：底栏上滑拉出的「最近 / 书签」抽屉，0x7f1107ca）
+    /** 抽屉是否打开（底栏上滑置 true；独立书签页走 AppRoot 的路由，不经过这里） */
+    var showBookmarks by mutableStateOf(false)
+    /** 上次停在哪个标签页：关掉再拉起来还停在原页（MT 的 TabLayout 同样记忆选中项） */
+    var bookmarkTab by mutableStateOf(BookmarkTab.BOOKMARK)
 }
