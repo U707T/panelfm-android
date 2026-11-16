@@ -51,6 +51,23 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!--
+              系统「打开方式」：其他应用把 content:// 文件交给 PanelFM。
+              只声明 content scheme（不接 file://，避免被构造私有路径）；
+              单文件 ACTION_VIEW 由 IncomingFileReceiver 复制到 cache 后预览。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <!-- 某些 provider 不带 MIME type：补一个纯 scheme 的 filter，保证仍出现在选择器里。 -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" />
+            </intent-filter>
         </activity>
 
         <provider

@@ -2,6 +2,7 @@ package com.u707t.panelfm.core.vfs.local
 
 import android.content.Context
 import android.os.Build
+import com.u707t.panelfm.core.common.AppDirs
 import com.u707t.panelfm.core.vfs.VfsUri
 import java.io.File
 
@@ -14,6 +15,14 @@ object LocalVolumes {
     const val AUTHORITY_EMULATED = "emulated"
     const val AUTHORITY_APP = "app"
 
+    /**
+     * 「接收文件」卷：`cacheDir/incoming`。
+     *
+     * 只把接收目录暴露给用户，不把 `cache/thumbs`、`cache/logs`、`cache/tmp` 一并摊开。
+     * 它会出现在主页「本地」列表与侧栏。
+     */
+    const val AUTHORITY_INCOMING = "incoming"
+
     /** 内部存储绝对路径 */
     val emulatedPath: String = "/storage/emulated/0"
 
@@ -21,6 +30,8 @@ object LocalVolumes {
         val list = mutableListOf<LocalVolume>()
         list += LocalVolume(AUTHORITY_EMULATED, "内部存储", emulatedPath)
         list += LocalVolume(AUTHORITY_APP, "应用私有目录", context.filesDir.absolutePath)
+        // 「用其他应用打开」的落盘目录：用户能在双窗格/侧栏找到并再次打开、复制。
+        list += LocalVolume(AUTHORITY_INCOMING, "接收文件", File(context.cacheDir, AppDirs.INCOMING_SUBDIR).absolutePath)
         // 外置卡：从 getExternalFilesDirs 反推卷根
         val dirs = runCatching { context.getExternalFilesDirs(null) }.getOrNull() ?: emptyArray()
         dirs.filterNotNull().forEach { dir ->

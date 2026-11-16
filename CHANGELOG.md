@@ -10,6 +10,28 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.4.3 — 用其他应用打开（ACTION_VIEW）
+
+> 一句话：其他应用点「打开方式」可以直接选 PanelFM；文件先复制到应用缓存，再进内置预览。
+
+### 新增
+
+- **系统「打开方式」**：`MainActivity` 增加 `ACTION_VIEW(content://)` filter；`IncomingFileReceiver`
+  复制到 `cache/incoming/`（单文件、≤ 2 GB、进度/取消、7 天 / 512 MB 清理），
+  再以 `local://incoming/...` 交给现有预览链路；压缩包回到双窗格进入包内浏览，EPUB 直接进阅读器，
+  APK 进 APK 信息；预览菜单「保存到当前窗格」可把副本存到目标目录；
+  `onNewIntent` 支持应用已运行时的二次打开。
+- 本地 VFS 新增 `incoming` 卷映射；`cache/incoming` 作为「接收文件」卷出现在主页「本地」与侧栏，
+  接收文件可再次打开、复制、删除。
+- 应用内「外部应用 / 打开方式」排除 PanelFM 自身，避免自己打开自己的自环。
+
+### 验证
+
+- 全仓 `testDebugUnitTest`：**802 例**全绿（新增 `IncomingNamesTest` 6 例、`IncomingCacheTest` 5 例、
+  `LocalVfsIncomingAuthorityTest` 3 例）。
+- `:app:assembleDebug`、`:app:lintDebug` 通过（0 error）。
+- 待真机：见 [`docs/OPEN-WITH.md`](docs/OPEN-WITH.md) §5。
+
 ## v2.4.2 — 列表不再显示大小（体积只在「属性」里看）
 
 > 一句话：按用户要求把「文件大小」从列表里拿掉 —— 体积只在手动点开**属性**时显示。

@@ -26,6 +26,7 @@ import com.u707t.panelfm.core.vfs.s3.S3Vfs
 import com.u707t.panelfm.core.vfs.sftp.SftpVfs
 import com.u707t.panelfm.core.vfs.smb.SmbVfs
 import com.u707t.panelfm.core.vfs.webdav.WebDavVfsFactory
+import com.u707t.panelfm.open.IncomingFileReceiver
 import com.u707t.panelfm.tools.RemoteHttpServer
 import com.u707t.panelfm.tools.TrashService
 import com.u707t.panelfm.service.TransferService
@@ -67,6 +68,17 @@ class AppContainer(val app: Application) {
     }
 
     val scope = CoroutineScope(SupervisorJob() + crashGuard + dispatchers.io)
+
+    /**
+     * 外部「用其他应用打开」的接收器：
+     * `content://` → `cache/incoming/` → `local://incoming/...` → 现有预览链路。
+     */
+    val incoming = IncomingFileReceiver(app, appDirs, dispatchers, scope)
+
+    init {
+        // 冷启动也执行一次缓存清理：不能只靠「下次再收文件」触发 7 天 / 512 MB 策略。
+        runCatching { incoming.cleanupNow() }
+    }
 
     val env: VfsEnv = VfsEnv(
         appDirs = appDirs,

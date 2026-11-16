@@ -100,6 +100,7 @@ import com.u707t.panelfm.ui.preview.OpenWithManageDialog
 import com.u707t.panelfm.ui.preview.OpenWithOption
 import com.u707t.panelfm.ui.preview.PreviewMode
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.open.selfExclusion
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -204,7 +205,11 @@ internal fun openWithSystem(
     val intent = Intent(Intent.ACTION_VIEW)
         .setDataAndType(uri, item.mimeType ?: "*/*")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    runCatching { context.startActivity(Intent.createChooser(intent, "打开方式")) }
+    // 新增 ACTION_VIEW filter 后系统选择器会列出 PanelFM 自己：排除掉，避免「自己打开自己」。
+    val chooser = Intent.createChooser(intent, "打开方式").apply {
+        putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, selfExclusion(context))
+    }
+    runCatching { context.startActivity(chooser) }
         .onFailure { onMessage("没有可用的应用") }
 }
 /**

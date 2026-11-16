@@ -8,7 +8,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.4.2 (120)
+版本      2.4.3 (121)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -35,6 +35,9 @@ targetSdk 37
   内置测试证书重签；包内已有 `universal.apk` / 匹配本机的 `standalones/` 时直接取出（保留官方签名）。
   高密度图片与其它语言不并（资源表不重写，见 [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md)）
 - 文件过滤（通配符）+ 搜索（通配符 / 正则 / 按名或内容 / 结果排序 / 相对路径展示）
+- **系统「打开方式」**：其他应用的文件（`content://`）可直接交给 PanelFM 预览；
+  先复制到应用缓存再走内置查看器，压缩包进包内浏览、EPUB 进阅读器，编辑只改副本，
+  可保存到当前窗格（单文件、≤ 2 GB，见 [`docs/OPEN-WITH.md`](docs/OPEN-WITH.md)）
 - 传输任务：开始传输自动弹出**带进度条的模态对话框**（暂停 / 取消 / 后台运行），
   关掉后底部留一行胶囊可随时点回；另有独立任务页（多任务总览、暂停全部、清空）
 - 书签（长按拖动排序）、路径历史、常用目录
@@ -43,7 +46,7 @@ targetSdk 37
 
 | 类型 | 说明 |
 |---|---|
-| 本地 | 含外部存储与 SAF |
+| 本地 | 含外部存储、SAF 与「接收文件」缓存卷（外部「打开方式」的落盘处） |
 | WebDAV | 坚果云 / Nextcloud 等 |
 | FTP | 含 FTPS |
 | SFTP | 密钥与口令认证 |
@@ -135,14 +138,14 @@ core/data/                 SQLite + DataStore（连接 / 书签 / 偏好 / 密�
 core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / 文件图标 / 手势）
 ```
 
-规模（不含测试）：15 个模块、**201** 个 Kotlin 文件、**4.78 万**行（2026-11-14 实测，v2.4.2 删掉 `DirSize.kt` 后）。
+规模（不含测试）：15 个模块、**205** 个 Kotlin 文件、**4.83 万**行（2026-11-16 实测，v2.4.3）。
 
 ## 5. 代码质量现状
 
 本节数据来自 2026-10-08 起的全量重审（归档于 `docs/archive/AUDIT-2026-10-08-REAUDIT.md`）与后续批次，
-数字于 2026-11-13（v2.4.0）重新实测。
+数字于 2026-11-16（v2.4.2 + ACTION_VIEW 接收链路）重新实测。
 
-- **单测**：118 个测试文件、**788** 个 `@Test`（全模块 `testDebugUnitTest` 实际执行 788 例，2026-11-14 实测）
+- **单测**：121 个测试文件、**802** 个 `@Test`（全模块 `testDebugUnitTest` 实际执行 802 例，2026-11-16 实测）
 - **巨型文件**：全仓仅 `ArchiveVfs.kt`（1,058 行）超过 1,000 行。重审时的两座大山
   `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）已拆成 6 + 8 个文件。
   两个反弹项要说清楚：`MediaScreen` 655 → 986（v2.2.2–v2.2.4 播放链路增强）、
@@ -157,6 +160,7 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 - [`docs/EDITOR-ENGINE.md`](docs/EDITOR-ENGINE.md) —— 编辑器架构与维护
 - [`docs/OFFICE-PREVIEW.md`](docs/OFFICE-PREVIEW.md) —— Office / Markdown / CSV 预览
 - [`docs/READERS.md`](docs/READERS.md) —— SQLite 与 EPUB 阅读器
+- [`docs/OPEN-WITH.md`](docs/OPEN-WITH.md) —— 用其他应用打开（ACTION_VIEW）的链路、边界与验证
 - [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md) —— APKS / XAPK / APKM 转 APK（合并口径、清单补丁、签名、已知限制）
 
 ## 6. 与 MT 管理器的关系

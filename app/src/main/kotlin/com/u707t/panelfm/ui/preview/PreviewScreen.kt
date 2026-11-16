@@ -47,10 +47,16 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.common.RenderFormats
 import com.u707t.panelfm.core.common.SqliteFormats
+import com.u707t.panelfm.core.model.ConflictPolicy
+import com.u707t.panelfm.core.model.TransferOp
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.local.LocalVolumes
+import com.u707t.panelfm.open.selfExclusion
+import com.u707t.panelfm.ui.browser.PaneSide
+import com.u707t.panelfm.ui.browser.transferRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import java.io.File
@@ -239,6 +245,14 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                             checked = resolved == PreviewMode.APK_INFO,
                         ) { effective = PreviewMode.APK_INFO; modeMenu = false }
                     }
+                    if (item != null && uri.scheme == "local" &&
+                        uri.authority == LocalVolumes.AUTHORITY_INCOMING
+                    ) {
+                        ClaudeMenuItem(label = "保存到当前窗格", icon = MtIcon.SAVE) {
+                            modeMenu = false
+                            saveIncomingToCurrentPane(container, item)
+                        }
+                    }
                     if (uri.scheme == "local") {
                         ClaudeMenuItem(label = "外部应用", icon = MtIcon.SHARE) {
                             modeMenu = false
@@ -255,6 +269,8 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                                     val intent = Intent(Intent.ACTION_VIEW)
                                         .setDataAndType(shareUri, meta?.mimeType ?: "*/*")
                                         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                        // 不把 PanelFM 自己列进「外部应用」（新增 ACTION_VIEW filter 后会自环）
+                                        .putExtra(Intent.EXTRA_EXCLUDE_COMPONENTS, selfExclusion(context))
                                     // 旧实现失败时静默（用户以为点了没反应）
                                     runCatching { context.startActivity(intent) }
                                         .onFailure { error = "没有可用的应用打开该文件类型" }
@@ -525,6 +541,48 @@ internal fun sampleToFit(width: Int, height: Int, target: Int): Int {
     val longest = maxOf(width, height)
     while (longest / (sample * 2) >= target) sample *= 2
     return sample
+}
+
+/**
+ * 「用其他应用打开」的接收副本 → 当前窗格。
+ *
+ * 只做最常见的「先存下来」：目标取当前焦点窗格的目录；压缩包 / 接收目录 / 只读 VFS
+ * 直接给可行动提示，不建一个注定失败的任务。
+ */
+private fun saveIncomingToCurrentPane(container: AppContainer, item: FileMetadata) {
+    val st = container.browser.state.value
+    val dest = if (st.focused == PaneSide.LEFT) st.left.uri else st.right.uri
+    if (dest.scheme == "archive") {
+        container.browser.showStatus("当前窗格是压缩包，请先切到普通目录")
+        return
+    }
+    if (dest.scheme == "local" && dest.authority == LocalVolumes.AUTHORITY_INCOMING) {
+        container.browser.showStatus("当前窗格就是接收目录，请切到目标目录")
+        return
+    }
+    val destVfs = container.locator.find(dest)
+    if (destVfs != null && !destVfs.capabilities.writable) {
+        container.browser.showStatus("当前窗格不可写入：${dest.displayPath}")
+        return
+    }
+    // 直接入队，不走 enqueueChecked：
+    // 空间不足 / 冲突的确认对话框挂在 BrowserDialogHost，预览页在它上面时不会被组合，
+    // 用户会看到「已加入」却永远不开始。这里用 KEEP_BOTH 把冲突变成自动改名，
+    // 空间不足则让任务正常失败并在任务页给出原因。
+    runCatching {
+        container.engine.enqueue(
+            container.browser.transferRequest(
+                sources = listOf(item.uri),
+                destDir = dest,
+                op = TransferOp.COPY,
+                conflict = ConflictPolicy.KEEP_BOTH,
+            ),
+        )
+    }.onSuccess {
+        container.browser.showStatus("已提交传输任务：保存到 ${dest.displayPath}")
+    }.onFailure {
+        container.browser.showStatus("保存失败：${it.message ?: "无法创建传输任务"}")
+    }
 }
 
 private const val TARGET_MAX_EDGE = 2048

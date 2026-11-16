@@ -74,6 +74,9 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
     fun absolutePath(uri: VfsUri): String = when (uri.authority) {
         LocalVolumes.AUTHORITY_EMULATED -> LocalVolumes.emulatedPath + uri.path.trimEnd('/')
         LocalVolumes.AUTHORITY_APP -> env.appDirs.filesDir + uri.path.trimEnd('/')
+        // 「接收文件」卷：外部 App「用其他应用打开」的文件先落在 cache/incoming，
+        // 预览 / 播放 / 编辑器都当普通本地文件处理；卷本身出现在主页本地列表与侧栏。
+        LocalVolumes.AUTHORITY_INCOMING -> env.appDirs.incomingDir + uri.path.trimEnd('/')
         LocalVolumes.AUTHORITY_ROOT -> uri.path.trimEnd('/').ifEmpty { "/" }
         else -> {
             // vol:/storage/XXXX-XXXX 形式
@@ -89,6 +92,7 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         val path = when (authority) {
             LocalVolumes.AUTHORITY_EMULATED -> absolutePath.removePrefix(LocalVolumes.emulatedPath).ifEmpty { "/" }
             LocalVolumes.AUTHORITY_APP -> absolutePath.removePrefix(env.appDirs.filesDir).ifEmpty { "/" }
+            LocalVolumes.AUTHORITY_INCOMING -> absolutePath.removePrefix(env.appDirs.incomingDir).ifEmpty { "/" }
             else -> absolutePath
         }
         return VfsUri.of("local", authority, path)

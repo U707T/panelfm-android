@@ -12,14 +12,17 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
@@ -33,14 +36,18 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.MtSpec
 import androidx.compose.ui.platform.LocalContext
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.LocalNetwork
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.open.IncomingState
 import com.u707t.panelfm.ui.bookmarks.BookmarksScreen
 import com.u707t.panelfm.ui.browser.DualPaneScreen
+import com.u707t.panelfm.ui.browser.openArchiveInPane
 import com.u707t.panelfm.ui.connections.ConnectionEditScreen
 import com.u707t.panelfm.ui.connections.LanScanScreen
 import com.u707t.panelfm.ui.connections.connectionTypeForScanPort
@@ -83,7 +90,7 @@ sealed interface Screen {
 }
 
 @Composable
-fun AppRoot(container: AppContainer) {
+fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
     val context = LocalContext.current
     var stack by remember { mutableStateOf(listOf<Screen>(Screen.Browser)) }
     val push: (Screen) -> Unit = { stack = stack + it }
@@ -133,6 +140,68 @@ fun AppRoot(container: AppContainer) {
         }
     }
 
+    // 外部「用其他应用打开」：复制完成后直接进预览；复制中由下面的模态对话框显示进度。
+    // key 只取「终态」：Copying 每 200ms 变一次，不能让它反复重启这个 effect。
+    val incoming by container.incoming.state.collectAsState()
+    val incomingTerminal = when (incoming) {
+        is IncomingState.Ready -> incoming
+        is IncomingState.Error -> incoming
+        else -> null
+    }
+    LaunchedEffect(incomingTerminal) {
+        when (val s = incomingTerminal) {
+            is IncomingState.Ready -> {
+                container.incoming.consume()
+                container.browser.showStatus("已接收「${s.name}」到缓存（编辑只改副本）")
+                val ext = s.name.substringAfterLast('.', "").lowercase()
+                val kind = com.u707t.panelfm.core.common.MimeTypes.kindOf(ext)
+                when {
+                    // EPUB 本质是 zip，但用户「打开」它通常是想读，不是看包结构。
+                    ext == "epub" -> push(
+                        Screen.Preview(
+                            com.u707t.panelfm.ui.preview.PreviewRequest(
+                                s.uri,
+                                com.u707t.panelfm.ui.preview.PreviewMode.EPUB,
+                            ),
+                        ),
+                    )
+                    // 压缩包不在 PreviewScreen 里看（那里只能提示「返回列表」）：
+                    // 回到双窗格，复用 MT 的「进入压缩包」链路。
+                    kind == com.u707t.panelfm.core.common.MimeTypes.Kind.ARCHIVE -> {
+                        stack = listOf(Screen.Browser)
+                        runCatching {
+                            container.browser.openArchiveInPane(
+                                container.browser.state.value.focused,
+                                com.u707t.panelfm.core.vfs.FileMetadata(
+                                    uri = s.uri,
+                                    name = s.name,
+                                    isDirectory = false,
+                                    size = s.size,
+                                    mimeType = s.mime,
+                                ),
+                            )
+                        }.onFailure {
+                            container.browser.showStatus("打开压缩包失败：${it.message ?: "未知错误"}")
+                        }
+                    }
+                    else -> push(
+                        Screen.Preview(
+                            com.u707t.panelfm.ui.preview.PreviewRequest(
+                                s.uri,
+                                com.u707t.panelfm.ui.preview.PreviewMode.AUTO,
+                            ),
+                        ),
+                    )
+                }
+            }
+            is IncomingState.Error -> {
+                container.incoming.consume()
+                container.browser.showStatus(s.message)
+            }
+            else -> Unit
+        }
+    }
+
     // ---------------- 启动授权弹窗（MT：打开即用，权限用弹窗补齐）
     var askStorage by remember {
         mutableStateOf(
@@ -164,6 +233,12 @@ fun AppRoot(container: AppContainer) {
     LaunchedEffect(Unit) {
         if (resumeChecked) return@LaunchedEffect
         resumeChecked = true
+        // 本次是「用其他应用打开」：让 incoming 流程接管，不要再恢复上次预览。
+        // 用 Activity 传入的稳定标志，而不是只看 incoming 状态 —— 小文件可能在首帧前
+        // 就已经 Ready 并被消费成 Idle，只看状态会漏判、叠出两个 Preview 页面。
+        if (suppressAutoResume || container.incoming.state.value !is IncomingState.Idle) {
+            return@LaunchedEffect
+        }
         val last = runCatching { container.prefs.lastOpenedPreview() }.getOrNull() ?: return@LaunchedEffect
         if (System.currentTimeMillis() - last.at > 24L * 3600 * 1000) return@LaunchedEffect
         val target = runCatching { VfsUri.parse(last.uri) }.getOrNull() ?: return@LaunchedEffect
@@ -245,6 +320,57 @@ fun AppRoot(container: AppContainer) {
                 }) { Text("允许") }
             },
             dismissButton = { TextButton(onClick = { askNotification = false }) { Text("不用了") } },
+        )
+    }
+
+    // 外部文件复制进度：模态显示，避免用户连点 / 不知道大文件为什么没反应。
+    (incoming as? IncomingState.Copying)?.let { copying ->
+        AlertDialog(
+            onDismissRequest = { container.incoming.cancel() },
+            title = { Text("正在接收文件") },
+            text = {
+                Column {
+                    Text(
+                        copying.name,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    if (copying.total > 0) {
+                        LinearProgressIndicator(
+                            progress = { (copying.copied.toFloat() / copying.total).coerceIn(0f, 1f) },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp),
+                        )
+                        Text(
+                            "${Fmt.size(copying.copied)} / ${Fmt.size(copying.total)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    } else {
+                        LinearProgressIndicator(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(top = 12.dp),
+                        )
+                        Text(
+                            "已接收 ${Fmt.size(copying.copied)}",
+                            style = MaterialTheme.typography.labelSmall,
+                            modifier = Modifier.padding(top = 6.dp),
+                        )
+                    }
+                    Text(
+                        "文件会先复制到应用缓存；编辑只改副本，不回写来源。",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 10.dp),
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { container.incoming.cancel() }) { Text("取消") }
+            },
         )
     }
 

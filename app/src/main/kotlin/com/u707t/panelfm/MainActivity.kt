@@ -1,5 +1,6 @@
 package com.u707t.panelfm
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -35,6 +36,11 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val container = (application as PanelApp).container
+        // 系统「打开方式」：只在首次创建时处理。
+        // savedInstanceState != null 说明是配置变化/进程重建，原 VIEW intent 还在，
+        // 再处理一次会重复复制同一个文件。
+        val incomingView = savedInstanceState == null && intent?.action == Intent.ACTION_VIEW
+        if (incomingView) container.incoming.handle(intent)
         setContent {
             val settings by container.settings.collectAsState()
             val dark = when (settings.themeMode) {
@@ -66,9 +72,23 @@ class MainActivity : ComponentActivity() {
                         MtViewConfiguration(baseViewConfiguration)
                     },
                 ) {
-                    AppRoot(container)
+                    AppRoot(
+                        container,
+                        // 冷启动由 VIEW intent 拉起时，不要让「恢复上次预览」再叠一层。
+                        suppressAutoResume = incomingView,
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * 应用已经在运行时，系统「打开方式」会走这里（MainActivity 是 singleTop）。
+     * 必须先 setIntent，否则后续 getIntent() 仍指向旧文件。
+     */
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        container.incoming.handle(intent)
     }
 }
