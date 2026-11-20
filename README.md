@@ -153,7 +153,7 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 本节数据来自 2026-10-08 起的全量重审（归档于 `docs/archive/AUDIT-2026-10-08-REAUDIT.md`）与后续批次，
 数字于 2026-11-16（v2.4.4）重新实测。
 
-- **单测**：122 个测试文件、**821** 个 `@Test`（全模块 `testDebugUnitTest` 实际执行 821 例，2026-11-16 实测）
+- **单测**：127 个测试文件、**876** 个 `@Test`（全模块 `testDebugUnitTest` 实际执行 876 例，2026-11-20 实测）
 - **巨型文件**：全仓仅 `ArchiveVfs.kt`（1,058 行）超过 1,000 行。重审时的两座大山
   `BrowserController.kt`（2,289 行）与 `DualPaneScreen.kt`（2,277 行）已拆成 6 + 8 个文件。
   两个反弹项要说清楚：`MediaScreen` 655 → 986（v2.2.2–v2.2.4 播放链路增强）、
