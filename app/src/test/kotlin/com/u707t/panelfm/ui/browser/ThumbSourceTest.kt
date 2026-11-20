@@ -51,9 +51,28 @@ class ThumbSourceTest {
     fun `目录与其它类型不取`() {
         assertEquals(ThumbSource.NONE, thumbSourceOf("mp4", isDirectory = true, scheme = "local"))
         assertEquals(ThumbSource.NONE, thumbSourceOf("jpg", isDirectory = true, scheme = "local"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = true, scheme = "local"))
         assertEquals(ThumbSource.NONE, thumbSourceOf("pdf", isDirectory = false, scheme = "local"))
         assertEquals(ThumbSource.NONE, thumbSourceOf("docx", isDirectory = false, scheme = "local"))
         assertEquals(ThumbSource.NONE, thumbSourceOf("", isDirectory = false, scheme = "local"))
+    }
+
+    @Test
+    fun `本地 APK 取应用图标`() {
+        // MT 观感：安装包显示它自己的图标，而不是通用的安卓机器人
+        assertEquals(ThumbSource.APK, thumbSourceOf("apk", isDirectory = false, scheme = "local"))
+        assertEquals(ThumbSource.APK, thumbSourceOf("APK", isDirectory = false, scheme = "local"))
+    }
+
+    @Test
+    fun `远端 APK 不取图标`() {
+        // 图标在 zip 里要随机读：远端要么整包下载，要么（FTP）根本读不了
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = false, scheme = "dav"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = false, scheme = "sftp"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = false, scheme = "smb"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = false, scheme = "s3"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = false, scheme = "ftp"))
+        assertEquals(ThumbSource.NONE, thumbSourceOf("apk", isDirectory = false, scheme = "archive"))
     }
 
     @Test

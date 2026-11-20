@@ -65,6 +65,26 @@ object ThumbCache {
     private const val VIDEO_FAILURE_TTL_MS = 5L * 60_000L
 
     /**
+     * 解析失败过的 APK（key → 失败时刻）。
+     *
+     * 与 [videoFailures] 同一个理由：损坏包 / 只有 split 的包 / 图标只在别处的包会**稳定失败**，
+     * 没有这层记忆，每次滚回来都要重新解一遍 zip 中央目录 + `resources.arsc`。
+     * key 里带 mtime + size，所以「刚拷进来的包」会自然变成新 key，不会被误拉黑。
+     */
+    private val apkIconFailures = android.util.LruCache<String, Long>(64)
+    private const val APK_FAILURE_TTL_MS = 10L * 60_000L
+
+    /**
+     * APK 图标专用调度器：**2 并发**。
+     *
+     * 取图标要开 zip 读 `resources.arsc` 再解一张 PNG（几 ms 到几十 ms），比图片解码重；
+     * 一屏几十个安装包时不能像图片那样直接 `Dispatchers.IO`（64 并发）——
+     * 同时开几十个 zip 会把 IO 队列打满，列表滚动先掉帧。
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val apkDispatcher = Dispatchers.IO.limitedParallelism(2)
+
+    /**
      * 磁盘缓存上限（默认 128 MB）。
      *
      * 旧实现**没有任何淘汰**：`cache/thumbs/<sha1>.png` 只增不减，用户浏览过的每张图都会
@@ -247,6 +267,87 @@ object ThumbCache {
         }
     }
 
+    /**
+     * 本地 APK 的**应用图标**（MT 观感：安装包在列表里显示它自己的图标，而不是通用的安卓机器人）。
+     *
+     * 只做本地：图标藏在 zip 里（`resources.arsc` + 图标资源），要随机读；远端协议要么得把
+     * 整包拉下来（几十 MB 换一张 32dp 的图），要么像 FTP 一样根本不能随机读。
+     * 失败（损坏包 / 只有 split 的包 / 包里没有图标）返回 null，由调用方回退类型图标。
+     */
+    suspend fun loadApkIcon(container: AppContainer, item: FileMetadata, targetPx: Int): Bitmap? {
+        val key = keyOf(item) + "#apk-icon"
+        if (recentlyFailedApkIcon(key)) return null
+        memory.get(key)?.let { return it }
+        fileOf(key)?.takeIf { it.exists() }?.let { cached ->
+            val bm = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(cached.absolutePath) }
+            if (bm != null) {
+                memory.put(key, bm)
+                return bm
+            }
+        }
+        val bitmap = withContext(apkDispatcher) {
+            // 取消（滚走 / 超时）不是「坏包」：必须抛出去，别记进失败表
+            runCatching { apkIcon(container, item, targetPx) }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                null
+            }
+        }
+        if (bitmap == null) {
+            apkIconFailures.put(key, System.currentTimeMillis())
+            return null
+        }
+        apkIconFailures.remove(key)
+        memory.put(key, bitmap)
+        writeDisk(key, bitmap, jpeg = false)
+        return bitmap
+    }
+
+    /** 解析 APK 清单 → 取应用图标 → 画成方形位图。[item] 必须是本地文件。 */
+    private fun apkIcon(container: AppContainer, item: FileMetadata, targetPx: Int): Bitmap? {
+        val path = container.localVfs.absolutePath(item.uri)
+        if (path.isBlank() || !File(path).isFile) return null
+        val pm = container.app.packageManager
+        @Suppress("DEPRECATION") // API 33 的 PackageInfoFlags 版本在 minSdk 26 上要走分支，这里读的是归档包、行为一致
+        val info = pm.getPackageArchiveInfo(path, 0) ?: return null
+        val appInfo = info.applicationInfo ?: return null
+        // loadIcon 按 sourceDir 去包里读图标资源；不设这两个字段拿到的是系统默认图标
+        appInfo.sourceDir = path
+        appInfo.publicSourceDir = path
+        val drawable = appInfo.loadIcon(pm) ?: return null
+        return renderAppIcon(drawable, targetPx)
+    }
+
+    /**
+     * Drawable → 方形位图。
+     *
+     * 自适应图标（Android 8+ 的绝大多数应用）固有画布是 **108dp**，系统只显示中间 72dp；
+     * 直接 `toBitmap(96,96)` 得到的是「整块 108dp 画布塞进 96px」—— 图标比系统里小一圈，
+     * 32dp 的行图标上看着就是个缩在角落的色块。这里按 1.5 倍画完再裁掉四周各 1/6，
+     * 还原系统实际显示的那一块；旧式位图图标（非自适应）原样缩放。
+     */
+    private fun renderAppIcon(drawable: android.graphics.drawable.Drawable, targetPx: Int): Bitmap {
+        val size = targetPx.coerceAtLeast(16)
+        val full = size * 3 / 2
+        val canvasBitmap = Bitmap.createBitmap(full, full, Bitmap.Config.ARGB_8888)
+        drawable.setBounds(0, 0, full, full)
+        drawable.draw(android.graphics.Canvas(canvasBitmap))
+        val cropped = if (drawable is android.graphics.drawable.AdaptiveIconDrawable) {
+            val crop = full / 6
+            Bitmap.createBitmap(canvasBitmap, crop, crop, full - crop * 2, full - crop * 2)
+        } else {
+            canvasBitmap
+        }
+        val scaled = Bitmap.createScaledBitmap(cropped, size, size, true)
+        if (scaled !== cropped) cropped.recycle()
+        if (cropped !== canvasBitmap) canvasBitmap.recycle()
+        return scaled
+    }
+
+    private fun recentlyFailedApkIcon(key: String): Boolean {
+        val at = apkIconFailures.get(key) ?: return false
+        return System.currentTimeMillis() - at < APK_FAILURE_TTL_MS
+    }
+
     private fun recentlyFailed(key: String): Boolean {
         val at = videoFailures.get(key) ?: return false
         return System.currentTimeMillis() - at < VIDEO_FAILURE_TTL_MS
@@ -339,8 +440,17 @@ private const val VIDEO_LOCAL_TIMEOUT_MS = 2_000L
  */
 private const val REMOTE_VIDEO_TIMEOUT_MS = 8_000L
 
-/** 列表行缩略图的来源：不加载 / 图片 / 本地视频首帧 / 网络视频首帧 */
-internal enum class ThumbSource { NONE, IMAGE, VIDEO_LOCAL, VIDEO_REMOTE }
+/**
+ * 单个 **APK 图标**的加载上限（3 秒）。
+ *
+ * 正常包是「开 zip 读中央目录 + 解 resources.arsc + 画一张 96px 图」，实测 10–60 ms；
+ * 3 秒是给「几百 MB 的包 / 存储卡掉速」留的余量。超时只是这一行回退成类型图标，
+ * 失败会进 [ThumbCache] 的 10 分钟失败表，不会每次滚动都重试。
+ */
+private const val APK_ICON_TIMEOUT_MS = 3_000L
+
+/** 列表行缩略图的来源：不加载 / 图片 / 本地视频首帧 / 网络视频首帧 / APK 应用图标 */
+internal enum class ThumbSource { NONE, IMAGE, VIDEO_LOCAL, VIDEO_REMOTE, APK }
 
 /**
  * 允许给视频取首帧的协议。
@@ -360,11 +470,13 @@ private val VIDEO_SCHEMES = setOf("local", "dav", "sftp", "smb", "s3")
  * 图片：本地 + 所有远端协议（远端另有「连接开关 / 仅 Wi-Fi / 大小上限」三道闸）。
  * 视频：本地 + 上面 [VIDEO_SCHEMES] 里的网络协议；远端视频走 `VfsMediaDataSource`
  * 按 Range 随机读首帧，窗口 512 KB、预算 8 MB，不下载整片。
+ * APK：**只本地** —— 图标在 zip 里要随机读，远端要么整包下载、要么（FTP）根本读不了。
  */
 internal fun thumbSourceOf(extension: String, isDirectory: Boolean, scheme: String): ThumbSource {
     if (isDirectory) return ThumbSource.NONE
     val kind = MimeTypes.kindOf(extension)
     if (kind == MimeTypes.Kind.IMAGE) return ThumbSource.IMAGE
+    if (kind == MimeTypes.Kind.APK) return if (scheme == "local") ThumbSource.APK else ThumbSource.NONE
     if (kind == MimeTypes.Kind.VIDEO && scheme in VIDEO_SCHEMES) {
         return if (scheme == "local") ThumbSource.VIDEO_LOCAL else ThumbSource.VIDEO_REMOTE
     }
@@ -382,7 +494,7 @@ fun rememberThumb(
 ): ImageBitmap? {
     val source = thumbSourceOf(item.extension, item.isDirectory, item.uri.scheme)
     if (source == ThumbSource.NONE || skip) return null
-    // 连接级开关：编辑连接 → 缩略图选项 → 关闭后该连接不加载缩略图（本地视频恒为本地，不走这里）
+    // 连接级开关：编辑连接 → 缩略图选项 → 关闭后该连接不加载缩略图（本地视频 / 本地 APK 恒为本地，不走这里）
     if (source != ThumbSource.VIDEO_LOCAL && item.uri.scheme != "local") {
         val cfg = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(item.uri))
             ?: container.connectionByAuthority(item.uri.scheme, item.uri.authority)
@@ -400,16 +512,19 @@ fun rememberThumb(
         val timeoutMs = when (source) {
             ThumbSource.VIDEO_LOCAL -> VIDEO_LOCAL_TIMEOUT_MS
             ThumbSource.VIDEO_REMOTE -> REMOTE_VIDEO_TIMEOUT_MS
+            ThumbSource.APK -> APK_ICON_TIMEOUT_MS
             else -> IMAGE_LOAD_TIMEOUT_MS
         }
         val bitmap = if (source == ThumbSource.VIDEO_REMOTE && !allowRemote) {
             null
         } else {
             kotlinx.coroutines.withTimeoutOrNull(timeoutMs) {
-                if (source == ThumbSource.VIDEO_LOCAL || source == ThumbSource.VIDEO_REMOTE) {
-                    ThumbCache.loadVideo(container, item, targetPx)
-                } else {
-                    ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
+                when (source) {
+                    ThumbSource.VIDEO_LOCAL, ThumbSource.VIDEO_REMOTE ->
+                        ThumbCache.loadVideo(container, item, targetPx)
+                    // 安装包显示它自己的图标（MT 观感）；解析失败返回 null → 回退类型图标
+                    ThumbSource.APK -> ThumbCache.loadApkIcon(container, item, targetPx)
+                    else -> ThumbCache.load(container, item, targetPx, allowRemote, policy.maxBytes)
                 }
             }
         }

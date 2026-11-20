@@ -152,12 +152,14 @@ object Fmt {
 
 /**
  * MT「文件列表显示策略」两档的副标题渲染（文案 `0x7f110200 / 201`）：
- *  - 0 = 只有时间（默认档）
- *  - 1 = 只有权限（协议不提供权限时退回时间）
+ *  - 0 = 时间（默认档）
+ *  - 1 = 权限（协议不提供权限时退回时间）
  *
- * **大小不进列表**（v2.4.2 用户决定）：文件体积 / 文件夹递归统计都只在「属性」对话框里看。
- * 因此 MT 的第三档「时间+大小」与第二档里的「+大小」一并废止 —— 列表里不再有体积文本，
- * 也就没有「打开 /sdcard 时一屏 10 个文件夹同时递归统计」那类开销（原 `DirSize.kt` 已删除）。
+ * 体积口径（对齐 MT 原版，v2.5.1 恢复）：**只有文件带大小，文件夹永远不带**。
+ * MT 的副标题是**同一个 TextView**（`0x7f0c00e4` 里没有独立的大小控件），
+ * 所以大小只能跟在时间 / 权限后面，而不是右对齐成一列。
+ * 目录体积要递归遍历才能得到（旧 `DirSize.kt`），打开 `/sdcard` 时一屏十几个目录同时统计，
+ * 与 MT「进目录先出列表」的手感冲突 —— 目录体积只在「属性」对话框里给。
  *
  * 抽成纯函数是为了可单测（原实现内联在 PaneView 里，改档位只能靠肉眼验证）。
  */
@@ -165,9 +167,12 @@ object MtListSubtitle {
 
     /** 档位名（设置页展示用） */
     val MODE_LABELS = listOf(
-        "只显示时间",
-        "只显示权限",
+        "时间",
+        "权限",
     )
+
+    /** 主信息与大小之间的间隔（MT 是同一个 TextView，纯空格，不是分隔符） */
+    private const val SIZE_GAP = "  "
 
     /**
      * 组装一行副标题。
@@ -175,14 +180,23 @@ object MtListSubtitle {
      * @param mode 0/1，越界按最近合法档处理
      * @param permissionText 权限串（如 `drwxrws---`），null = 该协议不提供
      * @param timeText 时间串（已格式化），空串 = 无时间
+     * @param sizeText 大小串（已格式化），**空串 = 文件夹 / 大小未知**（目录不进列表）
      */
     fun render(
         mode: Int,
         permissionText: String?,
         timeText: String,
-    ): String = when (mode.coerceIn(0, 1)) {
-        0 -> timeText
-        // 权限拿不到时退回时间（列表不会出现空副标题）
-        else -> permissionText?.takeIf { it.isNotBlank() } ?: timeText
+        sizeText: String = "",
+    ): String {
+        val head = when (mode.coerceIn(0, 1)) {
+            0 -> timeText
+            // 权限拿不到时退回时间（列表不会出现空副标题）
+            else -> permissionText?.takeIf { it.isNotBlank() } ?: timeText
+        }
+        return when {
+            head.isBlank() -> sizeText
+            sizeText.isBlank() -> head
+            else -> head + SIZE_GAP + sizeText
+        }
     }
 }

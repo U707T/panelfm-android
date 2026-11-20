@@ -235,6 +235,11 @@ Manifest 目前没有 `REQUEST_INSTALL_PACKAGES`。
 > 文件夹递归统计只保留在「属性」对话框里（`DialogsProperties.folderSummary`，5 万项上限，用户显式触发）。
 > 下面这段留作历史记录 —— **不要再按它去恢复列表内统计**，除非用户重新提出。
 >
+> **2026-11-20 修正（v2.5.1）**：用户要求「文件显示大小，文件夹不显示，文件夹要看就去长按属性」。
+> 于是 `MtListSubtitle` 增加 `sizeText`：**文件恒带体积、目录恒为空**（口径就是
+> `FileMetadata.displaySize`）。这**不是**恢复本节的目录递归统计 —— `DirSize.kt` 仍然不存在，
+> 打开大目录时副标题这一层没有任何后台 IO。
+>
 > 另外：`按大小排序`不受影响（读的是 `FileMetadata.size`，与列表显示无关）；
 > 目录仍不参与大小排序（目录的 `size` 依旧未知）。
 

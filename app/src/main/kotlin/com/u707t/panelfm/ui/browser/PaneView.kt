@@ -688,9 +688,8 @@ private fun MtFileRow(
                 else MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                // MT「文件列表显示」两档（`0x7f110200/201`）：时间 / 权限。
-                // 大小**不进列表**（v2.4.2 用户决定）：体积只在「属性」里看，
-                // 行内也不再触发目录递归统计（见 docs/ROADMAP.md「目录大小」条目的废止说明）。
+                // MT「文件列表显示」两档（`0x7f110200/201`）：时间 / 权限，文件再跟一个大小。
+                // 文件夹**不带**大小（目录体积要递归统计，只在「属性」里给，见 rowSubtitle）。
                 rowSubtitle(listDisplayMode, item),
                 style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.RowSubSize, lineHeight = 13.sp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -710,16 +709,19 @@ private fun MtFileRow(
 }
 
 /**
- * 列表副标题（MT「文件列表显示」两档，文案 `0x7f110200/201`）：时间 / 权限。
+ * 列表副标题（MT「文件列表显示」两档，文案 `0x7f110200/201`）：时间 / 权限 + 文件大小。
  * 纯函数在 [com.u707t.panelfm.core.common.MtListSubtitle]（可单测），这里只负责取字段。
  *
- * **不含大小**（v2.4.2）：文件体积、文件夹递归统计都只在「属性」里看。
+ * 大小口径 = [FileMetadata.displaySize]：**目录恒为空、大小未知（远端未给）也为空**，
+ * 只有普通文件带体积。目录不进列表（递归统计的代价见 docs/ROADMAP.md），
+ * 所以打开大目录时副标题这一层没有任何后台 IO。
  */
 private fun rowSubtitle(mode: Int, item: FileMetadata): String =
     com.u707t.panelfm.core.common.MtListSubtitle.render(
         mode = mode,
         permissionText = item.permissions?.let { Fmt.modeLong(it, item.isDirectory, item.isSymlink) },
         timeText = Fmt.time(item.lastModified),
+        sizeText = item.displaySize,
     )
 
 /** 路径中间省略（MT 的 `/storage/emula.../0/Download/` 观感） */
