@@ -65,7 +65,7 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
         var materialized: File? = null
         runCatching {
             withContext(Dispatchers.IO) {
-                val file = materializeApk(container, item)
+                val file = com.u707t.panelfm.ui.browser.materializeApk(container, item)
                 materialized = file
                 val pm = context.packageManager
                 val flags = PackageManager.GET_PERMISSIONS or
@@ -309,44 +309,4 @@ private suspend fun fileDigests(file: File): Pair<String, String> = withContext(
     }
     fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
     hex(md5.digest()) to hex(sha.digest())
-}
-
-/** 远程 APK 先缓存到本地（PackageManager 只接受文件路径） */
-private suspend fun materializeApk(container: AppContainer, item: FileMetadata): File {
-    if (item.uri.scheme == "local") {
-        val path = runCatching { container.localVfs.absolutePath(item.uri) }.getOrNull()
-        if (path != null && File(path).exists()) return File(path)
-    }
-    val dir = File(container.appDirs.cacheDir, "apk")
-    runCatching { dir.mkdirs() }
-    // 缓存键用 SHA-256 前 16 个 hex（旧实现是 String.hashCode()，32 位 → 不同 APK 撞哈希
-    // 会直接解析成别人的包信息 / 装错包）
-    val key = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(item.uri.toString().toByteArray())
-        .take(8)
-        .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
-    val target = File(dir, "pkg-$key-${item.size}.apk")
-    if (target.exists() && target.length() > 0) return target
-    // 清掉 3 天没碰过的物化缓存（APK 动辄几十上百 MB，只增不减会吃掉用户存储）
-    val cutoff = System.currentTimeMillis() - 3L * 24 * 3600 * 1000
-    runCatching {
-        dir.listFiles()?.forEach { f -> if (f != target && f.lastModified() < cutoff) runCatching { f.delete() } }
-    }
-    val tmp = File(dir, "${target.name}.part")
-    val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
-    vfs.openRead(item.uri).use { reader ->
-        tmp.outputStream().use { out ->
-            val buf = ByteArray(128 * 1024)
-            while (true) {
-                val n = reader.read(buf)
-                if (n < 0) break
-                out.write(buf, 0, n)
-            }
-        }
-    }
-    if (!tmp.renameTo(target)) {
-        tmp.copyTo(target, overwrite = true)
-        tmp.delete()
-    }
-    return target
 }

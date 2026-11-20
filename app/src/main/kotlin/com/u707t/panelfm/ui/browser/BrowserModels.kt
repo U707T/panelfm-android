@@ -246,6 +246,11 @@ data class BrowserUiState(
     val property: FileMetadata? = null,
     /** 多选属性（2 项以上）；与 [property] 互斥，谁非空就弹哪个 */
     val propertyMulti: List<FileMetadata>? = null,
+    /**
+     * 「APK 信息」对话框（v2.5.2）：单击 apk / apks / xapk / apkm 就弹它，不再直接进预览页。
+     * 与 [property] 一样属于**屏幕级弹层**，由 [BrowserDialogHost] 渲染。
+     */
+    val apkInfo: FileMetadata? = null,
     val tasks: List<TransferTaskSnapshot> = emptyList(),
     /**
      * 浏览模式三档（MT「单列 / 双列 / 自动切换」）。

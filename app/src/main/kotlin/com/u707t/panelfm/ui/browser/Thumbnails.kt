@@ -302,11 +302,52 @@ object ThumbCache {
         return bitmap
     }
 
+    /**
+     * 从**任意本地 APK 文件**取应用图标（APK 信息对话框用）。
+     *
+     * 与 [loadApkIcon] 的区别只在缓存键：列表行用「VFS URI + mtime + size」，这里用
+     * 「绝对路径 + mtime + size」—— 对话框解析的可能是缓存里解出来的 `base.apk`
+     * （`.apks` 场景），根本不对应任何一个列表项。
+     */
+    suspend fun loadApkIconOf(pm: android.content.pm.PackageManager, file: File, targetPx: Int): Bitmap? {
+        if (!file.isFile) return null
+        val key = "file:${file.absolutePath}:${file.length()}:${file.lastModified()}#apk-icon"
+        if (recentlyFailedApkIcon(key)) return null
+        memory.get(key)?.let { return it }
+        fileOf(key)?.takeIf { it.exists() }?.let { cached ->
+            val bm = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(cached.absolutePath) }
+            if (bm != null) {
+                memory.put(key, bm)
+                return bm
+            }
+        }
+        val bitmap = withContext(apkDispatcher) {
+            runCatching { apkIconOf(pm, file, targetPx) }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                null
+            }
+        }
+        if (bitmap == null) {
+            apkIconFailures.put(key, System.currentTimeMillis())
+            return null
+        }
+        apkIconFailures.remove(key)
+        memory.put(key, bitmap)
+        writeDisk(key, bitmap, jpeg = false)
+        return bitmap
+    }
+
     /** 解析 APK 清单 → 取应用图标 → 画成方形位图。[item] 必须是本地文件。 */
     private fun apkIcon(container: AppContainer, item: FileMetadata, targetPx: Int): Bitmap? {
         val path = container.localVfs.absolutePath(item.uri)
-        if (path.isBlank() || !File(path).isFile) return null
-        val pm = container.app.packageManager
+        if (path.isBlank()) return null
+        return apkIconOf(container.app.packageManager, File(path), targetPx)
+    }
+
+    /** 同 [apkIcon]，入参是文件本体（列表行与信息对话框共用一套取图逻辑） */
+    private fun apkIconOf(pm: android.content.pm.PackageManager, file: File, targetPx: Int): Bitmap? {
+        if (!file.isFile) return null
+        val path = file.absolutePath
         @Suppress("DEPRECATION") // API 33 的 PackageInfoFlags 版本在 minSdk 26 上要走分支，这里读的是归档包、行为一致
         val info = pm.getPackageArchiveInfo(path, 0) ?: return null
         val appInfo = info.applicationInfo ?: return null

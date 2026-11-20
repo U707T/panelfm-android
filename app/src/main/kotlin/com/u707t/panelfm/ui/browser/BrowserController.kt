@@ -431,6 +431,16 @@ class BrowserController(internal val container: AppContainer) {
 
     fun dismissProperties() = update { it.copy(property = null, propertyMulti = null) }
 
+    /**
+     * 打开「APK 信息」对话框（单击 apk / 分包安装包，或长按菜单里的「APK 信息」）。
+     *
+     * 走 [BrowserUiState.apkInfo] 而不是 `_previewRequest`：这张卡片是**弹层**，
+     * 不占路由栈 —— 关掉就回到原目录，不该在返回键历史里留一页。
+     */
+    fun showApkInfo(item: FileMetadata) = update { it.copy(apkInfo = item) }
+
+    fun dismissApkInfo() = update { it.copy(apkInfo = null) }
+
     // ------------------------------------------------------------------ 空间预检队列
 
     /**

@@ -283,6 +283,9 @@ fun BrowserController.openItem(side: PaneSide, item: FileMetadata) {
         when {
             mode == com.u707t.panelfm.ui.preview.PreviewMode.ARCHIVE -> openArchiveInPane(side, item)
             mode != null -> openWith(item, mode)
+            // APK 家族（apk / apks / xapk / apkm）：弹 MT 那张信息卡片，**不直接进包内浏览**
+            // （旧行为是 .apk 进预览页、.apks 直接挂载成压缩包 —— 想看包内文件用卡片里的「查看」）
+            TypeActions.isApkFamily(item.name) -> showApkInfo(item)
             else -> {
                 val isArchive = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.ArchiveKind
                     .ofFileName(item.name) != null

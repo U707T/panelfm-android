@@ -51,7 +51,11 @@ object TypeActions {
     const val ACTION_OPEN_WITH = "open_with"
 
     /** split 安装包的三种外壳（结构都是 zip，里面装 base + 分包） */
-    private val APK_BUNDLE_EXTENSIONS = setOf("apks", "xapk", "apkm")
+    internal val APK_BUNDLE_EXTENSIONS = setOf("apks", "xapk", "apkm")
+
+    /** 文件名是否分包外壳（`.apks` / `.xapk` / `.apkm`，大小写不敏感） */
+    fun isApkBundle(name: String): Boolean =
+        name.substringAfterLast('.', "").lowercase() in APK_BUNDLE_EXTENSIONS
 
     fun kindOf(extension: String): MimeTypes.Kind = MimeTypes.kindOf(extension)
 
@@ -68,6 +72,19 @@ object TypeActions {
     }
 
     fun isApk(kind: MimeTypes.Kind): Boolean = kind == MimeTypes.Kind.APK
+
+    /**
+     * APK 家族：`.apk` + 三种分包外壳（`.apks` / `.xapk` / `.apkm`）。
+     *
+     * 单击它们统一弹「APK 信息」卡片（v2.5.2）：分包外壳本质是 zip，旧行为是直接挂载成
+     * 压缩包进包内浏览 —— 但用户点一个安装包，十次有九次是想看「这是什么包、装没装」。
+     * 想看包内文件走卡片里的「查看」，长按菜单里的解压 / 转 APK 也都不变。
+     */
+    fun isApkFamily(name: String): Boolean {
+        if (isApkBundle(name)) return true
+        val ext = name.substringAfterLast('.', "").lowercase()
+        return kindOf(ext) == MimeTypes.Kind.APK
+    }
 
     /**
      * 有**独立**内置查看器的类型（图片 / 音频 / 视频 / 字体 / PDF / Office 文档）。

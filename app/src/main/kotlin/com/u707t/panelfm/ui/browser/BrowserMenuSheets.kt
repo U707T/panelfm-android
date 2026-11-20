@@ -371,7 +371,9 @@ internal fun BrowserActionSheets(
                             controller.showStatus(msg)
                         }
                         TypeActions.ACTION_APK_INFO -> {
-                            controller.openWith(item, com.u707t.panelfm.ui.preview.PreviewMode.APK_INFO)
+                            // v2.5.2：长按「APK 信息」与单击同一个入口（MT 那张卡片），
+                            // 整页详情走卡片里的「功能 → APK 详细信息」
+                            controller.showApkInfo(item)
                         }
                         TypeActions.ACTION_EXTRACT_APK_ICON -> extractApkIcon(container, context, item) { msg ->
                             controller.showStatus(msg)

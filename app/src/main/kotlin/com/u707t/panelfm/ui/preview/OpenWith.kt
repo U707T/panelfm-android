@@ -64,7 +64,7 @@ enum class PreviewMode(val handlerId: String, val label: String, val icon: MtIco
     OFFICE("office", "文档预览", MtIcon.DESC),
     SQLITE("sqlite", "SQLite 浏览", MtIcon.LAYERS),
     EPUB("epub", "阅读电子书", MtIcon.DESC),
-    APK_INFO("apk", "APK 信息", MtIcon.ANDROID),
+    APK_INFO("apk", "APK 详细信息", MtIcon.ANDROID),
     ARCHIVE("archive", "浏览压缩包", MtIcon.ARCHIVE),
     FONT("font", "查看字体", MtIcon.FONT),
     SYSTEM("system", "系统应用打开", MtIcon.LAUNCH),

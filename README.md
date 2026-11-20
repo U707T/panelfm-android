@@ -8,7 +8,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.4.3 (121)
+版本      2.5.2 (125)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -33,6 +33,11 @@ targetSdk 37
   **视频取首帧**（本地直接读，网络按 Range 随机读解 moov，单张预算 8 MB；压缩包内不取帧）；
   **本地 APK 取包内应用图标**（自适应图标按系统可见区裁切，解析失败回退类型图标）
 - 复制 / 移动 / 删除（**带回收站**）/ 重命名 / 批量重命名 / 新建 / 压缩 / 解压 / 修改权限
+- **单击 APK 弹信息卡片**（MT 的「APK 信息」）：`apk` / `apks` / `xapk` / `apkm` 单击不再直接进预览页，
+  而是弹卡片 —— 图标 + 名称 + 版本，包名 / 版本号 / 安装包大小 / 签名状态 / 加固状态 / 目标系统 /
+  最低系统 / 已安装（含首次安装、最后更新、UID）/ 数据目录 / APK 路径；
+  底部 `功能`（整页详情 · 提取图标 · 转为 APK · 校验值 · 属性 · 复制路径）· `查看`（包内浏览）· `安装`。
+  详见 [`docs/APK-INFO.md`](docs/APK-INFO.md)
 - **APKS / XAPK / APKM → APK**（长按「转为 APK」）：合并 base 与 ABI 分包、补清单、
   内置测试证书重签；包内已有 `universal.apk` / 匹配本机的 `standalones/` 时直接取出（保留官方签名）。
   高密度图片与其它语言不并（资源表不重写，见 [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md)）
@@ -70,7 +75,7 @@ targetSdk 37
 | Markdown / CSV | 与 Office 同一页面渲染（marked + DOMPurify 清洗） |
 | EPUB | 只读阅读 |
 | SQLite | 表列表 + 前 200 行浏览（只读，不提供 SQL 控制台） |
-| APK | 包名 / 版本 / 权限 / 签名摘要 / ABI / 安装位置 / 可调试 |
+| APK | 单击弹信息卡片（见 [`docs/APK-INFO.md`](docs/APK-INFO.md)）；整页详情含权限 / ABI / 安装位置 / 签名摘要 / MD5·SHA-256 |
 | 压缩包 | 列表浏览 + 解压 |
 | 文本 | sora-editor，22 种语言 TextMate 语法着色 |
 
@@ -165,6 +170,7 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 - [`docs/READERS.md`](docs/READERS.md) —— SQLite 与 EPUB 阅读器
 - [`docs/OPEN-WITH.md`](docs/OPEN-WITH.md) —— 用其他应用打开（ACTION_VIEW）的链路、边界与验证
 - [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md) —— APKS / XAPK / APKM 转 APK（合并口径、清单补丁、签名、已知限制）
+- [`docs/APK-INFO.md`](docs/APK-INFO.md) —— 单击 APK 的信息卡片（字段来源、签名方案与加固的判定边界）
 
 ## 6. 与 MT 管理器的关系
 

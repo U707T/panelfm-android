@@ -201,6 +201,26 @@ class TypeActionsTest {
     }
 
     @Test
+    fun `APK 家族判定：apk 与三种分包外壳`() {
+        // 单击这些文件都弹「APK 信息」卡片（v2.5.2），不再直接进包内浏览 / 预览页
+        listOf("a.apk", "a.APK", "a.apks", "a.xapk", "a.apkm", "抖音极速版_37.8.0.apk").forEach {
+            assertTrue("$it 应属于 APK 家族", TypeActions.isApkFamily(it))
+        }
+        listOf("a.zip", "a.apk.bak", "a.apkz", "apk", "a.txt", "").forEach {
+            assertFalse("$it 不应属于 APK 家族", TypeActions.isApkFamily(it))
+        }
+    }
+
+    @Test
+    fun `分包外壳判定只看后缀`() {
+        assertTrue(TypeActions.isApkBundle("x.apks"))
+        assertTrue(TypeActions.isApkBundle("X.XAPK"))
+        assertFalse(TypeActions.isApkBundle("x.apk"))
+        assertFalse(TypeActions.isApkBundle("x.apks.zip"))
+        assertFalse(TypeActions.isApkBundle("apks"))
+    }
+
+    @Test
     fun `查看器文案对齐 MT`() {
         assertEquals("查看图片", TypeActions.viewerLabel(TypeActions.kindOf("png")))
         assertEquals("播放音乐", TypeActions.viewerLabel(TypeActions.kindOf("mp3")))

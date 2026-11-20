@@ -473,6 +473,20 @@ internal fun BrowserDialogHost(
                 onDismiss = { apkConvertFor = null },
             )
         }
+        // APK 信息卡片（v2.5.2）：单击 apk / 分包安装包弹出，不占路由栈
+        ui.apkInfo?.let { target ->
+            ApkInfoDialog(
+                container = container,
+                controller = controller,
+                item = target,
+                onDismiss = { controller.dismissApkInfo() },
+                onConvertApk = { apkConvertFor = target },
+                onChecksum = { algorithm ->
+                    controller.checksum(target.uri, algorithm) { r -> message = algorithm to (r ?: "计算失败") }
+                },
+                onProperties = { controller.showProperties(target) },
+            )
+        }
         message?.let { (title, body) ->
             MessageDialog(title, body) { message = null }
         }

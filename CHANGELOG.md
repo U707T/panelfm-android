@@ -10,6 +10,46 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.5.2 — 单击 APK 弹信息卡片（MT 的「APK 信息」）
+
+> 一句话：单击 `apk` / `apks` / `xapk` / `apkm` 不再直接进预览页、也不再直接挂成压缩包，
+> 而是弹 MT 那张卡片 —— 图标 + 名称 + 版本，下面 14 行（包名 / 版本号 / 安装包大小 / 签名状态 /
+> 加固状态 / 目标系统 / 最低系统 / 已安装 / 数据目录 1、2 / APK 路径 / 首次安装 / 最后更新 / UID），
+> 底部 `功能` · `查看` · `安装`。
+
+### 新增
+
+- **APK 信息对话框**（`ui/browser/DialogsApkInfo.kt` + `ApkInfoModel.kt`）：单击 APK 家族即弹，
+  不占路由栈（关掉就回原目录）。`功能` = APK 详细信息整页 / 提取图标 / 转为 APK（分包包）/
+  校验值 MD5·SHA-256 / 属性 / 复制路径；`查看` = 当压缩包打开（v2.5.2 之前单击 apk 的行为）；
+  `安装` = 交给系统安装器（`.apks` 走 PackageInstaller）。
+- **签名方案检测**（`core/apk/ApkSignatureSchemes.kt`）：只读 zip 结构（`META-INF` 的 `.SF` +
+  `.RSA/.DSA/.EC`、APK Signing Block 里的 V2/V3/V3.1 块 ID），显示成 MT 的 `V1 + V2 + V3`。
+  **只判方案是否存在，不做完整校验**（改一个字节就整体失败的 `ApkVerifier` 不适合放进点击路径）。
+- **加固检测**（`core/apk/ApkHardening.kt`）：条目名特征（`libjiagu` / `libshella-` / `libSecShell` …）
+  + 清单里的壳入口类（`com.stub.StubApp` / `com.secneo.apkwrapper` …），不解析 dex。
+- **API → Android 版本名**（`core/common/AndroidApi.kt`）：`Android 14 (API 34)`。
+- **分包安装包解析**：`.apks/.xapk/.apkm` 取出 base.apk（缓存按「路径 + 大小 + 修改时间」做键，
+  3 天未用自动清）后再用 PackageManager 读包信息；远端安装包先整包缓存到 `cache/apk`。
+
+### 变更
+
+- 单击 `.apk`：预览页 → 信息卡片；单击 `.apks/.xapk/.apkm`：压缩包内浏览 → 信息卡片。
+  整页详情（权限 / ABI / 安装位置 / MD5 / SHA-256）改到卡片「功能 → APK 详细信息」，
+  包内浏览改到卡片「查看」。
+- 长按菜单与顶栏动作条的「APK 信息」改为同一入口（卡片），不再是整页。
+- 「打开方式」里的该项改名 **APK 详细信息**（仍是整页），与卡片区分开。
+- 物化缓存（`cache/apk`）的复制循环补 `ensureActive()`：关掉对话框能立刻停下，
+  不再把 200 MB 的包在后台白读到底。
+
+### 验证
+
+- 新增单测：`ApkSignatureSchemesTest`（9 例，手工拼 zip + 伪造签名块）、`ApkHardeningTest`（9 例）、
+  `AndroidApiTest`（4 例）、`ApkInfoRowsTest`（8 例，行顺序 / 标签 / 单位 / 未安装时的取舍）、
+  `TypeActionsTest` 补 APK 家族判定 2 例。
+- `:app:testDebugUnitTest` 全绿（435 例），全仓 `testDebugUnitTest` 857 例 0 失败，`:app:compileDebugKotlin` 通过。
+- 待真机：卡片在深/浅主题下的排版、分包包取 base.apk 的耗时、`.apks` 的「安装 / 转为 APK」两路。
+
 ## v2.5.1 — 列表恢复文件大小 + APK 应用图标 + 文件夹图形重画
 
 > 一句话：文件行重新带上体积（文件夹仍然不给大小），本地 APK 显示它自己的图标，
