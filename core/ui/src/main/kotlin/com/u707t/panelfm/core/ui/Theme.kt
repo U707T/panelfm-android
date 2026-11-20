@@ -18,14 +18,20 @@ import androidx.compose.ui.unit.sp
  *  - 次文字 `0x7f060047` = #99000000（浅）/ #99c4c4c4（深）
  *  - 分割线 `0x7f06003a` = #ffbbbbbb（浅）/ #ff505050（深）
  *  - 强调蓝 `0x7f0400ed` = #ff1976d2（浅）/ #ff42a5f5（深）
- *  - 顶栏（标题栏）**始终深色**，底色随主题预设换（见 [ThemePreset.topBar]）
- * 各套预设（MT 蓝 / 墨笺 / 黛青 / 松烟 / 赭石）在 [ThemePreset] 里给出完整明暗 ColorScheme。
+ *  - 顶栏（标题栏）底色随预设换（见 [ThemePreset.topBar]）；除 Linear 浅色是白底外，其余是深色
+ * 各套预设（MT 蓝 / 墨笺 / 黛青 / 松烟 / 赭石 / Linear）在 [ThemePreset] 里给出完整明暗 ColorScheme。
  * 动态取色默认关闭；开启后优先于预设。
  */
 val LocalTopBarBackground = androidx.compose.runtime.staticCompositionLocalOf { MtSpec.TopBarLight }
 
 /** 列表 / 顶栏分割线颜色；由 [PanelTheme] 按主题提供，MT 预设保持原来的灰色。 */
 val LocalDividerColor = androidx.compose.runtime.staticCompositionLocalOf { MtSpec.DividerLight }
+
+/** 顶栏前景色（标题 / 图标 / 选中 tab）；浅色顶栏主题（Linear 浅色）自动切成近黑。 */
+val LocalTopBarForeground = androidx.compose.runtime.staticCompositionLocalOf { MtSpec.TopBarText }
+
+/** 顶栏次要前景（父级路径 / 未选中 tab / 统计 / 抽屉副标题） */
+val LocalTopBarForegroundMuted = androidx.compose.runtime.staticCompositionLocalOf { MtSpec.TopBarSubText }
 
 /** MT 的排版略紧凑、标题偏粗；整体乘 [scale] 缩放（设置里的「字体大小」） */
 private fun scaledTypography(scale: Float): Typography {
@@ -85,12 +91,18 @@ fun PanelTheme(
         dynamic -> if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         else -> preset.scheme(darkTheme)
     }
-    // 顶栏始终深色；动态取色没有配套的顶栏色，回落 MT 的深色
+    // 顶栏底色随预设（Linear 浅色是白底）；动态取色没有配套顶栏色，回落 MT 的深色
     val topBar = if (dynamic) ThemePreset.MT.topBar(darkTheme) else preset.topBar(darkTheme)
+    // 顶栏前景跟着顶栏亮度走：Linear 浅色模式是浅底深字，其余是深底浅字
+    val topBarPreset = if (dynamic) ThemePreset.MT else preset
+    val topBarFg = topBarPreset.topBarContent(darkTheme)
+    val topBarFgMuted = topBarPreset.topBarContentMuted(darkTheme)
     val divider = if (dynamic) colors.outlineVariant else preset.divider(darkTheme)
     androidx.compose.runtime.CompositionLocalProvider(
         LocalPanelDarkTheme provides darkTheme,
         LocalTopBarBackground provides topBar,
+        LocalTopBarForeground provides topBarFg,
+        LocalTopBarForegroundMuted provides topBarFgMuted,
         LocalDividerColor provides divider,
     ) {
         MaterialTheme(

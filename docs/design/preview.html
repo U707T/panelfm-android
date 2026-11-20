@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>PanelFM · 设置页 + Linear 主题</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f4f5f7; --card:#fff; --text:#17181a; --muted:#6b7075; --line:#e7e9ec; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0b0c0e; --card:#121316; --text:#ecedef; --muted:#9ba1a6; --line:#25272c; } }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 -apple-system,"Noto Sans SC","PingFang SC",sans-serif; }
+  header { padding:22px 18px 6px; max-width:460px; margin:0 auto; }
+  h1 { font-size:20px; margin:0 0 4px; letter-spacing:.2px; }
+  p.sub { margin:0; color:var(--muted); font-size:13px; }
+  main { padding:14px 18px 48px; display:grid; gap:18px; max-width:460px; margin:0 auto; }
+  figure { margin:0; background:var(--card); border:1px solid var(--line); border-radius:14px; overflow:hidden; }
+  figcaption { padding:9px 12px; font-size:13px; color:var(--muted); border-bottom:1px solid var(--line); }
+  img { display:block; width:100%; height:auto; background:#fff; }
+  .dark img { background:#0b0c0e; }
+  footer { max-width:460px; margin:0 auto; padding:0 18px 40px; color:var(--muted); font-size:12px; }
+</style>
+<header>
+  <h1>PanelFM · 设置页 + Linear 主题</h1>
+  <p class="sub">静态设计稿（390×844 dp · 2x），不是真机截图。上下滑动查看。</p>
+</header>
+<main>
+  <figure><figcaption>设置 · Linear 主题（重构后）</figcaption><img src="settings-linear-light.png" alt="设置 Linear"></figure>
+  <figure><figcaption>设置 · 配色选择（Linear 已选）</figcaption><img src="settings-linear-palette.png" alt="配色选择"></figure>
+  <figure class="dark"><figcaption>设置 · Linear 深色</figcaption><img src="settings-linear-dark.png" alt="设置 Linear 深色"></figure>
+  <figure><figcaption>双列 · Linear 主题（浅色顶栏）</figcaption><img src="clean-12-dual-linear.png" alt="双列 Linear"></figure>
+  <figure><figcaption>现状 · MT 复刻（对照）</figcaption><img src="clean-00-before.png" alt="现状"></figure>
+</main>
+<footer>
+  详细提案：docs/UI-CLEAN.md · 生成脚本：docs/design/mock_clean_ui.py
+</footer>
+</html>

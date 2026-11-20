@@ -1,28 +1,31 @@
 package com.u707t.panelfm.ui.settings
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -33,29 +36,39 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.u707t.panelfm.core.ui.safeAreaPadding
-import com.u707t.panelfm.core.ui.MtScreenTopBar
-import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
-import com.u707t.panelfm.core.ui.ThemePreset
+import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.BuildConfig
+import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.ThemeMode
+import com.u707t.panelfm.core.model.VerifyMode
+import com.u707t.panelfm.core.ui.DividerPx
+import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtScreenTopBar
+import com.u707t.panelfm.core.ui.MtVectorIcon
+import com.u707t.panelfm.core.ui.ThemePreset
+import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.ui.browser.BrowseMode
 import kotlinx.coroutines.launch
 
 /**
- * 设置页（对齐 MT 的「设置」观感）。
+ * 设置页（Clean 版）。
  *
- * 只保留**真的会改变行为**的开关：主题 / 动态取色 / 显示 / 手势 / 文件 / 缩略图 /
- * 视频播放 / 界面 / 传输 / 网络。
+ * 只做三件事：
+ *  1. **分组**：外观 / 浏览 / 手势 / 文件 / 媒体 / 传输 / 回收站 / 网络 / 关于；
+ *  2. **值右置**：每行 = 标签 + 当前值 + ›（或开关），多选进底部 sheet；
+ *  3. **零说明段**：解释文字不进主列表；User-Agent 的编辑收进对话框，主列表只留标签和当前值。
  *
- * v2.1.4 删掉的项（早期 MT 复刻遗留，见 CHANGELOG）：记忆上次的双列路径（与「启动时进入首页」
- * 重复）、对话框图标背景（只覆盖 2 个对话框）、底部工具栏下边距（安全区已由 insets 处理）、
- * 缩略图的两个纯实现细节（滚动跳过 / 超时秒数）。
+ * 所有开关仍然接原来那 22 个 `prefs.set*`，一个不少。
  */
 @Composable
 fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
@@ -63,321 +76,352 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
     val browserState by container.browser.state.collectAsState()
     val scope = rememberCoroutineScope()
     val dark = LocalPanelDarkTheme.current
+
+    var sheet by remember { mutableStateOf<SettingsSheet?>(null) }
+    var showAbout by remember { mutableStateOf(false) }
     var editUserAgent by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        // 顶栏固定（不随内容滚动），与其它二级页面观感一致
         MtScreenTopBar(title = "设置", onBack = onBack)
         Column(
             Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(horizontal = 20.dp)
+                .padding(top = 2.dp, bottom = 32.dp),
         ) {
-
-        // 主题：三选一（旧实现只有「跟随系统」开关，取消勾选会固定成 DARK —— 浅色主题不可达）
-        SectionLabel("主题")
-        listOf(
-            ThemeMode.SYSTEM to "跟随系统",
-            ThemeMode.LIGHT to "浅色",
-            ThemeMode.DARK to "深色",
-        ).forEach { (mode, label) ->
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable { scope.launch { container.prefs.setTheme(mode) } }
-                    .padding(vertical = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                RadioButton(selected = settings.themeMode == mode, onClick = { scope.launch { container.prefs.setTheme(mode) } })
-                Text(label, style = MaterialTheme.typography.bodyMedium)
-            }
-        }
-        SettingSwitch("动态取色（Android 12+，默认关闭保持 MT 观感）", settings.dynamicColor) {
-            scope.launch { container.prefs.setDynamicColor(it) }
-        }
-
-        SectionLabel("配色主题")
-        Text(
-            "参考 cfbrowser 的纸墨配色。选择预设会自动关闭「动态取色」；想跟随壁纸取色请在上方重新打开。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-        ThemePreset.entries.forEach { preset ->
-            ThemePresetRow(
-                preset = preset,
-                dark = dark,
-                selected = !settings.dynamicColor && settings.themePreset == preset.id,
-                onClick = {
-                    scope.launch {
-                        container.prefs.setDynamicColor(false)
-                        container.prefs.setThemePreset(preset.id)
-                    }
-                },
-            )
-        }
-
-        SectionLabel("显示")
-        SettingSwitch("时间显示到秒", settings.showSeconds) {
-            scope.launch { container.prefs.setShowSeconds(it) }
-        }
-        // 字体大小（全局缩放：紧凑 / 适中 / 标准）
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text("字体大小", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-            listOf("紧凑", "适中", "标准").forEachIndexed { idx, label ->
-                TextButton(onClick = { scope.launch { container.prefs.setFontScaleLevel(idx) } }) {
-                    Text(
-                        label,
-                        color = if (settings.fontScaleLevel == idx) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        SettingSwitch("默认显示隐藏文件", settings.showHidden) {
-            scope.launch { container.prefs.setShowHidden(it) }
-        }
-        SettingSwitch("底栏上滑调出书签", settings.bookmarkSwipe) {
-            scope.launch { container.prefs.setBookmarkSwipe(it) }
-        }
-
-        // MT 0x7f110630：点击两次 = 区间选择（与长按连选互补，默认关 = MT 默认）
-        SectionLabel("手势（复刻 MT 交互）")
-        SettingSwitch("点击连选：开启后点击列表中任意两个项，将会自动选择它们中间所有的项", settings.tapRangeSelect) {
-            scope.launch { container.prefs.setTapRangeSelect(it) }
-        }
-        Text(
-            "· 长按 = 弹出该项二级菜单（不改选择、不进多选）\n" +
-                "· 左右滑动 ≥24dp = 选中该行进入多选；再滑动另一项 = 连选两项之间的所有项\n" +
-                "· 滑动后点击另一项 = 只加选这两项（点击会清掉滑动锚点，不再连出大区间）\n" +
-                "· 底栏长按「同步」= 过滤；底栏上滑 = 书签（MT 0x7f11028f / 7ca）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-        )
-
-        SectionLabel("文件")
-        SettingSwitch("保留文件时间（复制/解压/下载后保留原修改时间）", settings.preserveModifiedTime) {
-            scope.launch { container.prefs.setPreserveModifiedTime(it) }
-        }
-        SettingSwitch("启动时进入首页（关闭 = 恢复上次双列路径）", settings.startAtHome) {
-            scope.launch { container.prefs.setStartAtHome(it) }
-        }
-        Text(
-            // MT 0x7f110200/201「文件列表显示策略」两档（按钮用短名，完整语义看上一行）
-            "文件列表显示：" + com.u707t.panelfm.core.common.MtListSubtitle.MODE_LABELS[settings.listDisplayMode],
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf("时间", "权限").forEachIndexed { mode, short ->
-                TextButton(onClick = { scope.launch { container.prefs.setListDisplayMode(mode) } }) {
-                    Text(
-                        short,
-                        color = if (mode == settings.listDisplayMode) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Text(
-            // 大小不常驻列表（v2.4.2）：告诉用户去哪儿看，免得以为功能被砍了
-            "文件大小 / 文件夹总大小在「属性」里查看（列表不显示，打开大目录时也不再后台统计）",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-        )
-        SettingSwitch("保存文件时自动生成 .bak 备份", settings.backupOnSave) {
-            scope.launch { container.prefs.setBackupOnSave(it) }
-        }
-        SettingSwitch("退出前双次确认（连按两次返回才退出）", settings.confirmExit) {
-            scope.launch { container.prefs.setConfirmExit(it) }
-        }
-
-        SectionLabel("缩略图")
-        SettingSwitch("移动数据下加载缩略图", settings.thumbnailsOnMobile) {
-            scope.launch { container.prefs.setThumbsOnMobile(it) }
-        }
-        Text(
-            "超过该大小的图片不加载缩略图：" + com.u707t.panelfm.core.common.Fmt.size(settings.thumbnailMaxBytes),
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(1L, 3L, 10L, 0L).forEach { mb ->
-                TextButton(onClick = { scope.launch { container.prefs.setThumbnailMaxBytes(mb * 1024 * 1024) } }) {
-                    Text(
-                        if (mb == 0L) "不限制" else "${mb}MB",
-                        color = if (mb * 1024 * 1024 == settings.thumbnailMaxBytes) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        // 视频 / 音频播放（v2.1.3）：目前只有「自动后台播放」一项。
-        // 放在「缩略图」之后 —— 与「界面」「传输」这类全局偏好区分开，按媒体相关归组。
-        SectionLabel("视频播放")
-        SettingSwitch("自动后台播放（默认关闭）", settings.backgroundPlay) {
-            scope.launch { container.prefs.setBackgroundPlay(it) }
-        }
-        Text(
-            "视频与音频共用同一个播放器：开启后切到后台 / 熄屏继续出声（音量与播放列表照常）；\n" +
-                "关闭则离开应用即暂停，不会有声音留在后台。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, top = 2.dp),
-        )
-
-        SectionLabel("界面")
-        Text(
-            "浏览模式（MT 单列 / 双列 / 自动切换）：",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(BrowseMode.AUTO to "自动切换", BrowseMode.SINGLE to "单列", BrowseMode.DUAL to "双列").forEach { (mode, label) ->
-                TextButton(onClick = { container.browser.setBrowseMode(mode) }) {
-                    Text(
-                        label,
-                        color = if (browserState.browseMode == mode) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
-        SectionLabel("传输")
-        SettingSwitch("默认信任自签证书（新建的 WebDAV / FTP / FTPS / S3 连接）", settings.trustSelfSigned) {
-            scope.launch { container.prefs.setTrustSelfSigned(it) }
-        }
-        // 传输校验：引擎已实现三档（大小 / 双向 SHA-256），默认只校验大小 ——
-        // HASH 会把源与目标各完整读一遍，远端或大文件代价翻倍，必须显式选。
-        Text(
-            "传输校验：" + when (settings.verifyMode) {
-                com.u707t.panelfm.core.model.VerifyMode.NONE -> "不校验"
-                com.u707t.panelfm.core.model.VerifyMode.SIZE -> "仅大小（默认）"
-                com.u707t.panelfm.core.model.VerifyMode.HASH -> "SHA-256（最慢）"
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(
-                com.u707t.panelfm.core.model.VerifyMode.NONE to "不校验",
-                com.u707t.panelfm.core.model.VerifyMode.SIZE to "大小",
-                com.u707t.panelfm.core.model.VerifyMode.HASH to "SHA-256",
-            ).forEach { (mode, label) ->
-                TextButton(onClick = { scope.launch { container.prefs.setVerifyMode(mode) } }) {
-                    Text(
-                        label,
-                        color = if (settings.verifyMode == mode) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Text(
-            "SHA-256 会把源与目标各完整读一遍：大文件或网络存储会明显变慢，失败时任务直接判失败。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-        Text("任务并发：${settings.maxConcurrentTasks}", style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            (1..4).forEach { n ->
-                TextButton(onClick = {
-                    scope.launch {
-                        container.prefs.setMaxConcurrent(n)
-                        container.engine.updateConcurrency(n)
-                    }
-                }) {
-                    Text(
-                        n.toString(),
-                        color = if (n == settings.maxConcurrentTasks) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-
-        SectionLabel("回收站")
-        Text(
-            "保留天数：" + if (settings.trashRetentionDays == 0) "不自动清理" else "${settings.trashRetentionDays} 天",
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0, 7, 30, 90).forEach { days ->
-                TextButton(onClick = { scope.launch { container.prefs.setTrashRetentionDays(days) } }) {
-                    Text(
-                        if (days == 0) "不清理" else "$days 天",
-                        color = if (settings.trashRetentionDays == days) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Text(
-            "容量上限：" + com.u707t.panelfm.core.common.Fmt.size(settings.trashMaxBytes).let {
-                if (settings.trashMaxBytes <= 0L) "不限" else it
-            },
-            style = MaterialTheme.typography.bodyMedium,
-            modifier = Modifier.padding(top = 4.dp),
-        )
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-            listOf(0L, 512L, 1024L, 4096L).forEach { mb ->
-                TextButton(onClick = { scope.launch { container.prefs.setTrashMaxBytes(mb * 1024 * 1024) } }) {
-                    Text(
-                        if (mb == 0L) "不限" else "${mb}MB",
-                        color = if (settings.trashMaxBytes == mb * 1024 * 1024) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            }
-        }
-        Text(
-            "启动后 5 秒在后台清理一次（幂等）；只删回收站里的旧条目，不碰当前目录。默认不自动清理。",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(start = 4.dp, bottom = 4.dp),
-        )
-
-        SectionLabel("网络")
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text("全局 User-Agent", style = MaterialTheme.typography.bodyMedium)
-                Text(
-                    settings.userAgent,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+            SettingsGroup("外观") {
+                SettingsRow(
+                    title = "主题",
+                    value = settings.themeMode.label(),
+                    onClick = { sheet = SettingsSheet.THEME_MODE },
+                )
+                SettingsRow(
+                    title = "配色",
+                    value = if (settings.dynamicColor) "动态取色"
+                    else ThemePreset.byId(settings.themePreset).label,
+                    onClick = { sheet = SettingsSheet.PALETTE },
+                )
+                SettingsRow(
+                    title = "字体大小",
+                    value = fontScaleLabel(settings.fontScaleLevel),
+                    onClick = { sheet = SettingsSheet.FONT_SCALE },
+                )
+                SettingsSwitchRow(
+                    title = "动态取色",
+                    checked = settings.dynamicColor,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setDynamicColor(on) } },
+                    divider = false,
                 )
             }
-            TextButton(onClick = { editUserAgent = true }) { Text("修改") }
-        }
 
-        Column(Modifier.padding(top = 16.dp)) {
-            Text("关于", style = MaterialTheme.typography.titleSmall)
-            Text(
-                "PanelFM ${com.u707t.panelfm.BuildConfig.VERSION_NAME}（原生 Kotlin / Compose 双窗格文件管理器）\n" +
-                    "协议：本地 / SFTP / FTP·FTPS / WebDAV / SMB / S3；压缩包挂载与读写（zip）\n" +
-                    "预览：图片、音视频、PDF、Office / Markdown / CSV、EPUB、SQLite、APK、字体、文本（sora-editor）\n" +
-                    "工具：网络工具箱（Ping / DNS / HTTP）、局域网扫描（网段 + 端口）、文本对比、回收站\n" +
-                    "不含任何逆向工程功能（不做 DEX / Arsc / APK 编辑）。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Column(Modifier.padding(bottom = 30.dp)) {}
+            SettingsGroup("浏览") {
+                SettingsRow(
+                    title = "默认视图",
+                    value = browserState.browseMode.label,
+                    onClick = { sheet = SettingsSheet.BROWSE_MODE },
+                )
+                SettingsSwitchRow(
+                    title = "显示隐藏文件",
+                    checked = settings.showHidden,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setShowHidden(on) } },
+                )
+                SettingsSwitchRow(
+                    title = "时间显示到秒",
+                    checked = settings.showSeconds,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setShowSeconds(on) } },
+                )
+                SettingsRow(
+                    title = "列表副标题",
+                    value = listSubtitleLabel(settings.listDisplayMode),
+                    onClick = { sheet = SettingsSheet.LIST_SUBTITLE },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("手势") {
+                SettingsSwitchRow(
+                    title = "点击连选",
+                    checked = settings.tapRangeSelect,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setTapRangeSelect(on) } },
+                )
+                SettingsSwitchRow(
+                    title = "底栏上滑书签",
+                    checked = settings.bookmarkSwipe,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setBookmarkSwipe(on) } },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("文件") {
+                SettingsSwitchRow(
+                    title = "启动时进入首页",
+                    checked = settings.startAtHome,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setStartAtHome(on) } },
+                )
+                SettingsSwitchRow(
+                    title = "保留修改时间",
+                    checked = settings.preserveModifiedTime,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setPreserveModifiedTime(on) } },
+                )
+                SettingsSwitchRow(
+                    title = "保存时生成 .bak",
+                    checked = settings.backupOnSave,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setBackupOnSave(on) } },
+                )
+                SettingsSwitchRow(
+                    title = "退出前二次确认",
+                    checked = settings.confirmExit,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setConfirmExit(on) } },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("媒体") {
+                SettingsSwitchRow(
+                    title = "移动数据下加载缩略图",
+                    checked = settings.thumbnailsOnMobile,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setThumbsOnMobile(on) } },
+                )
+                SettingsRow(
+                    title = "缩略图上限",
+                    value = if (settings.thumbnailMaxBytes <= 0L) "不限"
+                    else Fmt.size(settings.thumbnailMaxBytes),
+                    onClick = { sheet = SettingsSheet.THUMB_SIZE },
+                )
+                SettingsSwitchRow(
+                    title = "自动后台播放",
+                    checked = settings.backgroundPlay,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setBackgroundPlay(on) } },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("传输") {
+                SettingsSwitchRow(
+                    title = "信任自签证书",
+                    checked = settings.trustSelfSigned,
+                    onCheckedChange = { on -> scope.launch { container.prefs.setTrustSelfSigned(on) } },
+                )
+                SettingsRow(
+                    title = "传输校验",
+                    value = settings.verifyMode.label(),
+                    onClick = { sheet = SettingsSheet.VERIFY },
+                )
+                SettingsRow(
+                    title = "并发任务",
+                    value = settings.maxConcurrentTasks.toString(),
+                    onClick = { sheet = SettingsSheet.CONCURRENCY },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("回收站") {
+                SettingsRow(
+                    title = "保留天数",
+                    value = if (settings.trashRetentionDays == 0) "不清理"
+                    else "${settings.trashRetentionDays} 天",
+                    onClick = { sheet = SettingsSheet.TRASH_DAYS },
+                )
+                SettingsRow(
+                    title = "容量上限",
+                    value = if (settings.trashMaxBytes <= 0L) "不限" else Fmt.size(settings.trashMaxBytes),
+                    onClick = { sheet = SettingsSheet.TRASH_SIZE },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("网络") {
+                SettingsRow(
+                    title = "全局 User-Agent",
+                    value = settings.userAgent,
+                    onClick = { editUserAgent = true },
+                    divider = false,
+                )
+            }
+
+            SettingsGroup("关于") {
+                SettingsRow(
+                    title = "版本",
+                    value = BuildConfig.VERSION_NAME,
+                    onClick = { showAbout = true },
+                    divider = false,
+                )
+            }
         }
     }
 
+    when (sheet) {
+        SettingsSheet.THEME_MODE -> ChoiceSheet(
+            title = "主题",
+            options = listOf(
+                ChoiceOption(ThemeMode.SYSTEM, "跟随系统"),
+                ChoiceOption(ThemeMode.LIGHT, "浅色"),
+                ChoiceOption(ThemeMode.DARK, "深色"),
+            ),
+            selected = settings.themeMode,
+            onSelect = { mode ->
+                scope.launch { container.prefs.setTheme(mode) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.PALETTE -> PaletteSheet(
+            selectedId = settings.themePreset,
+            dynamic = settings.dynamicColor,
+            dark = dark,
+            onSelect = { preset ->
+                scope.launch {
+                    container.prefs.setDynamicColor(false)
+                    container.prefs.setThemePreset(preset.id)
+                }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.FONT_SCALE -> ChoiceSheet(
+            title = "字体大小",
+            options = listOf(
+                ChoiceOption(0, "紧凑"),
+                ChoiceOption(1, "适中"),
+                ChoiceOption(2, "标准"),
+            ),
+            selected = settings.fontScaleLevel,
+            onSelect = { level ->
+                scope.launch { container.prefs.setFontScaleLevel(level) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.BROWSE_MODE -> ChoiceSheet(
+            title = "默认视图",
+            options = BrowseMode.entries.map { ChoiceOption(it, it.label) },
+            selected = browserState.browseMode,
+            onSelect = { mode ->
+                container.browser.setBrowseMode(mode)
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.LIST_SUBTITLE -> ChoiceSheet(
+            title = "列表副标题",
+            options = listOf(
+                ChoiceOption(0, "时间"),
+                ChoiceOption(1, "权限"),
+            ),
+            selected = settings.listDisplayMode,
+            onSelect = { mode ->
+                scope.launch { container.prefs.setListDisplayMode(mode) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.THUMB_SIZE -> ChoiceSheet(
+            title = "缩略图上限",
+            options = listOf(
+                ChoiceOption(1L shl 20, "1 MB"),
+                ChoiceOption(3L shl 20, "3 MB"),
+                ChoiceOption(10L shl 20, "10 MB"),
+                ChoiceOption(0L, "不限"),
+            ),
+            selected = settings.thumbnailMaxBytes,
+            onSelect = { bytes ->
+                scope.launch { container.prefs.setThumbnailMaxBytes(bytes) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.VERIFY -> ChoiceSheet(
+            title = "传输校验",
+            options = listOf(
+                ChoiceOption(VerifyMode.NONE, "不校验"),
+                ChoiceOption(VerifyMode.SIZE, "仅大小"),
+                ChoiceOption(VerifyMode.HASH, "SHA-256"),
+            ),
+            selected = settings.verifyMode,
+            onSelect = { mode ->
+                scope.launch { container.prefs.setVerifyMode(mode) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.CONCURRENCY -> ChoiceSheet(
+            title = "并发任务",
+            options = (1..4).map { ChoiceOption(it, it.toString()) },
+            selected = settings.maxConcurrentTasks,
+            onSelect = { n ->
+                scope.launch {
+                    container.prefs.setMaxConcurrent(n)
+                    container.engine.updateConcurrency(n)
+                }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.TRASH_DAYS -> ChoiceSheet(
+            title = "回收站保留",
+            options = listOf(
+                ChoiceOption(0, "不清理"),
+                ChoiceOption(7, "7 天"),
+                ChoiceOption(30, "30 天"),
+                ChoiceOption(90, "90 天"),
+            ),
+            selected = settings.trashRetentionDays,
+            onSelect = { days ->
+                scope.launch { container.prefs.setTrashRetentionDays(days) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        SettingsSheet.TRASH_SIZE -> ChoiceSheet(
+            title = "回收站容量",
+            options = listOf(
+                ChoiceOption(0L, "不限"),
+                ChoiceOption(512L shl 20, "512 MB"),
+                ChoiceOption(1024L shl 20, "1 GB"),
+                ChoiceOption(4096L shl 20, "4 GB"),
+            ),
+            selected = settings.trashMaxBytes,
+            onSelect = { bytes ->
+                scope.launch { container.prefs.setTrashMaxBytes(bytes) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+
+        null -> Unit
+    }
+
+    if (showAbout) {
+        AlertDialog(
+            onDismissRequest = { showAbout = false },
+            title = { Text("关于 PanelFM") },
+            text = {
+                Text(
+                    "版本 ${BuildConfig.VERSION_NAME}\n" +
+                        "本地 / SFTP / FTP · FTPS / WebDAV / SMB / S3 / 压缩包\n" +
+                        "预览：图片 · 音视频 · PDF · Office · EPUB · SQLite · APK · 文本",
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { showAbout = false }) { Text("关闭") }
+            },
+        )
+    }
+
     if (editUserAgent) {
-        var text by remember { mutableStateOf(settings.userAgent) }
-        // F16：打开即聚焦
-        val uaFocus = remember { androidx.compose.ui.focus.FocusRequester() }
-        val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+        var text by remember(settings.userAgent) { mutableStateOf(settings.userAgent) }
+        val uaFocus = remember { FocusRequester() }
+        val keyboard = LocalSoftwareKeyboardController.current
         LaunchedEffect(Unit) {
             kotlinx.coroutines.delay(60)
             runCatching { uaFocus.requestFocus() }
@@ -385,106 +429,294 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
         }
         AlertDialog(
             onDismissRequest = { editUserAgent = false },
-            title = { Text("全局 User-Agent") },
+            title = { Text("User-Agent") },
             text = {
-                Column {
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = { text = it },
-                        label = { Text("User-Agent") },
-                        singleLine = true,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .focusRequester(uaFocus),
-                    )
-                    Text(
-                        "用于 WebDAV 等协议的请求头；改完立即生效（新请求即用新 UA）。留空恢复默认。",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(top = 6.dp),
-                    )
-                }
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    singleLine = true,
+                    placeholder = { Text("留空恢复默认") },
+                    modifier = Modifier.fillMaxWidth().focusRequester(uaFocus),
+                )
             },
             confirmButton = {
                 TextButton(onClick = {
-                    val ua = text.trim().ifBlank { "PanelFM/${com.u707t.panelfm.BuildConfig.VERSION_NAME} (Android)" }
+                    val ua = text.trim().ifBlank { "PanelFM/${BuildConfig.VERSION_NAME} (Android)" }
                     scope.launch { container.prefs.setUserAgent(ua) }
                     editUserAgent = false
                 }) { Text("保存") }
             },
-            dismissButton = { TextButton(onClick = { editUserAgent = false }) { Text("取消") } },
+            dismissButton = {
+                TextButton(onClick = { editUserAgent = false }) { Text("取消") }
+            },
         )
     }
 }
 
-@Composable
-private fun SectionLabel(title: String) {
-    Text(
-        title,
-        style = MaterialTheme.typography.labelLarge,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(top = 14.dp, bottom = 2.dp),
-    )
+// ----------------------------------------------------------------------------- 组件
+
+private enum class SettingsSheet {
+    THEME_MODE, PALETTE, FONT_SCALE, BROWSE_MODE, LIST_SUBTITLE,
+    THUMB_SIZE, VERIFY, CONCURRENCY, TRASH_DAYS, TRASH_SIZE,
 }
 
+private data class ChoiceOption<T>(val value: T, val label: String)
+
 @Composable
-private fun SettingSwitch(title: String, checked: Boolean, onChange: (Boolean) -> Unit) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text(title, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.weight(1f))
-        Switch(checked = checked, onCheckedChange = onChange)
+private fun SettingsGroup(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        Text(
+            title,
+            style = MaterialTheme.typography.labelMedium.copy(fontSize = 11.sp),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 22.dp, bottom = 2.dp),
+        )
+        content()
     }
 }
 
-/** 配色预设行：三枚色卡（表面 / 强调 / 顶栏）+ 名称说明 + 单选。 */
 @Composable
-private fun ThemePresetRow(
-    preset: ThemePreset,
-    dark: Boolean,
-    selected: Boolean,
-    onClick: () -> Unit,
+private fun SettingsRow(
+    title: String,
+    value: String? = null,
+    onClick: (() -> Unit)? = null,
+    divider: Boolean = true,
 ) {
-    val scheme = preset.scheme(dark)
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-            .padding(horizontal = 4.dp, vertical = 7.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-            ThemeSwatch(scheme.surface, scheme.outlineVariant)
-            ThemeSwatch(scheme.primary, scheme.primary)
-            ThemeSwatch(preset.topBar(dark), preset.topBar(dark))
+    Column {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .then(
+                    if (onClick != null) {
+                        Modifier.clickable(role = Role.Button, onClick = onClick)
+                    } else Modifier
+                )
+                .height(48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                modifier = Modifier.weight(1f),
+            )
+            if (value != null) {
+                Text(
+                    value,
+                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 13.sp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.widthIn(max = 160.dp).padding(start = 12.dp),
+                )
+            }
+            if (onClick != null) {
+                MtVectorIcon(
+                    icon = MtIcon.CHEVRON_R,
+                    size = 16.dp,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.padding(start = 6.dp),
+                )
+            }
         }
+        if (divider) DividerPx(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@Composable
+private fun SettingsSwitchRow(
+    title: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    divider: Boolean = true,
+) {
+    Column {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                // 整行是一个 Switch 语义节点；Switch 自己不接点击，避免 TalkBack 出现两个开关
+                .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+                .height(48.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                modifier = Modifier.weight(1f),
+            )
+            Switch(checked = checked, onCheckedChange = null)
+        }
+        if (divider) DividerPx(color = MaterialTheme.colorScheme.outlineVariant)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun <T> ChoiceSheet(
+    title: String,
+    options: List<ChoiceOption<T>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetScope = rememberCoroutineScope()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
         Column(
             Modifier
-                .weight(1f)
-                .padding(start = 12.dp),
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = 8.dp),
         ) {
-            Text(preset.label, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                preset.description,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            SheetTitle(title)
+            options.forEach { option ->
+                val isSelected = option.value == selected
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = isSelected,
+                            role = Role.RadioButton,
+                            onClick = {
+                                // 先播完收起动画，再让父层把 sheet 置空；否则会「啪」地消失
+                                sheetScope.launch {
+                                    sheetState.hide()
+                                    onSelect(option.value)
+                                }
+                            },
+                        )
+                        .height(52.dp)
+                        .padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        option.label,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (isSelected) {
+                        MtVectorIcon(
+                            icon = MtIcon.CHECK,
+                            size = 18.dp,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
         }
-        RadioButton(selected = selected, onClick = null)
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PaletteSheet(
+    selectedId: String,
+    dynamic: Boolean,
+    dark: Boolean,
+    onSelect: (ThemePreset) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val sheetScope = rememberCoroutineScope()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = MaterialTheme.colorScheme.surface,
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .padding(bottom = 8.dp),
+        ) {
+            SheetTitle("配色")
+            ThemePreset.entries.forEach { preset ->
+                val isSelected = !dynamic && preset.id == selectedId
+                val scheme = preset.scheme(dark)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = isSelected,
+                            role = Role.RadioButton,
+                            onClick = {
+                                sheetScope.launch {
+                                    sheetState.hide()
+                                    onSelect(preset)
+                                }
+                            },
+                        )
+                        .height(56.dp)
+                        .padding(horizontal = 20.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Swatch(scheme.surface, scheme.outlineVariant)
+                        Swatch(scheme.primary, scheme.primary)
+                        // 顶栏色卡：Linear 浅色是白顶栏，边框必须用 outlineVariant，否则白底上看不见
+                        Swatch(preset.topBar(dark), scheme.outlineVariant)
+                    }
+                    Text(
+                        preset.label,
+                        style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                        modifier = Modifier.weight(1f).padding(start = 14.dp),
+                    )
+                    if (isSelected) {
+                        MtVectorIcon(
+                            icon = MtIcon.CHECK,
+                            size = 18.dp,
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
 @Composable
-private fun ThemeSwatch(color: Color, borderColor: Color) {
-    Box(
-        Modifier
-            .size(18.dp)
-            .clip(CircleShape)
-            .background(color)
-            .border(1.dp, borderColor, CircleShape),
+private fun SheetTitle(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.titleMedium.copy(fontSize = 15.sp),
+        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 2.dp, bottom = 10.dp),
     )
+}
+
+@Composable
+private fun Swatch(color: Color, borderColor: Color) {
+    Canvas(Modifier.size(16.dp)) {
+        drawCircle(color, radius = size.minDimension / 2f)
+        drawCircle(
+            color = borderColor,
+            radius = size.minDimension / 2f - 0.5f,
+            style = Stroke(width = 1f),
+        )
+    }
+}
+
+// ----------------------------------------------------------------------------- 文案
+
+private fun ThemeMode.label(): String = when (this) {
+    ThemeMode.SYSTEM -> "跟随系统"
+    ThemeMode.LIGHT -> "浅色"
+    ThemeMode.DARK -> "深色"
+}
+
+private fun fontScaleLabel(level: Int): String = when (level) {
+    0 -> "紧凑"
+    2 -> "标准"
+    else -> "适中"
+}
+
+private fun listSubtitleLabel(mode: Int): String =
+    if (mode == 1) "权限" else "时间"
+
+private fun VerifyMode.label(): String = when (this) {
+    VerifyMode.NONE -> "不校验"
+    VerifyMode.SIZE -> "仅大小"
+    VerifyMode.HASH -> "SHA-256"
 }

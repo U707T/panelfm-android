@@ -38,14 +38,29 @@ class ThemePresetTest {
     }
 
     @Test
-    fun `每套都有明暗且顶栏始终深色`() {
+    fun `每套都有明暗且顶栏文字可读`() {
         ThemePreset.entries.forEach { preset ->
             val light = preset.scheme(false)
             val dark = preset.scheme(true)
             assertTrue("${preset.id} 浅色背景应亮于深色", light.background.luminance() > dark.background.luminance())
-            assertTrue("${preset.id} 浅色顶栏应深色", preset.topBar(false).luminance() < 0.1f)
-            assertTrue("${preset.id} 深色顶栏应深色", preset.topBar(true).luminance() < 0.1f)
+            listOf(false, true).forEach { d ->
+                val bg = preset.topBar(d)
+                val fg = preset.topBarContent(d)
+                val muted = preset.topBarContentMuted(d)
+                assertTrue("${preset.id} dark=$d 顶栏正文对比不足", contrast(bg, fg) >= 4.5f)
+                assertTrue("${preset.id} dark=$d 顶栏次文对比不足", contrast(bg, muted) >= 3.0f)
+            }
         }
+        // 既有预设保持深色顶栏；Linear 浅色模式是浅色顶栏（这是它唯一的结构差异）
+        assertTrue(ThemePreset.MT.topBar(false).luminance() < 0.1f)
+        assertTrue(ThemePreset.LINEAR.topBar(false).luminance() > 0.9f)
+    }
+
+    /** WCAG 对比度；顶栏是「同一块颜色上的文字」，必须能读。 */
+    private fun contrast(a: Color, b: Color): Float {
+        val l1 = maxOf(a.luminance(), b.luminance()) + 0.05f
+        val l2 = minOf(a.luminance(), b.luminance()) + 0.05f
+        return l1 / l2
     }
 
     @Test

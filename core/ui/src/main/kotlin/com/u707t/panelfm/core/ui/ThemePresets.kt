@@ -4,14 +4,16 @@ import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 
 /**
  * 内置配色主题。
  *
- * 参考 cfbrowser 的「墨笺 / 黛青 / 松烟 / 赭石」四套纸墨配色，加上原来的 **MT 蓝** 作为默认：
+ * 参考 cfbrowser 的「墨笺 / 黛青 / 松烟 / 赭石」四套纸墨配色，加上 **MT 蓝**（默认）与 **Linear**：
  *  - 每套都给出完整的浅色 / 深色 [ColorScheme]（surfaceContainer 五个层级也显式给出，
  *    抽屉 / 输入框 / 浮层不会掉回 M3 默认的紫灰）；
- *  - 顶栏仍然「始终深色」，但底色随主题换（见 [topBar]）；
+ *  - 顶栏底色随主题换（见 [topBar]）。除 LINEAR 外仍是深色顶栏；LINEAR 浅色模式用浅色顶栏，
+ *    前景色由 [topBarContent] / [topBarContentMuted] 按顶栏亮度自动选（浅底深字 / 深底浅字）；
  *  - 菜单 / 弹层全部从 `MaterialTheme.colorScheme` 取色，所以换主题后自动跟随。
  *
  * 动态取色（Android 12+）优先于预设：开启时走系统壁纸色，顶栏回落 MT 深色。
@@ -183,13 +185,64 @@ enum class ThemePreset(
         topBarLightColor = Color(0xFF241C14),
         topBarDarkColor = Color(0xFF241C14),
     ),
+
+    /**
+     * Linear：中性灰阶 + 靛蓝强调。
+     *
+     * 与其它预设唯一的架构差异：**浅色模式用浅色顶栏**（#FFFFFF，深色字），
+     * 深色模式仍是近黑顶栏（#0F1011，浅色字）。所以它不能沿用「顶栏永远深色」的假设，
+     * 顶栏前景一律走 [topBarContent] / [topBarContentMuted]。
+     */
+    LINEAR(
+        id = "linear",
+        label = "Linear",
+        description = "中性灰 + 靛蓝（Linear 风格）",
+        lightSpec = SchemeSpec(
+            primary = Color(0xFF5E6AD2), onPrimary = Color(0xFFFFFFFF),
+            primaryContainer = Color(0xFFEDEEFB), onPrimaryContainer = Color(0xFF2A2F6B),
+            background = Color(0xFFFBFBFB), onBackground = Color(0xFF282A30),
+            surface = Color(0xFFFFFFFF), onSurface = Color(0xFF282A30),
+            surfaceVariant = Color(0xFFF4F5F6), onSurfaceVariant = Color(0xFF6B6F76),
+            outline = Color(0xFFD0D3D8), outlineVariant = Color(0xFFE9EAEE),
+            containerLowest = Color(0xFFFFFFFF), containerLow = Color(0xFFFBFBFB),
+            container = Color(0xFFF7F8F8), containerHigh = Color(0xFFF1F2F4),
+            containerHighest = Color(0xFFEAEBEE), error = Color(0xFFE5484D),
+        ),
+        darkSpec = SchemeSpec(
+            primary = Color(0xFF7C87E8), onPrimary = Color(0xFF0B0D1A),
+            primaryContainer = Color(0xFF23264A), onPrimaryContainer = Color(0xFFE0E3FF),
+            background = Color(0xFF08090A), onBackground = Color(0xFFF7F8F8),
+            surface = Color(0xFF0F1011), onSurface = Color(0xFFF7F8F8),
+            surfaceVariant = Color(0xFF16171A), onSurfaceVariant = Color(0xFF8A8F98),
+            outline = Color(0xFF34363C), outlineVariant = Color(0xFF23252A),
+            containerLowest = Color(0xFF050506), containerLow = Color(0xFF0B0C0D),
+            container = Color(0xFF0F1011), containerHigh = Color(0xFF16171A),
+            containerHighest = Color(0xFF1D1F23), error = Color(0xFFFF6369),
+            onError = Color(0xFF2B0A0C),
+        ),
+        topBarLightColor = Color(0xFFFFFFFF),
+        topBarDarkColor = Color(0xFF0F1011),
+    ),
     ;
 
     fun scheme(dark: Boolean): ColorScheme =
         (if (dark) darkSpec else lightSpec).toScheme(dark)
 
-    /** 顶栏 / 抽屉头始终深色，但底色随主题换 */
+    /** 顶栏 / 抽屉头底色随主题换（Linear 浅色是白底，其余是深色） */
     fun topBar(dark: Boolean): Color = if (dark) topBarDarkColor else topBarLightColor
+
+    /**
+     * 顶栏前景色：按顶栏亮度自动选。
+     *
+     * 浅色顶栏（LINEAR 浅色）→ 近黑字；深色顶栏（其余预设 / LINEAR 深色）→ 近白字。
+     * 不在枚举里再开 4 个参数：顶栏只有「亮 / 暗」两种，亮度判断足够且不会配错。
+     */
+    fun topBarContent(dark: Boolean): Color =
+        if (topBar(dark).luminance() < 0.5f) MtSpec.TopBarText else Color(0xFF282A30)
+
+    /** 顶栏次要前景（路径父级、tab 未选中、统计、抽屉副标题） */
+    fun topBarContentMuted(dark: Boolean): Color =
+        if (topBar(dark).luminance() < 0.5f) MtSpec.TopBarSubText else Color(0xFF6B6F76)
 
     /** 列表 / 顶栏的分割线：MT 保持原灰色，其它主题用各自的 outlineVariant */
     fun divider(dark: Boolean): Color = when (this) {

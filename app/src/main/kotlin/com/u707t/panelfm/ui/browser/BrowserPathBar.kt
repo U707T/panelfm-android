@@ -50,6 +50,7 @@ import com.u707t.panelfm.core.ui.ClaudeMenuSection
 import com.u707t.panelfm.core.ui.ClaudeMenuTheme
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
+import com.u707t.panelfm.core.ui.LocalTopBarForeground
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.currentClaudePalette
@@ -94,7 +95,7 @@ internal fun BrowserPathBar(
                 fontSize = MtSpec.TopBarTitleSize,
                 fontWeight = FontWeight.SemiBold,
             ),
-            color = MtSpec.TopBarText,
+            color = LocalTopBarForeground.current,
             maxLines = 1,
             overflow = TextOverflow.MiddleEllipsis,
             textAlign = TextAlign.Center,

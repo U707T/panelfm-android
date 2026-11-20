@@ -39,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.semantics.onClick
 import androidx.compose.ui.platform.LocalConfiguration
@@ -53,6 +54,7 @@ import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.ui.DividerPx
 import com.u707t.panelfm.core.ui.DividerSideShadow
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
+import com.u707t.panelfm.core.ui.LocalTopBarBackground
 import com.u707t.panelfm.core.ui.ThinProgressBar
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.core.ui.safeAreaPadding
@@ -120,18 +122,17 @@ fun DualPaneScreen(
     // ---------------- 侧边栏（MT：≡ 打开抽屉）
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
-    // 全面屏（v2.0.14）：本页顶栏在两种主题下都是深色（MT 规格）、且底色已向上铺满状态栏区域 ——
     // 状态栏图标随「此刻状态栏正下方」的面板底色走：
-    //  - 常态 = 深色顶栏 → 浅色图标；
-    //  - 抽屉打开 = 浅色面板（M3 默认 surfaceContainerLow，浅色主题下近白）→ 切深色图标，
-    //    否则白图标贴白面板不可见；深色主题下两态都深，恒浅色。
+    //  - 常态 = 顶栏底色（MT / 纸墨是深色 → 浅图标；Linear 浅色是白底 → 深图标）；
+    //  - 抽屉打开 = 抽屉面板（浅色主题近白 → 深图标；深色主题 → 浅图标）。
     // 离开本页恢复「跟随主题」的全局规则（MainActivity 的设定）。
     val appDark = LocalPanelDarkTheme.current
+    val topBarLight = LocalTopBarBackground.current.luminance() > 0.5f
     val drawerOpen = drawerState.targetValue == DrawerValue.Open
-    DisposableEffect(appDark, drawerOpen) {
+    DisposableEffect(appDark, drawerOpen, topBarLight) {
         val window = (context as? android.app.Activity)?.window
         val controller = window?.let { WindowCompat.getInsetsController(it, it.decorView) }
-        controller?.isAppearanceLightStatusBars = !appDark && drawerOpen
+        controller?.isAppearanceLightStatusBars = if (drawerOpen) !appDark else topBarLight
         onDispose { controller?.isAppearanceLightStatusBars = !appDark }
     }
     val volumes = remember { LocalVolumes.volumes(context) }

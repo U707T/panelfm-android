@@ -78,6 +78,8 @@ import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtMenuRow
 import com.u707t.panelfm.core.ui.LocalTopBarBackground
+import com.u707t.panelfm.core.ui.LocalTopBarForeground
+import com.u707t.panelfm.core.ui.LocalTopBarForegroundMuted
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.PaneEdgeShadow
@@ -131,6 +133,8 @@ internal fun BrowserTopBar(
         //   结构：TabLayout(0903F9) + ⋮(0902B2) + ＋(090116) + 动作条(09022F) + 1px 分割线(0903F8)
         //   NORMAL 态：动作条整行 GONE；SELECTING 态：出现「复制 / 移动 / 删除」三连（可横向滚动）
         val topBarBg = LocalTopBarBackground.current
+        val topBarFg = LocalTopBarForeground.current
+        val topBarFgMuted = LocalTopBarForegroundMuted.current
         Column(
             Modifier
                 .fillMaxWidth()
@@ -163,7 +167,7 @@ internal fun BrowserTopBar(
                             contentDescription = "打开侧边栏"
                         },
                 ) {
-                    MtVectorIcon(icon = MtIcon.MENU, size = 26.dp, tint = MtSpec.TopBarText)
+                    MtVectorIcon(icon = MtIcon.MENU, size = 26.dp, tint = topBarFg)
                 }
 
                 // 中间：路径（单行居中，复刻 MT）+ 统计（小字居中）
@@ -196,7 +200,7 @@ internal fun BrowserTopBar(
                             if (focused.filtered) append("  ·  已过滤")
                         },
                         style = MaterialTheme.typography.labelSmall.copy(fontSize = MtSpec.TopBarSubSize),
-                        color = MtSpec.TopBarSubText,
+                        color = topBarFgMuted,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -272,7 +276,7 @@ internal fun BrowserTopBar(
                             Row(
                                 Modifier
                                     .clip(RoundedCornerShape(6.dp))
-                                    .background(if (active) Color.White.copy(alpha = 0.14f) else Color.Transparent)
+                                    .background(if (active) topBarFg.copy(alpha = 0.12f) else Color.Transparent)
                                     .clickableNoRipple { controller.switchTab(focusSide, index) }
                                     .padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp)
                                     .semantics {
@@ -283,7 +287,7 @@ internal fun BrowserTopBar(
                                 Text(
                                     tabLabelOf(tab),
                                     style = MaterialTheme.typography.labelSmall,
-                                    color = if (active) MtSpec.TopBarText else MtSpec.TopBarSubText,
+                                    color = if (active) topBarFg else topBarFgMuted,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis,
                                     modifier = Modifier.widthIn(max = 76.dp),
@@ -291,7 +295,7 @@ internal fun BrowserTopBar(
                                 MtVectorIcon(
                                     icon = MtIcon.CLOSE,
                                     size = 14.dp,
-                                    tint = MtSpec.TopBarSubText,
+                                    tint = topBarFgMuted,
                                     modifier = Modifier
                                         .clip(RoundedCornerShape(4.dp))
                                         .clickableNoRipple { controller.closeTab(focusSide, index) }
@@ -309,7 +313,7 @@ internal fun BrowserTopBar(
                                     contentDescription = "新建标签页"
                                 },
                         ) {
-                            MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = MtSpec.TopBarText)
+                            MtVectorIcon(icon = MtIcon.PLUS, size = 22.dp, tint = topBarFg)
                         }
                     }
                 }
@@ -325,7 +329,7 @@ internal fun BrowserTopBar(
                             contentDescription = "更多菜单"
                         },
                 ) {
-                    MtVectorIcon(icon = MtIcon.MORE, size = 26.dp, tint = MtSpec.TopBarText)
+                    MtVectorIcon(icon = MtIcon.MORE, size = 26.dp, tint = topBarFg)
                 }
             }
         }

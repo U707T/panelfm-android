@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -51,6 +52,8 @@ import com.u707t.panelfm.core.ui.MtGesture
 import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.LocalPanelDarkTheme
 import com.u707t.panelfm.core.ui.LocalTopBarBackground
+import com.u707t.panelfm.core.ui.LocalTopBarForeground
+import com.u707t.panelfm.core.ui.LocalTopBarForegroundMuted
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.MtListRow
@@ -147,6 +150,9 @@ fun MtSideDrawer(
     Column(Modifier.fillMaxWidth()) {
         // ---------------- 头部（复刻 MT：深色底 #151515 + 图标 + 名称 + 副标题 + 右上 ⋮）
         val drawerHeaderBg = LocalTopBarBackground.current
+        val drawerHeaderFg = LocalTopBarForeground.current
+        val drawerHeaderFgMuted = LocalTopBarForegroundMuted.current
+        val drawerHeaderLight = drawerHeaderBg.luminance() > 0.5f
         Row(
             Modifier
                 .fillMaxWidth()
@@ -159,10 +165,10 @@ fun MtSideDrawer(
                 Modifier
                     .size(46.dp)
                     .clip(RoundedCornerShape(MtSpec.CornerMedium))
-                    .background(Color.White),
+                    .background(if (drawerHeaderLight) MaterialTheme.colorScheme.surfaceVariant else Color.White),
                 contentAlignment = Alignment.Center,
             ) {
-                MtFolderGlyph(size = 30.dp, color = Color(0xFF3C3C3C))
+                MtFolderGlyph(size = 30.dp, color = if (drawerHeaderLight) MaterialTheme.colorScheme.onSurface else Color(0xFF3C3C3C))
             }
             Column(
                 Modifier
@@ -172,7 +178,7 @@ fun MtSideDrawer(
                 Text(
                     "PanelFM",
                     style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
-                    color = MtSpec.TopBarText,
+                    color = drawerHeaderFg,
                 )
                 Text(
                     when (settings.themeMode) {
@@ -181,7 +187,7 @@ fun MtSideDrawer(
                         ThemeMode.DARK -> "深色主题"
                     },
                     style = MaterialTheme.typography.labelSmall,
-                    color = MtSpec.TopBarSubText,
+                    color = drawerHeaderFgMuted,
                 )
             }
             // ---------------- 侧边栏右上 ⋮（MT：主题跟随系统 / 添加存储 / 分组 / 设置）
@@ -196,7 +202,7 @@ fun MtSideDrawer(
                             contentDescription = "侧边栏菜单"
                         },
                 ) {
-                    MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = MtSpec.TopBarText)
+                    MtVectorIcon(icon = MtIcon.MORE, size = 22.dp, tint = drawerHeaderFg)
                 }
                 ClaudeDropdownMenu(expanded = drawerMenu, onDismissRequest = { drawerMenu = false }) {
                     if (!protocolSub) {
