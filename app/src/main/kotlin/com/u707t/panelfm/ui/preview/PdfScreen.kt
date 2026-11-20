@@ -35,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.materializeToCache
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.MtScreenTopBar
@@ -206,54 +207,12 @@ private fun PdfPage(
 }
 
 /** 远程 / 压缩包内的 PDF 先复制到应用缓存（PdfRenderer 只接受文件描述符） */
-private suspend fun materializePdf(container: AppContainer, item: FileMetadata): File {
-    if (item.uri.scheme == "local") {
-        val path = runCatching { container.localVfs.absolutePath(item.uri) }.getOrNull()
-        if (path != null && File(path).exists()) return File(path)
-    }
-    val dir = File(container.appDirs.cacheDir, "pdf")
-    runCatching { dir.mkdirs() }
-    // ⚠️ 缓存键必须带 uri 的**完整哈希**：旧实现用 `String.hashCode()`（32 位），
-    // 不同 PDF 撞哈希 → 直接打开别人的缓存文件（看到的是错文档）。
-    // 顺带每次落盘前清一遍超龄缓存（见 pruneMaterialized）。
-    val target = File(dir, "doc-${materializeKey(item.uri.toString())}-${item.size}.pdf")
-    if (target.exists() && target.length() > 0) return target
-    pruneMaterialized(dir, keep = target)
-    val tmp = File(dir, "${target.name}.part")
-    val vfs = container.resolveSession(item.uri) ?: throw IllegalStateException("会话不可用（存储已断开）")
-    vfs.openRead(item.uri).use { reader ->
-        tmp.outputStream().use { out ->
-            val buf = ByteArray(128 * 1024)
-            while (true) {
-                val n = reader.read(buf)
-                if (n < 0) break
-                out.write(buf, 0, n)
-            }
-        }
-    }
-    if (!tmp.renameTo(target)) {
-        tmp.copyTo(target, overwrite = true)
-        tmp.delete()
-    }
-    return target
-}
-
-/** 物化缓存键：SHA-256 前 16 个 hex 字符（碰撞概率可忽略，文件名仍是定长 ASCII） */
-private fun materializeKey(s: String): String =
-    java.security.MessageDigest.getInstance("SHA-256")
-        .digest(s.toByteArray())
-        .take(8)
-        .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
-
-/**
- * 清掉物化缓存里超过 3 天没被碰过的文件（远程 PDF 先落盘才能渲染，只增不减会一直吃存储）。
- * [keep] 是本次要用的目标文件，永不删除。
- */
-private fun pruneMaterialized(dir: File, keep: File) {
-    val cutoff = System.currentTimeMillis() - 3L * 24 * 3600 * 1000
-    runCatching {
-        dir.listFiles()?.forEach { f ->
-            if (f != keep && f.lastModified() < cutoff) runCatching { f.delete() }
-        }
-    }
-}
+private suspend fun materializePdf(container: AppContainer, item: FileMetadata): File =
+    materializeToCache(
+        container = container,
+        uri = item.uri,
+        size = item.size,
+        subdir = "pdf",
+        prefix = "doc",
+        extension = "pdf",
+    )

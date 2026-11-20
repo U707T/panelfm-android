@@ -41,16 +41,27 @@ class TypeActionsTest {
         listOf("gz", "xz", "txz", "tgz", "tbz2", "bz2", "lzma", "lz4", "cpio", "deb").forEach { ext ->
             assertEquals("$ext 应与 zip 同菜单", ids("zip"), ids(ext))
         }
-        // .apks：压缩包菜单 + 最前面两项：安装（PackageInstaller）/ 转为 APK（合并 + 重签）
+        // .apks：压缩包菜单 + 最前面三项：安装（PackageInstaller）/ 转为 APK（合并 + 重签）/ APK 信息
         assertEquals(
-            listOf(TypeActions.ACTION_INSTALL, TypeActions.ACTION_CONVERT_APK) + ids("zip"),
+            listOf(
+                TypeActions.ACTION_INSTALL,
+                TypeActions.ACTION_CONVERT_APK,
+                TypeActions.ACTION_APK_INFO,
+            ) + ids("zip"),
             ids("apks"),
         )
         // .xapk / .apkm：同样的 split 外壳，但没有「安装」（系统安装器不认，PackageInstaller 也只接了 .apks）
-        assertEquals(listOf(TypeActions.ACTION_CONVERT_APK) + ids("zip"), ids("xapk"))
-        assertEquals(listOf(TypeActions.ACTION_CONVERT_APK) + ids("zip"), ids("apkm"))
-        // 压缩包内部不给转 APK（要先落到本地）
+        assertEquals(
+            listOf(TypeActions.ACTION_CONVERT_APK, TypeActions.ACTION_APK_INFO) + ids("zip"),
+            ids("xapk"),
+        )
+        assertEquals(
+            listOf(TypeActions.ACTION_CONVERT_APK, TypeActions.ACTION_APK_INFO) + ids("zip"),
+            ids("apkm"),
+        )
+        // 压缩包内部不给转 APK / APK 信息（要先落到本地）
         assertFalse(ids("apks", inArchive = true).contains(TypeActions.ACTION_CONVERT_APK))
+        assertFalse(ids("apks", inArchive = true).contains(TypeActions.ACTION_APK_INFO))
         assertEquals("转为 APK", TypeActions.labelOf(TypeActions.ACTION_CONVERT_APK, TypeActions.kindOf("apks")))
     }
 

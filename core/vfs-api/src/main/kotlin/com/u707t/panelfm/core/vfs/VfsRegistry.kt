@@ -1,5 +1,7 @@
 package com.u707t.panelfm.core.vfs
 
+import com.u707t.panelfm.core.common.toHex
+
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.model.ConnectionConfig
 import kotlinx.coroutines.CoroutineScope
@@ -125,7 +127,7 @@ class VfsRegistry(
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
         // Locale.ROOT：部分 locale（阿拉伯语等）会把 %x 的数字本地化成非 ASCII 字符，
         // 指纹会随系统语言变化 → 会话 key 抖动、复用判断失效。哈希串必须固定 ASCII。
-        val fingerprint = digest.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+        val fingerprint = digest.toHex()
         return "${config.sessionKey}|secret=$fingerprint"
     }
 }

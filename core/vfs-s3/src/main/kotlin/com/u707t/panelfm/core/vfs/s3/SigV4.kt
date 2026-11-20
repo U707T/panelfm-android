@@ -1,5 +1,7 @@
 package com.u707t.panelfm.core.vfs.s3
 
+import com.u707t.panelfm.core.common.toHex
+
 import java.net.URLEncoder
 import java.security.MessageDigest
 import javax.crypto.Mac
@@ -29,7 +31,7 @@ object SigV4 {
     private val amzDateFmt = DateTimeFormatter.ofPattern("yyyyMMdd'T'HHmmss'Z'").withZone(ZoneOffset.UTC)
     private val dateFmt = DateTimeFormatter.ofPattern("yyyyMMdd").withZone(ZoneOffset.UTC)
 
-    fun hex(data: ByteArray): String = data.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+    fun hex(data: ByteArray): String = data.toHex()
 
     fun sha256Hex(data: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(data))
 

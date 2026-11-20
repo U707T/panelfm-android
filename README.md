@@ -8,7 +8,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.5.2 (125)
+版本      2.5.3 (126)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -171,6 +171,7 @@ core/ui/                   UI 基座（MtSpec / MtIcons / MtWidgets / 主题 / �
 - [`docs/OPEN-WITH.md`](docs/OPEN-WITH.md) —— 用其他应用打开（ACTION_VIEW）的链路、边界与验证
 - [`docs/APKS-TO-APK.md`](docs/APKS-TO-APK.md) —— APKS / XAPK / APKM 转 APK（合并口径、清单补丁、签名、已知限制）
 - [`docs/APK-INFO.md`](docs/APK-INFO.md) —— 单击 APK 的信息卡片（字段来源、签名方案与加固的判定边界）
+- [`docs/AUDIT-2026-11-20-CHANGESET-v2.5.3.md`](docs/AUDIT-2026-11-20-CHANGESET-v2.5.3.md) —— 卡片排版 + 全仓复用收口（哪几处重复实现收成了一份）
 
 ## 6. 与 MT 管理器的关系
 

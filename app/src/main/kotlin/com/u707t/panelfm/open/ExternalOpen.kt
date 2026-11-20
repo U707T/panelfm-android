@@ -2,6 +2,9 @@ package com.u707t.panelfm.open
 
 import android.content.ComponentName
 import android.content.Context
+import android.net.Uri
+import androidx.core.content.FileProvider
+import java.io.File
 
 /**
  * 应用内「外部应用 / 打开方式」要排除 PanelFM 自身。
@@ -12,3 +15,16 @@ import android.content.Context
  */
 internal fun selfExclusion(context: Context): Array<ComponentName> =
     arrayOf(ComponentName(context, com.u707t.panelfm.MainActivity::class.java))
+
+/**
+ * 本应用 FileProvider 的 `content://` URI —— **authority 只在这里写一次**。
+ *
+ * 以前 6 处（分享 / 打开方式 / 指定应用打开 / 安装 / 预览外部应用 / 播放器外部打开）
+ * 各自拼 `"${context.packageName}.fileprovider"` 并各自包一层 runCatching；
+ * authority 改名（Manifest 与代码必须同步）时要改 6 个地方，漏一个就是「文件不存在」。
+ *
+ * @return null = 生成失败（路径不在 file_paths.xml 覆盖范围内 / FileProvider 未注册）
+ */
+internal fun fileProviderUri(context: Context, file: File): Uri? = runCatching {
+    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+}.getOrNull()

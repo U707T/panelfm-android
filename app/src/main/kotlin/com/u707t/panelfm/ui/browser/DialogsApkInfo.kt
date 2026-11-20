@@ -2,14 +2,11 @@ package com.u707t.panelfm.ui.browser
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -38,6 +35,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
 import com.u707t.panelfm.core.ui.ClaudeMenuItem
@@ -57,7 +55,8 @@ import kotlinx.coroutines.CancellationException
  * 三个按钮的语义（与 MT 一致）：
  *  - `功能`：整页「APK 详细信息」、提取图标、转为 APK（分包包）、校验值、属性、复制路径；
  *  - `查看`：把包当 zip 打开，进压缩包内浏览（v2.5.2 之前单击 apk 就是直接进这里）；
- *  - `安装`：交给系统安装器（`.apks` 走 PackageInstaller），网络文件提示先复制到本地。
+ *  - `安装`：本地 `.apk` 交系统安装器、`.apks` 走 PackageInstaller；远端 / 包内的包在解析时
+ *    已经把同一份字节缓存到 `cache/apk`，直接装缓存那份（不再让用户「先复制到本地」重来一遍）。
  */
 @Composable
 internal fun ApkInfoDialog(
@@ -95,11 +94,15 @@ internal fun ApkInfoDialog(
         }.getOrNull()
     }.value
 
+    /** 解析时落到本地的副本（远端 / 压缩包内的包才有；安装直接用它，不必让用户再复制一遍） */
+    val cachedApk = info?.localApkPath?.let { File(it) }
     val title = info?.label ?: item.name
     val subtitle = info?.versionName ?: if (isApkBundleName(item.name)) "分包安装包" else "APK 安装包"
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        // MT 的卡片是 24dp 圆角（默认 M3 是 28dp 的对话框 + 更窄的内边距，观感差一档）
+        shape = RoundedCornerShape(24.dp),
         title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (icon != null) {
@@ -108,33 +111,34 @@ internal fun ApkInfoDialog(
                         contentDescription = null,
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp)),
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(16.dp)),
                     )
                 } else {
                     Box(
                         Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(12.dp))
+                            .size(56.dp)
+                            .clip(RoundedCornerShape(16.dp))
                             .background(MaterialTheme.colorScheme.surfaceVariant),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(title.take(1), style = MaterialTheme.typography.titleMedium)
                     }
                 }
-                Column(Modifier.padding(start = 12.dp)) {
+                Column(Modifier.padding(start = 14.dp)) {
                     Text(
                         title,
-                        style = MaterialTheme.typography.titleMedium,
+                        style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         subtitle,
-                        style = MaterialTheme.typography.labelSmall,
+                        style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(top = 2.dp),
                     )
                 }
             }
@@ -145,13 +149,13 @@ internal fun ApkInfoDialog(
                     error != null -> {
                         Text(
                             "解析失败：$error",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
                         Text(
                             "损坏的包、只有分包没有 base.apk、或存储已断开都会走到这里。" +
                                 "可以先用「功能 → 属性」确认文件大小，或先复制到本地再试。",
-                            style = MaterialTheme.typography.labelSmall,
+                            style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(top = 6.dp),
                         )
@@ -160,8 +164,8 @@ internal fun ApkInfoDialog(
                         CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
                         Text(
                             stage,
-                            style = MaterialTheme.typography.bodySmall,
-                            modifier = Modifier.padding(start = 10.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(start = 12.dp),
                         )
                     }
                     else -> {
@@ -169,16 +173,26 @@ internal fun ApkInfoDialog(
                         s.bundleNote?.let {
                             Text(
                                 it,
-                                style = MaterialTheme.typography.labelSmall,
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(bottom = 8.dp),
+                                modifier = Modifier.padding(bottom = 10.dp),
                             )
                         }
                         // 路径 / 包名都是要抄走的东西：整块可选，长按就能复制
                         SelectionContainer {
-                            Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+                            Column {
                                 ApkInfoRows.of(s).forEach { (label, value) ->
-                                    ApkInfoRow(label, value)
+                                    InfoRow(
+                                        label = label,
+                                        value = value,
+                                        labelWidth = 88.dp,
+                                        labelStyle = MaterialTheme.typography.bodyMedium,
+                                        valueStyle = MaterialTheme.typography.bodyMedium.copy(
+                                            fontFamily = FontFamily.Monospace,
+                                        ),
+                                        maxLines = 3,
+                                        verticalPadding = 6.dp,
+                                    )
                                 }
                             }
                         }
@@ -245,34 +259,17 @@ internal fun ApkInfoDialog(
                 }) { Text("查看") }
                 TextButton(onClick = {
                     onDismiss()
-                    installApk(container, context, item) { msg -> controller.showStatus(msg) }
+                    when {
+                        // 本地文件：.apk 交系统安装器、.apks 走 PackageInstaller
+                        item.uri.scheme == "local" ->
+                            installApk(container, context, item) { msg -> controller.showStatus(msg) }
+                        // 远端 / 包内：解析时已经缓存了同一份字节，直接装缓存那份
+                        cachedApk != null && !isApkBundleName(item.name) ->
+                            installApkFile(context, cachedApk) { msg -> controller.showStatus(msg) }
+                        else -> controller.showStatus("网络 / 压缩包内的安装包请先复制到本地再安装")
+                    }
                 }) { Text("安装") }
             }
         },
     )
-}
-
-/** 一行「标签 + 值」：标签定宽 76dp，值最多两行（长路径不把对话框撑爆，仍能看全尾段） */
-@Composable
-private fun ApkInfoRow(label: String, value: String) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(vertical = 3.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(76.dp),
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-            modifier = Modifier.weight(1f),
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
 }

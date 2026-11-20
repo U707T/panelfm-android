@@ -28,9 +28,12 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.HistoryButton
 
@@ -171,20 +174,44 @@ fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
     )
 }
 
+/**
+ * 「标签 + 值」一行 —— 全仓对话框**唯一**实现（属性 / APK 信息 / APK 详情 / 各类结果框共用）。
+ *
+ * 以前有三份副本（这里一份、APK 信息整页一份、APK 信息卡片一份），字号与列宽各写各的，
+ * 同一种信息在不同对话框里长得不一样。要改版式只改这里：
+ *
+ * @param labelWidth 标签列宽（短标签 72dp 够用；APK 卡片用 88dp 才不挤）
+ * @param labelStyle / valueStyle 字号档位（卡片用 bodyMedium，结果框用 bodySmall）
+ * @param maxLines 值最多几行（0 = 不限；路径类给 2–3 行，避免把对话框撑爆）
+ * @param verticalPadding 行间距
+ */
 @Composable
-fun InfoRow(label: String, value: String) {
+fun InfoRow(
+    label: String,
+    value: String,
+    labelWidth: Dp = 72.dp,
+    labelStyle: TextStyle = MaterialTheme.typography.bodySmall,
+    valueStyle: TextStyle = MaterialTheme.typography.bodySmall,
+    maxLines: Int = Int.MAX_VALUE,
+    verticalPadding: Dp = 3.dp,
+) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 3.dp),
+            .padding(vertical = verticalPadding),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         Text(
             label,
-            style = MaterialTheme.typography.bodySmall,
+            style = labelStyle,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.width(72.dp),
+            modifier = Modifier.width(labelWidth),
         )
-        Text(value, style = MaterialTheme.typography.bodySmall)
+        Text(
+            value,
+            style = valueStyle,
+            maxLines = maxLines,
+            overflow = if (maxLines == Int.MAX_VALUE) TextOverflow.Clip else TextOverflow.Ellipsis,
+        )
     }
 }

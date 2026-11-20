@@ -12,6 +12,7 @@ import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.MimeTypes
+import com.u707t.panelfm.core.common.sha1Hex
 import com.u707t.panelfm.core.vfs.FileMetadata
 import com.u707t.panelfm.core.vfs.VfsMediaDataSource
 import com.u707t.panelfm.core.vfs.VfsReader
@@ -129,8 +130,7 @@ object ThumbCache {
     private fun fileOf(key: String, jpeg: Boolean = false): File? {
         val dir = cacheDir ?: return null
         // Locale.ROOT：哈希文件名必须是固定 ASCII（本地化数字会让不同语言下缓存 key 不一致）
-        val hash = MessageDigest.getInstance("SHA-1").digest(key.toByteArray())
-            .joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+        val hash = sha1Hex(key.toByteArray())
         return File(dir, "$hash${if (jpeg) ".jpg" else ".png"}")
     }
 

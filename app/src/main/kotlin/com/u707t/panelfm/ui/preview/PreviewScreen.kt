@@ -38,7 +38,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.content.FileProvider
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.MtIcon
@@ -260,9 +259,7 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
                             if (file == null || !file.exists()) {
                                 error = "文件不存在（可能已被移动或删除）"
                             } else {
-                                val shareUri = runCatching {
-                                    FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-                                }.getOrNull()
+                                val shareUri = com.u707t.panelfm.open.fileProviderUri(context, file)
                                 if (shareUri == null) {
                                     error = "无法生成打开链接"
                                 } else {

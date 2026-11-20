@@ -10,6 +10,47 @@
 > 但**不要**再引用它们去论证「已对齐」。当前有效的差距与审计结论见 `docs/AUDIT-2026-10-08-REAUDIT.md`
 > （全量重审总文档；旧审查记录已于 2026-10-08 全部删除重建）。
 
+## v2.5.3 — 卡片排版对齐 MT + 全仓「重复造轮子」收口
+
+> 一句话：APK 信息卡片按 MT 放大字号 / 圆角 / 行距；顺手把这一版自己造的轮子
+> （行排版、十六进制、物化缓存、FileProvider、VFS 复制循环）收成一份，
+> 并修掉 v2.5.2 暴露出的几条路径问题。
+
+### 变更（观感）
+
+- **卡片排版对齐 MT**：24dp 圆角、56dp 图标（16dp 圆角）、标题 20sp、版本行 14sp；
+  正文 14sp（标签列 88dp、行距 6dp、值最多 3 行）——原来是 12sp + 76dp 列 + 3dp 行距，挤成一坨。
+
+### 修复
+
+- `.apks` 的「功能 → APK 详细信息」不再报「不是有效的 APK」：整页也先解出 base.apk 再解析。
+- `.xapk` / `.apkm` 点「安装」给可执行文案（先用「转为 APK」合并），不再是「只有 APK / .apks 可以安装」。
+- 远端 / 压缩包内的**单 APK**：直接安装解析时缓存的那份（`cache/apk`），不再要求先复制到本地。
+- 长按菜单补齐 `.apks / .xapk / .apkm` 的「APK 信息」（与单击同一入口）。
+- 命名区分：卡片 = **APK 信息**，整页 = **APK 详细信息**（`PreviewMode` 文案与页面副标题同步）。
+- 删除死代码 `TypeActions.isApk`；`pkg.packageName ?: "—"` 的死分支改 `ifBlank`。
+
+### 复用（不再重复造轮子）
+
+- **「标签 + 值」行 3 → 1**：`InfoRow` 参数化（列宽 / 字号 / 行数 / 行距），属性、APK 详情页、APK 卡片共用。
+- **十六进制与摘要 9 处 → 1 份**：`core/common/Hashes.kt`（`toHex` / `digestHex` / `sha256Hex` / `sha1Hex`）。
+- **VFS → 本地复制循环 → 1 份**：`core/vfs-api/VfsCopy.kt`（`VfsReader.copyTo`，可取消 + 连续 0 读保护），
+  本次替换 APK / PDF / 字体 3 处；剩余 6 处（压缩包挂载 / 编辑器 / 导出 / 内置 HTTP 服务）留后续批次。
+- **java.io 复制 → 1 份**：`core/common/Streams.kt`（`copyStreamTo`）。
+- **物化缓存（远端落盘）→ 1 份**：`app/MaterializedCache.kt`，APK 与 PDF 共用目录约定、SHA-256 键、
+  以及「先写 `.part` 再 rename」的原子写（`writeAtomically`，失败/取消都删残片）。
+- **缓存清理 → 1 份**：`core/common/CacheFiles.kt`（`sweepStaleFiles`，默认 3 天）。
+- **FileProvider URI 6 处 → 1 份**：`open/ExternalOpen.fileProviderUri`（authority 只写一次）。
+
+### 验证
+
+- 全仓 `testDebugUnitTest` **876 例 / 0 失败**（新增 `HashesTest` 6、`StreamsTest` 4、
+  `CacheFilesTest` 4、`VfsCopyTest` 5；`TypeActionsTest` 更新分包菜单断言）。
+- `grep` 归零：`"%02x"` 只剩 `Hashes.kt`；`FileProvider.getUriForFile` 只剩 `ExternalOpen.kt`；
+  `pruneMaterialized` / `materializeKey` / 私有 `InfoRow` 全部消失。
+- 逐条记录见 [`docs/AUDIT-2026-11-20-CHANGESET-v2.5.3.md`](docs/AUDIT-2026-11-20-CHANGESET-v2.5.3.md)。
+- 待真机：窄屏 + 长包名的折行、深色主题下 24dp 圆角观感、`.apks` 首开解 base.apk 的耗时。
+
 ## v2.5.2 — 单击 APK 弹信息卡片（MT 的「APK 信息」）
 
 > 一句话：单击 `apk` / `apks` / `xapk` / `apkm` 不再直接进预览页、也不再直接挂成压缩包，

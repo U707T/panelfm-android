@@ -7,6 +7,7 @@ package com.u707t.panelfm.ui.browser
 
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.toHex
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.common.MtSelection
 import com.u707t.panelfm.core.model.ConflictDecision
@@ -408,7 +409,7 @@ suspend fun BrowserController.checksumNow(
             }
             // Locale.ROOT：校验值必须是固定 ASCII 十六进制（本地化数字会让「比对校验值」失去意义）
             crc?.let { "%08x".format(java.util.Locale.ROOT, it.value) }
-                ?: digest!!.digest().joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
+                ?: digest!!.digest().toHex()
         } finally {
             runCatching { reader.close() }
         }

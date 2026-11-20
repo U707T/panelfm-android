@@ -4,20 +4,22 @@ import android.content.Context
 import android.os.Build
 import android.os.Environment
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.materializeToCache
+import com.u707t.panelfm.writeAtomically
 import com.u707t.panelfm.core.apk.ApkBundleReader
 import com.u707t.panelfm.core.apk.ApkHardening
 import com.u707t.panelfm.core.apk.ApkSignatures
 import com.u707t.panelfm.core.apk.SignatureSchemes
 import com.u707t.panelfm.core.common.AndroidApi
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.copyStreamTo
+import com.u707t.panelfm.core.common.sha256Hex
+import com.u707t.panelfm.core.common.sweepStaleFiles
 import com.u707t.panelfm.core.vfs.FileMetadata
 import java.io.File
 import java.util.Locale
 import java.util.zip.ZipFile
-import kotlin.coroutines.coroutineContext
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 
 // ================================================================================================
@@ -188,58 +190,22 @@ internal suspend fun loadApkInfo(
 /**
  * 把「要解析的 APK」落到本地缓存（PackageManager 只认文件路径）。
  *
- * 本地文件直接用原路径（不复制）；远端 / 压缩包内 / 接收目录的文件先整包缓存到
- * `cache/apk/`，键 = URI 的 SHA-256 前 16 位 + 大小（旧实现用 `String.hashCode()`，
- * 32 位撞哈希会解析成别人的包信息 / 装错包）。
- *
- * ⚠️ 与旧实现的差别：复制循环里加了 `ensureActive()` —— 关掉对话框要能立刻停下，
- * 否则一个 200 MB 的包会在后台白读到底。
+ * 具体策略（不复制本地文件、SHA-256 键、`.part` 中转、3 天清理）统一在
+ * [com.u707t.panelfm.materializeToCache] —— 与 PDF 渲染共用一套。
  */
 internal suspend fun materializeApk(
     container: AppContainer,
     item: FileMetadata,
     onStage: (String) -> Unit = {},
-): File {
-    if (item.uri.scheme == "local") {
-        val path = runCatching { container.localVfs.absolutePath(item.uri) }.getOrNull()
-        if (path != null && File(path).isFile) return File(path)
-    }
-    val dir = File(container.appDirs.cacheDir, "apk").apply { runCatching { mkdirs() } }
-    val key = java.security.MessageDigest.getInstance("SHA-256")
-        .digest(item.uri.toString().toByteArray())
-        .take(8)
-        .joinToString("") { "%02x".format(Locale.ROOT, it) }
-    val target = File(dir, "pkg-$key-${item.size}.apk")
-    if (target.isFile && target.length() > 0) return target
-    sweepOldCache(dir, keep = target)
-
-    val tmp = File(dir, "${target.name}.part")
-    onStage("正在缓存到本地（${Fmt.sizeCompact(item.size)}）…")
-    val vfs = container.resolveSession(item.uri)
-        ?: throw IllegalStateException("会话不可用（存储已断开）")
-    runCatching {
-        vfs.openRead(item.uri).use { reader ->
-            tmp.outputStream().use { out ->
-                val buf = ByteArray(128 * 1024)
-                while (true) {
-                    coroutineContext.ensureActive()
-                    val n = reader.read(buf)
-                    if (n < 0) break
-                    out.write(buf, 0, n)
-                }
-            }
-        }
-    }.onFailure { e ->
-        runCatching { tmp.delete() }
-        if (e is CancellationException) throw e
-        throw e
-    }
-    if (!tmp.renameTo(target)) {
-        tmp.copyTo(target, overwrite = true)
-        tmp.delete()
-    }
-    return target
-}
+): File = materializeToCache(
+    container = container,
+    uri = item.uri,
+    size = item.size,
+    subdir = "apk",
+    prefix = "pkg",
+    extension = "apk",
+    onStage = onStage,
+)
 
 /**
  * 从 `.apks` / `.xapk` / `.apkm` 里取出 base.apk（或 universal / standalone）落到缓存。
@@ -261,50 +227,21 @@ internal suspend fun extractBundleBaseApk(
         ?: bundle.standalones.firstOrNull()
         ?: throw IllegalStateException("分包安装包里找不到 base.apk")
     val dir = File(container.appDirs.cacheDir, "apk").apply { runCatching { mkdirs() } }
-    val key = java.security.MessageDigest.getInstance("SHA-256")
-        .digest("${bundleFile.absolutePath}:${bundleFile.length()}:${bundleFile.lastModified()}:${primary.path}".toByteArray())
-        .take(8)
-        .joinToString("") { "%02x".format(Locale.ROOT, it) }
+    val key = sha256Hex(
+        "${bundleFile.absolutePath}:${bundleFile.length()}:${bundleFile.lastModified()}:${primary.path}".toByteArray(),
+        takeBytes = 8,
+    )
     val target = File(dir, "base-$key.apk")
     if (target.isFile && target.length() > 0) return@withContext target
-    sweepOldCache(dir, keep = target)
+    sweepStaleFiles(dir, keep = target)
 
     onStage("正在解出 base.apk（${Fmt.sizeCompact(primary.size)}）…")
-    val tmp = File(dir, "${target.name}.part")
-    runCatching {
+    writeAtomically(target) { out ->
         ZipFile(bundleFile).use { zip ->
             val entry = zip.getEntry(primary.path)
                 ?: throw IllegalStateException("包内条目丢失：${primary.path}")
-            zip.getInputStream(entry).use { input ->
-                tmp.outputStream().use { out ->
-                    val buf = ByteArray(128 * 1024)
-                    while (true) {
-                        coroutineContext.ensureActive()
-                        val n = input.read(buf)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                    }
-                }
-            }
+            zip.getInputStream(entry).use { it.copyStreamTo(out) }
         }
-    }.onFailure { e ->
-        runCatching { tmp.delete() }
-        if (e is CancellationException) throw e
-        throw e
-    }
-    if (!tmp.renameTo(target)) {
-        tmp.copyTo(target, overwrite = true)
-        tmp.delete()
     }
     target
-}
-
-/** 清掉 3 天没碰过的物化缓存（APK 动辄几十上百 MB，只增不减会吃掉用户存储） */
-private fun sweepOldCache(dir: File, keep: File) {
-    val cutoff = System.currentTimeMillis() - 3L * 24 * 3600 * 1000
-    runCatching {
-        dir.listFiles()?.forEach { f ->
-            if (f != keep && f.lastModified() < cutoff) runCatching { f.delete() }
-        }
-    }
 }

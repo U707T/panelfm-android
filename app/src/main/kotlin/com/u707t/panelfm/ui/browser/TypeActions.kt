@@ -71,8 +71,6 @@ object TypeActions {
         return kindOf(extension) == MimeTypes.Kind.OTHER
     }
 
-    fun isApk(kind: MimeTypes.Kind): Boolean = kind == MimeTypes.Kind.APK
-
     /**
      * APK 家族：`.apk` + 三种分包外壳（`.apks` / `.xapk` / `.apkm`）。
      *
@@ -128,7 +126,11 @@ object TypeActions {
                 MimeTypes.Kind.ARCHIVE -> {
                     // .apks / .xapk / .apkm 是 split 安装包（本质是 zip）：既能解压浏览，也能直接装
                     if (!inArchive && extension.equals("apks", ignoreCase = true)) add(ACTION_INSTALL)
-                    if (!inArchive && extension.lowercase() in APK_BUNDLE_EXTENSIONS) add(ACTION_CONVERT_APK)
+                    if (!inArchive && extension.lowercase() in APK_BUNDLE_EXTENSIONS) {
+                        add(ACTION_CONVERT_APK)
+                        // 与单击同一入口（MT 的 APK 信息卡片）
+                        add(ACTION_APK_INFO)
+                    }
                     if (!inArchive) {
                         add(ACTION_EXTRACT_HERE)
                         add(ACTION_EXTRACT_OWN_FOLDER)

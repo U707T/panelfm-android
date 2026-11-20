@@ -37,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
+import com.u707t.panelfm.core.common.toHex
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.HSeparator
@@ -67,20 +68,27 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
             withContext(Dispatchers.IO) {
                 val file = com.u707t.panelfm.ui.browser.materializeApk(container, item)
                 materialized = file
+                // .apks / .xapk / .apkm：整页详情同样要解析 base.apk，
+                // 否则 PackageManager 拿到一个 zip 会直接「不是有效的 APK」
+                val apk = if (com.u707t.panelfm.ui.browser.isApkBundleName(item.name)) {
+                    com.u707t.panelfm.ui.browser.extractBundleBaseApk(container, file)
+                } else {
+                    file
+                }
                 val pm = context.packageManager
                 val flags = PackageManager.GET_PERMISSIONS or
                     (if (Build.VERSION.SDK_INT >= 28) PackageManager.GET_SIGNING_CERTIFICATES else 0)
                 @Suppress("DEPRECATION")
-                val pkg = pm.getPackageArchiveInfo(file.absolutePath, flags)
+                val pkg = pm.getPackageArchiveInfo(apk.absolutePath, flags)
                     ?: throw IllegalStateException("不是有效的 APK 文件（解析失败）")
                 pkg.applicationInfo?.let { ai ->
-                    ai.sourceDir = file.absolutePath
-                    ai.publicSourceDir = file.absolutePath
+                    ai.sourceDir = apk.absolutePath
+                    ai.publicSourceDir = apk.absolutePath
                 }
                 ApkSummary(
                     label = pkg.applicationInfo?.let { pm.getApplicationLabel(it).toString() } ?: "（未知）",
                     icon = runCatching { pkg.applicationInfo?.let { pm.getApplicationIcon(it).toBitmap(96, 96).asImageBitmap() } }.getOrNull(),
-                    packageName = pkg.packageName ?: "—",
+                    packageName = pkg.packageName.ifBlank { "—" },
                     versionName = pkg.versionName ?: "—",
                     versionCode = if (Build.VERSION.SDK_INT >= 28) pkg.longVersionCode else @Suppress("DEPRECATION") pkg.versionCode.toLong(),
                     minSdk = pkg.applicationInfo?.minSdkVersion ?: 0,
@@ -90,7 +98,7 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
                     size = file.length(),
                     signer = signerSummary(pkg),
                     abis = runCatching {
-                        java.util.zip.ZipFile(file).use { z ->
+                        java.util.zip.ZipFile(apk).use { z ->
                             z.entries().asSequence().mapNotNull { e ->
                                 val parts = e.name.split('/')
                                 if (parts.size >= 3 && parts[0] == "lib") parts[1] else null
@@ -120,7 +128,11 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
             title = item.name,
-            subtitle = "APK 信息",
+            subtitle = if (com.u707t.panelfm.ui.browser.isApkBundleName(item.name)) {
+                "APK 详细信息（取自 base.apk）"
+            } else {
+                "APK 详细信息"
+            },
             onBack = onBack,
         )
 
@@ -134,18 +146,18 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
                     verticalArrangement = Arrangement.spacedBy(2.dp),
                 ) {
                     item { Header(s) }
-                    item { InfoRow("包名", s.packageName) }
-                    item { InfoRow("版本", "${s.versionName}（versionCode ${s.versionCode}）") }
-                    item { InfoRow("SDK", "最低 ${s.minSdk} · 目标 ${s.targetSdk}" + if (s.compileSdk > 0) " · 编译 ${s.compileSdk}" else "") }
-                    item { InfoRow("大小", Fmt.size(s.size)) }
+                    item { ApkDetailRow("包名", s.packageName) }
+                    item { ApkDetailRow("版本", "${s.versionName}（versionCode ${s.versionCode}）") }
+                    item { ApkDetailRow("SDK", "最低 ${s.minSdk} · 目标 ${s.targetSdk}" + if (s.compileSdk > 0) " · 编译 ${s.compileSdk}" else "") }
+                    item { ApkDetailRow("大小", Fmt.size(s.size)) }
                     item {
-                        InfoRow(
+                        ApkDetailRow(
                             "ABI",
                             if (s.abis.isEmpty()) "无 native 库" else s.abis.joinToString(" / "),
                         )
                     }
                     item {
-                        InfoRow(
+                        ApkDetailRow(
                             "安装位置",
                             when (s.installLocation) {
                                 1 -> "内部存储"
@@ -154,10 +166,10 @@ fun ApkInfoScreen(container: AppContainer, item: FileMetadata, onBack: () -> Uni
                             } + if (s.debuggable) " · 可调试" else "",
                         )
                     }
-                    item { InfoRow("签名", s.signer) }
+                    item { ApkDetailRow("签名", s.signer) }
                     checksums?.let { (md5, sha) ->
-                        md5?.let { item { InfoRow("MD5", it) } }
-                        sha?.let { item { InfoRow("SHA-256", it) } }
+                        md5?.let { item { ApkDetailRow("MD5", it) } }
+                        sha?.let { item { ApkDetailRow("SHA-256", it) } }
                     }
                     item {
                         Text(
@@ -253,27 +265,20 @@ private fun Header(s: ApkSummary) {
     HSeparator()
 }
 
+/**
+ * 详情页的一行：只是给共享的 [com.u707t.panelfm.ui.browser.InfoRow] 绑上「整页档」参数
+ * （等宽值、3 行上限）—— 实现只有一份，见 DialogsInput.kt。
+ */
 @Composable
-private fun InfoRow(label: String, value: String) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 14.dp, vertical = 6.dp),
-    ) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(width = 76.dp, height = 20.dp),
-        )
-        Text(
-            value,
-            style = MaterialTheme.typography.bodySmall,
-            fontFamily = FontFamily.Monospace,
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
+private fun ApkDetailRow(label: String, value: String) = com.u707t.panelfm.ui.browser.InfoRow(
+    label = label,
+    value = value,
+    labelWidth = 76.dp,
+    labelStyle = MaterialTheme.typography.labelMedium,
+    valueStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
+    maxLines = 3,
+    verticalPadding = 6.dp,
+)
 
 /** 签名证书摘要（SHA-256 前 16 位 + 主题），非逆向：直接读 PackageManager 的签名信息 */
 private fun signerSummary(pkg: PackageInfo): String = runCatching {
@@ -285,7 +290,7 @@ private fun signerSummary(pkg: PackageInfo): String = runCatching {
     infos.firstOrNull()?.let { sig ->
         val md = java.security.MessageDigest.getInstance("SHA-256")
         val digest = md.digest(sig.toByteArray())
-        "SHA-256: " + digest.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }.take(16) + "…"
+        "SHA-256: " + digest.toHex().take(16) + "…"
     } ?: "未签名"
 }.getOrDefault("读取失败")
 
@@ -307,6 +312,5 @@ private suspend fun fileDigests(file: File): Pair<String, String> = withContext(
             sha.update(buf, 0, n)
         }
     }
-    fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(java.util.Locale.ROOT, it) }
-    hex(md5.digest()) to hex(sha.digest())
+    md5.digest().toHex() to sha.digest().toHex()
 }

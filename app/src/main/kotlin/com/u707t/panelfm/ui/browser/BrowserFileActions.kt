@@ -79,6 +79,7 @@ import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.ui.PaneEdgeShadow
 import com.u707t.panelfm.core.ui.VDividerPx
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.open.fileProviderUri
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.MimeTypes
 import com.u707t.panelfm.core.data.PrefsStore
@@ -126,10 +127,7 @@ internal fun shareItems(
     }
     val uris = items.mapNotNull { item ->
         val file = File(container.localVfs.absolutePath(item.uri))
-        if (!file.exists()) null
-        else runCatching {
-            FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-        }.getOrNull()
+        if (!file.exists()) null else fileProviderUri(context, file)
     }
     if (uris.isEmpty()) {
         onMessage("文件不存在")
@@ -170,9 +168,7 @@ internal fun openWithSystemApp(
         onMessage("文件不存在")
         return
     }
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    }.getOrNull() ?: return onMessage("无法生成打开链接")
+    val uri = fileProviderUri(context, file) ?: return onMessage("无法生成打开链接")
     val intent = Intent(app.action).apply {
         setClassName(app.packageName, app.activityName)
         addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -199,9 +195,7 @@ internal fun openWithSystem(
         return
     }
     val file = File(container.localVfs.absolutePath(item.uri))
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    }.getOrNull() ?: return onMessage("无法生成打开链接")
+    val uri = fileProviderUri(context, file) ?: return onMessage("无法生成打开链接")
     val intent = Intent(Intent.ACTION_VIEW)
         .setDataAndType(uri, item.mimeType ?: "*/*")
         .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
@@ -230,7 +224,8 @@ internal fun installApk(
         return
     }
     if (!item.name.lowercase().endsWith(".apk")) {
-        onMessage("只有 APK / .apks 文件可以安装")
+        // .xapk / .apkm 系统安装器不认（连 PackageInstaller 也只接了 .apks）：给出可执行的下一步
+        onMessage("${item.extension.uppercase()} 不能直接安装：先用「转为 APK」合并成单个 APK")
         return
     }
     if (item.uri.scheme != "local") {
@@ -242,9 +237,25 @@ internal fun installApk(
         onMessage("文件不存在")
         return
     }
-    val uri = runCatching {
-        FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
-    }.getOrNull()
+    installApkFile(context, file, onMessage)
+}
+
+/**
+ * 把一个**已落地的** APK 文件交给系统安装器。
+ *
+ * 单独抽出来给「APK 信息卡片 → 安装」用：远端包在解析时已经缓存到 `cache/apk`，
+ * 那里装的是同一份字节，没必要再让用户「先复制到本地」重来一遍。
+ */
+internal fun installApkFile(
+    context: android.content.Context,
+    file: java.io.File,
+    onMessage: (String) -> Unit,
+) {
+    if (!file.isFile) {
+        onMessage("文件不存在")
+        return
+    }
+    val uri = fileProviderUri(context, file)
     if (uri == null) {
         onMessage("无法生成安装链接")
         return

@@ -593,11 +593,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
             val targetIsAudio = MimeTypes.kindOf(vfsUri.name.substringAfterLast('.', "")) == MimeTypes.Kind.AUDIO
             val intent = android.content.Intent(android.content.Intent.ACTION_VIEW)
                 .setDataAndType(
-                    androidx.core.content.FileProvider.getUriForFile(
-                        context,
-                        "${context.packageName}.fileprovider",
-                        java.io.File(path),
-                    ),
+                    com.u707t.panelfm.open.fileProviderUri(context, java.io.File(path))
+                        ?: throw IllegalStateException("无法生成打开链接"),
                     if (targetIsAudio) "audio/*" else "video/*",
                 )
                 .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)

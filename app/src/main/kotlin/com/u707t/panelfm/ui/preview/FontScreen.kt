@@ -32,6 +32,7 @@ import androidx.compose.ui.unit.sp
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.AppContainer
+import com.u707t.panelfm.core.vfs.copyTo
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.ui.ErrorState
 import com.u707t.panelfm.core.ui.LoadingState
@@ -62,14 +63,7 @@ fun FontScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                     val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
                     val reader = vfs.openRead(uri)
                     try {
-                        local.outputStream().use { out ->
-                            val buf = ByteArray(128 * 1024)
-                            while (true) {
-                                val n = reader.read(buf, 0, buf.size)
-                                if (n < 0) break
-                                out.write(buf, 0, n)
-                            }
-                        }
+                        local.outputStream().use { out -> reader.copyTo(out) }
                     } finally {
                         runCatching { reader.close() }
                     }
