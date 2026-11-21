@@ -2,6 +2,7 @@ package com.u707t.panelfm.ui.browser
 
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -9,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -178,22 +178,26 @@ internal fun ApkInfoDialog(
                                 modifier = Modifier.padding(bottom = 10.dp),
                             )
                         }
-                        // 路径 / 包名都是要抄走的东西：整块可选，长按就能复制
-                        SelectionContainer {
-                            Column {
-                                ApkInfoRows.of(s).forEach { (label, value) ->
-                                    InfoRow(
-                                        label = label,
-                                        value = value,
-                                        labelWidth = 88.dp,
-                                        labelStyle = MaterialTheme.typography.bodyMedium,
-                                        valueStyle = MaterialTheme.typography.bodyMedium.copy(
-                                            fontFamily = FontFamily.Monospace,
-                                        ),
-                                        maxLines = 3,
-                                        verticalPadding = 6.dp,
-                                    )
-                                }
+                        // 紧凑档：13sp、单行省略、行距 3dp —— 15 行能一屏放下。
+                        // 值被截断时**点这一行就复制全文**（比在单行省略号上长按选中更好用）。
+                        Column {
+                            ApkInfoRows.of(s).forEach { (label, value) ->
+                                InfoRow(
+                                    label = label,
+                                    value = value,
+                                    labelWidth = 84.dp,
+                                    labelStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                                    valueStyle = MaterialTheme.typography.bodyMedium.copy(
+                                        fontSize = 13.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                    ),
+                                    maxLines = 1,
+                                    verticalPadding = 3.dp,
+                                    modifier = Modifier.clickable {
+                                        clipboard.setText(AnnotatedString(value))
+                                        controller.showStatus("已复制「$label」")
+                                    },
+                                )
                             }
                         }
                     }

@@ -180,10 +180,11 @@ fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
  * 以前有三份副本（这里一份、APK 信息整页一份、APK 信息卡片一份），字号与列宽各写各的，
  * 同一种信息在不同对话框里长得不一样。要改版式只改这里：
  *
- * @param labelWidth 标签列宽（短标签 72dp 够用；APK 卡片用 88dp 才不挤）
- * @param labelStyle / valueStyle 字号档位（卡片用 bodyMedium，结果框用 bodySmall）
- * @param maxLines 值最多几行（0 = 不限；路径类给 2–3 行，避免把对话框撑爆）
+ * @param labelWidth 标签列宽（短标签 72dp 够用；APK 卡片用 84dp 才不挤）
+ * @param labelStyle / valueStyle 字号档位（卡片 13sp 紧凑档，结果框 bodySmall）
+ * @param maxLines 值最多几行（[Int.MAX_VALUE] = 不限；卡片给 1 行 + 省略号，整行可点复制）
  * @param verticalPadding 行间距
+ * @param modifier 行级修饰符（卡片用它挂「点击复制」）
  */
 @Composable
 fun InfoRow(
@@ -194,9 +195,10 @@ fun InfoRow(
     valueStyle: TextStyle = MaterialTheme.typography.bodySmall,
     maxLines: Int = Int.MAX_VALUE,
     verticalPadding: Dp = 3.dp,
+    modifier: Modifier = Modifier,
 ) {
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
             .padding(vertical = verticalPadding),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
