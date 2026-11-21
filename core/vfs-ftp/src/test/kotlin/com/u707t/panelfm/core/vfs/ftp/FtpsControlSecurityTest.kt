@@ -20,6 +20,10 @@ class FtpsControlSecurityTest {
         var controlEncrypted = true
         var credentialsEncrypted = false
         var configuredTrust: TrustManager? = null
+        var endpointChecking = false
+        override var isEndpointCheckingEnabled: Boolean
+            get() = endpointChecking
+            set(value) { endpointChecking = value }
         override fun setTrustManager(trustManager: TrustManager) {
             // The fake client records configuration; invoking the real FTPS setter
             // initializes Android/JVM SSL internals and is outside this unit test.
