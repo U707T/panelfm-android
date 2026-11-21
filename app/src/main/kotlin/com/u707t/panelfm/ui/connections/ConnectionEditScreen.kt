@@ -88,7 +88,10 @@ fun ConnectionEditScreen(
         missingExisting = false
         existing = null
         val result = withContext(Dispatchers.IO) {
-            runCatching { container.connectionDao.all().firstOrNull { it.id == connectionId } }
+            runCatching {
+                val config = container.connectionDao.all().firstOrNull { it.id == connectionId }
+                config?.let { it to container.secretStore.read(container.connectionDao.secretRef(it.id)) }
+            }
         }
         result.onFailure { e ->
             loadError = e.message ?: e.javaClass.simpleName
@@ -96,9 +99,21 @@ fun ConnectionEditScreen(
             if (loaded == null) {
                 missingExisting = true
             } else {
-                // loadSecret 内部已切 IO（查 secret_ref + Keystore 解密）
-                rawSecret = runCatching { container.loadSecret(loaded.id) }.getOrNull()
-                existing = loaded
+                val (config, secretResult) = loaded
+                when (secretResult) {
+                    is com.u707t.panelfm.core.data.SecretReadResult.Missing -> {
+                        rawSecret = null
+                        existing = config
+                    }
+                    is com.u707t.panelfm.core.data.SecretReadResult.Present -> {
+                        rawSecret = secretResult.value
+                        existing = config
+                    }
+                    is com.u707t.panelfm.core.data.SecretReadResult.Failure -> {
+                        // 绝不把失败伪装成「没有口令」：不创建可编辑表单，因此改名后保存也不会删密文。
+                        loadError = "读取已保存口令失败（${secretResult.message}）。配置未打开，也不会更改凭据。"
+                    }
+                }
             }
         }
         loadingExisting = false
@@ -167,23 +182,17 @@ fun ConnectionEditScreen(
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             try {
-                val fileName = withContext(Dispatchers.IO) {
-                    // lastPathSegment 来自外部 URI，可能带 `/` 或 `..`：只取 basename，防止写到 keysDir 之外
-                    val picked = File(uri.lastPathSegment ?: "id_key").name
-                        .takeIf { it.isNotBlank() && it != "." && it != ".." } ?: "id_key"
-                    val dest = File(container.appDirs.keysDir, picked)
-                    context.contentResolver.openInputStream(uri)?.use { input ->
-                        dest.outputStream().use { output -> input.copyTo(output) }
-                    }
-                    // 私钥仅本应用可读写（相当于 chmod 600）
-                    dest.setReadable(false, false)
-                    dest.setReadable(true, true)
-                    dest.setWritable(false, false)
-                    dest.setWritable(true, true)
-                    dest.absolutePath
+                val imported = withContext(Dispatchers.IO) {
+                    val input = context.contentResolver.openInputStream(uri)
+                        ?: throw IllegalStateException("无法读取私钥文件")
+                    importPrivateKeyAtomically(
+                        input = input,
+                        keysDir = File(container.appDirs.keysDir),
+                        rawName = uri.lastPathSegment ?: "id_key",
+                    )
                 }
-                state.keyPath = fileName
-                status = "已导入私钥：${File(fileName).name}"
+                state.keyPath = imported.absolutePath
+                status = "已导入私钥：${imported.name}"
             } catch (e: Exception) {
                 status = "私钥导入失败：${e.message}"
             }
@@ -270,37 +279,33 @@ fun ConnectionEditScreen(
                 // 局部快照：existing 是 delegated property，无法智能转换（且异步写入后可能变）
                 val editing = existing
                 if (editing != null) {
-                    val oldSecret = runCatching { container.loadSecret(editing.id) }.getOrNull()
-                    val secretSaved = container.saveSecret(config.id, secret)
-                    if (!secretSaved) {
-                        status = "配置未保存：口令写入失败（系统密钥库不可用）。请稍后重试。"
+                    val oldSecretRead = withContext(Dispatchers.IO) {
+                        container.secretStore.read(container.connectionDao.secretRef(editing.id))
+                    }
+                    if (oldSecretRead is com.u707t.panelfm.core.data.SecretReadResult.Failure) {
+                        status = "保存已取消：无法确认原口令状态，原凭据保持不变。请先重试读取。"
                         busy = false
                         return@launch
                     }
-                    // update 返回受影响行数：记录在别处被删时不能报成功（secret 已写，回滚成旧值）
-                    val updated = container.connectionDao.update(config)
-                    if (updated <= 0) {
-                        runCatching { container.saveSecret(config.id, oldSecret) }
-                        status = "保存失败：连接已被删除，请返回列表刷新后重试"
+                    val oldSecret = (oldSecretRead as? com.u707t.panelfm.core.data.SecretReadResult.Present)?.value
+                    // 配置和口令在同一 SQLite transaction 内提交，任一失败均回滚到旧值。
+                    val saved = withContext(Dispatchers.IO) {
+                        container.connectionDao.updateWithSecret(config, container.secretStore, secret)
+                    }
+                    if (!saved) {
+                        status = "保存失败：配置或口令未写入，原配置与凭据保持不变。请稍后重试。"
                         busy = false
                         return@launch
                     }
-                    // 会话键或口令变化 → 断掉旧会话，下次打开用新配置
                     if (editing.sessionKey != config.sessionKey || oldSecret != secret) {
                         container.disconnectConnection(editing)
                     }
                 } else {
-                    val id = container.connectionDao.insert(config)
-                    if (id <= 0) {
-                        // SQLite insert 失败返回 -1：不检查会给 -1 写一条孤儿 secret，还当保存成功返回
-                        status = "创建失败：无法写入数据库（存储空间不足？）"
-                        busy = false
-                        return@launch
+                    val id = withContext(Dispatchers.IO) {
+                        container.connectionDao.insertWithSecret(config, container.secretStore, secret)
                     }
-                    if (!container.saveSecret(id, secret)) {
-                        // 新连接的 secret 写失败时不留下半成品配置。
-                        container.connectionDao.delete(id)
-                        status = "连接未创建：口令写入失败（系统密钥库不可用）。请重试。"
+                    if (id <= 0) {
+                        status = "创建失败：配置或口令未写入，数据库中未留下半成品。请稍后重试。"
                         busy = false
                         return@launch
                     }

@@ -32,7 +32,10 @@ private fun BrowserController.updateLoad(
     uri: VfsUri,
     transform: (PaneState) -> PaneState,
 ) {
-    if (isCurrentLoad(side, generation, uri)) updatePane(side, transform)
+    updatePane(side) { current ->
+        if (loadGeneration.getValue(side).get() == generation && current.uri == uri) transform(current)
+        else current
+    }
 }
 
 fun BrowserController.load(side: PaneSide) {
@@ -60,25 +63,10 @@ fun BrowserController.load(side: PaneSide) {
             )
             val listed = withContext(container.dispatchers.vfs) { vfs.list(uri, options) }
             updateLoad(side, generation, uri) { it.copy(loadProgress = 0.75f) }
-            val items = applyPaneFilter(listed, pane.search, pane.filterKind)
             updateLoad(side, generation, uri) { it.copy(loadProgress = 0.9f) }
             val space = runCatching { withContext(container.dispatchers.vfs) { vfs.space(uri) } }.getOrNull()
-            // loadedUri = 「这批 items 属于哪个目录」：滚动位置记忆按它来记，避免串目录
-            updateLoad(side, generation, uri) {
-                it.applyPendingReveal(items).copy(
-                    items = items,
-                    // 未过滤的完整列表：之后改搜索 / 类型过滤只在内存里重算，不再重拉目录
-                    unfilteredItems = listed,
-                    loading = false,
-                    loadProgress = null,
-                    error = null,
-                    space = space,
-                    loadedUri = VfsUris.stripped(uri).toString(),
-                    // 内容换了一批 → 滑动锚点失效（否则下一次滑动会连着旧列表的项算区间）
-                    selectionAnchor = null,
-                    tapAnchor = null,
-                ).withSelectionPruned(items)
-            }
+            currentCoroutineContext().ensureActive()
+            updateLoad(side, generation, uri) { it.withLoadedListing(listed, space) }
             if (isCurrentLoad(side, generation, uri)) {
                 runCatching { container.bookmarkDao.recordVisit(uri, pane.tab.connectionId) }
             }
@@ -140,8 +128,20 @@ fun BrowserController.open(side: PaneSide, uri: VfsUri, connectionId: Long? = nu
     // 这里统一补上，让所有入口一致（已经是同一个连接的 URI 则原样保留）。
     //
     // 连接号选择见 [pickConnectionId]：跨协议 / 跨主机 / URI 自带 c= 都不能沿用当前 tab 的连接号。
+    val identities = uri.connectionIdentityCount()
+    if (uri.scheme != "local" && uri.scheme != "archive" &&
+        (identities > 1 || (identities == 1 && VfsUris.connectionId(uri) == null))
+    ) {
+        showStatus("路径包含无效的连接标识")
+        return
+    }
     val effectiveConnId = pickConnectionId(uri, tab, connectionId) { container.connectionForUri(it)?.id }
-    val stamped = if (effectiveConnId != null) VfsUris.withConnection(uri, effectiveConnId) else uri
+    val config = container.connectionOf(effectiveConnId)?.takeIf { it.scheme == uri.scheme }
+    val stamped = when {
+        config != null -> storedPathWithConnection(uri, config)
+        effectiveConnId != null -> VfsUris.withConnection(uri, effectiveConnId)
+        else -> uri
+    }
     if (tab.uri == stamped) {
         load(side)
         return
@@ -172,7 +172,7 @@ private fun BrowserController.openStamped(
     // 切到 FTP」时新目录被旧条件静默裁剪，用户看到的是「这个存储是空的」。
     val hadFilter = pane.filtered
     updatePane(side) {
-        it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab })
+        it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, hasNavigated = true)
             .clearedFilter()
             .withSelectionCleared()
     }
@@ -358,21 +358,24 @@ fun BrowserController.startFileDiff(side: PaneSide) {
     _diffRequest.value = candidates[0].uri to candidates[1].uri
 }
 
-fun BrowserController.back(side: PaneSide) {
-    val tab = pane(side).tab
-    val prev = tab.back.lastOrNull() ?: return
-    flushScroll(side)
-    val newTab = tab.copy(back = tab.back.dropLast(1), forward = (tab.forward + tab.uri).takeLast(BrowserController.HISTORY_LIMIT), uri = prev)
-    updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }).withSelectionCleared() }
-    load(side)
-}
+fun BrowserController.back(side: PaneSide) = stepHistory(side, backwards = true)
 
-fun BrowserController.forward(side: PaneSide) {
+fun BrowserController.forward(side: PaneSide) = stepHistory(side, backwards = false)
+
+private fun BrowserController.stepHistory(side: PaneSide, backwards: Boolean) {
     val tab = pane(side).tab
-    val next = tab.forward.lastOrNull() ?: return
+    val target = (if (backwards) tab.back else tab.forward).lastOrNull() ?: return
     flushScroll(side)
-    val newTab = tab.copy(forward = tab.forward.dropLast(1), back = (tab.back + tab.uri).takeLast(BrowserController.HISTORY_LIMIT), uri = next)
-    updatePane(side) { it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }).withSelectionCleared() }
+    val restored = tab.atHistoricalLocation(target, container::connectionForUri)
+    val newTab = if (backwards) {
+        restored.copy(back = tab.back.dropLast(1), forward = (tab.forward + tab.uri).takeLast(BrowserController.HISTORY_LIMIT))
+    } else {
+        restored.copy(forward = tab.forward.dropLast(1), back = (tab.back + tab.uri).takeLast(BrowserController.HISTORY_LIMIT))
+    }
+    updatePane(side) {
+        it.copy(tabs = it.tabs.toMutableList().also { list -> list[it.activeTab] = newTab }, hasNavigated = true)
+            .clearedFilter().withSelectionCleared()
+    }
     load(side)
 }
 
@@ -387,13 +390,13 @@ fun BrowserController.up(side: PaneSide) {
             val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
             val parent = host?.parent
             if (parent != null) {
-                open(side, parent, pane(side).tab.connectionId, pane(side).tab.label)
+                open(side, parent, label = container.connectionForUri(parent)?.name)
                 return
             }
         }
     }
     val parent = uri.parent ?: return
-    open(side, parent, pane(side).tab.connectionId, pane(side).tab.label)
+    open(side, parent)
 }
 
 // ------------------------------------------------------------------ 标签页
@@ -410,7 +413,10 @@ fun BrowserController.switchTab(side: PaneSide, index: Int) {
     if (index !in pane.tabs.indices || index == pane.activeTab) return
     // 每个标签是独立的一屏：过滤条件不带过去（否则 A 标签的过滤会把 B 标签的目录裁掉）
     val hadFilter = pane.filtered
-    updatePane(side) { it.copy(activeTab = index).clearedFilter().withSelectionCleared() }
+    updatePane(side) {
+        it.copy(activeTab = index, hasNavigated = it.hasNavigated || it.tabs.getOrNull(index)?.uri != it.uri)
+            .clearedFilter().withSelectionCleared()
+    }
     if (hadFilter) showStatus("已清除过滤")
     load(side)
 }
@@ -422,7 +428,10 @@ fun BrowserController.closeTab(side: PaneSide, index: Int) {
     val newActive = closeTabNewActive(pane.activeTab, index, tabs.size)
     // 与 switchTab 同口径：落到另一个标签 = 另一屏，过滤条件不带过去
     val hadFilter = pane.filtered
-    updatePane(side) { it.copy(tabs = tabs, activeTab = newActive).clearedFilter().withSelectionCleared() }
+    updatePane(side) {
+        it.copy(tabs = tabs, activeTab = newActive, hasNavigated = it.hasNavigated || tabs[newActive].uri != it.uri)
+            .clearedFilter().withSelectionCleared()
+    }
     if (hadFilter) showStatus("已清除过滤")
     load(side)
 }
@@ -489,7 +498,6 @@ fun BrowserController.recallScroll(side: PaneSide, uri: VfsUri): com.u707t.panel
 
 @Synchronized
 fun BrowserController.swapPanes() {
-    val st = _state.value
     // 先落盘两侧位置，再把记忆跟着内容一起换边（否则交换后位置记忆留在原侧 = 丢失）
     flushScroll(PaneSide.LEFT)
     flushScroll(PaneSide.RIGHT)
@@ -497,7 +505,14 @@ fun BrowserController.swapPanes() {
         PaneSide.LEFT to scrollMemory.getValue(PaneSide.RIGHT),
         PaneSide.RIGHT to scrollMemory.getValue(PaneSide.LEFT),
     )
-    update { it.copy(left = st.right, right = st.left) }
+    update {
+        val moved = it.left.uri != it.right.uri
+        it.copy(
+            left = it.right.copy(hasNavigated = it.left.hasNavigated || moved),
+            right = it.left.copy(hasNavigated = it.right.hasNavigated || moved),
+        )
+    }
+    schedulePersistPaths()
 }
 
 /** 同步按钮：把非激活窗格跳到激活窗格相同路径（压缩包内部则定位到压缩包所在目录） */

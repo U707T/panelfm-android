@@ -1,6 +1,9 @@
 package com.u707t.panelfm.ui.browser
 
+import com.u707t.panelfm.core.model.ConnectionConfig
+import com.u707t.panelfm.core.model.ConnectionType
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.VfsUris
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -63,4 +66,26 @@ class NavigationConnectionTest {
         val s3lookup: (VfsUri) -> Long? = { 8L }
         assertEquals(8L, pickConnectionId(VfsUri.parse("s3://bucket/x"), tab, null, s3lookup))
     }
+
+    @Test
+    fun `history changes account and parent keeps the history target identity`() {
+        val first = VfsUri.parse("sftp://nas:22/first/child?c=3")
+        val second = VfsUri.parse("sftp://nas:22/second/child?c=7")
+        val byUri: (VfsUri) -> ConnectionConfig? = { uri ->
+            VfsUris.connectionId(uri)?.let { id ->
+                ConnectionConfig(id = id, type = ConnectionType.SFTP, name = "account $id", host = "nas")
+            }
+        }
+        val backed = PaneTab(second, 7, "account 7").atHistoricalLocation(first, byUri)
+        assertEquals(3L, backed.connectionId)
+        assertEquals("account 3", backed.label)
+        assertEquals(3L, pickConnectionId(requireNotNull(backed.uri.parent), backed, null, lookup))
+        val forwarded = backed.atHistoricalLocation(second, byUri)
+        assertEquals(7L, forwarded.connectionId)
+        assertEquals(7L, pickConnectionId(requireNotNull(forwarded.uri.parent), forwarded, null, lookup))
+        val local = forwarded.atHistoricalLocation(VfsUri.parse("local://emulated/Download"), byUri)
+        assertNull(local.connectionId)
+        assertEquals("内部存储", local.label)
+    }
+
 }

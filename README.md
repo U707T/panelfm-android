@@ -8,7 +8,7 @@ MT 管理器风格的**双窗格文件管理器**，Kotlin + Jetpack Compose 原
 
 ```
 包名      com.u707t.panelfm
-版本      2.5.8 (131)
+版本      2.5.9-rc1 (132)
 minSdk    26（Android 8.0）
 targetSdk 37
 产物      PanelFM-release-{arm64-v8a, armeabi-v7a, x86_64}.apk
@@ -54,7 +54,7 @@ targetSdk 37
 
 | 类型 | 说明 |
 |---|---|
-| 本地 | 含外部存储、SAF 与「接收文件」缓存卷（外部「打开方式」的落盘处） |
+| 本地 | 外部存储直访与「接收文件」缓存卷；当前不提供 SAF 目录挂载 |
 | WebDAV | 坚果云 / Nextcloud 等 |
 | FTP | 含 FTPS |
 | SFTP | 密钥与口令认证 |
@@ -112,7 +112,7 @@ targetSdk 37
 ./gradlew assembleDebug --offline            # 本地出包（三 ABI）
 ```
 
-签名：`keystore.properties` 缺失时自动回落 debug 签名；CI 上缺 release key 会**硬失败**而非静默降级。
+签名：`key.properties` 缺失时自动回落 debug 签名；CI 上缺 release key 会**硬失败**而非静默降级。
 
 **不本地出 release**：release 一律由 CI 构建并发布，见下。
 
@@ -195,16 +195,19 @@ sora-editor（LGPL-2.1）、TextMate 语法（MIT）、docx-preview / SheetJS / 
 
 ---
 
-## 本地构建缓存（沙箱）
+## 本地轻量验证与 CI
 
-> 沙箱里 `dl.google.com` / `maven.google.com` 基本不通，**Gradle 依赖重下不回来**。删缓存前先看 `/workspace/AI通用说明.md` §2。
+Windows 本地可用隔离 JDK 21、Kotlin CLI 2.4.10 和 JUnit 4.13.2 执行不依赖 Android 的定向回归，不需要安装 Android SDK 或模拟器。Android 单元测试、Compose/Kotlin 编译、三 ABI APK 和 16KB 校验由 CI 执行；本地纯 JVM 通过不能替代 Android 平台验证。
 
-| 路径 | 现状（2026-11-04） | 怎么办 |
-|---|---|---|
-| `app/build/intermediates` | 约 356 MB（本工作区最大的一份 Android 增量缓存） | **别删**，删了下次全量重编 |
-| 根目录 `build/` | 151 KB | 空壳，可删 |
-| `~/.gradle/caches/modules-2` / `caches/9.7.0` | 全局共享 | **别删** |
-| `~/.gradle/daemon/9.7.0/*.log` | 每次构建一份 DEBUG 日志 | 可删，只留最近 3 个 |
+前端预览测试使用 Node.js 24、pnpm 11.28.5，依赖固定在 `tools/preview-tests/pnpm-lock.yaml`：
 
-- 本地验证：`./gradlew testDebugUnitTest --offline`（约 20 s）；`assembleDebug` 增量约 30 s。
-- 发版交 CI，本地不打 release。
+```powershell
+pnpm --dir tools/preview-tests install --frozen-lockfile --ignore-scripts
+pnpm --dir tools/preview-tests test
+```
+
+测试执行实际内置 SheetJS / DOMPurify / marked 与查看器脚本，检查资产 SHA-256、表格危险链接、中文 CSV 与 Markdown 清洗。CI 的 `preview` job 也执行这些测试，并与 JVM 单测共同作为 APK 构建门禁。
+
+- 工具链与下载缓存放仓库之外或已有忽略目录，默认保留；不提交 SDK、JDK、签名材料、本机路径或令牌。
+- 完整 CI 可通过 `workflow_dispatch` 在修复分支运行；只有推送 main 才自动创建版本 Release。
+- 真实权限/安装确认、长期后台服务、文件系统原子替换支持、各 WebView 排版仍需设备验收。

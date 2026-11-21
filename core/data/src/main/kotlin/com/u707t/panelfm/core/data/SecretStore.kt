@@ -21,15 +21,23 @@ import javax.crypto.spec.GCMParameterSpec
  *  - [get] 任何异常（密文损坏 / Keystore 被系统重置 / 设备迁移）都返回 null，
  *    绝不向上抛：调用方在组合期读取它，抛异常会直接崩界面。
  */
+sealed interface SecretReadResult {
+    data object Missing : SecretReadResult
+    data class Present(val value: String) : SecretReadResult
+    data class Failure(val message: String) : SecretReadResult
+}
+
+internal fun secretInsertSucceeded(rowId: Long): Boolean = rowId != -1L
+
 class SecretStore(private val db: PanelDb) {
 
     /** @return true = 已写入（或已删除）；false = 写入失败，调用方必须提示用户 */
     fun put(ref: String, plain: String?): Boolean {
-        if (plain.isNullOrEmpty()) {
-            delete(ref)
-            return true
-        }
         return runCatching {
+            if (plain.isNullOrEmpty()) {
+                delete(ref)
+                return true
+            }
             val cipher = Cipher.getInstance(TRANSFORMATION)
             cipher.init(Cipher.ENCRYPT_MODE, masterKey())
             val iv = cipher.iv
@@ -40,32 +48,40 @@ class SecretStore(private val db: PanelDb) {
                 put("iv", Base64.encodeToString(iv, Base64.NO_WRAP))
                 put("updated_at", System.currentTimeMillis())
             }
-            db.writableDatabase.insertWithOnConflict("secret", null, values, 5 /* REPLACE */)
-            true
+            secretInsertSucceeded(
+                db.writableDatabase.insertWithOnConflict(
+                    "secret", null, values, android.database.sqlite.SQLiteDatabase.CONFLICT_REPLACE,
+                ),
+            )
         }.onFailure { Logx.e("SecretStore", "put failed: ${it.message}", it) }
             .getOrDefault(false)
     }
 
-    fun get(ref: String): String? = runCatching {
-        db.readableDatabase.query("secret", arrayOf("cipher", "iv"), "ref = ?", arrayOf(ref), null, null, null)
-            .use { c ->
-                if (!c.moveToFirst()) return@runCatching null
-                val cipherText = Base64.decode(c.getString(0), Base64.NO_WRAP)
-                val iv = Base64.decode(c.getString(1), Base64.NO_WRAP)
-                runCatching {
-                    val cipher = Cipher.getInstance(TRANSFORMATION)
-                    cipher.init(Cipher.DECRYPT_MODE, masterKey(), GCMParameterSpec(128, iv))
-                    String(cipher.doFinal(cipherText), Charsets.UTF_8)
-                }.onFailure { Logx.e("SecretStore", "decrypt failed (key invalidated?): ${it.message}", it) }
-                    .getOrNull()
-            }
-    }.onFailure { Logx.e("SecretStore", "get failed: ${it.message}", it) }.getOrNull()
+    /** Missing 与解密/数据库失败分开表达；编辑连接时 Failure 必须阻止隐式清除原密文。 */
+    fun read(ref: String): SecretReadResult = try {
+        val value = db.readableDatabase.query(
+            "secret", arrayOf("cipher", "iv"), "ref = ?", arrayOf(ref), null, null, null,
+        ).use { c ->
+            if (!c.moveToFirst()) return SecretReadResult.Missing
+            val cipherText = Base64.decode(c.getString(0), Base64.NO_WRAP)
+            val iv = Base64.decode(c.getString(1), Base64.NO_WRAP)
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.DECRYPT_MODE, masterKey(), GCMParameterSpec(128, iv))
+            String(cipher.doFinal(cipherText), Charsets.UTF_8)
+        }
+        SecretReadResult.Present(value)
+    } catch (e: Exception) {
+        Logx.e("SecretStore", "read/decrypt failed (key invalidated?): ${e.message}", e)
+        SecretReadResult.Failure(e.message ?: e.javaClass.simpleName)
+    }
+
+    /** 兼容既有调用方；需要区分“未设置”和“读取失败”的编辑流程应使用 [read]。 */
+    fun get(ref: String): String? = (read(ref) as? SecretReadResult.Present)?.value
 
     fun delete(ref: String) {
         db.writableDatabase.delete("secret", "ref = ?", arrayOf(ref))
     }
 
-    // （旧有 has(ref) / HostKeyDao.all() 零消费，已删——如需「指纹管理」等 UI 再接，成本极低；第 10 批 🔵3）
 
     private fun masterKey(): SecretKey {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }

@@ -1,6 +1,7 @@
 package com.u707t.panelfm.ui
 
 import androidx.core.net.toUri
+import android.Manifest
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -61,6 +62,33 @@ import com.u707t.panelfm.ui.tools.NetToolboxScreen
 import com.u707t.panelfm.ui.tools.RemoteScreen
 import com.u707t.panelfm.ui.tools.TextToolboxScreen
 import com.u707t.panelfm.ui.tools.TrashScreen
+
+internal enum class StartupPermissionStep { STORAGE, LEGACY_STORAGE, LOCAL_NETWORK, NOTIFICATIONS, DONE }
+
+internal fun firstStartupPermissionStep(
+    sdk: Int,
+    allFilesGranted: Boolean,
+    legacyReadGranted: Boolean,
+    legacyWriteGranted: Boolean,
+    localNetworkGranted: Boolean,
+    notificationsGranted: Boolean,
+): StartupPermissionStep = startupPermissionSteps(
+    sdk, allFilesGranted, legacyReadGranted, legacyWriteGranted, localNetworkGranted, notificationsGranted,
+).firstOrNull() ?: StartupPermissionStep.DONE
+
+internal fun startupPermissionSteps(
+    sdk: Int,
+    allFilesGranted: Boolean,
+    legacyReadGranted: Boolean,
+    legacyWriteGranted: Boolean,
+    localNetworkGranted: Boolean,
+    notificationsGranted: Boolean,
+): List<StartupPermissionStep> = buildList {
+    if (sdk >= 30 && !allFilesGranted) add(StartupPermissionStep.STORAGE)
+    if (sdk in 26..29 && (!legacyReadGranted || !legacyWriteGranted)) add(StartupPermissionStep.LEGACY_STORAGE)
+    if (sdk >= 37 && !localNetworkGranted) add(StartupPermissionStep.LOCAL_NETWORK)
+    if (sdk >= 33 && !notificationsGranted) add(StartupPermissionStep.NOTIFICATIONS)
+}
 
 /** 简单屏幕栈（不引入 navigation-compose：单人项目减少依赖，行为完全可控）。 */
 sealed interface Screen {
@@ -148,9 +176,18 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
         is IncomingState.Error -> incoming
         else -> null
     }
-    LaunchedEffect(incomingTerminal) {
-        when (val s = incomingTerminal) {
+    var pendingIncoming by remember { mutableStateOf<IncomingState.Ready?>(null) }
+    var approvedIncoming by remember { mutableStateOf<IncomingState.Ready?>(null) }
+    LaunchedEffect(incomingTerminal, approvedIncoming) {
+        val approved = approvedIncoming
+        approvedIncoming = null
+        when (val s = approved ?: incomingTerminal) {
             is IncomingState.Ready -> {
+                if (approved == null && stack.lastOrNull() is Screen.Preview) {
+                    pendingIncoming = s
+                    return@LaunchedEffect
+                }
+                pendingIncoming = null
                 container.incoming.consume()
                 container.browser.showStatus("已接收「${s.name}」到缓存（编辑只改副本）")
                 val ext = s.name.substringAfterLast('.', "").lowercase()
@@ -202,25 +239,73 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
         }
     }
 
-    // ---------------- 启动授权弹窗（MT：打开即用，权限用弹窗补齐）
-    var askStorage by remember {
-        mutableStateOf(
-            if (Build.VERSION.SDK_INT >= 30) !Environment.isExternalStorageManager() else false
+    pendingIncoming?.let { received ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingIncoming = null
+                container.incoming.consume()
+                container.browser.showStatus("新文件已保留在「接收文件」，当前文件未切换")
+            },
+            title = { Text("打开新收到的文件？") },
+            text = { Text("当前文件可能还有未保存修改。切换到「${received.name}」会离开当前预览；请先保存需要保留的修改。也可留在当前文件，稍后从「接收文件」打开新文件。") },
+            confirmButton = {
+                TextButton(onClick = { approvedIncoming = received; pendingIncoming = null }) { Text("仍然切换") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingIncoming = null
+                    container.incoming.consume()
+                    container.browser.showStatus("新文件已保留在「接收文件」，当前文件未切换")
+                }) { Text("留在当前文件") }
+            },
         )
     }
-    var askLocalNet by remember { mutableStateOf(!LocalNetwork.isGranted(context)) }
-    var askNotification by remember { mutableStateOf(false) }
+
+    // ---------------- 启动授权状态机：存储 → 局域网 → 通知；“稍后”只跳过本次当前步骤。
+    var skippedPermissionSteps by remember { mutableStateOf(emptySet<StartupPermissionStep>()) }
+    var permissionRefresh by remember { mutableStateOf(0) }
+    val permissionSdk = remember(permissionRefresh) { Build.VERSION.SDK_INT }
+    val allFilesGranted = permissionSdk < 30 || Environment.isExternalStorageManager()
+    val legacyReadGranted = permissionSdk >= 30 || context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+    val legacyWriteGranted = permissionSdk >= 30 || context.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+    val localNetworkGranted = LocalNetwork.isGranted(context)
+    val notificationsGranted = permissionSdk < 33 || context.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
+    val permissionStep = startupPermissionSteps(
+        permissionSdk,
+        allFilesGranted,
+        legacyReadGranted,
+        legacyWriteGranted,
+        localNetworkGranted,
+        notificationsGranted,
+    ).firstOrNull { it !in skippedPermissionSteps } ?: StartupPermissionStep.DONE
+
+    fun skipPermission(step: StartupPermissionStep) {
+        skippedPermissionSteps = skippedPermissionSteps + step
+        permissionRefresh++
+    }
 
     val storageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        askStorage = if (Build.VERSION.SDK_INT >= 30) !Environment.isExternalStorageManager() else false
-        if (askStorage) askNotification = true
+        permissionRefresh++
+        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
+            skipPermission(StartupPermissionStep.STORAGE)
+        }
     }
-    val localNetLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        askLocalNet = !it
-        askNotification = true
+    val legacyStorageLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
+        permissionRefresh++
+        if (grants[Manifest.permission.READ_EXTERNAL_STORAGE] != true ||
+            (Build.VERSION.SDK_INT <= 29 && grants[Manifest.permission.WRITE_EXTERNAL_STORAGE] != true)
+        ) skipPermission(StartupPermissionStep.LEGACY_STORAGE)
     }
-    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
-        askNotification = false
+    val localNetLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permissionRefresh++
+        if (!granted) skipPermission(StartupPermissionStep.LOCAL_NETWORK)
+    }
+    val notificationLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        permissionRefresh++
+        if (!granted) skipPermission(StartupPermissionStep.NOTIFICATIONS)
     }
 
     /**
@@ -254,73 +339,55 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
         push(Screen.Preview(com.u707t.panelfm.ui.preview.PreviewRequest(target, mode)))
     }
 
-    LaunchedEffect(Unit) {
-        if (Build.VERSION.SDK_INT >= 33) {
-            val granted = context.checkSelfPermission("android.permission.POST_NOTIFICATIONS") ==
-                android.content.pm.PackageManager.PERMISSION_GRANTED
-            // 通知用于后台传输进度，等前两个权限处理完再问
-            if (granted) askNotification = false
-        }
-    }
-
-    if (askStorage) {
-        AlertDialog(
-            onDismissRequest = { askStorage = false; askLocalNet = !LocalNetwork.isGranted(context) },
-            title = { Text("需要「所有文件访问」权限") },
-            text = { Text("Android 11 及以上必须授权，才能像 MT 一样浏览 /storage/emulated/0、Android/data 之外的完整文件系统。\n未授权时会退化为只能访问应用私有目录。") },
+    when (permissionStep) {
+        StartupPermissionStep.STORAGE, StartupPermissionStep.LEGACY_STORAGE -> AlertDialog(
+            onDismissRequest = { skipPermission(permissionStep) },
+            title = { Text(if (permissionSdk >= 30) "需要「所有文件访问」权限" else "需要存储读写权限") },
+            text = { Text("授权后可浏览和管理共享存储。未授权时只能使用应用私有目录；可稍后从系统应用权限设置授予。") },
             confirmButton = {
                 TextButton(onClick = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        runCatching {
+                    runCatching {
+                        if (permissionSdk >= 30) {
                             storageLauncher.launch(
                                 Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION)
-                                    .setData("package:${context.packageName}".toUri())
+                                    .setData("package:${context.packageName}".toUri()),
                             )
+                        } else {
+                            legacyStorageLauncher.launch(arrayOf(
+                                Manifest.permission.READ_EXTERNAL_STORAGE,
+                                Manifest.permission.WRITE_EXTERNAL_STORAGE,
+                            ))
                         }
-                    } else {
-                        // askStorage 在 API < 30 默认就是 false；这里仅防止未来状态来源变化。
-                        askStorage = false
-                    }
-                    askStorage = false
-                    askLocalNet = !LocalNetwork.isGranted(context)
+                    }.onFailure { skipPermission(permissionStep) }
                 }) { Text("去授权") }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    askStorage = false
-                    askLocalNet = !LocalNetwork.isGranted(context)
-                }) { Text("稍后") }
-            },
+            dismissButton = { TextButton(onClick = { skipPermission(permissionStep) }) { Text("稍后") } },
         )
-    } else if (askLocalNet) {
-        AlertDialog(
-            onDismissRequest = { askLocalNet = false; askNotification = true },
-            title = { Text("需要「局域网访问」权限（Android 17）") },
-            text = { Text("访问 NAS / Alist / SMB / SFTP 等局域网设备必须授权；未授权时连接会直接超时且没有提示。") },
+        StartupPermissionStep.LOCAL_NETWORK -> AlertDialog(
+            onDismissRequest = { skipPermission(permissionStep) },
+            title = { Text("需要「局域网访问」权限") },
+            text = { Text("连接 NAS / SMB / SFTP 等局域网设备需要该权限。") },
             confirmButton = {
                 TextButton(onClick = {
                     runCatching { localNetLauncher.launch(LocalNetwork.PERMISSION) }
-                    askLocalNet = false
-                    askNotification = true
+                        .onFailure { skipPermission(permissionStep) }
                 }) { Text("去授权") }
             },
-            dismissButton = {
-                TextButton(onClick = { askLocalNet = false; askNotification = true }) { Text("稍后") }
-            },
+            dismissButton = { TextButton(onClick = { skipPermission(permissionStep) }) { Text("稍后") } },
         )
-    } else if (askNotification && Build.VERSION.SDK_INT >= 33) {
-        AlertDialog(
-            onDismissRequest = { askNotification = false },
+        StartupPermissionStep.NOTIFICATIONS -> AlertDialog(
+            onDismissRequest = { skipPermission(permissionStep) },
             title = { Text("允许发送通知？") },
-            text = { Text("用于显示后台传输进度与完成提醒（不加任何广告/统计）。") },
+            text = { Text("用于显示后台传输进度与完成提醒。未允许通知也可在应用内查看任务。") },
             confirmButton = {
                 TextButton(onClick = {
-                    runCatching { notificationLauncher.launch("android.permission.POST_NOTIFICATIONS") }
-                    askNotification = false
+                    runCatching { notificationLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) }
+                        .onFailure { skipPermission(permissionStep) }
                 }) { Text("允许") }
             },
-            dismissButton = { TextButton(onClick = { askNotification = false }) { Text("不用了") } },
+            dismissButton = { TextButton(onClick = { skipPermission(permissionStep) }) { Text("稍后") } },
         )
+        StartupPermissionStep.DONE -> Unit
     }
 
     // 外部文件复制进度：模态显示，避免用户连点 / 不知道大文件为什么没反应。

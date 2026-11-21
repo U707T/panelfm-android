@@ -22,6 +22,22 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.28.5
+      - name: Preview security and compatibility tests
+        run: |
+          pnpm --dir tools/preview-tests install --frozen-lockfile --ignore-scripts
+          pnpm --dir tools/preview-tests test
+
   # ------------------------------------------------------------------ 单元测试
   test:
     runs-on: ubuntu-latest
@@ -42,7 +58,7 @@ jobs:
   # PR：只出 debug（fork / Dependabot 拿不到 secrets，碰 release 会硬失败 → 永远红）
   # push / dispatch：debug + release；缺 keystore 时 release 依旧硬失败（禁止发 debug 签名的 release）
   android:
-    needs: test
+    needs: [test, preview]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

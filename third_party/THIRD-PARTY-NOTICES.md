@@ -41,15 +41,15 @@ https://github.com/U707T/panelfm-android —— 任何人都可以拿到本仓�
 |---|---|---|---|---|
 | `vendor/jszip.min.js` | [JSZip](https://github.com/Stuk/jszip) | 3.10.2 | MIT **或** GPL-3.0（本仓库按 **MIT** 使用） | 96 KB |
 | `vendor/docx-preview.min.js` | [docx-preview](https://github.com/VolodymyrBaydalka/docxjs) | 0.4.1 | Apache-2.0 | 76 KB |
-| `vendor/xlsx.full.min.js` | [SheetJS CE](https://git.sheetjs.com/SheetJS/sheetjs) | 0.18.5（npm 最后一个 CE 版） | Apache-2.0 | 864 KB |
+| `vendor/xlsx.full.min.js` | [SheetJS CE](https://git.sheetjs.com/SheetJS/sheetjs) | 0.20.3（[官方分发](https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js)，修复旧版原型污染/ReDoS） | Apache-2.0 | 930 KB |
 | `vendor/pptx-renderer.es.js` | [@aiden0z/pptx-renderer](https://github.com/aiden0z/pptx-renderer)（浏览器版，自带 JSZip + ECharts） | 1.3.0 | Apache-2.0 | 1.8 MB |
 | `vendor/marked.min.js` | [marked](https://github.com/markedjs/marked)（Markdown 解析） | 12.0.2 | MIT | 35 KB |
-| `vendor/purify.min.js` | [DOMPurify](https://github.com/cure53/DOMPurify)（Markdown 渲染后的 HTML 清洗） | 3.1.6 | Apache-2.0 **或** MPL-2.0 | 21 KB |
+| `vendor/purify.min.js` | [DOMPurify](https://github.com/cure53/DOMPurify)（Markdown/表格 HTML 清洗） | 3.4.18（官方 npm 包，下载验证 SHA-512 integrity） | Apache-2.0 **或** MPL-2.0 | 28 KB |
 | `index.html` / `viewer.js` / `viewer.css` | PanelFM 自写（粘合与样式） | — | 本仓库 | ~9 KB |
 
 许可证全文见本目录（`LICENSE-*.txt` / `LICENSE-jszip-MIT.markdown`）。
 
-**更新步骤**：从 npm 取对应 tarball，替换 `dist/` 里的 min 产物即可；
+**更新步骤**：SheetJS CE 从其[官方 CDN](https://cdn.sheetjs.com/)获取维护版本（旧 npm `xlsx` 包仍停在受影响版本）；其他库从各自官方发行包获取。下载后核对版本、许可证与包完整性，更新 `third_party/office-web/asset-manifest.json` 的来源和 SHA-256，并运行 `tools/preview-tests`。
 替换后按 `docs/OFFICE-PREVIEW.md` 的检查清单做一次真机抽验，并同步更新上表版本号。
 
 > 说明：曾评估 `pptx-preview`（体积接近），但其授权条款限定「源码不开放、不得改源码转自有项目」，

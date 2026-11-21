@@ -118,4 +118,66 @@ class TrashServiceTest {
         assertFalse(File(dirs.trashDir, entry.trashName).exists())
         assertTrue(svc.list().isEmpty())
     }
+
+    @Test
+    fun directoryCapacityUsesAllLeafBytesAndQuotaRemovesDirectory() = runTest {
+        val svc = newService()
+        val src = tmp.newFolder("tree")
+        File(src, "a").writeBytes(ByteArray(2048))
+        File(src, "sub").mkdir()
+        File(src, "sub/b").writeBytes(ByteArray(4096))
+        assertEquals(1, svc.moveToTrash(listOf(localUri(src))))
+        assertEquals(6144L, svc.list().single().size)
+        val result = svc.autoPurge(0, 5000)
+        assertEquals(1, result.first)
+        assertEquals(6144L, result.second)
+        assertTrue(svc.list().isEmpty())
+    }
+
+    @Test
+    fun sidecarRecoversCompletedMoveWhenMainIndexIsMissingOrCorrupt() = runTest {
+        val svc = newService()
+        val src = sourceFile(content = "recover me")
+        assertEquals(1, svc.moveToTrash(listOf(localUri(src))))
+        val before = svc.list().single()
+        val index = File(dirs.trashDir, "index.json")
+        assertTrue(index.delete())
+        val reopened = TrashService(dirs, LocalVfs(VfsEnv(dirs,
+            PanelDispatchers(Dispatchers.IO, Dispatchers.IO, Dispatchers.Default, Dispatchers.Unconfined))))
+        assertEquals(before, reopened.list().single())
+        index.writeText("broken-json")
+        assertEquals(before, reopened.list().single())
+        assertTrue(reopened.restore(before))
+        assertEquals("recover me", src.readText())
+        assertTrue(reopened.list().isEmpty())
+    }
+
+    @Test
+    fun pendingMoveMetadataDoesNotPublishAnIncompleteCopyWhileSourceExists() = runTest {
+        val svc = newService()
+        val src = sourceFile(content = "complete original")
+        val metadata = File(dirs.trashDir, ".entries").apply { mkdirs() }
+        File(dirs.trashDir, "incomplete").writeText("part")
+        File(metadata, "incomplete.json").writeText(org.json.JSONObject().apply {
+            put("id", "incomplete"); put("trashName", "incomplete"); put("name", src.name)
+            put("originalPath", src.absolutePath); put("size", 17); put("deletedAt", 1L)
+            put("isDirectory", false); put("pending", true)
+        }.toString())
+        assertTrue(svc.list().isEmpty())
+        assertEquals("complete original", src.readText())
+    }
+
+    @Test
+    fun pendingMetadataRecoversMoveCompletedBeforeCommitMarker() = runTest {
+        val svc = newService()
+        val src = sourceFile(content = "recover pending")
+        assertEquals(1, svc.moveToTrash(listOf(localUri(src))))
+        val before = svc.list().single()
+        val metadata = File(File(dirs.trashDir, ".entries"), before.trashName + ".json")
+        metadata.writeText(org.json.JSONObject(metadata.readText()).put("pending", true).toString())
+        assertTrue(File(dirs.trashDir, "index.json").delete())
+        assertEquals(before, svc.list().single())
+        assertTrue(svc.restore(before))
+        assertEquals("recover pending", src.readText())
+    }
 }

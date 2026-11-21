@@ -32,11 +32,16 @@ import com.u707t.panelfm.core.vfs.VfsUris
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicLong
 
@@ -50,27 +55,27 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * 整段串行在一个 Mutex 里：空间检查是异步的，不串行化会让连续两次操作倒序入队。
  */
-internal fun BrowserController.enqueueChecked(request: TransferRequest) {
+internal fun BrowserController.enqueueChecked(request: TransferRequest, clipboardRevision: Long? = null) {
     container.scope.launch {
-        spaceGate.lock()
+        var accepted = false
         try {
-            val destVfs = container.locator.find(request.destDir)
-            val sameVfsMove = request.op == TransferOp.MOVE && destVfs != null &&
-                request.sources.isNotEmpty() && request.sources.all { container.locator.find(it) === destVfs }
-            if (skipsSpacePrecheck(request.op, sameVfsMove)) {
-                container.engine.enqueue(request)
-                return@launch
-            }
-            val free = withContext(container.dispatchers.vfs) {
-                runCatching { destVfs?.space(request.destDir) }.getOrNull()
-            }?.free ?: -1L
-            val need = if (free > 0L) knownFileBytes(request.sources) else -1L
-            when (spaceCheckOutcome(request.op, sameVfsMove, need, free)) {
-                SpaceCheck.Enqueue -> container.engine.enqueue(request)
-                SpaceCheck.Warn -> pushSpaceWarning(SpaceWarning(request, need, free))
+            spaceGate.withLock {
+                val destVfs = container.locator.find(request.destDir)
+                val sameVfsMove = request.op == TransferOp.MOVE && destVfs != null &&
+                    request.sources.isNotEmpty() && request.sources.all { container.locator.find(it) === destVfs }
+                val free = if (skipsSpacePrecheck(request.op, sameVfsMove)) -1L else withContext(container.dispatchers.vfs) {
+                    runCatching { destVfs?.space(request.destDir) }.getOrNull()?.free ?: -1L
+                }
+                val need = if (free > 0L) knownFileBytes(request.sources) else -1L
+                currentCoroutineContext().ensureActive()
+                when (spaceCheckOutcome(request.op, sameVfsMove, need, free)) {
+                    SpaceCheck.Enqueue -> enqueueConfirmedTransfer(request, clipboardRevision)
+                    SpaceCheck.Warn -> pushSpaceWarning(SpaceWarning(request, need, free, clipboardRevision))
+                }
+                accepted = true
             }
         } finally {
-            spaceGate.unlock()
+            if (!accepted && clipboardRevision != null) fileClipboard.releaseMove(clipboardRevision)
         }
     }
 }
@@ -112,12 +117,39 @@ private suspend fun BrowserController.knownFileBytes(sources: List<VfsUri>): Lon
 /** 用户选「仍然继续」：原请求入队。 */
 fun BrowserController.confirmSpaceWarning() {
     val warn = popSpaceWarning() ?: return
-    container.engine.enqueue(warn.request)
+    try {
+        enqueueConfirmedTransfer(warn.request, warn.clipboardRevision)
+    } catch (e: Exception) {
+        warn.clipboardRevision?.let(fileClipboard::releaseMove)
+        showStatus("传输未入队：${e.message ?: "未知错误"}")
+    }
+}
+
+private fun BrowserController.enqueueConfirmedTransfer(request: TransferRequest, clipboardRevision: Long?) {
+    val task = container.engine.enqueue(request)
+    if (clipboardRevision == null) return
+    container.scope.launch {
+        try {
+            // Direct subscription also handles a task finishing before the observer starts.
+            // A removed queued task may never reach a terminal state in the engine.
+            val end = combine(task.state, container.engine.tasks) { state, tasks ->
+                when {
+                    state.isFinished -> state
+                    task !in tasks -> TaskState.Cancelled
+                    else -> null
+                }
+            }.filterNotNull().first()
+            fileClipboard.consumeMoved(clipboardRevision, request.sources, end)
+        } finally {
+            fileClipboard.releaseMove(clipboardRevision)
+        }
+    }
 }
 
 /** 用户选「取消」：丢弃请求（源文件与目标都不动）。 */
 fun BrowserController.dismissSpaceWarning() {
     val warn = popSpaceWarning() ?: return
+    warn.clipboardRevision?.let(fileClipboard::releaseMove)
     showStatus("已取消：目标空间不足（${warn.request.sources.size} 项未传输）")
 }
 
@@ -265,11 +297,12 @@ fun BrowserController.copySelectionToClipboard(side: PaneSide, overrideSources: 
 
 /**
  * 从剪贴板粘贴到当前窗格目录（MT 的剪贴板 FAB）。
- * 移动语义：粘贴后清空剪贴板（与 MT 的「剪切后粘贴」一致）。
+ * 移动语义：成功完成后才移除对应来源，失败、跳过或取消保留以便重试。
  */
 fun BrowserController.pasteFromClipboard(side: PaneSide, move: Boolean = false) {
     val st = _state.value
-    val sources = clipboard.value
+    val snapshot = fileClipboard.snapshot()
+    val sources = snapshot.sources
     if (sources.isEmpty()) {
         showStatus("剪贴板为空")
         return
@@ -281,6 +314,10 @@ fun BrowserController.pasteFromClipboard(side: PaneSide, move: Boolean = false) 
         showStatus("剪贴板中的位置已不可用（会话可能已断开）")
         return
     }
+    if (move && !fileClipboard.reserveMove(snapshot.revision)) {
+        showStatus("剪贴板刚更新或已有移动任务，请稍后重试")
+        return
+    }
     val op = if (move) TransferOp.MOVE else TransferOp.COPY
     val opText = if (move) "移动" else "复制"
     showStatus("$opText ${reachable.size} 项 → ${dest.displayPath}")
@@ -289,8 +326,7 @@ fun BrowserController.pasteFromClipboard(side: PaneSide, move: Boolean = false) 
         kotlinx.coroutines.delay(1600)
         update { it.copy(highlight = false) }
     }
-    enqueueChecked(transferRequest(reachable, dest, op))
-    if (move) clearClipboard()
+    enqueueChecked(transferRequest(reachable, dest, op), clipboardRevision = snapshot.revision.takeIf { move })
     clearSelection(side)
 }
 
@@ -388,10 +424,16 @@ internal fun BrowserController.observeTasks() {
     }
 }
 
-fun BrowserController.resolveConflict(policy: ConflictPolicy, applyAll: Boolean) {
-    val task = container.engine.tasks.value.firstOrNull { it.state.value is TaskState.WaitingConflict } ?: return
-    container.scope.launch { task.resolveConflict(ConflictDecision(policy, applyAll)) }
-    update { it.copy(conflict = null) }
+fun BrowserController.resolveConflict(token: Long, policy: ConflictPolicy, applyAll: Boolean) {
+    container.scope.launch {
+        conflictDecisionLock.withLock {
+            if (_state.value.conflict?.token != token || answeredConflictToken == token) return@withLock
+            val task = conflictWithToken(container.engine.tasks.value, token) { it.state.value } ?: return@withLock
+            answeredConflictToken = token
+            // Do not clear a newer dialog here; the engine's state emission advances the queue.
+            task.resolveConflict(ConflictDecision(policy, applyAll))
+        }
+    }
 }
 
 fun BrowserController.pauseTask(id: String) {

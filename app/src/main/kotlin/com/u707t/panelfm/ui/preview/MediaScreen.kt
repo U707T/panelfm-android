@@ -51,6 +51,7 @@ import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -236,8 +237,10 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
     var bufferedMs by remember { mutableStateOf(0L) }
     /** 播放列表面板（右侧滑出；底栏最右按钮开关） */
     var showPlaylist by remember { mutableStateOf(false) }
-    /** 播放切换的**意图令牌**：连点时让异步完成的结果「过期即弃」（2026-10-08 重审 §2 竞态修复） */
-    var playToken by remember { mutableStateOf(0) }
+    val playbackIntent = remember { MediaPlaybackIntent() }
+    var switchJob by remember { mutableStateOf<Job?>(null) }
+    var requestedUri by remember { mutableStateOf<VfsUri?>(null) }
+    var loadedUri by remember { mutableStateOf<VfsUri?>(null) }
     /** 最近一次播放失败的曲目（错误区「重试 / 外部打开」作用对象，而不是打开页面时的入参） */
     var failedUri by remember { mutableStateOf<VfsUri?>(null) }
 
@@ -283,7 +286,7 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                 // 面向用户的文案：Media3 的原始 message 是英文技术细节（如
                 // "Source error"），按 errorCode 给出可执行的下一步（与项目里
                 // 「错误文案可执行化」的约定一致）
-                failedUri = liveNowPlayingUri
+                failedUri = loadedUri ?: liveNowPlayingUri
                 error = describePlaybackError(e)
             }
 
@@ -524,39 +527,34 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
         }
     }
 
-    /** 真正启动一次播放（预检 → 装载 → 就绪）；返回错误文案，null = 成功 */
-    suspend fun startPlayback(vfsUri: VfsUri): String? {
-        preflightMedia(container, vfsUri)?.let { return it }
-        return runCatching {
-            player.setMediaItem(itemFor(vfsUri))
-            player.prepare()
-            armPlayback()
-        }.fold(
-            onSuccess = { null },
-            onFailure = { describePlaybackError(it) },
-        )
-    }
+    /** Preflight may suspend; every player mutation is behind the latest intent check. */
+    suspend fun startPlayback(vfsUri: VfsUri, token: Long): String? = playbackIntent.prepare(
+        token = token,
+        preflight = { preflightMedia(container, vfsUri) },
+        applyToPlayer = {
+            runCatching {
+                player.setMediaItem(itemFor(vfsUri))
+                loadedUri = vfsUri
+                player.prepare()
+                armPlayback()
+            }.exceptionOrNull()?.let(::describePlaybackError)
+        },
+    )
 
-    /**
-     * 播放一个条目；[index] 非空时同步「当前曲目」高亮。
-     *
-     * 一致性（2026-10-08 重审 §2）：
-     *  - 每次调用持一个**意图令牌**（[playToken]），异步完成时若不是最新意图就整体丢弃 ——
-     *    连点「下一集」时先发后至的一方不再把播放器切回去（旧实现会「点快了就播错歌」）；
-     *  - 失败时回滚 [playlistIndex]（乐观高亮的旧值）并记下 [failedUri]，
-     *    让「标题 / 列表高亮 / 实际播放」三方保持一致。
-     */
     fun play(vfsUri: VfsUri, index: Int?) {
-        val token = ++playToken
-        val prevIndex = playlistIndex
+        val token = playbackIntent.next()
+        switchJob?.cancel()
+        requestedUri = vfsUri
         if (index != null) playlistIndex = index
         error = null
         controlsVisible = true
-        scope.launch {
-            val err = startPlayback(vfsUri)
-            if (token != playToken) return@launch   // 已被更新的点击取代：结果整体丢弃
+        switchJob = scope.launch {
+            val err = startPlayback(vfsUri, token)
+            if (!playbackIntent.isCurrent(token)) return@launch
+            requestedUri = null
+            // 不回滚到刚被另一请求乐观选中的下标，按实际已设置的媒体重新定位。
+            playlistIndex = playlist.indexOfFirst { it.uri == (loadedUri ?: uri) }
             if (err != null) {
-                if (index != null) playlistIndex = prevIndex
                 failedUri = vfsUri
                 error = err
             } else {
@@ -575,7 +573,8 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
      * 列表末尾就停在最后一帧（不循环，符合「播放列表」语义）。
      */
     onEnded.value = {
-        nextTrackAfterEnded(playlist.size, playlistIndex, looping)?.let { playAt(it) }
+        // 旧曲目在手动切歌预检期间结束，不抢走这次手动意图。
+        if (requestedUri == null) nextTrackAfterEnded(playlist.size, playlistIndex, looping)?.let { playAt(it) }
     }
 
 
@@ -604,31 +603,24 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
 
     // 载入媒体 + 同目录播放列表
     LaunchedEffect(uri) {
-        // 先预检（可读性），失败就直接给出可执行文案，不进入黑屏
-        // （preflightMedia 内部已处理普通异常；取消异常原样穿透 —— 见 2026-10-08 重审 §2 的「吞取消」清理）
-        val pre = preflightMedia(container, uri)
-        if (pre != null) {
-            failedUri = uri
-            error = pre
-        } else {
-            runCatching {
-                player.setMediaItem(itemFor(uri))
-                player.prepare()
-                armPlayback()
-            }.onFailure {
+        val token = playbackIntent.next()
+        val pre = startPlayback(uri, token)
+        if (playbackIntent.isCurrent(token)) {
+            if (pre != null) {
                 failedUri = uri
-                error = describePlaybackError(it)
+                error = pre
             }
+            showControls()
         }
-        showControls()
         val parent = uri.parent
         if (parent != null) {
             try {
                 val media = loadSiblingMedia(container, parent)
                 orderedPlaylist = media
                 // 若开着随机，切换文件后仍按随机顺序播放（当前曲目置顶）
-                playlist = if (shuffle) shuffledFrom(media, uri.toString()) else media
-                playlistIndex = playlist.indexOfFirst { it.uri.toString() == uri.toString() }
+                val current = requestedUri ?: loadedUri ?: uri
+                playlist = if (shuffle) shuffledFrom(media, current.toString()) else media
+                playlistIndex = playlist.indexOfFirst { it.uri == current }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

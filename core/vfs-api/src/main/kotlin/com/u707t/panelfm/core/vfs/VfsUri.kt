@@ -49,8 +49,11 @@ data class VfsUri(
     fun withPath(newPath: String): VfsUri = copy(path = if (newPath.startsWith("/")) newPath else "/$newPath")
 
     override fun toString(): String = buildString {
-        append(scheme).append("://").append(authority).append(path)
+        val encoded = path.any { it == '%' || it == '?' || it == '#' }
+        append(scheme).append("://").append(authority).append(if (encoded) encodePath(path) else path)
         query?.let { append('?').append(it) }
+        // 只对新版转义串解码：旧记录中 a%20b 是合法的字面文件名，不能自动改成空格。
+        if (encoded) append(if (query == null) '?' else '&').append(pathEncodingMarker(encodePath(path)))
     }
 
     /** 用于 UI 展示的短路径 */
@@ -67,10 +70,30 @@ data class VfsUri(
             val authority = if (slash < 0) rest else rest.substring(0, slash)
             var path = if (slash < 0) "/" else rest.substring(slash)
             var query: String? = null
-            val q = path.indexOf('?')
-            if (q >= 0) {
-                query = path.substring(q + 1)
-                path = path.substring(0, q)
+            val archiveBoundary = if (scheme == "archive") path.indexOf("!/") else -1
+            if (archiveBoundary >= 0) {
+                val innerStart = archiveBoundary + 2
+                val q = path.indexOf('?', innerStart)
+                val tail = if (q >= 0) path.substring(q + 1) else ""
+                // 新格式的标记明确声明路径组件已转义。没有标记的旧归档 URI
+                // 把内层 ? 当作文件名字符；宿主 c= 在 !/ 之前则始终属于宿主。
+                val marker = pathEncodingMarker(path)
+                if (q >= 0 && (tail == marker || tail.endsWith("&$marker"))) {
+                    val outerQuery = tail.removeSuffix(if (tail == marker) marker else "&$marker")
+                    query = outerQuery.ifEmpty { null }
+                    path = decodePath(path.substring(0, q))
+                }
+            } else {
+                val q = path.indexOf('?')
+                if (q >= 0) {
+                    val tail = path.substring(q + 1)
+                    path = path.substring(0, q)
+                    val marker = pathEncodingMarker(path)
+                    if (tail == marker || tail.endsWith("&$marker")) {
+                        query = if (tail == marker) null else tail.removeSuffix("&$marker")
+                        path = decodePath(path)
+                    } else query = tail
+                }
             }
             if (!path.startsWith("/")) path = "/$path"
             return VfsUri(scheme, authority, path, query)
@@ -83,10 +106,29 @@ data class VfsUri(
         fun archive(host: VfsUri, inner: String): VfsUri =
             VfsUri("archive", "zip", "/" + encodeHost(host.toString()) + "!/" + inner.trimStart('/'))
 
-        fun encodeHost(host: String): String =
-            host.replace("%", "%25").replace("/", "%2F").replace("!", "%21").replace(":", "%3A")
+        private const val PATH_ENCODING_KEY = "__pf_path_encoding=2-"
 
-        fun decodeHost(encoded: String): String =
-            encoded.replace("%21", "!").replace("%3A", ":").replace("%2F", "/").replace("%25", "%")
+        private fun pathEncodingMarker(encodedPath: String): String {
+            val digest = java.security.MessageDigest.getInstance("SHA-256").digest(encodedPath.toByteArray(Charsets.UTF_8))
+            return PATH_ENCODING_KEY + digest.take(8).joinToString("") { "%02x".format(it.toInt() and 255) }
+        }
+
+        private fun encodePath(value: String): String = value.replace("%", "%25")
+            .replace("?", "%3F").replace("#", "%23")
+
+        private fun decodePath(value: String): String = Regex("%(25|3[Ff]|23)").replace(value) {
+            when (it.value.uppercase()) { "%25" -> "%"; "%3F" -> "?"; else -> "#" }
+        }
+
+        fun encodeHost(host: String): String = host.replace("%", "%25")
+            .replace("/", "%2F").replace("!", "%21").replace(":", "%3A")
+            .replace("?", "%3F").replace("#", "%23").replace("&", "%26").replace("=", "%3D")
+
+        fun decodeHost(encoded: String): String = Regex("%(25|2[Ff]|21|3[Aa]|3[Ff]|23|26|3[Dd])").replace(encoded) {
+            when (it.value.uppercase()) {
+                "%25" -> "%"; "%2F" -> "/"; "%21" -> "!"; "%3A" -> ":"
+                "%3F" -> "?"; "%23" -> "#"; "%26" -> "&"; else -> "="
+            }
+        }
     }
 }

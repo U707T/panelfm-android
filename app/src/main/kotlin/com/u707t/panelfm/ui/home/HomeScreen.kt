@@ -1,7 +1,9 @@
 package com.u707t.panelfm.ui.home
 
 import androidx.core.net.toUri
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
@@ -117,16 +119,25 @@ fun HomeScreen(
     // 「关于」改弹对话框（旧实现把版本+功能描述塞进 4 秒 snackbar，读不完就消失）
     var showAbout by remember { mutableStateOf(false) }
 
-    var storageGranted by remember {
-        mutableStateOf(if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true)
+    fun legacyStorageGranted(): Boolean {
+        if (Build.VERSION.SDK_INT >= 30) return Environment.isExternalStorageManager()
+        val read = androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        val write = Build.VERSION.SDK_INT > 29 ||
+            androidx.core.content.ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+        return read && write
+    }
+    var storageGranted by remember { mutableStateOf(legacyStorageGranted()) }
+    val requestLegacyStorage = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { storageGranted = legacyStorageGranted() }
+    val requestStorage = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        storageGranted = legacyStorageGranted()
     }
     var localNetGranted by remember { mutableStateOf(LocalNetwork.isGranted(context)) }
-    val requestStorage = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        storageGranted = if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager() else true
-    }
     val requestLocalNet = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
         localNetGranted = it
     }
+    LaunchedEffect(Unit) { storageGranted = legacyStorageGranted() }
 
     var expandLocal by remember { mutableStateOf(true) }
     var expandNet by remember { mutableStateOf(true) }
@@ -262,8 +273,10 @@ fun HomeScreen(
             // ---------------- 权限提示
             if (!storageGranted) {
                 PermissionCard(
-                    title = "需要「所有文件访问」权限",
-                    detail = "Android 11+ 必须授予后才能完整浏览 /storage/emulated/0。",
+                    title = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) "需要「所有文件访问」权限" else "需要存储权限",
+                    detail = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                        "Android 11+ 必须授予后才能完整浏览 /storage/emulated/0。"
+                    else "需要允许读取和写入共享存储，才能浏览和管理设备文件。",
                     actionLabel = "去授权",
                     onAction = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -274,7 +287,9 @@ fun HomeScreen(
                                 )
                             }
                         } else {
-                            storageGranted = true
+                            requestLegacyStorage.launch(
+                                arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                            )
                         }
                     },
                 )

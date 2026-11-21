@@ -387,36 +387,23 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
         }
 
         /**
-         * 提交：`.name.panelfm.part` → 正式名。
-         *
-         * **必须原子替换**。旧实现是「先 `target.delete()` 再 `renameTo()`」——两步之间
-         * 进程被杀 / 断电，用户的原文件就没了（只剩一个隐藏的 `.part`），
-         * 而注释里却写着「commit 时原子改名」。现在先走 `ATOMIC_MOVE`（同卷 rename(2)，
-         * POSIX 语义下直接替换目标），只有文件系统不支持时才退化为「删目标 + 改名」，
-         * 且删除失败要报错，不能带着半成品继续。
+         * 提交只允许原子替换。即使 provider 不支持 ATOMIC_MOVE 也不能先删除旧目标：
+         * 调用方可以明确报告保存失败，旧目标必须仍可恢复。
          */
         override suspend fun commit() {
             if (closed) return
-            runCatching { raf.close() }
+            raf.close()
             closed = true
-            val atomic = runCatching {
+            try {
                 Files.move(
                     part.toPath(), target.toPath(),
                     StandardCopyOption.REPLACE_EXISTING,
                     StandardCopyOption.ATOMIC_MOVE,
                 )
-                true
-            }.getOrDefault(false)
-            if (!atomic) {
-                if (target.exists() && !target.delete()) {
-                    throw VfsException.Io("保存失败：${target.name}（无法替换已有文件）")
-                }
-                if (!part.renameTo(target)) {
-                    runCatching { Files.move(part.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING) }
-                        .getOrElse { throw VfsException.Io("保存失败：${target.name}") }
-                }
+            } catch (e: Exception) {
+                throw VfsException.Io("保存失败：${target.name}（无法原子替换，原文件已保留）", e)
             }
-            Logx.d("LocalVfs", "commit ${target.absolutePath} ($written bytes, atomic=$atomic)")
+            Logx.d("LocalVfs", "commit ${target.absolutePath} ($written bytes)")
         }
 
         override suspend fun abort() {

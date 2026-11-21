@@ -131,6 +131,7 @@ class AppContainer(val app: Application) {
 
     /** 应用级持有的会话租约：只要 App 还引用着该连接，就不被空闲回收器关掉 */
     private val heldLeases = ConcurrentHashMap<String, com.u707t.panelfm.core.vfs.VfsLease>()
+    private val connectionIntents = ConnectionOpenIntents()
 
     /** 已挂载的压缩包（hostUri → ArchiveVfs） */
     private val archives = ConcurrentHashMap<String, ArchiveVfs>()
@@ -186,7 +187,10 @@ class AppContainer(val app: Application) {
     val trash = TrashService(appDirs, localVfs)
 
     /** 远程管理：内置只读 HTTP 服务 */
-    val remote = RemoteHttpServer(locator)
+    val remote = RemoteHttpServer(
+        locator,
+        protectedRoots = listOf(app.filesDir, app.noBackupFilesDir, app.getDatabasePath("panel.db").parentFile!!),
+    )
 
     /** Media3 播放用的统一 VFS 数据源（本地/SFTP/WebDAV/SMB/S3 通吃） */
     @androidx.media3.common.util.UnstableApi
@@ -206,24 +210,44 @@ class AppContainer(val app: Application) {
                 }
             }
         }
-        // 任务运行时启用前台服务通知（M9）；用 taskEvents 才能观察到任务的开始/结束
+        // 请求已接受不等于已进入前台；同时观察任务和服务真实生命周期。
         scope.launch {
-            var foreground = false
-            // 启动失败只提示一次：taskEvents 每次进度回调都会进这里，不能每 200ms 重试一次
-            var startFailedForBatch = false
-            engine.taskEvents.collect { tasks ->
-                val active = tasks.any { it.state.value.isActive }
-                if (active && !foreground && !startFailedForBatch) {
-                    // 起不来（Android 12+ 后台限制 / 系统拒绝）必须让用户知道：任务切后台可能被中断
-                    foreground = TransferService.start(app)
-                    if (!foreground) {
-                        startFailedForBatch = true
-                        browser.showStatus("后台传输通知不可用：切到后台后传输可能被系统中断")
+            var failedForBatch = false
+            kotlinx.coroutines.flow.combine(
+                engine.taskEvents,
+                com.u707t.panelfm.service.TransferForegroundState.status,
+            ) { tasks, status -> tasks to status }.collect { (tasks, _) ->
+                val needed = tasks.any { com.u707t.panelfm.service.needsTransferForeground(it.state.value) }
+                val status = com.u707t.panelfm.service.TransferForegroundState.status.value
+                if (!needed) {
+                    failedForBatch = false
+                    if (status == com.u707t.panelfm.service.TransferForegroundStatus.Running ||
+                        status == com.u707t.panelfm.service.TransferForegroundStatus.Starting
+                    ) TransferService.stop(app)
+                    else if (status != com.u707t.panelfm.service.TransferForegroundStatus.Stopped) {
+                        com.u707t.panelfm.service.TransferForegroundState.publish(
+                            com.u707t.panelfm.service.TransferForegroundStatus.Stopped,
+                        )
                     }
-                } else if (!active) {
-                    if (foreground) TransferService.stop(app)
-                    foreground = false
-                    startFailedForBatch = false
+                } else when (status) {
+                    com.u707t.panelfm.service.TransferForegroundStatus.Stopped -> {
+                        if (!failedForBatch && !TransferService.start(app)) {
+                            failedForBatch = true
+                            browser.showStatus("后台传输通知不可用：切到后台后传输可能被系统中断")
+                        }
+                    }
+                    com.u707t.panelfm.service.TransferForegroundStatus.Failed,
+                    com.u707t.panelfm.service.TransferForegroundStatus.TimedOut -> {
+                        if (!failedForBatch) {
+                            failedForBatch = true
+                            browser.showStatus(
+                                if (status == com.u707t.panelfm.service.TransferForegroundStatus.TimedOut)
+                                    "后台传输达到系统时间限制，任务已停止，请回到应用后重试"
+                                else "后台传输保障已停止：切到后台后任务可能被系统中断",
+                            )
+                        }
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -278,7 +302,7 @@ class AppContainer(val app: Application) {
     fun connectionOf(id: Long?): ConnectionConfig? = id?.let { cid -> connections.value.firstOrNull { it.id == cid } }
 
     fun connectionByAuthority(scheme: String, authority: String): ConnectionConfig? =
-        connections.value.firstOrNull { it.scheme == scheme && "${it.host}:${it.port}" == authority }
+        connections.value.singleOrNull { it.scheme == scheme && "${it.host}:${it.port}" == authority }
 
     /**
      * 由一个 VFS URI 反查它属于哪个连接配置。
@@ -289,14 +313,8 @@ class AppContainer(val app: Application) {
      *  3. S3 的 authority 是 **bucket 名**，不是 host:port —— 先按连接的默认 bucket 匹配，
      *     只有一个 S3 连接时直接采用它。
      */
-    fun connectionForUri(uri: com.u707t.panelfm.core.vfs.VfsUri): ConnectionConfig? {
-        connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))?.let { return it }
-        connectionByAuthority(uri.scheme, uri.authority)?.let { return it }
-        val sameScheme = connections.value.filter { it.scheme == uri.scheme }
-        sameScheme.firstOrNull { it.option(com.u707t.panelfm.core.vfs.s3.S3Config.OPT_BUCKET) == uri.authority }
-            ?.let { return it }
-        return sameScheme.singleOrNull()
-    }
+    fun connectionForUri(uri: com.u707t.panelfm.core.vfs.VfsUri): ConnectionConfig? =
+        connectionConfigForUri(connections.value, uri)
 
     /**
      * 在当前**活着**的会话里找 URI 所属的 VFS。
@@ -305,14 +323,8 @@ class AppContainer(val app: Application) {
      * 单靠它会返回一个已经死掉的实例；而 URI 丢了 `?c=` 时（历史书签、旧路径记录、
      * 解析层丢掉 query）又没法用连接号定位。这里直接以「注册表里真实存在的会话」为准。
      */
-    fun liveSessionFor(uri: com.u707t.panelfm.core.vfs.VfsUri): com.u707t.panelfm.core.vfs.VirtualFileSystem? {
-        registry.peek(connectionForUri(uri) ?: return null)?.let { return it }
-        // 同 scheme 且只有一个活会话时（典型是单 S3 / 单 WebDAV），直接采信
-        val sameScheme = connections.value.filter { it.scheme == uri.scheme }
-            .mapNotNull { c -> registry.peek(c)?.let { c to it } }
-        if (sameScheme.size == 1) return sameScheme.first().second
-        return null
-    }
+    fun liveSessionFor(uri: com.u707t.panelfm.core.vfs.VfsUri): com.u707t.panelfm.core.vfs.VirtualFileSystem? =
+        connectionForUri(uri)?.let { registry.peek(it) }
 
     /**
      * 解析 URI 所属会话；**找不到时自动重连一次**。
@@ -335,6 +347,7 @@ class AppContainer(val app: Application) {
         config: ConnectionConfig,
         secretOverride: String? = null,
     ): com.u707t.panelfm.core.vfs.VirtualFileSystem {
+        val ticket = connectionIntents.begin(config.id)
         val secret = secretOverride
             ?: withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(config.id)) }
         val lease = registry.acquire(config, secret)
@@ -348,10 +361,26 @@ class AppContainer(val app: Application) {
             runCatching { lease.close() }
             throw t
         }
-        // 关键：应用要一直持有租约，否则 5 分钟空闲回收会把正在浏览的会话关掉
-        heldLeases.put(config.sessionKey, lease)?.let { runCatching { it.close() } }
-        mounted[config.sessionKey] = vfs
-        mounted["${config.scheme}://${config.host}:${config.port}"] = vfs
+        var published = false
+        connectionIntents.publish(ticket) {
+            if (registry.activate(config, lease)) {
+                val key = heldConnectionKey(config)
+                heldLeases.entries.filter { it.key.startsWith("${config.id}|") && it.key != key }.forEach { old ->
+                    if (heldLeases.remove(old.key, old.value)) old.value.close()
+                    mounted.remove(old.key)
+                }
+                heldLeases.put(key, lease)?.close()
+                mounted[key] = vfs
+                published = true
+            }
+        }
+        if (!published) {
+            lease.close()
+            throw com.u707t.panelfm.core.vfs.VfsException.Network(
+                com.u707t.panelfm.core.vfs.VfsException.Network.Kind.DISCONNECTED,
+                "连接请求已被更新或取消，请重新打开",
+            )
+        }
         withContext(Dispatchers.IO) { connectionDao.touch(config.id) }
         return vfs
     }
@@ -380,17 +409,24 @@ class AppContainer(val app: Application) {
 
     /** 断开单个连接（侧边栏「断开」/ 删除连接）：释放租约、摘掉挂载表并立即关闭会话 */
     fun disconnectConnection(config: ConnectionConfig) {
-        heldLeases.remove(config.sessionKey)?.let { runCatching { it.close() } }
-        mounted.remove(config.sessionKey)
-        mounted.remove("${config.scheme}://${config.host}:${config.port}")
-        scope.launch { registry.closeSession(config.sessionKey) }
+        val activation = connectionIntents.disconnect(config.id) {
+            val token = registry.activationToken(config)
+            heldLeases.remove(heldConnectionKey(config))?.close()
+            mounted.remove(heldConnectionKey(config))
+            token
+        }
+        scope.launch { registry.closeConnection(config, activation) }
     }
 
-    /** 断开全部连接（保留连接配置，仅关会话） */
+    /** 只撤销本次观察到的会话；之后新开的会话不受异步清理影响。 */
     fun disconnectAll() {
-        heldLeases.keys.toList().forEach { key -> heldLeases.remove(key)?.let { runCatching { it.close() } } }
-        mounted.clear()
-        scope.launch { registry.closeAll() }
+        val activations = connectionIntents.disconnectAll {
+            val snapshot = connections.value.map { it to registry.activationToken(it) }
+            heldLeases.keys.toList().forEach { key -> heldLeases.remove(key)?.close() }
+            mounted.clear()
+            snapshot
+        }
+        scope.launch { activations.forEach { (config, token) -> registry.closeConnection(config, token) } }
     }
 
     fun mountedOf(key: String): com.u707t.panelfm.core.vfs.VirtualFileSystem? = mounted[key]
@@ -406,13 +442,10 @@ class AppContainer(val app: Application) {
     fun uriForConnection(
         config: com.u707t.panelfm.core.model.ConnectionConfig,
         path: String = config.openPath,
-    ): com.u707t.panelfm.core.vfs.VfsUri =
-        com.u707t.panelfm.core.vfs.VfsUris.withConnection(
-            com.u707t.panelfm.core.vfs.VfsUri.of(config.scheme, "${'$'}{config.host}:${'$'}{config.port}", path),
-            config.id,
-        )
+    ): com.u707t.panelfm.core.vfs.VfsUri = connectionUri(config, path)
 
     fun archiveOf(hostUri: String): ArchiveVfs? = archives[hostUri]
+        ?: runCatching { archives[com.u707t.panelfm.core.vfs.VfsUri.parse(hostUri).toString()] }.getOrNull()
 
     /**
      * 挂载压缩包：本地文件直接随机访问；远程文件先下载到 cache（zip 才支持随机访问，7z/tar 顺序读）。

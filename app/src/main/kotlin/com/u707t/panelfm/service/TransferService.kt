@@ -14,7 +14,6 @@ import com.u707t.panelfm.PanelApp
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.transfer.TaskState
-import com.u707t.panelfm.core.transfer.isActive
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -30,6 +29,15 @@ import kotlinx.coroutines.launch
  *  - 任务全部结束或取消后自动降级退出
  *  - 纯本地实现，不引入 WorkManager / 任何统计 SDK
  */
+enum class TransferForegroundStatus { Stopped, Starting, Running, Failed, TimedOut }
+
+/** Service lifecycle is asynchronous; callers must observe this state instead of trusting startService(). */
+object TransferForegroundState {
+    private val mutableStatus = kotlinx.coroutines.flow.MutableStateFlow(TransferForegroundStatus.Stopped)
+    val status: kotlinx.coroutines.flow.StateFlow<TransferForegroundStatus> = mutableStatus
+    internal fun publish(value: TransferForegroundStatus) { mutableStatus.value = value }
+}
+
 class TransferService : Service() {
 
     /**
@@ -41,6 +49,7 @@ class TransferService : Service() {
     }
     private val scope = CoroutineScope(SupervisorJob() + crashGuard + Dispatchers.Main.immediate)
     private var collectJob: Job? = null
+    @Volatile private var timeoutHandled = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -51,9 +60,10 @@ class TransferService : Service() {
         collectJob = scope.launch {
             // 用 taskEvents：任务状态（进度 / 暂停 / 冲突 / 完成）变化时都要刷新通知与前台状态
             container.engine.taskEvents.collectLatest { tasks ->
-                val active = tasks.filter { it.state.value.isActive }
+                val active = tasks.filter { needsTransferForeground(it.state.value) }
                 if (active.isEmpty()) {
                     stopForegroundCompat()
+                    TransferForegroundState.publish(TransferForegroundStatus.Stopped)
                     stopSelf()
                     return@collectLatest
                 }
@@ -97,8 +107,8 @@ class TransferService : Service() {
         return START_STICKY
     }
 
-    private fun startForegroundSafe(notification: Notification): Boolean =
-        runCatching {
+    private fun startForegroundSafe(notification: Notification): Boolean {
+        val started = runCatching {
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(NOTIFICATION_ID, notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
             } else {
@@ -106,6 +116,14 @@ class TransferService : Service() {
             }
         }.onFailure { Logx.w("TransferService", "startForeground failed: ${it.message}") }
             .isSuccess
+        if (started) {
+            if (!timeoutHandled) TransferForegroundState.publish(TransferForegroundStatus.Running)
+        } else {
+            TransferForegroundState.publish(TransferForegroundStatus.Failed)
+            stopSelf()
+        }
+        return started
+    }
 
     private fun stopForegroundCompat() {
         runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
@@ -148,11 +166,42 @@ class TransferService : Service() {
         }
     }
 
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    override fun onTimeout(startId: Int) {
+        stopForTimeout(startId)
+    }
+
+    @androidx.annotation.RequiresApi(Build.VERSION_CODES.VANILLA_ICE_CREAM)
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        if (fgsType and android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC != 0) {
+            stopForTimeout(startId)
+        }
+    }
+
+    private fun stopForTimeout(startId: Int) {
+        if (timeoutHandled) return
+        timeoutHandled = true
+        TransferForegroundState.publish(TransferForegroundStatus.TimedOut)
+        Logx.w("TransferService", "dataSync foreground-service time limit reached; cancelling active transfers")
+        runCatching {
+            (application as PanelApp).container.engine.tasks.value
+                .filter { needsTransferForeground(it.state.value) }
+                .forEach { it.cancel() }
+        }.onFailure { Logx.e("TransferService", "cancel after FGS timeout failed: ${it.message}", it) }
+        stopForegroundCompat()
+        stopSelf(startId)
+    }
+
     override fun onDestroy() {
         collectJob?.cancel()
         // 异常销毁 / 用户 stopService 时通知不一定被系统立刻清掉：显式移除
         stopForegroundCompat()
         scope.cancel()
+        if (TransferForegroundState.status.value !in setOf(
+                TransferForegroundStatus.Failed,
+                TransferForegroundStatus.TimedOut,
+            )
+        ) TransferForegroundState.publish(TransferForegroundStatus.Stopped)
         Logx.i("TransferService", "onDestroy")
         super.onDestroy()
     }
@@ -163,10 +212,13 @@ class TransferService : Service() {
 
         /** @return false = 没能进入前台（调用方必须提示：任务切后台可能被系统中断） */
         fun start(context: Context): Boolean = runCatching {
+            TransferForegroundState.publish(TransferForegroundStatus.Starting)
             context.startForegroundService(Intent(context, TransferService::class.java))
-            true
-        }.onFailure { Logx.e("TransferService", "startForegroundService failed: ${it.message}", it) }
-            .getOrDefault(false)
+            true // request accepted only; observe TransferForegroundState.status for Running/Failed.
+        }.onFailure {
+            TransferForegroundState.publish(TransferForegroundStatus.Failed)
+            Logx.e("TransferService", "startForegroundService failed: ${it.message}", it)
+        }.getOrDefault(false)
 
         fun stop(context: Context) {
             runCatching { context.stopService(Intent(context, TransferService::class.java)) }

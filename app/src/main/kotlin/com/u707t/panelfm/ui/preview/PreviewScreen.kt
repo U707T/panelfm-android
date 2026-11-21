@@ -24,6 +24,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
@@ -57,6 +58,8 @@ import com.u707t.panelfm.open.selfExclusion
 import com.u707t.panelfm.ui.browser.PaneSide
 import com.u707t.panelfm.ui.browser.transferRequest
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import java.io.File
 import com.u707t.panelfm.core.ui.ClaudeDropdownMenu
@@ -71,15 +74,9 @@ import com.u707t.panelfm.core.ui.ClaudeMenuItem
 @Composable
 fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -> Unit) {
     val uri = request.uri
-    val context = LocalContext.current
-    var meta by remember { mutableStateOf<FileMetadata?>(null) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var effective by remember { mutableStateOf(request.mode) }
-    var modeMenu by remember { mutableStateOf(false) }
-
     // 记录「当前打开着的文件」：进程被杀 / 直接退出后，下次启动自动回到这里。
     // 用户主动返回（onDispose）会清掉这条记录，所以「看完返回列表再退出」不会自动跳回。
-    LaunchedEffect(uri) {
+    LaunchedEffect(request) {
         runCatching { container.prefs.saveLastOpenedPreview(request.mode.name, uri.toString()) }
     }
     androidx.compose.runtime.DisposableEffect(uri) {
@@ -93,12 +90,29 @@ fun PreviewScreen(container: AppContainer, request: PreviewRequest, onBack: () -
         }
     }
 
+    // 同一路由调用点可能切换文件或显式模式。重新创建整个查看器子树，
+    // 不只清外壳状态，也取消旧媒体/编辑器/WebView 的效果。
+    key(request) { PreviewRequestContent(container, request, onBack) }
+}
+
+@androidx.media3.common.util.UnstableApi
+@Composable
+private fun PreviewRequestContent(container: AppContainer, request: PreviewRequest, onBack: () -> Unit) {
+    val uri = request.uri
+    val context = LocalContext.current
+    var meta by remember { mutableStateOf<FileMetadata?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var effective by remember { mutableStateOf(request.mode) }
+    var modeMenu by remember { mutableStateOf(false) }
+
     LaunchedEffect(uri) {
         try {
             // resolveSession：会话被回收 / URI 丢过连接号时自动重连，避免整页变成
             // 「会话不可用」而用户什么都没法做
             val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
-            meta = vfs.stat(uri)
+            val loaded = vfs.stat(uri)
+            currentCoroutineContext().ensureActive()
+            meta = loaded
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

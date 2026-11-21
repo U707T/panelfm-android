@@ -46,7 +46,7 @@ import java.io.ByteArrayOutputStream
  *
  * ⚠️ 三条铁律（改动前先看文档）：
  *  1. 主页面走同源 https + 全拦截，**不要**改回 `loadDataWithBaseURL`；
- *  2. 非 http(s) 请求必须返回 null（否则主文档被 404，整页打不开）；
+ *  2. data:/blob:/about: 内存资源交回 WebView；其他非 HTTPS 协议拒绝；
  *  3. 拦截响应必须禁缓存（`Cache-Control: no-store`）+ 页面 URL 带版本号。
  */
 internal const val PREVIEW_HOST = "office.panelfm"
@@ -75,8 +75,8 @@ internal class PreviewWebViewClient(
         val scheme = url.scheme?.lowercase()
         // ⚠️ 非 http(s)（data: / blob: / about: …）必须返回 null 交回 WebView：
         // 早期实现一律回 404，主文档直接 ERR_HTTP_RESPONSE_CODE_FAILURE（整页打不开）。
-        if (scheme != "http" && scheme != "https") return null
-        if (url.host != PREVIEW_HOST) return notFound()
+        if (scheme == "data" || scheme == "blob" || scheme == "about") return null
+        if (scheme != "https" || url.host != PREVIEW_HOST || url.port !in listOf(-1, 443)) return notFound()
         val path = url.path.orEmpty()
         return when {
             path == "/doc/current" -> WebResourceResponse(
@@ -93,13 +93,8 @@ internal class PreviewWebViewClient(
         }
     }
 
-    /** 预览页只读：同源与非 http 协议放行，外链一律拦下。 */
-    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
-        val url = request.url ?: return true
-        val scheme = url.scheme?.lowercase()
-        if (scheme != "http" && scheme != "https") return false
-        return url.host != PREVIEW_HOST
-    }
+    /** 文件中的链接不能导航到新页面或执行 javascript:/intent:。 */
+    override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean = true
 
     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
         if (request.isForMainFrame) {
@@ -144,6 +139,9 @@ internal class PreviewWebViewClient(
         val NO_STORE = mapOf(
             "Cache-Control" to "no-store, no-cache, must-revalidate",
             "Pragma" to "no-cache",
+            "Content-Security-Policy" to "default-src 'none'; script-src 'self'; connect-src https://office.panelfm; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data: blob:; object-src 'none'; frame-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'",
+            "Referrer-Policy" to "no-referrer",
+            "X-Content-Type-Options" to "nosniff",
         )
     }
 }

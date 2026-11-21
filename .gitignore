@@ -13,3 +13,5 @@ key.properties
 .kotlin/
 dist/
 *.p12
+node_modules/
+.pnpm-store/

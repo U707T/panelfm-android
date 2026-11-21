@@ -26,7 +26,7 @@
     var finished = false;
 
     /** 粘合层版本（跟着 App 版本走；诊断时一眼看出页面脚本是不是旧缓存） */
-    var VIEWER_VERSION = '2.0.7';
+    var VIEWER_VERSION = '2.5.9-rc1';
 
     /** 单次 docx 渲染的最长等待（ms）：挂住时不再无限等，直接走兼容排版/纯文本兜底 */
     var DOCX_RENDER_TIMEOUT_MS = 8000;
@@ -351,7 +351,13 @@
 
         function show(index) {
             var html = window.XLSX.utils.sheet_to_html(wb.Sheets[names[index]], { header: '', footer: '' });
-            content.innerHTML = html;
+            if (!window.DOMPurify) throw new Error('DOMPurify 未加载');
+            content.innerHTML = window.DOMPurify.sanitize(html, {
+                USE_PROFILES: { html: true },
+                FORBID_TAGS: ['a', 'script', 'iframe', 'object', 'embed', 'form', 'input', 'button', 'textarea', 'select', 'link', 'meta'],
+                FORBID_ATTR: ['href', 'xlink:href', 'srcset', 'ping', 'formaction'],
+                ALLOW_DATA_ATTR: false
+            });
             Array.prototype.forEach.call(toolbar.querySelectorAll('button'), function (btn, i) {
                 btn.classList.toggle('active', i === index);
             });
