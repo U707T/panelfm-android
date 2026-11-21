@@ -26,7 +26,7 @@
     var finished = false;
 
     /** 粘合层版本（跟着 App 版本走；诊断时一眼看出页面脚本是不是旧缓存） */
-    var VIEWER_VERSION = '2.5.9-rc1';
+    var VIEWER_VERSION = '2.5.9';
 
     /** 单次 docx 渲染的最长等待（ms）：挂住时不再无限等，直接走兼容排版/纯文本兜底 */
     var DOCX_RENDER_TIMEOUT_MS = 8000;

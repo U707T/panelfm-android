@@ -93,4 +93,4 @@
 - **CSV**：复用 SheetJS（`XLSX.read(text, {type:'string'})` → `sheet_to_html`），与 xlsx 共用标签栏；
 - `mode=text`（诊断弹窗「纯文本预览」）对两者都有效：直接显示原文；
 - 真 Chromium 冒烟（沙箱）：`markdown`（含内嵌 `<script>`，确认被 DOMPurify 清掉）、`csv`（中文单元格）、
-  以及 `xlsx` 路径回归（用 `.ods` 样本）全部通过；`viewer 2.5.9-rc1` 日志可见。
+  以及 `xlsx` 路径回归（用 `.ods` 样本）全部通过；`viewer 2.5.9` 日志可见。

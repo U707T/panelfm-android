@@ -45,7 +45,7 @@ android {
         minSdk = 26
         targetSdk = 37
         versionCode = 132
-        versionName = "2.5.9-rc1"
+        versionName = "2.5.9"
     }
 
     // 单元测试里 call android.util.Log / org.json 桩不抛「not mocked」；
