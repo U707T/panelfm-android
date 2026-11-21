@@ -122,69 +122,117 @@ internal suspend fun loadApkInfo(
         bundleNote = null
     }
 
-    return withContext(Dispatchers.IO) {
-        val pm = context.packageManager
+    return loadApkInfoFromApkFile(
+        context = context,
+        apkFile = apkFile,
+        size = if (item.size >= 0) item.size else outer.length(),
+        apkPath = if (item.uri.scheme == "local") {
+            runCatching { container.localVfs.absolutePath(item.uri) }.getOrNull() ?: item.uri.toString()
+        } else {
+            item.uri.toString()
+        },
+        bundleNote = bundleNote,
+    )
+}
+
+/**
+ * 从**已落地的 APK 文件**解析信息 —— 文件浏览（[loadApkInfo]）与「已安装应用」
+ * （[loadInstalledAppInfo]）共用的那一半。
+ *
+ * @param size 安装包大小（文件浏览用列表 metadata，已安装应用用 base + 各 split 之和）
+ * @param apkPath 「APK 路径」一行要显示的路径（文件浏览是文件本身，已安装应用是 sourceDir）
+ */
+internal suspend fun loadApkInfoFromApkFile(
+    context: Context,
+    apkFile: File,
+    size: Long,
+    apkPath: String,
+    bundleNote: String? = null,
+): ApkInfo = withContext(Dispatchers.IO) {
+    val pm = context.packageManager
+    @Suppress("DEPRECATION")
+    val archive = pm.getPackageArchiveInfo(apkFile.absolutePath, 0)
+        ?: throw IllegalStateException("不是有效的 APK（系统解析失败）")
+    val appInfo = archive.applicationInfo
+    // loadIcon / getApplicationLabel 按 sourceDir 去包里读资源；不设这两个字段拿到的是系统默认图标
+    appInfo?.sourceDir = apkFile.absolutePath
+    appInfo?.publicSourceDir = apkFile.absolutePath
+    val packageName = archive.packageName
+    if (packageName.isBlank()) throw IllegalStateException("包里没有包名")
+    val versionCode = if (Build.VERSION.SDK_INT >= 28) {
+        archive.longVersionCode
+    } else {
         @Suppress("DEPRECATION")
-        val archive = pm.getPackageArchiveInfo(apkFile.absolutePath, 0)
-            ?: throw IllegalStateException("不是有效的 APK（系统解析失败）")
-        val appInfo = archive.applicationInfo
-        // loadIcon / getApplicationLabel 按 sourceDir 去包里读资源；不设这两个字段拿到的是系统默认图标
-        appInfo?.sourceDir = apkFile.absolutePath
-        appInfo?.publicSourceDir = apkFile.absolutePath
-        val packageName = archive.packageName
-        if (packageName.isBlank()) throw IllegalStateException("包里没有包名")
-        val versionCode = if (Build.VERSION.SDK_INT >= 28) {
-            archive.longVersionCode
+        archive.versionCode.toLong()
+    }
+    val label = appInfo?.let { ai ->
+        runCatching { pm.getApplicationLabel(ai).toString() }.getOrNull()
+    }?.takeIf { it.isNotBlank() } ?: apkFile.name
+
+    // 已安装：QUERY_ALL_PACKAGES 已声明（Manifest），这里能查到任意包
+    val installed = runCatching { pm.getPackageInfo(packageName, 0) }.getOrNull()
+    val installedVersion = installed?.let {
+        val code = if (Build.VERSION.SDK_INT >= 28) {
+            it.longVersionCode
         } else {
             @Suppress("DEPRECATION")
-            archive.versionCode.toLong()
+            it.versionCode.toLong()
         }
-        val label = appInfo?.let { ai ->
-            runCatching { pm.getApplicationLabel(ai).toString() }.getOrNull()
-        }?.takeIf { it.isNotBlank() } ?: item.name
-
-        // 已安装：QUERY_ALL_PACKAGES 已声明（Manifest），这里能查到任意包
-        val installed = runCatching { pm.getPackageInfo(packageName, 0) }.getOrNull()
-        val installedVersion = installed?.let {
-            val code = if (Build.VERSION.SDK_INT >= 28) {
-                it.longVersionCode
-            } else {
-                @Suppress("DEPRECATION")
-                it.versionCode.toLong()
-            }
-            "${it.versionName ?: "—"} ($code)"
-        }
-
-        val schemes = runCatching { ApkSignatures.detect(apkFile) }.getOrDefault(SignatureSchemes.NONE)
-        val hardening = ApkHardening.detect(apkFile, appInfo?.className)
-
-        val externalRoot = Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
-        ApkInfo(
-            label = label,
-            versionName = archive.versionName,
-            packageName = packageName,
-            versionCode = versionCode,
-            size = if (item.size >= 0) item.size else outer.length(),
-            signatures = schemes.label(),
-            hardening = hardening?.label() ?: ApkHardening.NONE_LABEL,
-            targetSdk = appInfo?.targetSdkVersion ?: 0,
-            minSdk = appInfo?.minSdkVersion ?: 0,
-            installedVersion = installedVersion,
-            dataDir = "/data/user/0/$packageName",
-            externalDataDir = "$externalRoot/Android/data/$packageName",
-            apkPath = if (item.uri.scheme == "local") {
-                runCatching { container.localVfs.absolutePath(item.uri) }.getOrNull() ?: item.uri.toString()
-            } else {
-                item.uri.toString()
-            },
-            installedPath = installed?.applicationInfo?.sourceDir,
-            firstInstall = installed?.firstInstallTime?.takeIf { it > 0 },
-            lastUpdate = installed?.lastUpdateTime?.takeIf { it > 0 },
-            uid = installed?.applicationInfo?.uid,
-            bundleNote = bundleNote,
-            localApkPath = apkFile.absolutePath,
-        )
+        "${it.versionName ?: "—"} ($code)"
     }
+
+    val schemes = runCatching { ApkSignatures.detect(apkFile) }.getOrDefault(SignatureSchemes.NONE)
+    val hardening = ApkHardening.detect(apkFile, appInfo?.className)
+
+    val externalRoot = Environment.getExternalStorageDirectory()?.absolutePath ?: "/storage/emulated/0"
+    ApkInfo(
+        label = label,
+        versionName = archive.versionName,
+        packageName = packageName,
+        versionCode = versionCode,
+        size = size,
+        signatures = schemes.label(),
+        hardening = hardening?.label() ?: ApkHardening.NONE_LABEL,
+        targetSdk = appInfo?.targetSdkVersion ?: 0,
+        minSdk = appInfo?.minSdkVersion ?: 0,
+        installedVersion = installedVersion,
+        dataDir = "/data/user/0/$packageName",
+        externalDataDir = "$externalRoot/Android/data/$packageName",
+        apkPath = apkPath,
+        installedPath = installed?.applicationInfo?.sourceDir,
+        firstInstall = installed?.firstInstallTime?.takeIf { it > 0 },
+        lastUpdate = installed?.lastUpdateTime?.takeIf { it > 0 },
+        uid = installed?.applicationInfo?.uid,
+        bundleNote = bundleNote,
+        localApkPath = apkFile.absolutePath,
+    )
+}
+
+/**
+ * 已安装应用的信息（「已安装应用」页点开一行时用）。
+ *
+ * 与文件浏览的差别只在**入口**：APK 就是 `ApplicationInfo.sourceDir`，不需要物化；
+ * 大小按 base + 各 split 求和（与 MT 的「安装包大小」同一口径）。
+ * 参数刻意用基础类型（而不是 `InstalledApp`）：这里不该反过来依赖「已安装应用」页的模型。
+ */
+internal suspend fun loadInstalledAppInfo(
+    context: Context,
+    sourceDir: String,
+    size: Long,
+    splitCount: Int = 1,
+): ApkInfo {
+    if (sourceDir.isBlank()) throw IllegalStateException("应用没有 APK 路径")
+    return loadApkInfoFromApkFile(
+        context = context,
+        apkFile = File(sourceDir),
+        size = size,
+        apkPath = sourceDir,
+        bundleNote = if (splitCount > 1) {
+            "已安装应用（含 ${splitCount - 1} 个 split 分包）：信息取自 base.apk"
+        } else {
+            null
+        },
+    )
 }
 
 /**

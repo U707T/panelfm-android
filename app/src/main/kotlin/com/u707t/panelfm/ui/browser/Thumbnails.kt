@@ -337,6 +337,40 @@ object ThumbCache {
         return bitmap
     }
 
+    /**
+     * **已安装应用**的图标（「已安装应用」页用）。
+     *
+     * 与 [loadApkIconOf] 的区别：图标直接从 `PackageManager` 拿（不用解 APK），
+     * 缓存键带 versionCode —— 应用更新后自动换新图，不会显示上一个版本的图标。
+     */
+    suspend fun loadInstalledIcon(
+        pm: android.content.pm.PackageManager,
+        packageName: String,
+        versionCode: Long,
+        targetPx: Int,
+    ): Bitmap? {
+        val key = "installed:$packageName@$versionCode#apk-icon"
+        memory.get(key)?.let { return it }
+        fileOf(key)?.takeIf { it.exists() }?.let { cached ->
+            val bm = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(cached.absolutePath) }
+            if (bm != null) {
+                memory.put(key, bm)
+                return bm
+            }
+        }
+        val bitmap = withContext(apkDispatcher) {
+            runCatching {
+                renderAppIcon(pm.getApplicationIcon(packageName), targetPx)
+            }.getOrElse { e ->
+                if (e is CancellationException) throw e
+                null
+            }
+        } ?: return null
+        memory.put(key, bitmap)
+        writeDisk(key, bitmap, jpeg = false)
+        return bitmap
+    }
+
     /** 解析 APK 清单 → 取应用图标 → 画成方形位图。[item] 必须是本地文件。 */
     private fun apkIcon(container: AppContainer, item: FileMetadata, targetPx: Int): Bitmap? {
         val path = container.localVfs.absolutePath(item.uri)

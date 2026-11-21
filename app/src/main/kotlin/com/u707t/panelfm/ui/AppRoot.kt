@@ -433,7 +433,12 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
                 onOpen = { stack = listOf(Screen.Browser) },
             )
             Screen.Trash -> TrashScreen(container = container, onBack = pop)
-            Screen.Apps -> AppsScreen(container = container, onBack = pop)
+            Screen.Apps -> AppsScreen(
+                container = container,
+                onBack = pop,
+                // 「提取安装包 → 定位」必须落到浏览器（本页也可能从主页/侧栏进来）
+                onLocate = { stack = listOf(Screen.Browser) },
+            )
             Screen.Remote -> RemoteScreen(container = container, onBack = pop)
             Screen.NetToolbox -> NetToolboxScreen(container = container, onBack = pop)
             Screen.TextToolbox -> TextToolboxScreen(container = container, onBack = pop)

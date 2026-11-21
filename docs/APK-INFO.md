@@ -17,6 +17,8 @@
 | 卡片 `安装` | 交给系统安装器；`.apks` 走 `PackageInstaller`（`installApk` / `installApkBundle`） |
 | 卡片 `功能` | APK 详细信息整页 / 提取图标 / 转为 APK（分包包）/ 校验值 MD5·SHA-256 / 属性 / 复制路径 |
 | 「打开方式」里的 `APK 详细信息` | 整页（权限清单 / ABI / 安装位置 / 可调试 / 签名摘要 / MD5·SHA-256） |
+| 已安装应用页点一行 | **同一张卡片**（`InstalledAppInfoDialog`）：字段一样，按钮换成 `更多` / `提取安装包`；
+  APK 直接取 `ApplicationInfo.sourceDir`，不需要物化 |
 
 ### 不做
 

@@ -103,49 +103,7 @@ internal fun ApkInfoDialog(
         onDismissRequest = onDismiss,
         // MT 的卡片是 24dp 圆角（默认 M3 是 28dp 的对话框 + 更窄的内边距，观感差一档）
         shape = RoundedCornerShape(24.dp),
-        title = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                if (icon != null) {
-                    Image(
-                        bitmap = icon,
-                        contentDescription = null,
-                        contentScale = ContentScale.Fit,
-                        modifier = Modifier
-                            .size(56.dp)
-                            .clip(RoundedCornerShape(16.dp)),
-                    )
-                } else {
-                    Box(
-                        Modifier
-                            .size(56.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(MaterialTheme.colorScheme.surfaceVariant),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(title.take(1), style = MaterialTheme.typography.titleMedium)
-                    }
-                }
-                Column(Modifier.padding(start = 14.dp)) {
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge.copy(
-                            fontSize = 20.sp,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        subtitle,
-                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.padding(top = 2.dp),
-                    )
-                }
-            }
-        },
+        title = { ApkInfoCardHeader(icon = icon, title = title, subtitle = subtitle) },
         text = {
             Column(Modifier.verticalScroll(rememberScrollState())) {
                 when {
@@ -181,34 +139,9 @@ internal fun ApkInfoDialog(
                                 modifier = Modifier.padding(bottom = 10.dp),
                             )
                         }
-                        // 对齐 MT：标签**深色加粗**、值用系统字体（非等宽）、单行省略、行距 2dp。
-                        // 值被截断时**点这一行就复制全文**（比在单行省略号上长按选中更好用）。
-                        Column {
-                            ApkInfoRows.of(s).forEach { (label, value) ->
-                                InfoRow(
-                                    label = label,
-                                    value = value,
-                                    labelWidth = 84.dp,
-                                    // lineHeight 收到 16sp：M3 的 bodyMedium 默认 20sp 行高，
-                                    // 15 行就是 60dp 的纯空白 —— MT 的行距几乎是「字贴字」
-                                    labelStyle = MaterialTheme.typography.bodyMedium.copy(
-                                        fontSize = 13.sp,
-                                        lineHeight = 16.sp,
-                                        fontWeight = FontWeight.Bold,
-                                    ),
-                                    valueStyle = MaterialTheme.typography.bodyMedium.copy(
-                                        fontSize = 13.sp,
-                                        lineHeight = 16.sp,
-                                    ),
-                                    maxLines = 1,
-                                    verticalPadding = 2.dp,
-                                    labelColor = MaterialTheme.colorScheme.onSurface,
-                                    modifier = Modifier.clickable {
-                                        clipboard.setText(AnnotatedString(value))
-                                        controller.showStatus("已复制「$label」")
-                                    },
-                                )
-                            }
+                        ApkInfoTable(info = s) { label, value ->
+                            clipboard.setText(AnnotatedString(value))
+                            controller.showStatus("已复制「$label」")
                         }
                     }
                 }
@@ -286,4 +219,84 @@ internal fun ApkInfoDialog(
             }
         },
     )
+}
+
+/**
+ * 卡片头部：图标 + 应用名 + 版本 —— 文件浏览的「APK 信息」与「已安装应用」的详情共用。
+ *
+ * 图标为 null 时画首字占位（解析失败 / 还没加载完），不留空洞。
+ */
+@Composable
+internal fun ApkInfoCardHeader(icon: ImageBitmap?, title: String, subtitle: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (icon != null) {
+            Image(
+                bitmap = icon,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(16.dp)),
+            )
+        } else {
+            Box(
+                Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(title.take(1), style = MaterialTheme.typography.titleMedium)
+            }
+        }
+        Column(Modifier.padding(start = 14.dp)) {
+            Text(
+                title,
+                style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp, fontWeight = FontWeight.Bold),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = 2.dp),
+            )
+        }
+    }
+}
+
+/**
+ * 卡片正文的 15 行表格（对齐 MT）：标签**深色加粗**、值用系统字体、单行省略、行距 2dp。
+ *
+ * 值被截断时**点这一行就复制全文**（比在单行省略号上长按选中更好用）。
+ * 文件浏览的「APK 信息」与「已安装应用」的详情共用这一份。
+ */
+@Composable
+internal fun ApkInfoTable(info: ApkInfo, onCopy: (label: String, value: String) -> Unit) {
+    Column {
+        ApkInfoRows.of(info).forEach { (label, value) ->
+            InfoRow(
+                label = label,
+                value = value,
+                labelWidth = 84.dp,
+                // lineHeight 收到 16sp：M3 的 bodyMedium 默认 20sp 行高，15 行就是 60dp 的纯空白
+                labelStyle = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 13.sp,
+                    lineHeight = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                ),
+                valueStyle = MaterialTheme.typography.bodyMedium.copy(
+                    fontSize = 13.sp,
+                    lineHeight = 16.sp,
+                ),
+                maxLines = 1,
+                verticalPadding = 2.dp,
+                labelColor = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.clickable { onCopy(label, value) },
+            )
+        }
+    }
 }
