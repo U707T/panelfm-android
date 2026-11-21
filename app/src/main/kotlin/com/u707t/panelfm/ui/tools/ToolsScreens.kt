@@ -181,7 +181,7 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(title = "远程管理", onBack = onBack)
         Text(
-            "在电脑浏览器里打开下面的地址，即可浏览/下载当前窗格目录（只读，仅在局域网内可访问）。",
+            "使用下方完整授权链接浏览/下载当前目录（只读）。链接持有人均可访问；请勿转发，只在可信网络使用。应用私有目录及无法验证链接边界的存储不支持分享。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.padding(horizontal = 16.dp),
@@ -194,18 +194,20 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = {
-                if (running) {
-                    remote.stop()
-                    running = false
-                    url = ""
-                    log = "已停止"
-                } else {
-                    scope.launch {
-                        val started = remote.start(container.browser.state.value.focusedPane.uri)
+                scope.launch {
+                    if (running) {
+                        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) { remote.stop() }
+                        running = false
+                        url = ""
+                        log = "已停止，旧授权链接已失效"
+                    } else {
+                        val started = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                            remote.start(container.browser.state.value.focusedPane.uri)
+                        }
                         running = started != null
                         url = started ?: ""
-                        log = if (started == null) "启动失败（端口被占用？）"
-                        else "已启动：$started（目录：${remote.servedRoot?.displayPath ?: "?"}）"
+                        log = if (started == null) "启动失败：请检查目录权限；私有目录和无法验证符号链接边界的存储不支持分享"
+                        else "已启动（目录：${remote.servedRoot?.displayPath ?: "?"}）"
                     }
                 }
             }) { Text(if (running) "停止服务" else "启动服务") }
@@ -225,7 +227,7 @@ fun RemoteScreen(container: AppContainer, onBack: () -> Unit) {
         }
         Text(log, style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(horizontal = 16.dp))
         Text(
-            "提示：手机与电脑需在同一局域网，且本应用已获得「局域网访问」权限。",
+            "提示：完整链接包含本次授权。停止或重启服务后旧链接失效；仅绑定一个本地接口，未找到局域网地址时只允许本机访问。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontWeight = FontWeight.Normal,

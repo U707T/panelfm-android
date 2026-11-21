@@ -6,6 +6,7 @@ import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import org.apache.commons.compress.archivers.ArchiveEntry
 import org.apache.commons.compress.archivers.ArchiveOutputStream
@@ -28,6 +29,21 @@ import java.io.OutputStream
  * 因为写侧是统一的 [com.u707t.panelfm.core.vfs.VfsWriter]，所以「压缩到网络」天然可用。
  */
 class ArchiveCompressor(private val locator: VfsLocator) {
+
+    /** 所有创建格式统一拒绝链接；不把用户选取边界外的内容悄悄打进归档。 */
+    private class Traversal {
+        private val directories = HashSet<VfsUri>()
+        private var entries = 0
+        suspend fun check(meta: com.u707t.panelfm.core.vfs.FileMetadata, depth: Int) {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            if (meta.isSymlink) throw VfsException.Unsupported("暂不支持压缩符号链接：${meta.name}")
+            if (depth > 64) throw VfsException.ProtocolError("压缩目录层级过深（> 64）")
+            if (++entries > 200_000) throw VfsException.ProtocolError("压缩条目超过 200000，请分批操作")
+            if (meta.isDirectory && !directories.add(meta.uri)) {
+                throw VfsException.ProtocolError("压缩目录重复或形成环：${meta.name}")
+            }
+        }
+    }
 
     /** MT 支持的创建格式：zip / 7z / tar / tar.gz / tar.bz2 / tar.xz */
     enum class Format(val id: String, val label: String, val ext: String) {
@@ -73,19 +89,20 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         level: Level = Level.NORMAL,
         password: String? = null,
     ) {
+        val traversal = Traversal()
         val pwd = password?.takeIf { it.isNotEmpty() }
         if (pwd != null && !format.supportsPassword) {
             throw VfsException.Unsupported("${format.label} 不支持加密（仅 ZIP / 7z 支持）")
         }
         if (format == Format.SEVEN_Z) {
             // 7z 需要随机访问（先写本地临时文件，再整包回传到目标）
-            compressSevenZ(sources, destFile, onProgress, level, pwd)
+            compressSevenZ(sources, destFile, onProgress, level, pwd, traversal)
             return
         }
         if (format == Format.ZIP && pwd != null) {
             // 加密 ZIP 走 [EncryptedZipWriter]：commons-compress 的 addRawArchiveEntry
             // 见到 encryption 标志就抛 UnsupportedZipFeatureException，根本写不出来。
-            compressEncryptedZip(sources, destFile, onProgress, level, pwd)
+            compressEncryptedZip(sources, destFile, onProgress, level, pwd, traversal)
             return
         }
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
@@ -115,8 +132,9 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                         val vfs = locator.find(source)
                             ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${source.name}")
                         val meta = vfs.stat(source)
+                        traversal.check(meta, 0)
                         if (meta.isDirectory) {
-                            entries += addDirectory(out, format, vfs, source, meta.name) { bytes ->
+                            entries += addDirectory(out, format, vfs, source, meta.name, traversal, 0) { bytes ->
                                 doneBytes += bytes
                                 onProgress?.onProgress(doneBytes, -1)
                             }
@@ -154,6 +172,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         onProgress: ProgressCallback?,
         level: Level,
         password: String?,
+        traversal: Traversal,
     ) {
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
         val tmp = File.createTempFile("panelfm-7z-", ".7z")
@@ -174,7 +193,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                         val vfs = locator.find(source)
                             ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${source.name}")
                         val meta = vfs.stat(source)
-                        if (meta.isDirectory) addSevenZDirectory(sevenZ, vfs, source, meta.name, onProgress)
+                        traversal.check(meta, 0)
+                        if (meta.isDirectory) addSevenZDirectory(sevenZ, vfs, source, meta.name, onProgress, traversal, 0)
                         else addSevenZFile(sevenZ, vfs, source, meta.name)
                     }
                 }
@@ -233,11 +253,14 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         dir: VfsUri,
         prefix: String,
         onProgress: ProgressCallback?,
+        traversal: Traversal,
+        depth: Int,
     ) {
         var bytes = 0L
         vfs.list(dir).forEach { child ->
+            traversal.check(child, depth + 1)
             val name = "$prefix/${child.name}"
-            if (child.isDirectory) addSevenZDirectory(out, vfs, child.uri, name, onProgress)
+            if (child.isDirectory) addSevenZDirectory(out, vfs, child.uri, name, onProgress, traversal, depth + 1)
             else {
                 addSevenZFile(out, vfs, child.uri, name)
                 bytes += child.size.coerceAtLeast(0)
@@ -252,6 +275,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
         dir: VfsUri,
         prefix: String,
+        traversal: Traversal,
+        depth: Int,
         onBytes: (Long) -> Unit,
     ): Int {
         var count = 0
@@ -259,9 +284,10 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         (zip as ArchiveOutputStream<ArchiveEntry>).putArchiveEntry(directoryEntry(format, "$prefix/"))
         zip.closeArchiveEntry()
         vfs.list(dir).forEach { child ->
+            traversal.check(child, depth + 1)
             val name = "$prefix/${child.name}"
             if (child.isDirectory) {
-                count += addDirectory(zip, format, vfs, child.uri, name, onBytes)
+                count += addDirectory(zip, format, vfs, child.uri, name, traversal, depth + 1, onBytes)
             } else {
                 // 逐块上报（累计由 onBytes 的调用方维护）；单文件也能在中途取消
                 addFile(zip, format, vfs, child.uri, name, child.size) { n -> onBytes(n) }
@@ -324,6 +350,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         onProgress: ProgressCallback?,
         level: Level,
         password: String,
+        traversal: Traversal,
     ) {
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
         val writer = destVfs.openWrite(destFile, size = null, offset = 0L)
@@ -337,13 +364,15 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                     deflateLevel = level.deflateLevel,
                     store = level.store,
                 )
-                suspend fun addOne(vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem, uri: VfsUri, name: String) {
+                suspend fun addOne(vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem, uri: VfsUri, name: String, depth: Int) {
                     val meta = vfs.stat(uri)
+                    traversal.check(meta, depth)
                     if (meta.isDirectory) {
                         zip.putDirectory(name, System.currentTimeMillis())
                         entries++
                         vfs.list(uri).forEach { child ->
-                            addOne(vfs, child.uri, "$name/${child.name}")
+                            if (child.isSymlink) throw VfsException.Unsupported("暂不支持压缩符号链接：${child.name}")
+                            addOne(vfs, child.uri, "$name/${child.name}", depth + 1)
                         }
                     } else {
                         val reader = vfs.openRead(uri)
@@ -371,7 +400,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                 sources.forEach { source ->
                     val vfs = locator.find(source)
                         ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${source.name}")
-                    addOne(vfs, source, vfs.stat(source).name)
+                    addOne(vfs, source, source.name, 0)
                 }
                 zip.finish()
             }

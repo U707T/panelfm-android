@@ -39,6 +39,41 @@ class ConnectionDao(private val db: PanelDb) {
         return id
     }
 
+    /** 配置与凭据同事务写入；任一步骤失败都会回滚，false 表示记录缺失或凭据写失败。 */
+    fun updateWithSecret(config: ConnectionConfig, secretStore: SecretStore, secret: String?): Boolean {
+        val database = db.writableDatabase
+        database.beginTransaction()
+        try {
+            if (database.update(
+                    "connection",
+                    config.toValues(includeCreatedAt = false),
+                    "id = ?",
+                    arrayOf(config.id.toString()),
+                ) <= 0
+            ) return false
+            if (!secretStore.put(secretRef(config.id), secret)) return false
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
+    }
+
+    /** 新连接与凭据同事务插入；失败时不留下孤儿配置或密文。 */
+    fun insertWithSecret(config: ConnectionConfig, secretStore: SecretStore, secret: String?): Long {
+        val database = db.writableDatabase
+        database.beginTransaction()
+        try {
+            val id = insert(config)
+            if (id <= 0) return -1L
+            if (!secretStore.put(secretRef(id), secret)) return -1L
+            database.setTransactionSuccessful()
+            return id
+        } finally {
+            database.endTransaction()
+        }
+    }
+
     /** 返回受影响行数；0 = 记录已不存在（调用方必须提示，不能当作保存成功）。 */
     fun update(config: ConnectionConfig): Int {
         // 注意：update 不能带上 created_at —— 否则每次编辑连接都会把「创建时间」改成当前时间，

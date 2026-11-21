@@ -41,7 +41,11 @@ import io.github.rosemoe.sora.event.ContentChangeEvent
 import io.github.rosemoe.sora.event.PublishSearchResultEvent
 import io.github.rosemoe.sora.widget.CodeEditor
 import io.github.rosemoe.sora.widget.component.Magnifier
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -90,6 +94,8 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     var loading by remember { mutableStateOf(true) }
     var status by remember { mutableStateOf<String?>(null) }
     var dirty by remember { mutableStateOf(false) }
+    val documentOperations = remember { EditorDocumentOperations() }
+    var diskOperationBusy by remember { mutableStateOf(false) }
     var originalMode by remember { mutableStateOf<Int?>(null) }
     var scopeName by remember { mutableStateOf<String?>(null) }
     var charCount by remember { mutableIntStateOf(0) }
@@ -171,6 +177,12 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         // setText 会清空撤销栈：可用态在这里同步（不能在 AndroidView.update 里写状态）
         canUndo = false
         canRedo = false
+        // 重载与版本检查在同一个 UI turn 应用。首次没有 View，仍由 update 落地。
+        editorHolder[0]?.let { editor ->
+            appliedVersion[0] = textVersion
+            editor.setText(text)
+            editor.setSelection(0, 0, true)
+        }
     }
 
     /** 撤销 / 重做按钮的可用态（编辑器事件与各动作后都要同步）。 */
@@ -210,6 +222,10 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     /** 离开编辑器：未保存时弹「保存 / 放弃 / 取消」，避免手势返回静默丢修改 */
     fun attemptLeave() {
+        if (documentOperations.inProgress) {
+            status = "文件操作尚未结束，请稍候"
+            return
+        }
         if (!dirty) {
             onBack()
             return
@@ -278,63 +294,93 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
         ed.setSelection(target, column, true)
     }
 
-    /** 实际写盘（[useCharset] = 显式编码；正常保存传当前 charset）。 */
-    fun performSave(ed: CodeEditor, useCharset: String, onSaved: () -> Unit = {}) {
-        scope.launch {
-            val outcome = saveText(container, uri, ed.text.toString(), useCharset, originalMode)
-            status = saveStatusText(outcome, useCharset)
+    /** 保存、保存预检和重载不能同时占用同一文档；输入仍可继续。 */
+    fun launchDocumentOperation(block: suspend (Long) -> Unit) {
+        val revision = documentOperations.begin() ?: run {
+            status = "文件操作尚未结束，请稍候"
+            return
+        }
+        diskOperationBusy = true
+        scope.launch(start = CoroutineStart.UNDISPATCHED) {
+            try {
+                block(revision)
+            } finally {
+                documentOperations.end()
+                diskOperationBusy = false
+            }
+        }
+    }
+
+    /** 只允许已写入的版本清除修改标志或执行「保存并离开」。 */
+    fun requestSave(useCharset: String? = null, overwrite: Boolean = false, onSaved: () -> Unit = {}) {
+        val ed = editorHolder[0] ?: return
+        if (confirmOverwrite) return
+        launchDocumentOperation { revision ->
+            val text = ed.text.toString()
+            if (!overwrite) {
+                val before = meta
+                val now = statQuietly(container, uri)
+                currentCoroutineContext().ensureActive()
+                if (before != null && fileChangedSince(before, now)) {
+                    pendingSaveCharset = useCharset
+                    pendingSaveDone = onSaved
+                    confirmOverwrite = true
+                    return@launchDocumentOperation
+                }
+            }
+            val saveCharset = useCharset ?: charset
+            val outcome = saveText(container, uri, text, saveCharset, originalMode)
+            currentCoroutineContext().ensureActive()
+            val result = saveStatusText(outcome, saveCharset)
+            status = result
             if (outcome.ok) {
                 charset = outcome.charset
-                dirty = false
-                // 刷新元数据：它是「文件是否被外部改动」的判定基准
-                meta = statQuietly(container, uri) ?: meta
+                // stat 挂起时也可能收到新输入，必须在刷新基准后再判定版本。
+                val savedMeta = statQuietly(container, uri)
+                currentCoroutineContext().ensureActive()
+                meta = savedMeta ?: meta
                 container.browser.refreshAll()
-                onSaved()
+                if (documentOperations.isCurrent(revision)) {
+                    dirty = false
+                    onSaved()
+                } else {
+                    status = "$result；之后的修改尚未保存"
+                }
             }
         }
     }
 
-    /**
-     * 保存入口：先看磁盘上的文件是否被外部改动过（NP `save_inzip_tips` 同款提示），
-     * 改过就弹确认（避免静默覆盖别人的改动），没改过直接写。
-     */
-    fun requestSave(useCharset: String? = null, onSaved: () -> Unit = {}) {
-        val ed = editorHolder[0] ?: return
-        scope.launch {
-            val before = meta
-            val now = statQuietly(container, uri)
-            if (before != null && fileChangedSince(before, now)) {
-                pendingSaveCharset = useCharset
-                pendingSaveDone = onSaved
-                confirmOverwrite = true
-                return@launch
-            }
-            performSave(ed, useCharset ?: charset, onSaved)
-        }
-    }
-
-    /**
-     * 重新加载：整篇重读（[charsetOverride] 非空 = NP「指定编码重新加载」，空 = 自动识别）。
-     * 文件在此期间涨到打开上限之外时取消（不硬撑出 OOM）。
-     */
+    /** 重读结果只允许替换发起请求时的版本（包括已确认丢弃的那个版本）。 */
     fun reload(charsetOverride: String?) {
         val override = charsetOverride?.takeIf { it.isNotEmpty() }
-        scope.launch {
+        launchDocumentOperation { revision ->
             try {
                 val vfs = container.resolveSession(uri) ?: throw IllegalStateException("会话不可用")
                 val info = withContext(Dispatchers.IO) { vfs.stat(uri) }
-                if (editorOpenPlan(info.size).decision == EditorOpenDecision.REFUSE) {
+                val plan = editorOpenPlan(info.size)
+                if (plan.decision == EditorOpenDecision.REFUSE) {
                     status = "文件已超过 ${Fmt.size(OPEN_LIMIT_BYTES)}，已取消重新加载"
-                    return@launch
+                    return@launchDocumentOperation
+                }
+                val decoded = readWholeText(vfs, uri, override)
+                currentCoroutineContext().ensureActive()
+                if (!documentOperations.isCurrent(revision)) {
+                    status = "重新加载期间有新修改，已保留当前内容"
+                    return@launchDocumentOperation
+                }
+                if (decoded == null) {
+                    status = "文件过大（超过 ${Fmt.size(OPEN_LIMIT_BYTES)}），已取消重新加载"
+                    return@launchDocumentOperation
                 }
                 meta = info
                 originalMode = info.permissions
-                autoFluent = editorOpenPlan(info.size).autoFluent
-                if (!openWhole(vfs, override)) {
-                    status = "文件过大（超过 ${Fmt.size(OPEN_LIMIT_BYTES)}），已取消重新加载"
-                    return@launch
-                }
+                autoFluent = plan.autoFluent
+                charset = decoded.charset
+                pushText(decoded.text)
+                dirty = false
                 status = "已重新加载（$charset）"
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 status = "重新加载失败：${e.message ?: "会话不可用"}"
             }
@@ -343,6 +389,11 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     /** 重新加载入口：有未保存修改时先确认（修改会被丢弃）。 */
     fun requestReload(charsetOverride: String?) {
+        if (editorHolder[0] == null || confirmOverwrite) return
+        if (documentOperations.inProgress) {
+            status = "文件操作尚未结束，请稍候"
+            return
+        }
         if (dirty) {
             pendingReloadCharset = charsetOverride
             confirmReload = true
@@ -589,7 +640,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             onBack = { attemptLeave() },
             canUndo = canUndo,
             canRedo = canRedo,
-            canSave = dirty,
+            canSave = dirty && !diskOperationBusy,
             menuInput = menuInput,
             onUndo = { editorHolder[0]?.let { it.undo(); syncUndoState(it) } },
             onRedo = { editorHolder[0]?.let { it.redo(); syncUndoState(it) } },
@@ -631,6 +682,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                                 // 编辑即「已修改」；整体换文本（装载/重载）不算（撤销栈由 pushText 重置）
                                 subscribeEvent(ContentChangeEvent::class.java) { event, _ ->
                                     if (event.action != ContentChangeEvent.ACTION_SET_NEW_TEXT) {
+                                        documentOperations.changed()
                                         dirty = true
                                         charCount = text.length
                                         lineTotal = this.lineCount
@@ -891,10 +943,9 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             confirmLabel = "覆盖保存",
             onConfirm = {
                 confirmOverwrite = false
-                val ed = editorHolder[0]
                 val done = pendingSaveDone
                 pendingSaveDone = {}
-                if (ed != null) performSave(ed, pendingSaveCharset ?: charset, done)
+                requestSave(useCharset = pendingSaveCharset, overwrite = true, onSaved = done)
             },
             onDismiss = {
                 confirmOverwrite = false

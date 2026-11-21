@@ -193,4 +193,18 @@ class SftpVfsTest {
         assertTrue("应当抛出认证失败，而不是超时或崩溃", authFailed)
         runCatching { badVfs.close() }
     }
+
+    @Test
+    fun `空文件创建真实落盘且缺失父目录必须报错`() = runTest {
+        vfs.connect()
+        vfs.touch(uri("/empty.txt"))
+        assertTrue(Files.isRegularFile(root.resolve("empty.txt")))
+        assertEquals(0L, Files.size(root.resolve("empty.txt")))
+        assertTrue(runCatching { vfs.touch(uri("/missing/empty.txt")) }.isFailure)
+        assertTrue(!Files.exists(root.resolve("missing/empty.txt")))
+        val writer = vfs.openWrite(uri("/missing/zero.txt"), 0, 0)
+        try {
+            assertTrue(runCatching { writer.commit() }.isFailure)
+        } finally { writer.abort() }
+    }
 }

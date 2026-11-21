@@ -1,10 +1,12 @@
 package com.u707t.panelfm.ui.browser
 
 import com.u707t.panelfm.core.model.ConflictInfo
+import com.u707t.panelfm.core.model.ConnectionConfig
 import com.u707t.panelfm.core.model.SortSpec
 import com.u707t.panelfm.core.transfer.TransferRequest
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
 import com.u707t.panelfm.core.vfs.FileMetadata
+import com.u707t.panelfm.core.vfs.SpaceInfo
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
 
@@ -45,6 +47,25 @@ data class PaneTab(
     val back: List<VfsUri> = emptyList(),
     val forward: List<VfsUri> = emptyList(),
 )
+
+/** Rebuild the active tab identity from the history target; never inherit the departing account. */
+internal fun PaneTab.atHistoricalLocation(target: VfsUri, lookup: (VfsUri) -> ConnectionConfig?): PaneTab {
+    val remote = target.scheme != "local" && target.scheme != "archive"
+    val config = if (remote) lookup(target) else null
+    val connection = when {
+        !remote -> null
+        target.connectionIdentityCount() == 1 -> VfsUris.connectionId(target)
+        else -> config?.id
+    }
+    val stamped = if (config != null && config.id == connection) storedPathWithConnection(target, config) else target
+    val targetLabel = when {
+        config != null && config.id == connection -> config.name
+        target.sameMount(uri) -> label
+        target.scheme == "local" && target.authority == "emulated" -> "内部存储"
+        else -> target.authority
+    }
+    return copy(uri = stamped, connectionId = connection, label = targetLabel)
+}
 
 data class PaneState(
     val tabs: List<PaneTab> = listOf(PaneTab(VfsUri.of("local", "emulated", "/"), label = "内部存储")),
@@ -112,6 +133,8 @@ data class PaneState(
      * 现在条件变化只在内存里重算 [items]（见 [applyPaneFilter]）。
      */
     val unfilteredItems: List<FileMetadata> = emptyList(),
+    /** 用户改变过此窗格的位置；后台刷新与启动恢复不置位。 */
+    val hasNavigated: Boolean = false,
 ) {
     val tab: PaneTab get() = tabs.getOrElse(activeTab) { tabs.first() }
     val uri: VfsUri get() = tab.uri
@@ -119,6 +142,22 @@ data class PaneState(
     val dirCount: Int get() = items.count { it.isDirectory }
     val fileCount: Int get() = items.size - dirCount
     val filtered: Boolean get() = search.isNotBlank() || filterKind != null
+
+    /** 列表返回时使用提交那一刻的过滤条件，而不是请求发出时的条件。 */
+    internal fun withLoadedListing(listed: List<FileMetadata>, space: SpaceInfo?): PaneState {
+        val visible = applyPaneFilter(listed, search, filterKind)
+        return applyPendingReveal(visible).copy(
+            items = visible,
+            unfilteredItems = listed,
+            loading = false,
+            loadProgress = null,
+            error = null,
+            space = space,
+            loadedUri = VfsUris.stripped(uri).toString(),
+            selectionAnchor = null,
+            tapAnchor = null,
+        ).withSelectionPruned(visible)
+    }
 
     /**
      * 把选择集夹到「当前列表里真实存在的项」上。
@@ -181,6 +220,13 @@ data class PaneState(
             ?.let { encoded -> runCatching { VfsUri.parse(VfsUri.decodeHost(encoded)).name }.getOrNull() }
             ?.takeIf { it.isNotEmpty() }
 }
+
+/** Startup may finish after a user navigation; it must not reset that pane. */
+internal fun PaneState.restoreStartupTab(restored: PaneTab?): PaneState =
+    if (restored == null || hasNavigated) this else copy(tabs = listOf(restored), activeTab = 0)
+
+internal fun PaneState.pathToPersist(unavailableSavedPath: String?): String =
+    unavailableSavedPath?.takeUnless { hasNavigated } ?: uri.toString()
 
 /** 搜索结果（MT 的搜索反馈：条数上限 / 主动停止 / 扫描量） */
 data class SearchOutcome(
@@ -457,4 +503,5 @@ data class SpaceWarning(
     val request: TransferRequest,
     val needBytes: Long,
     val freeBytes: Long,
+    val clipboardRevision: Long? = null,
 )

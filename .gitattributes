@@ -1,0 +1,2 @@
+# Keep reviewed vendor bytes stable on Windows and Linux.
+app/src/main/assets/office/vendor/* -text

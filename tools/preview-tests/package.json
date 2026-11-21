@@ -1,0 +1,6 @@
+{
+  "name": "panelfm-preview-tests",
+  "private": true,
+  "scripts": { "test": "node --test preview-security.test.cjs" },
+  "devDependencies": { "jsdom": "27.4.0" }
+}

@@ -327,9 +327,10 @@ internal fun installApkBundle(
                         val pending = android.app.PendingIntent.getBroadcast(
                             context,
                             sessionId,
-                            android.content.Intent(com.u707t.panelfm.service.ACTION_INSTALL_RESULT)
-                                .setPackage(context.packageName),
-                            android.app.PendingIntent.FLAG_IMMUTABLE or android.app.PendingIntent.FLAG_UPDATE_CURRENT,
+                            android.content.Intent(context, com.u707t.panelfm.service.InstallResultReceiver::class.java)
+                                .setAction(com.u707t.panelfm.service.ACTION_INSTALL_RESULT),
+                            android.app.PendingIntent.FLAG_UPDATE_CURRENT or
+                                (if (android.os.Build.VERSION.SDK_INT >= 31) android.app.PendingIntent.FLAG_MUTABLE else 0),
                         )
                         session.commit(pending.intentSender)
                     }

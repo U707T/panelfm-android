@@ -26,6 +26,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.u707t.panelfm.core.ui.HistoryButton
 import com.u707t.panelfm.core.vfs.FileMetadata
+import com.u707t.panelfm.core.vfs.VfsUri
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -100,16 +101,31 @@ object BatchRename {
         item.name to newName(expression, item, i, find, replace, useRegex)
     }
 
+    internal data class Entry(val source: FileMetadata, val newName: String, val target: VfsUri)
+
+    internal fun plan(
+        items: List<FileMetadata>,
+        expression: String,
+        find: String,
+        replace: String,
+        useRegex: Boolean,
+    ): List<Entry> = items.mapIndexedNotNull { index, item ->
+        val name = newName(expression, item, index, find, replace, useRegex)
+        val parent = item.uri.parent ?: return@mapIndexedNotNull null
+        if (name == item.name || name.isBlank()) null else Entry(item, name, parent.child(name))
+    }
+
+    internal fun duplicateTargets(plan: List<Entry>): Set<VfsUri> =
+        plan.groupingBy { it.target }.eachCount().filterValues { it > 1 }.keys
+
     fun hasConflict(
         items: List<FileMetadata>,
         expression: String,
         find: String = "",
         replace: String = "",
         useRegex: Boolean = false,
-    ): Boolean {
-        val names = items.mapIndexed { i, item -> newName(expression, item, i, find, replace, useRegex) }
-        return names.size != names.distinct().size
-    }
+    ): Boolean = duplicateTargets(plan(items, expression, find, replace, useRegex)).isNotEmpty()
+
 }
 
 @Composable
@@ -136,6 +152,9 @@ fun BatchRenameDialog(
     }
     val regexError = useRegex && find.isNotEmpty() &&
         runCatching { Regex(find) }.isFailure
+    val duplicateTargets = remember(items, expression, find, replace, useRegex) {
+        BatchRename.hasConflict(items, expression, find, replace, useRegex)
+    }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -208,9 +227,9 @@ fun BatchRenameDialog(
                 if (items.size > 8) {
                     Text("… 共 ${items.size} 项", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                if (BatchRename.hasConflict(items, expression, find, replace, useRegex)) {
+                if (duplicateTargets) {
                     Text(
-                        "注意：表达式会产生重名，执行时同名的会被跳过",
+                        "表达式会产生重复目标，请调整后再执行",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                         modifier = Modifier.padding(top = 6.dp),
@@ -220,7 +239,7 @@ fun BatchRenameDialog(
         },
         confirmButton = {
             TextButton(
-                enabled = !regexError,
+                enabled = !regexError && !duplicateTargets,
                 onClick = { onConfirm(expression, find, replace, useRegex); onDismiss() },
             ) { Text("执行") }
         },

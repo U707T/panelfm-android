@@ -215,6 +215,7 @@ class ArchiveVfs(
         val modified: Long,
         val isDirectory: Boolean,
         val source: Any,          // ZipArchiveEntry / SevenZArchiveEntry / TarArchiveEntry
+        val ordinal: Int = -1,    // 顺序格式中的原始条目序号，包含被安全过滤掉的条目
     )
 
     override suspend fun connect() {
@@ -273,6 +274,7 @@ class ArchiveVfs(
                 // 不给口令连条目名都读不出来。
                 val sz = sevenZFile()
                 sevenZ = sz
+                var ordinal = 0
                 var e = sz.nextEntry
                 while (e != null) {
                     currentCoroutineContext().ensureActive()
@@ -285,13 +287,16 @@ class ArchiveVfs(
                             modified = e.lastModifiedDate?.time ?: -1L,
                             isDirectory = e.isDirectory,
                             source = e,
+                            ordinal = ordinal,
                         )
                     }
+                    ordinal++
                     e = sz.nextEntry
                 }
             }
             ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2, ArchiveKind.TAR_XZ -> {
                 openTar().use { tar ->
+                    var ordinal = 0
                     var e = tar.nextEntry
                     while (e != null) {
                         currentCoroutineContext().ensureActive()
@@ -304,8 +309,10 @@ class ArchiveVfs(
                                 modified = e.lastModifiedDate?.time ?: -1L,
                                 isDirectory = e.isDirectory,
                                 source = e,
+                                ordinal = ordinal,
                             )
                         }
+                        ordinal++
                         e = tar.nextEntry
                     }
                 }
@@ -313,6 +320,7 @@ class ArchiveVfs(
             ArchiveKind.CPIO -> {
                 BufferedInputStream(localFile.inputStream(), 64 * 1024).use { raw ->
                     CpioArchiveInputStream(raw).use { cpio ->
+                        var ordinal = 0
                         var e = cpio.nextEntry
                         while (e != null) {
                             currentCoroutineContext().ensureActive()
@@ -325,8 +333,10 @@ class ArchiveVfs(
                                     modified = e.lastModifiedDate?.time ?: -1L,
                                     isDirectory = e.isDirectory,
                                     source = e,
+                                    ordinal = ordinal,
                                 )
                             }
+                            ordinal++
                             e = cpio.nextEntry
                         }
                     }
@@ -335,6 +345,7 @@ class ArchiveVfs(
             ArchiveKind.AR -> {
                 BufferedInputStream(localFile.inputStream(), 64 * 1024).use { raw ->
                     ArArchiveInputStream(raw).use { ar ->
+                        var ordinal = 0
                         var e = ar.nextEntry
                         while (e != null) {
                             currentCoroutineContext().ensureActive()
@@ -347,8 +358,10 @@ class ArchiveVfs(
                                     modified = e.lastModifiedDate?.time ?: -1L,
                                     isDirectory = e.isDirectory,
                                     source = e,
+                                    ordinal = ordinal,
                                 )
                             }
+                            ordinal++
                             e = ar.nextEntry
                         }
                     }
@@ -357,6 +370,7 @@ class ArchiveVfs(
             ArchiveKind.RAR -> {
                 // 列条目不一定要口令（RAR 通常只加密数据、不加密文件名）；头加密见下方特判。
                 rarArchive().use { ra ->
+                    var ordinal = 0
                     var e = ra.nextFileHeader()
                     while (e != null) {
                         currentCoroutineContext().ensureActive()
@@ -369,8 +383,10 @@ class ArchiveVfs(
                                 modified = e.mTime?.time ?: -1L,
                                 isDirectory = e.isDirectory,
                                 source = e,
+                                ordinal = ordinal,
                             )
                         }
+                        ordinal++
                         e = ra.nextFileHeader()
                     }
                     // 头加密的 RAR4：junrar 会「打开成功但一个条目都读不出来」（不抛异常）。
@@ -870,14 +886,14 @@ class ArchiveVfs(
                 }
             }
             ArchiveKind.SEVEN_Z -> {
-                // 7z 顺序读取：重新打开并跳到目标条目。必须 name + size 一起匹配：
-                // 同名条目（追加/重复打包）只比名字会读到第一份的内容，而索引保留的是最后一份。
+                // 以原始序号定位最后一个索引条目；同名同尺寸也可能是不同内容。
                 val sz = sevenZFile()
                 val target = entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
+                var ordinal = 0
                 var e = sz.nextEntry
                 var found: org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry? = null
                 while (e != null) {
-                    if (e.name == target.name && e.size == target.size) {
+                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
                         found = e
                         break
                     }
@@ -892,10 +908,11 @@ class ArchiveVfs(
             ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2, ArchiveKind.TAR_XZ -> {
                 val tar = openTar()
                 val target = entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry
+                var ordinal = 0
                 var e = tar.nextEntry
                 var found: org.apache.commons.compress.archivers.tar.TarArchiveEntry? = null
                 while (e != null) {
-                    if (e.name == target.name && e.size == target.size) {
+                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
                         found = e
                         break
                     }
@@ -912,9 +929,10 @@ class ArchiveVfs(
                 val cpio = CpioArchiveInputStream(BufferedInputStream(localFile.inputStream(), 64 * 1024))
                 val target = entry.source as CpioArchiveEntry
                 var match: CpioArchiveEntry? = null
+                var ordinal = 0
                 var e = cpio.nextEntry
                 while (e != null) {
-                    if (e.name == target.name && e.size == target.size) {
+                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
                         match = e
                         break
                     }
@@ -930,9 +948,10 @@ class ArchiveVfs(
                 val ar = ArArchiveInputStream(BufferedInputStream(localFile.inputStream(), 64 * 1024))
                 val target = entry.source as ArArchiveEntry
                 var match: ArArchiveEntry? = null
+                var ordinal = 0
                 var e = ar.nextEntry
                 while (e != null) {
-                    if (e.name == target.name && e.size == target.size) {
+                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
                         match = e
                         break
                     }
@@ -960,14 +979,15 @@ class ArchiveVfs(
                 }
             }
             ArchiveKind.RAR -> {
-                // junrar 的 FileHeader 没有 equals（identity 比较），跨实例按名 + 大小重新匹配；
+                // junrar 的 FileHeader 跨实例用原始序号定位，并校验名称/大小；
                 // 顺序扫描到目标条目由 Junrar 的 solid 逻辑负责（solid 包会从头重放）。
                 val ra = rarArchive()
                 val target = entry.source as FileHeader
                 var match: FileHeader? = null
+                var ordinal = 0
                 var e = ra.nextFileHeader()
                 while (e != null) {
-                    if (e.fileName == target.fileName && e.fullUnpackSize == target.fullUnpackSize) {
+                    if (ordinal++ == entry.ordinal && e.fileName == target.fileName && e.fullUnpackSize == target.fullUnpackSize) {
                         match = e
                         break
                     }

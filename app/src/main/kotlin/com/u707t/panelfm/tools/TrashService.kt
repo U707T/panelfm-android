@@ -36,6 +36,49 @@ class TrashService(
 
     private val dir: File get() = File(appDirs.trashDir).apply { mkdirs() }
     private val indexFile: File get() = File(dir, "index.json")
+    private val metadataDir: File get() = File(dir, ".entries").apply { mkdirs() }
+
+    private fun json(entry: Entry): JSONObject = JSONObject().apply {
+        put("id", entry.id); put("name", entry.name); put("originalPath", entry.originalPath)
+        put("trashName", entry.trashName); put("size", entry.size); put("deletedAt", entry.deletedAt)
+        put("isDirectory", entry.isDirectory)
+    }
+
+    private fun parseEntry(o: JSONObject): Entry? {
+        val trashName = o.optString("trashName")
+        // 索引/sidecar 不得把回收站操作引到目录外。
+        if (trashName.isBlank() || trashName == "." || trashName == ".." || trashName.contains('/') || trashName.contains('\\')) return null
+        return Entry(o.optString("id"), o.optString("name"), o.optString("originalPath"), trashName,
+            o.optLong("size", 0L), o.optLong("deletedAt", 0L), o.optBoolean("isDirectory", false))
+    }
+
+    /** 先存恢复路径，再移动文件。进程死在移动与总索引落盘之间，sidecar 仍能找回。 */
+    private fun saveMetadata(entry: Entry, pending: Boolean): Boolean {
+        val target = File(metadataDir, entry.trashName + ".json")
+        val tmp = File(metadataDir, entry.trashName + ".json.tmp")
+        return runCatching {
+            java.io.FileOutputStream(tmp).use { out ->
+                out.write(json(entry).apply { put("pending", pending) }.toString().toByteArray(Charsets.UTF_8))
+                out.fd.sync()
+            }
+            Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            true
+        }.onFailure { runCatching { tmp.delete() } }.getOrDefault(false)
+    }
+
+    /** 不跟随链接，按实际叶文件求和；目录 inode 长度不能当作目录容量。 */
+    private fun diskBytes(file: File): Long {
+        var total = 0L
+        Files.walk(file.toPath()).use { paths ->
+            paths.forEach { path ->
+                if (Files.isRegularFile(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                    val size = Files.size(path)
+                    total = if (Long.MAX_VALUE - total < size) Long.MAX_VALUE else total + size
+                }
+            }
+        }
+        return total
+    }
 
     /**
      * 索引读-改-写互斥（第 8 批 🟡1）：
@@ -47,23 +90,28 @@ class TrashService(
 
     @Synchronized
     fun list(): List<Entry> {
-        if (!indexFile.exists()) return emptyList()
-        val text = runCatching { indexFile.readText() }.getOrDefault("[]")
-        val arr = runCatching { JSONArray(text) }.getOrDefault(JSONArray())
-        val out = ArrayList<Entry>()
+        val arr = runCatching { JSONArray(indexFile.readText()) }.getOrDefault(JSONArray())
+        val out = LinkedHashMap<String, Entry>()
         for (i in 0 until arr.length()) {
             val o = arr.optJSONObject(i) ?: continue
-            out += Entry(
-                id = o.optString("id"),
-                name = o.optString("name"),
-                originalPath = o.optString("originalPath"),
-                trashName = o.optString("trashName"),
-                size = o.optLong("size", 0L),
-                deletedAt = o.optLong("deletedAt", 0L),
-                isDirectory = o.optBoolean("isDirectory", false),
-            )
+            parseEntry(o)?.let { out[it.trashName] = it }
         }
-        return out.sortedByDescending { it.deletedAt }
+        metadataDir.listFiles()?.filter { it.isFile && it.name.endsWith(".json") }?.forEach { file ->
+            runCatching {
+                val o = JSONObject(file.readText())
+                val entry = parseEntry(o) ?: return@runCatching
+                val payload = File(dir, entry.trashName)
+                // 未完成的跨卷复制仍有源文件，不能把半截副本当成已删除条目。
+                val complete = !o.optBoolean("pending", true) || !File(entry.originalPath).exists()
+                if (payload.exists() && complete) out.putIfAbsent(entry.trashName, entry)
+            }
+        }
+        return out.values.map { entry ->
+            val payload = File(dir, entry.trashName)
+            if (entry.isDirectory && payload.isDirectory) {
+                entry.copy(size = runCatching { diskBytes(payload) }.getOrDefault(entry.size))
+            } else entry
+        }.sortedByDescending { it.deletedAt }
     }
 
     private fun save(entries: List<Entry>): Boolean {
@@ -96,6 +144,11 @@ class TrashService(
             } catch (_: AtomicMoveNotSupportedException) {
                 Files.move(tmp.toPath(), indexFile.toPath(), StandardCopyOption.REPLACE_EXISTING)
             }
+            val retained = entries.map { it.trashName }.toSet()
+            metadataDir.listFiles()?.filter { it.isFile && it.name.endsWith(".json") }?.forEach { meta ->
+                val name = meta.name.removeSuffix(".json")
+                if (name !in retained && !File(dir, name).exists()) runCatching { meta.delete() }
+            }
             true
         }.onFailure {
             runCatching { tmp.delete() }
@@ -113,25 +166,24 @@ class TrashService(
                 if (uri.scheme != "local") return@forEach
                 val src = File(localVfs.absolutePath(uri))
                 if (!src.exists()) return@forEach
-                // 同名多选时用递增后缀，避免同一毫秒内互相覆盖（trashName 曾是纯时间戳 + 原名）
-                var trashName = "${System.currentTimeMillis()}-${src.name}"
-                var seq = 1
-                while (File(dir, trashName).exists() && seq < 1000) {
-                    trashName = "${System.currentTimeMillis()}-$seq-${src.name}"
-                    seq++
-                }
+                // 随机短名避免超长源文件名让 payload/sidecar 无法创建。
+                val trashName = "${System.currentTimeMillis()}-${java.util.UUID.randomUUID()}"
                 val dest = File(dir, trashName)
+                val entry = Entry(
+                    id = trashName,
+                    name = src.name,
+                    originalPath = localVfs.absolutePath(uri),
+                    trashName = trashName,
+                    size = diskBytes(src),
+                    deletedAt = System.currentTimeMillis(),
+                    isDirectory = src.isDirectory,
+                )
+                if (!saveMetadata(entry, pending = true)) return@forEach
                 val moved = moveFile(src, dest)
                 if (moved) {
-                    pending += Entry(
-                        id = trashName,
-                        name = src.name,
-                        originalPath = localVfs.absolutePath(uri),
-                        trashName = trashName,
-                        size = runCatching { dest.length() }.getOrDefault(0L),
-                        deletedAt = System.currentTimeMillis(),
-                        isDirectory = dest.isDirectory,
-                    )
+                    // 即使确认元数据写失败，pending sidecar + 源消失也足以恢复条目。
+                    saveMetadata(entry, pending = false)
+                    pending += entry
                     movedPairs += src to dest
                 }
             }

@@ -36,11 +36,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val container = (application as PanelApp).container
-        // 系统「打开方式」：只在首次创建时处理。
-        // savedInstanceState != null 说明是配置变化/进程重建，原 VIEW intent 还在，
-        // 再处理一次会重复复制同一个文件。
-        val incomingView = savedInstanceState == null && intent?.action == Intent.ACTION_VIEW
-        if (incomingView) container.incoming.handle(intent)
+        // ACTION_VIEW 总是交给接收器：同进程重建由其活动请求去重，进程重建则从持久化的
+        // pending URI / Ready 缓存记录恢复。不能把 savedInstanceState 当成文件已接收的证据。
+        val incomingView = intent?.action == Intent.ACTION_VIEW
+        if (incomingView) container.incoming.handle(intent, resumePersisted = savedInstanceState != null)
         setContent {
             val settings by container.settings.collectAsState()
             val dark = when (settings.themeMode) {

@@ -8,7 +8,7 @@
 |---|---|---|
 | `.docx`（含 `.docm` / `.dotx` / `.dotm`） | ✅ | docx-preview（分页、表格、图片、基础版式；宏不执行） |
 | `.xlsx` / `.xls`（含 `.xlsm` / `.xltx` / `.xltm`） | ✅ | SheetJS CE（多工作表用顶部标签切换） |
-| `.ods` / `.fods` | ✅ | 同走 SheetJS（OpenDocument 表格；bundled 0.18.5 实测可解析） |
+| `.ods` / `.fods` | ✅ | 同走 SheetJS（OpenDocument 表格；bundled 0.20.3） |
 | `.pptx`（含 `.pptm` / `.ppsx` / `.potx` / `.potm`） | ✅ | @aiden0z/pptx-renderer（文字/形状/图片/表格/图表/SmartArt） |
 | `.md` / `.markdown` | ✅ | marked（GFM）+ DOMPurify 清洗（见 §5） |
 | `.csv` | ✅ | SheetJS（按表格渲染） |
@@ -29,15 +29,16 @@
 
 ## 3. 关键设计点（改代码前先看）
 
-1. **同源加载 + 全拦截，不联网**：主页面直接 `loadUrl("https://office.panelfm/office/index.html?kind=…")`，
-   所有资源（页面 / JS / CSS / 文件字节）都由 `WebViewClient.shouldInterceptRequest`
-   从 assets / 内存提供；其它 host 一律 404 —— 预览页没有任何出网路径。
+1. **同源离线资源 + CSP**：主页面直接 `loadUrl("https://office.panelfm/office/index.html?kind=…")`，
+   页面 / JS / CSS / 文件字节由 `shouldInterceptRequest` 从 assets / 内存提供，只允许 HTTPS 预览源。
+   响应附 CSP，限制连接目标、内联脚本、表单和嵌入页面；文档链接导航全部拒绝。
+   仍需用真实 WebView 验证不同版本行为，JSDOM 回归不代替浏览器网络边界验收。
    ⚠️ **不要改回 `loadDataWithBaseURL`**：它的主文档是 `data:` URL，一旦拦截器对它回了非 2xx，
    WebView 会把整页升级成 `net::ERR_HTTP_RESPONSE_CODE_FAILURE`（v1.8.0 的线上故障）。
 2. **文件字节走内存**：`readCapped()` 读 ≤16 MB 到 `ByteArray`，每次请求用新的
    `ByteArrayInputStream`（拦截可能被调用多次）。大文件在读之前就被拦下给提示。
-3. **只读 & 最小攻击面**：不开 DOM storage、不注册 JS 桥、`allowFileAccess=false`、
-   `allowContentAccess=false`、`shouldOverrideUrlLoading` 全部拦（页面里没有可跳转的链接）。
+3. **只读 & 最小攻击面**：DOM storage 仅供渲染库使用，不注册 JS 桥，`allowFileAccess=false`、
+   `allowContentAccess=false`，拒绝文档发起的页面导航。表格与 Markdown 均清洗不可信 HTML。
 4. **旧的 .doc / .ppt 不进 WebView**：`OfficeFormats.viewerKindOf()` 返回空串时直接渲染说明页 ——
    避免把二进制垃圾喂给解析器再报一堆看不懂的错。
 5. **`shouldInterceptRequest` 的三条铁律**：
@@ -86,10 +87,10 @@
 
 - **编码统一在 Kotlin 侧**（`RenderScreen.kt`）：文件字节先过 `TextEncodings.decode()`（UTF-8 / GBK /
   Big5…）再转 UTF-8 喂给页面 —— 页面只按 UTF-8 解，中文 GBK 的 md/csv 不乱码；
-- **Markdown**：`marked`（MIT）解析 GFM → `DOMPurify`（Apache-2.0 / MPL-2.0，3.1.6）清洗后进 DOM。
+- **Markdown**：`marked`（MIT）解析 GFM → `DOMPurify`（Apache-2.0 / MPL-2.0，3.4.18）清洗后进 DOM。
   ⚠️ **md 是不可信输入**：marked 不做清洗，漏掉 `sanitize` 就等于给预览页开了个 HTML 注入口。
   链接会被降级成「文字（URL）」——预览页不出网，点了也打不开；
 - **CSV**：复用 SheetJS（`XLSX.read(text, {type:'string'})` → `sheet_to_html`），与 xlsx 共用标签栏；
 - `mode=text`（诊断弹窗「纯文本预览」）对两者都有效：直接显示原文；
 - 真 Chromium 冒烟（沙箱）：`markdown`（含内嵌 `<script>`，确认被 DOMPurify 清掉）、`csv`（中文单元格）、
-  以及 `xlsx` 路径回归（用 `.ods` 样本）全部通过；`viewer 2.0.7` 日志可见。
+  以及 `xlsx` 路径回归（用 `.ods` 样本）全部通过；`viewer 2.5.9` 日志可见。

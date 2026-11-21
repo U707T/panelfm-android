@@ -219,17 +219,12 @@ fun BrowserController.openBookmark(bookmark: com.u707t.panelfm.core.data.Bookmar
  * 与书签共用 [openStoredPath]：网络挂载未连接时先重连 —— 「最近」里同样会留下上次会话的
  * 网络路径，不重连就只能报「未连接」。
  */
-fun BrowserController.openRecentPath(uri: VfsUri) {
-    val conn = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
-        ?: container.connectionByAuthority(uri.scheme, uri.authority)
-    openStoredPath(
-        uri = uri,
-        connectionId = conn?.id ?: com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri),
-        // 根目录没有末级名：留空会让标签页变成一片空白，直接不传（沿用当前标签）
-        label = conn?.name ?: uri.name.takeIf { it.isNotBlank() },
-        failPrefix = "打开路径失败",
-    )
-}
+fun BrowserController.openRecentPath(uri: VfsUri) = openStoredPath(
+    uri = uri,
+    connectionId = null,
+    label = uri.name.takeIf { it.isNotBlank() && (uri.scheme == "local" || uri.scheme == "archive") },
+    failPrefix = "打开路径失败",
+)
 
 /**
  * 书签 / 最近路径的统一打开路径（在**活动窗格**打开）。
@@ -242,20 +237,29 @@ private fun BrowserController.openStoredPath(uri: VfsUri, connectionId: Long?, l
     val side = _state.value.focused
     container.scope.launch {
         try {
-            if (uri.scheme != "local" && container.locator.find(uri) == null) {
-                val config = container.connectionOf(com.u707t.panelfm.core.vfs.VfsUris.connectionId(uri))
-                    ?: container.connectionByAuthority(uri.scheme, uri.authority)
-                    ?: throw VfsException.Unsupported("找不到该连接：${uri.authority}")
-                container.openConnection(config)
-                open(side, uri, config.id, config.name)
-            } else {
-                open(side, uri, connectionId, label)
+            if (uri.scheme == "local" || uri.scheme == "archive") {
+                if (uri.scheme == "archive" && container.locator.find(uri) == null) {
+                    throw VfsException.Unsupported("压缩包尚未打开：${uri.authority}")
+                }
+                open(side, uri, label = label)
+                return@launch
             }
+            val config = connectionForStoredPath(uri, connectionId)
+                ?: throw VfsException.Unsupported("找不到该连接：${uri.authority}")
+            val stamped = storedPathWithConnection(uri, config)
+            if (container.locator.find(stamped) == null) container.openConnection(config)
+            open(side, stamped, config.id, label ?: config.name)
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             showStatus((e as? VfsException)?.userMessage ?: "$failPrefix：${e.message}")
         }
     }
 }
+
+/** Legacy S3 paths use a bucket authority; use the same lookup as other navigation. */
+internal fun BrowserController.connectionForStoredPath(uri: VfsUri, savedId: Long? = null): ConnectionConfig? =
+    container.connectionForUri(storedPathLookupUri(uri, savedId))
 
 /** 清空全部书签（书签抽屉 ⋮ →「清空书签」） */
 fun BrowserController.clearBookmarks() {

@@ -37,6 +37,14 @@ import java.io.OutputStream
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
+internal const val FTPS_ENDPOINT_CHECKING_ENABLED = true
+
+internal fun ftpsTrustManager(
+    trustSelfSigned: Boolean,
+    systemProvider: () -> javax.net.ssl.X509TrustManager,
+): javax.net.ssl.X509TrustManager =
+    if (trustSelfSigned) com.u707t.panelfm.core.vfs.TlsTrust.trustManager else systemProvider()
+
 /**
  * FTP / FTPS 协议实现（commons-net）。
  *
@@ -51,6 +59,8 @@ class FtpVfs(
     private val cfg: FtpConfig,
     private val env: VfsEnv,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + env.dispatchers.vfs),
+    private val clientFactory: (() -> FTPClient)? = null,
+    private val systemTrustManagerProvider: (() -> javax.net.ssl.X509TrustManager)? = null,
 ) : VirtualFileSystem {
 
     override val id: String = "${if (cfg.tls) "ftps" else "ftp"}:${cfg.host}:${cfg.port}"
@@ -81,8 +91,17 @@ class FtpVfs(
 
     // ------------------------------------------------------------------ 连接
 
+    private fun defaultSystemTrustManager(): javax.net.ssl.X509TrustManager {
+        val factory = javax.net.ssl.TrustManagerFactory.getInstance(
+            javax.net.ssl.TrustManagerFactory.getDefaultAlgorithm(),
+        )
+        factory.init(null as java.security.KeyStore?)
+        return factory.trustManagers.filterIsInstance<javax.net.ssl.X509TrustManager>().firstOrNull()
+            ?: throw IllegalStateException("系统未提供 X509 信任管理器")
+    }
+
     private fun newClient(): FTPClient {
-        val c: FTPClient = when {
+        val c: FTPClient = clientFactory?.invoke() ?: when {
             cfg.implicitTls -> FTPSClient(true)
             cfg.tls -> FTPSClient(false)
             else -> FTPClient()
@@ -93,8 +112,12 @@ class FtpVfs(
         c.controlEncoding = runCatching { java.nio.charset.Charset.forName(cfg.encoding).name() }
             .getOrElse { "UTF-8" }
         c.listHiddenFiles = true
-        if (c is FTPSClient && cfg.trustSelfSigned) {
-            c.trustManager = com.u707t.panelfm.core.vfs.TlsTrust.trustManager
+        if (c is FTPSClient) {
+            c.isEndpointCheckingEnabled = FTPS_ENDPOINT_CHECKING_ENABLED
+            c.trustManager = ftpsTrustManager(
+                cfg.trustSelfSigned,
+                systemTrustManagerProvider ?: ::defaultSystemTrustManager,
+            )
         }
         return c
     }
@@ -112,7 +135,6 @@ class FtpVfs(
                 if (c is FTPSClient) {
                     c.execPBSZ(0)
                     c.execPROT("P")
-                    runCatching { c.execCCC() }   // CCC 非必需，部分服务器不支持
                 }
                 if (!c.login(cfg.user, cfg.password ?: "")) {
                     throw VfsException.Auth("登录失败（${c.replyCode} ${c.replyString}）")

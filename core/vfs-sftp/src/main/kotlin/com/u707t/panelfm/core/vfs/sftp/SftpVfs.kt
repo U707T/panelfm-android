@@ -368,23 +368,25 @@ class SftpVfs(
 
         override suspend fun commit() {
             if (finished) return
-            finished = true
-            // 0 字节文件（touch）可能从未 write → 这里补一次 ensureOpen，
-            // 保证 part 文件真实存在后再 rename（旧实现会「成功」但不产生文件）
-            runCatching { ensureOpen() }
-            runCatching { handle?.close() }
-            handle = null
-            val ch = channel
-            channel = null
+            // 0 字节写入也必须真实创建 part。失败不能转换成 channel=null 的成功空操作。
+            ensureOpen()
+            val ch = checkNotNull(channel) { "SFTP 写入通道未打开" }
             try {
                 withContext(env.dispatchers.vfs) {
-                    ch?.rename(partUri.path, target.path, SftpClient.CopyMode.Overwrite)
+                    checkNotNull(handle).close()
+                    handle = null
+                    ch.rename(partUri.path, target.path, SftpClient.CopyMode.Overwrite)
                 }
+                finished = true
             } catch (e: Exception) {
-                runCatching { ch?.close() }
+                // 保留 channel 给 abort 清除 part；失败后不得再次打开并截断 part。
                 throw mapSftp(e, target)
+            } finally {
+                if (finished) {
+                    runCatching { ch.close() }
+                    channel = null
+                }
             }
-            runCatching { ch?.close() }
             Logx.d("SftpVfs", "commit ${target.path} ($written bytes)")
         }
 

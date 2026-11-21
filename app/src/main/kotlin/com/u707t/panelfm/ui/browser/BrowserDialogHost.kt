@@ -564,18 +564,19 @@ internal fun BrowserDialogHost(
                         container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_PATTERN, expression)
                         if (find.isNotBlank()) container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_SEARCH, find)
                         if (replace.isNotBlank()) container.prefs.addInputHistory(PrefsStore.RecordKeys.RENAME_REPLACE, replace)
-                        // 先算全量计划：跳过「名字没变 / 空名 / 拿不到父目录」的项。
-                        val plan = items.mapIndexedNotNull { index, fm ->
-                            val newName = BatchRename.newName(expression, fm, index, find, replace, useRegex)
-                            val target = fm.uri.parent?.child(newName)
-                            if (newName == fm.name || newName.isBlank() || target == null) null
-                            else Triple(fm, newName, target)
-                        }
+                        // 执行入口也检查计划内重名，不能只依靠对话框的按钮状态。
+                        val plan = BatchRename.plan(items, expression, find, replace, useRegex)
                         if (plan.isEmpty()) {
                             controller.showStatus("批量重命名：没有需要改名的项")
                             return@launch
                         }
-                        val vfs = container.locator.find(plan.first().first.uri)
+                        val duplicates = BatchRename.duplicateTargets(plan)
+                        if (duplicates.isNotEmpty()) {
+                            val shown = duplicates.take(3).joinToString("、") { it.name }
+                            controller.showStatus("未执行：${duplicates.size} 个重复目标（$shown）")
+                            return@launch
+                        }
+                        val vfs = container.locator.find(plan.first().source.uri)
                         if (vfs == null) {
                             controller.showStatus("批量重命名失败：会话不可用")
                             return@launch
@@ -731,7 +732,7 @@ internal fun BrowserDialogHost(
         ui.conflict?.let { info ->
             ConflictDialog(
                 info = info,
-            ) { policy, applyAll -> controller.resolveConflict(policy, applyAll) }
+            ) { policy, applyAll -> controller.resolveConflict(info.token, policy, applyAll) }
         }
         ui.diff?.let { diff ->
             FolderDiffDialog(

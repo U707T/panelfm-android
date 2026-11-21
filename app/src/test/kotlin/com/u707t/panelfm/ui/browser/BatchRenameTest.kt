@@ -85,4 +85,16 @@ class BatchRenameTest {
         val items = (1..20).map { item("f$it.txt") }
         assertEquals(8, BatchRename.preview(items, "{P}").size)
     }
+
+    @Test
+    fun `plan exposes internal duplicates but allows identical names in different parents`() {
+        val a = item("a.txt")
+        val b = item("b.txt")
+        val colliding = BatchRename.plan(listOf(a, b), "same", "", "", false)
+        assertEquals(2, colliding.size)
+        assertEquals(setOf(VfsUri.parse("local://emulated/tmp/same")), BatchRename.duplicateTargets(colliding))
+        val elsewhere = b.copy(uri = VfsUri.parse("local://emulated/other/b.txt"))
+        assertFalse(BatchRename.hasConflict(listOf(a, elsewhere), "same"))
+    }
+
 }

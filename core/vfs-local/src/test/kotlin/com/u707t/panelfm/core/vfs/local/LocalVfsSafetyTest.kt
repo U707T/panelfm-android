@@ -135,4 +135,30 @@ class LocalVfsSafetyTest {
         assertTrue("目标目录必须递归复制", File(dst, "sub/b.txt").readText() == "b")
         assertTrue("源目录必须已删除", !src.exists())
     }
+
+    @Test
+    fun `part 丢失时提交失败不得删除已有目标`() = runBlocking {
+        val base = tempDir()
+        val target = File(base, "keep.txt").apply { writeText("original") }
+        val writer = vfs().openWrite(uri(target.absolutePath), 3, 0)
+        writer.write("new".toByteArray(), 0, 3)
+        writer.close()
+        assertTrue(File(base, partNameOf(target.name)).delete())
+        assertTrue(runCatching { writer.commit() }.isFailure)
+        assertEquals("original", target.readText())
+        writer.abort()
+        assertEquals("original", target.readText())
+    }
+
+    @Test
+    fun `目标变成空目录时不得删除目录后再声称保存成功`() = runBlocking {
+        val base = tempDir()
+        val target = File(base, "keep-directory").apply { mkdir() }
+        val writer = vfs().openWrite(uri(target.absolutePath), 3, 0)
+        writer.write("new".toByteArray(), 0, 3)
+        assertTrue(runCatching { writer.commit() }.isFailure)
+        assertTrue(target.isDirectory)
+        writer.abort()
+        assertTrue(target.isDirectory)
+    }
 }

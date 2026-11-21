@@ -148,27 +148,38 @@ object ApkBundleReader {
 
     private fun readManifest(zip: ZipFile, entry: ZipEntry): ApkManifestInfo? = runCatching {
         zip.getInputStream(entry).use { raw ->
-            ZipInputStream(BufferedInputStream(raw)).use { nested ->
-                var budget = NESTED_SCAN_BUDGET
-                while (true) {
-                    val next = nested.nextEntry ?: return@runCatching null
-                    // 先判后读：ZipInputStream.getNextEntry() 内部会把**上一条目完整解压**掉才能
-                    // 读到下一个 header，所以「读进来再扣预算」等于没拦。已知大小的条目在这里直接放弃。
-                    if (next.size > budget) return@runCatching null
-                    if (next.name == "AndroidManifest.xml") {
-                        if (next.size > MAX_MANIFEST_BYTES) return@runCatching null
-                        val bytes = readAtMost(nested, MAX_MANIFEST_BYTES) ?: return@runCatching null
-                        return@runCatching ApkManifestReader.parse(bytes)
-                    }
-                    // size < 0（data descriptor / 流式 zip）无法预估：只能照读，由 8 MB 总预算兜底
-                    if (next.size > 0) budget -= next.size
-                    if (budget <= 0) return@runCatching null
-                }
-                @Suppress("UNREACHABLE_CODE")
-                null
-            }
+            readNestedManifestBytes(raw)?.let { ApkManifestReader.parse(it) }
         }
     }.getOrNull()
+
+    /** 每个非目标条目都主动限量消费，不能让 nextEntry 隐式解压绕过预算。 */
+    internal fun readNestedManifestBytes(input: java.io.InputStream): ByteArray? {
+        ZipInputStream(BufferedInputStream(input)).use { nested ->
+            var budget = NESTED_SCAN_BUDGET
+            val discard = ByteArray(16 * 1024)
+            repeat(4096) {
+                val next = nested.nextEntry ?: return null
+                if (next.size > budget) return null
+                if (next.name == "AndroidManifest.xml") {
+                    return readAtMost(nested, minOf(MAX_MANIFEST_BYTES, budget))
+                }
+                var zeroReads = 0
+                while (true) {
+                    // 多读至多一个字节即可发现超限，绝不继续隐式跳过整条。
+                    val n = nested.read(discard, 0, minOf(discard.size.toLong(), budget + 1).toInt())
+                    if (n < 0) break
+                    if (n == 0) {
+                        if (++zeroReads >= 3) throw java.io.IOException("嵌套 APK 读取无进展")
+                        continue
+                    }
+                    zeroReads = 0
+                    budget -= n
+                    if (budget < 0) return null
+                }
+            }
+            return null
+        }
+    }
 
     /** 读至多 [maxBytes]；超限返回 null（不把内存在畸形条目上押掉） */
     private fun readAtMost(input: java.io.InputStream, maxBytes: Long): ByteArray? {
