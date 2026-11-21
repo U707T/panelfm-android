@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -50,6 +51,12 @@ import com.u707t.panelfm.core.ui.MtIcon
 import com.u707t.panelfm.core.ui.MtIconButton
 import com.u707t.panelfm.core.ui.MtSpec
 import com.u707t.panelfm.core.ui.MtVectorIcon
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlin.math.roundToInt
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.NaturalOrder
@@ -93,7 +100,10 @@ fun AppsScreen(
     var query by remember { mutableStateOf("") }
     /** 顶栏搜索态（MT：点 🔍 后搜索框占据顶栏） */
     var searching by remember { mutableStateOf(false) }
-    var tab by remember { mutableStateOf(AppTab.USER) }
+    // 左右滑动 / 点标签共用同一个 pager（MT：滑一下就从「用户应用」到「系统应用」）
+    val pagerState = rememberPagerState(initialPage = AppTab.USER.ordinal) { AppTab.entries.size }
+    val tab = AppTab.entries[pagerState.currentPage]
+    val pagerScope = rememberCoroutineScope()
     var apps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
     /** 加载完成前不显示「0 个」（旧实现先把 0 闪出来） */
     var loaded by remember { mutableStateOf(false) }
@@ -122,8 +132,6 @@ fun AppsScreen(
         // 无论成功与否都要收掉「读取中…」：失败时保留缓存（或空列表），不能让副标题一直转
         loaded = true
     }
-
-    val visible = AppList.filter(apps, tab, query)
 
     fun export(app: InstalledApp) {
         if (exporting != null) return
@@ -168,7 +176,9 @@ fun AppsScreen(
                 },
             )
         }
-        AppTabBar(tab = tab, apps = apps, onSelect = { tab = it })
+        AppTabBar(pagerState = pagerState, apps = apps) { index ->
+            pagerScope.launch { pagerState.animateScrollToPage(index) }
+        }
         status?.let {
             Text(
                 it,
@@ -179,30 +189,36 @@ fun AppsScreen(
                 modifier = Modifier.padding(horizontal = 14.dp, vertical = 2.dp),
             )
         }
-        if (loaded && visible.isEmpty()) {
-            EmptyState(
-                title = if (query.isBlank()) "这一页没有应用" else "没有匹配的应用",
-                subtitle = if (query.isBlank()) null else "换个关键字，或切换分页看看",
-            )
-        } else {
-            LazyColumn(Modifier.fillMaxSize()) {
-                items(visible, key = { it.packageName }) { app ->
-                    MtListRow(
-                        title = app.label,
-                        subtitle = AppList.subtitleOf(app),
-                        icon = { AppIcon(pm, app) },
-                        onClick = { detail = app },
-                        trailing = {
-                            Text(
-                                if (exporting == app.packageName) "导出中…" else "导出",
-                                style = MaterialTheme.typography.labelMedium,
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier
-                                    .clickable(enabled = exporting == null) { export(app) }
-                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                            )
-                        },
-                    )
+        HorizontalPager(
+            state = pagerState,
+            modifier = Modifier.weight(1f),
+        ) { page ->
+            val pageApps = AppList.filter(apps, AppTab.entries[page], query)
+            if (loaded && pageApps.isEmpty()) {
+                EmptyState(
+                    title = if (query.isBlank()) "这一页没有应用" else "没有匹配的应用",
+                    subtitle = if (query.isBlank()) null else "换个关键字，或左右滑动切换分页",
+                )
+            } else {
+                LazyColumn(Modifier.fillMaxSize()) {
+                    items(pageApps, key = { it.packageName }) { app ->
+                        MtListRow(
+                            title = app.label,
+                            subtitle = AppList.subtitleOf(app),
+                            icon = { AppIcon(pm, app) },
+                            onClick = { detail = app },
+                            trailing = {
+                                Text(
+                                    if (exporting == app.packageName) "导出中…" else "导出",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier
+                                        .clickable(enabled = exporting == null) { export(app) }
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                )
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -240,40 +256,53 @@ fun AppsScreen(
     }
 }
 
-/** 分页条（MT：用户应用 / 系统应用，选中项加粗 + 主题色下划线） */
+/**
+ * 分页条（MT：用户应用 / 系统应用）。
+ *
+ * 选中项加粗 + 主题色，指示条**跟着 pager 的滑动位置插值**（滑到一半时指示条也在中间，
+ * 不是到站才跳过去）；点标签则是动画滚过去 —— 点与滑是同一个 pager，状态不会打架。
+ */
 @Composable
-private fun AppTabBar(tab: AppTab, apps: List<InstalledApp>, onSelect: (AppTab) -> Unit) {
-    Row(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
-        AppTab.entries.forEach { t ->
-            val selected = t == tab
-            Column(
-                Modifier
-                    .weight(1f)
-                    .clickable { onSelect(t) }
-                    .padding(top = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    "${t.label}  ${AppList.count(apps, t)}",
-                    style = MaterialTheme.typography.bodyMedium.copy(
-                        fontSize = 14.sp,
-                        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-                    ),
-                    color = if (selected) {
-                        MaterialTheme.colorScheme.primary
-                    } else {
-                        MaterialTheme.colorScheme.onSurfaceVariant
-                    },
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                Box(
+private fun AppTabBar(pagerState: androidx.compose.foundation.pager.PagerState, apps: List<InstalledApp>, onSelect: (Int) -> Unit) {
+    val position = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
+        .coerceIn(0f, (AppTab.entries.size - 1).toFloat())
+    val nearest = position.roundToInt()
+    BoxWithConstraints(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+        val tabWidth = maxWidth / AppTab.entries.size
+        Row(Modifier.fillMaxWidth()) {
+            AppTab.entries.forEachIndexed { index, t ->
+                val selected = index == nearest
+                Column(
                     Modifier
-                        .fillMaxWidth()
-                        .height(2.dp)
-                        .background(if (selected) MaterialTheme.colorScheme.primary else Color.Transparent),
-                )
+                        .weight(1f)
+                        .clickable { onSelect(index) }
+                        .padding(top = 10.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        "${t.label}  ${AppList.count(apps, t)}",
+                        style = MaterialTheme.typography.bodyMedium.copy(
+                            fontSize = 14.sp,
+                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+                        ),
+                        color = if (selected) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
             }
         }
+        Box(
+            Modifier
+                .offset(x = tabWidth * position)
+                .width(tabWidth)
+                .height(2.dp)
+                .align(Alignment.BottomStart)
+                .background(MaterialTheme.colorScheme.primary),
+        )
     }
 }
 
