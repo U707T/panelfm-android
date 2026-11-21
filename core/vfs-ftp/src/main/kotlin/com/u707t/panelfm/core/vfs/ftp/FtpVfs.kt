@@ -37,6 +37,14 @@ import java.io.OutputStream
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
+internal const val FTPS_ENDPOINT_CHECKING_ENABLED = true
+
+internal fun ftpsTrustManager(
+    trustSelfSigned: Boolean,
+    systemProvider: () -> javax.net.ssl.X509TrustManager,
+): javax.net.ssl.X509TrustManager =
+    if (trustSelfSigned) com.u707t.panelfm.core.vfs.TlsTrust.trustManager else systemProvider()
+
 /**
  * FTP / FTPS 协议实现（commons-net）。
  *
@@ -105,12 +113,11 @@ class FtpVfs(
             .getOrElse { "UTF-8" }
         c.listHiddenFiles = true
         if (c is FTPSClient) {
-            c.isEndpointCheckingEnabled = true
-            c.trustManager = if (cfg.trustSelfSigned) {
-                com.u707t.panelfm.core.vfs.TlsTrust.trustManager
-            } else {
-                (systemTrustManagerProvider ?: ::defaultSystemTrustManager).invoke()
-            }
+            c.isEndpointCheckingEnabled = FTPS_ENDPOINT_CHECKING_ENABLED
+            c.trustManager = ftpsTrustManager(
+                cfg.trustSelfSigned,
+                systemTrustManagerProvider ?: ::defaultSystemTrustManager,
+            )
         }
         return c
     }
