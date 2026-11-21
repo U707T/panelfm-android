@@ -81,11 +81,13 @@ data class VfsUri(
                     val q = path.indexOf('?', innerStart)
                     val tail = if (q >= 0) path.substring(q + 1) else ""
                     // New format marker identifies an encoded path; an inner ? without it is legacy text.
-                    val marker = pathEncodingMarker(path)
-                    if (q >= 0 && (tail == marker || tail.endsWith("&$marker"))) {
-                        val outerQuery = tail.removeSuffix(if (tail == marker) marker else "&$marker")
-                        query = outerQuery.ifEmpty { null }
-                        path = decodePath(path.substring(0, q))
+                    if (q >= 0) {
+                        val marker = pathEncodingMarker(path.substring(0, q))
+                        if (tail == marker || tail.endsWith("&$marker")) {
+                            val outerQuery = tail.removeSuffix(if (tail == marker) marker else "&$marker")
+                            query = outerQuery.ifEmpty { null }
+                            path = decodePath(path.substring(0, q))
+                        }
                     }
                 }
             } else {
