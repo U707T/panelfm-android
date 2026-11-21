@@ -22,7 +22,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -35,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -44,6 +44,12 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.graphics.SolidColor
+import com.u707t.panelfm.core.ui.MtIcon
+import com.u707t.panelfm.core.ui.MtIconButton
+import com.u707t.panelfm.core.ui.MtSpec
+import com.u707t.panelfm.core.ui.MtVectorIcon
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.common.NaturalOrder
@@ -85,6 +91,8 @@ fun AppsScreen(
     val context = LocalContext.current
     val pm = context.packageManager
     var query by remember { mutableStateOf("") }
+    /** 顶栏搜索态（MT：点 🔍 后搜索框占据顶栏） */
+    var searching by remember { mutableStateOf(false) }
     var tab by remember { mutableStateOf(AppTab.USER) }
     var apps by remember { mutableStateOf<List<InstalledApp>>(emptyList()) }
     /** 加载完成前不显示「0 个」（旧实现先把 0 闪出来） */
@@ -98,7 +106,20 @@ fun AppsScreen(
     var saved by remember { mutableStateOf<SavedApk?>(null) }
 
     LaunchedEffect(Unit) {
-        apps = withContext(Dispatchers.IO) { loadInstalledApps(context) }
+        // ① 先出磁盘缓存（毫秒级）：600+ 个包现扫要 1–2 秒，不能让页面白着
+        val cacheFile = AppListCache.fileOf(context.cacheDir)
+        val cached = withContext(Dispatchers.IO) { AppListCache.read(cacheFile) }
+        if (cached != null) {
+            apps = cached
+            loaded = true
+        }
+        // ② 再后台重扫一遍（用户此时已经在看列表），有变化才替换 + 写回缓存
+        val fresh = withContext(Dispatchers.IO) { loadInstalledApps(context) }
+        if (fresh.isNotEmpty() && fresh != cached) {
+            apps = fresh
+            withContext(Dispatchers.IO) { AppListCache.write(cacheFile, fresh) }
+        }
+        // 无论成功与否都要收掉「读取中…」：失败时保留缓存（或空列表），不能让副标题一直转
         loaded = true
     }
 
@@ -126,25 +147,28 @@ fun AppsScreen(
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
-        MtScreenTopBar(
-            title = "已安装应用",
-            subtitle = if (loaded) {
-                "${AppList.count(apps, tab)} 个（共 ${apps.size}）"
-            } else {
-                "读取中…"
-            },
-            onBack = onBack,
-        )
+        if (searching) {
+            // MT 的搜索：点顶栏 🔍 → 搜索框直接长在顶栏里（不是列表上方多一行输入框）
+            AppSearchBar(
+                query = query,
+                onQueryChange = { query = it },
+                onClose = { searching = false; query = "" },
+            )
+        } else {
+            MtScreenTopBar(
+                title = "已安装应用",
+                subtitle = if (loaded) {
+                    "${AppList.count(apps, tab)} 个（共 ${apps.size}）"
+                } else {
+                    "读取中…"
+                },
+                onBack = onBack,
+                actions = {
+                    MtIconButton(MtIcon.SEARCH, contentDescription = "搜索") { searching = true }
+                },
+            )
+        }
         AppTabBar(tab = tab, apps = apps, onSelect = { tab = it })
-        OutlinedTextField(
-            value = query,
-            onValueChange = { query = it },
-            label = { Text("搜索应用名 / 包名") },
-            singleLine = true,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-        )
         status?.let {
             Text(
                 it,
@@ -283,21 +307,22 @@ private fun AppIcon(pm: PackageManager, app: InstalledApp) {
  */
 private fun loadInstalledApps(context: android.content.Context): List<InstalledApp> {
     val pm = context.packageManager
+    // ⚠️ 一次拿全量：旧实现是 getInstalledApplications + 每个包再 getPackageInfo，
+    // 600+ 个应用 = 600+ 次 Binder 往返（冷启动 1–2 秒的主因之一）。
     @Suppress("DEPRECATION")
-    val infos = runCatching {
-        pm.getInstalledApplications(PackageManager.GET_META_DATA)
-    }.getOrDefault(emptyList())
-    return infos.mapNotNull { ai ->
+    val packages = runCatching { pm.getInstalledPackages(0) }.getOrDefault(emptyList())
+    return packages.mapNotNull { pkg ->
+        val ai = pkg.applicationInfo ?: return@mapNotNull null
         runCatching {
-            val pkg = pm.getPackageInfo(ai.packageName, 0)
             val parts = buildList {
                 ai.sourceDir?.let { add(File(it)) }
                 ai.splitSourceDirs?.forEach { add(File(it)) }
             }
             val bytes = parts.sumOf { f -> runCatching { if (f.isFile) f.length() else 0L }.getOrDefault(0L) }
             InstalledApp(
-                packageName = ai.packageName,
-                label = pm.getApplicationLabel(ai).toString(),
+                packageName = pkg.packageName,
+                label = runCatching { pm.getApplicationLabel(ai).toString() }.getOrNull()
+                    ?: pkg.packageName,
                 versionName = pkg.versionName.orEmpty(),
                 versionCode = if (Build.VERSION.SDK_INT >= 28) {
                     pkg.longVersionCode
@@ -397,4 +422,65 @@ private suspend fun exportApk(
             if (isBundle) runCatching { source.delete() }
         }
     }.getOrElse { ExportResult("提取失败：${it.message}") }
+}
+
+/**
+ * 顶栏内的搜索框（MT 的形态）：← 退出搜索 · 🔍 + 输入框 + 下划线 · ✕ 清空。
+ *
+ * 进入即聚焦并弹键盘；输入实时过滤（[AppList.filter] 是纯函数，600 条也够快）。
+ */
+@Composable
+private fun AppSearchBar(query: String, onQueryChange: (String) -> Unit, onClose: () -> Unit) {
+    val focus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keyboard = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(80)
+        runCatching { focus.requestFocus() }
+        keyboard?.show()
+    }
+    Column(Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(MtSpec.ScreenBarHeight)
+                .padding(start = 4.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            MtIconButton(MtIcon.BACK, contentDescription = "退出搜索", onClick = onClose)
+            Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+                MtVectorIcon(MtIcon.SEARCH, size = 18.dp, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                BasicTextField(
+                    value = query,
+                    onValueChange = onQueryChange,
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyMedium.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(start = 8.dp)
+                        .focusRequester(focus),
+                    decorationBox = { inner ->
+                        Box {
+                            if (query.isEmpty()) {
+                                Text(
+                                    "搜索应用名 / 包名",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
+                                )
+                            }
+                            inner()
+                        }
+                    },
+                )
+            }
+            MtIconButton(MtIcon.CLOSE, contentDescription = "清空", onClick = { onQueryChange("") })
+        }
+        // MT 的搜索框底下是一条细线
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(1.dp)
+                .background(MaterialTheme.colorScheme.outlineVariant),
+        )
+    }
 }
