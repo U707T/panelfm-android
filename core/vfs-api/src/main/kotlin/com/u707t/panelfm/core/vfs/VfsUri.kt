@@ -72,16 +72,21 @@ data class VfsUri(
             var query: String? = null
             val archiveBoundary = if (scheme == "archive") path.indexOf("!/") else -1
             if (archiveBoundary >= 0) {
-                val innerStart = archiveBoundary + 2
-                val q = path.indexOf('?', innerStart)
-                val tail = if (q >= 0) path.substring(q + 1) else ""
-                // 新格式的标记明确声明路径组件已转义。没有标记的旧归档 URI
-                // 把内层 ? 当作文件名字符；宿主 c= 在 !/ 之前则始终属于宿主。
-                val marker = pathEncodingMarker(path)
-                if (q >= 0 && (tail == marker || tail.endsWith("&$marker"))) {
-                    val outerQuery = tail.removeSuffix(if (tail == marker) marker else "&$marker")
-                    query = outerQuery.ifEmpty { null }
-                    path = decodePath(path.substring(0, q))
+                val q = path.indexOf('?', 0)
+                if (q >= 0 && q < archiveBoundary) {
+                    // Legacy form: archive host contains ?c= before the !/ separator.
+                    // Keep it inside path so decodeHost() can recover the host URI.
+                } else {
+                    val innerStart = archiveBoundary + 2
+                    val q = path.indexOf('?', innerStart)
+                    val tail = if (q >= 0) path.substring(q + 1) else ""
+                    // New format marker identifies an encoded path; an inner ? without it is legacy text.
+                    val marker = pathEncodingMarker(path)
+                    if (q >= 0 && (tail == marker || tail.endsWith("&$marker"))) {
+                        val outerQuery = tail.removeSuffix(if (tail == marker) marker else "&$marker")
+                        query = outerQuery.ifEmpty { null }
+                        path = decodePath(path.substring(0, q))
+                    }
                 }
             } else {
                 val q = path.indexOf('?')
