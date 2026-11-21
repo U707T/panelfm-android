@@ -32,7 +32,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -128,13 +128,16 @@ internal fun ApkInfoDialog(
                 Column(Modifier.padding(start = 14.dp)) {
                     Text(
                         title,
-                        style = MaterialTheme.typography.titleLarge.copy(fontSize = 20.sp),
+                        style = MaterialTheme.typography.titleLarge.copy(
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.Bold,
+                        ),
                         maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
                         subtitle,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -178,7 +181,7 @@ internal fun ApkInfoDialog(
                                 modifier = Modifier.padding(bottom = 10.dp),
                             )
                         }
-                        // 紧凑档：13sp、单行省略、行距 3dp —— 15 行能一屏放下。
+                        // 对齐 MT：标签**深色加粗**、值用系统字体（非等宽）、单行省略、行距 2dp。
                         // 值被截断时**点这一行就复制全文**（比在单行省略号上长按选中更好用）。
                         Column {
                             ApkInfoRows.of(s).forEach { (label, value) ->
@@ -186,13 +189,20 @@ internal fun ApkInfoDialog(
                                     label = label,
                                     value = value,
                                     labelWidth = 84.dp,
-                                    labelStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 13.sp),
+                                    // lineHeight 收到 16sp：M3 的 bodyMedium 默认 20sp 行高，
+                                    // 15 行就是 60dp 的纯空白 —— MT 的行距几乎是「字贴字」
+                                    labelStyle = MaterialTheme.typography.bodyMedium.copy(
+                                        fontSize = 13.sp,
+                                        lineHeight = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    ),
                                     valueStyle = MaterialTheme.typography.bodyMedium.copy(
                                         fontSize = 13.sp,
-                                        fontFamily = FontFamily.Monospace,
+                                        lineHeight = 16.sp,
                                     ),
                                     maxLines = 1,
-                                    verticalPadding = 3.dp,
+                                    verticalPadding = 2.dp,
+                                    labelColor = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.clickable {
                                         clipboard.setText(AnnotatedString(value))
                                         controller.showStatus("已复制「$label」")

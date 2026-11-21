@@ -24,6 +24,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
@@ -184,6 +185,7 @@ fun MessageDialog(title: String, message: String, onDismiss: () -> Unit) {
  * @param labelStyle / valueStyle 字号档位（卡片 13sp 紧凑档，结果框 bodySmall）
  * @param maxLines 值最多几行（[Int.MAX_VALUE] = 不限；卡片给 1 行 + 省略号，整行可点复制）
  * @param verticalPadding 行间距
+ * @param labelColor 标签颜色（默认次要色；MT 的 APK 卡片是**深色加粗**，传 onSurface）
  * @param modifier 行级修饰符（卡片用它挂「点击复制」）
  */
 @Composable
@@ -195,6 +197,7 @@ fun InfoRow(
     valueStyle: TextStyle = MaterialTheme.typography.bodySmall,
     maxLines: Int = Int.MAX_VALUE,
     verticalPadding: Dp = 3.dp,
+    labelColor: Color = MaterialTheme.colorScheme.onSurfaceVariant,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -206,7 +209,7 @@ fun InfoRow(
         Text(
             label,
             style = labelStyle,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = labelColor,
             modifier = Modifier.width(labelWidth),
         )
         Text(
