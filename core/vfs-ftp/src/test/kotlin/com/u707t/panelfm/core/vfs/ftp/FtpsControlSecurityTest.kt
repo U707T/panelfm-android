@@ -21,8 +21,9 @@ class FtpsControlSecurityTest {
         var credentialsEncrypted = false
         var configuredTrust: TrustManager? = null
         override fun setTrustManager(trustManager: TrustManager) {
+            // The fake client records configuration; invoking the real FTPS setter
+            // initializes Android/JVM SSL internals and is outside this unit test.
             configuredTrust = trustManager
-            super.setTrustManager(trustManager)
         }
         override fun connect(hostname: String, port: Int) { commands += "CONNECT" }
         override fun getReplyCode() = 220
