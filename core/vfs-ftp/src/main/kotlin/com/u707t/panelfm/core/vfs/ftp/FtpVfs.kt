@@ -52,6 +52,7 @@ class FtpVfs(
     private val env: VfsEnv,
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + env.dispatchers.vfs),
     private val clientFactory: (() -> FTPClient)? = null,
+    private val systemTrustManagerProvider: (() -> javax.net.ssl.X509TrustManager)? = null,
 ) : VirtualFileSystem {
 
     override val id: String = "${if (cfg.tls) "ftps" else "ftp"}:${cfg.host}:${cfg.port}"
@@ -108,7 +109,7 @@ class FtpVfs(
             c.trustManager = if (cfg.trustSelfSigned) {
                 com.u707t.panelfm.core.vfs.TlsTrust.trustManager
             } else {
-                defaultSystemTrustManager()
+                (systemTrustManagerProvider ?: ::defaultSystemTrustManager).invoke()
             }
         }
         return c

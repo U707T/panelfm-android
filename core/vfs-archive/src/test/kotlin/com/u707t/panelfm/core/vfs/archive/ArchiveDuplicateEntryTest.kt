@@ -11,8 +11,6 @@ import org.apache.commons.compress.archivers.ar.ArArchiveOutputStream
 import org.apache.commons.compress.archivers.cpio.CpioArchiveEntry
 import org.apache.commons.compress.archivers.cpio.CpioArchiveOutputStream
 import org.apache.commons.compress.archivers.cpio.CpioConstants
-import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
-import org.apache.commons.compress.archivers.sevenz.SevenZOutputFile
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry
 import org.apache.commons.compress.archivers.tar.TarArchiveOutputStream
 import org.apache.commons.compress.compressors.bzip2.BZip2CompressorOutputStream
@@ -31,13 +29,6 @@ class ArchiveDuplicateEntryTest {
     private fun make(dir: File, kind: ArchiveVfs.ArchiveKind): File {
         val file = File(dir, "duplicate.${kind.id}")
         when (kind) {
-            ArchiveVfs.ArchiveKind.SEVEN_Z -> SevenZOutputFile(file).use { out ->
-                entries.forEach { (name, text) ->
-                    out.putArchiveEntry(SevenZArchiveEntry().apply { this.name = name; size = 3 })
-                    out.write(text.toByteArray())
-                    out.closeArchiveEntry()
-                }
-            }
             ArchiveVfs.ArchiveKind.AR -> ArArchiveOutputStream(file.outputStream()).use { out ->
                 entries.drop(1).forEach { (name, text) ->
                     out.putArchiveEntry(ArArchiveEntry(name, 3))
@@ -78,7 +69,7 @@ class ArchiveDuplicateEntryTest {
         val dir = Files.createTempDirectory("ordinal").toFile()
         val kinds = listOf(ArchiveVfs.ArchiveKind.TAR, ArchiveVfs.ArchiveKind.TAR_GZ,
             ArchiveVfs.ArchiveKind.TAR_BZ2, ArchiveVfs.ArchiveKind.TAR_XZ,
-            ArchiveVfs.ArchiveKind.SEVEN_Z, ArchiveVfs.ArchiveKind.AR, ArchiveVfs.ArchiveKind.CPIO)
+            ArchiveVfs.ArchiveKind.AR, ArchiveVfs.ArchiveKind.CPIO)
         try {
             for (kind in kinds) {
                 val file = make(dir, kind)

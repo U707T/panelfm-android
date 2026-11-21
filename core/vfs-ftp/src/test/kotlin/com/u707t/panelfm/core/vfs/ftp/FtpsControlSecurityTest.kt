@@ -40,13 +40,26 @@ class FtpsControlSecurityTest {
         override fun disconnect() = Unit
     }
 
+    private val strictSystemTrust = object : X509TrustManager {
+        override fun checkClientTrusted(chain: Array<out java.security.cert.X509Certificate>, authType: String) = Unit
+        override fun checkServerTrusted(chain: Array<out java.security.cert.X509Certificate>, authType: String) {
+            if (chain.isEmpty()) throw java.security.cert.CertificateException("empty chain")
+        }
+        override fun getAcceptedIssuers() = emptyArray<java.security.cert.X509Certificate>()
+    }
+
     @Test fun `FTPS 保持控制通道加密并启用证书主机名验证`() = runBlocking {
         for (selfSigned in listOf(false, true)) {
             val client = RecordingFtps()
             val env = VfsEnv(AppDirs("unused", "unused"), PanelDispatchers(Dispatchers.Default, Dispatchers.Default, Dispatchers.Default, Dispatchers.Default))
             val config = ConnectionConfig(type = ConnectionType.FTPS, name = "secure", host = "nas.example", user = "u",
                 options = mapOf(ConnectionConfig.OPT_TRUST_SELF_SIGNED to selfSigned.toString()))
-            val vfs = FtpVfs(FtpConfig.from(config, "password"), env, clientFactory = { client })
+            val vfs = FtpVfs(
+                FtpConfig.from(config, "password"),
+                env,
+                clientFactory = { client },
+                systemTrustManagerProvider = { strictSystemTrust },
+            )
             try {
                 vfs.connect()
                 assertTrue("credentials must stay inside TLS", client.credentialsEncrypted)
