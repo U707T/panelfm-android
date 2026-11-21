@@ -5,6 +5,7 @@ import com.u707t.panelfm.core.common.PanelDispatchers
 import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVfs
+import kotlinx.coroutines.Dispatchers
 import org.junit.Assert.assertThrows
 import org.junit.Assume.assumeNoException
 import org.junit.Test
@@ -14,7 +15,7 @@ import java.nio.file.Files
 class RemoteLocalBoundaryTest {
     private fun vfs(base: File) = LocalVfs(VfsEnv(
         appDirs = AppDirs(File(base, "app").absolutePath, File(base, "cache").absolutePath),
-        dispatchers = PanelDispatchers(),
+        dispatchers = PanelDispatchers(Dispatchers.IO, Dispatchers.IO, Dispatchers.Default, Dispatchers.Default),
     ))
     private fun uri(file: File) = VfsUri.of("local", "root", file.absolutePath)
 
