@@ -129,7 +129,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
 
     // 编辑器实例 + 「待灌入文本」。用普通容器（非 Compose state）避免在组合期写状态。
     val editorHolder = remember { arrayOfNulls<CodeEditor>(1) }
-    var applyText by remember { mutableStateOf<Pair<Int, String>?>(null) }
+    val applyText = remember { arrayOfNulls<Pair<Int, String>>(1) }
     var textVersion by remember { mutableIntStateOf(0) }
     val appliedVersion = remember { intArrayOf(-1) }
     val appliedLanguage = remember { arrayOf<Any?>(NoLanguage) }
@@ -171,7 +171,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
     /** 让编辑器整体换一份文本（初次装载 / 重新加载）。 */
     fun pushText(text: String) {
         textVersion += 1
-        applyText = textVersion to text
+        applyText[0] = textVersion to text
         charCount = text.length
         lineTotal = text.count { it == '\n' } + 1
         // setText 会清空撤销栈：可用态在这里同步（不能在 AndroidView.update 里写状态）
@@ -182,6 +182,7 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
             appliedVersion[0] = textVersion
             editor.setText(text)
             editor.setSelection(0, 0, true)
+            applyText[0] = null
         }
     }
 
@@ -747,12 +748,14 @@ fun EditorScreen(container: AppContainer, uri: VfsUri, onBack: () -> Unit) {
                                 ed.setHighlightCurrentLine(!fluent)
                                 ed.setHighlightBracketPair(!fluent)
                             }
-                            applyText?.let { (version, text) ->
-                                if (appliedVersion[0] != version) {
+                            val versionToApply = textVersion // 只让版本号进入 Compose 快照
+                            applyText[0]?.let { (version, text) ->
+                                if (version == versionToApply && appliedVersion[0] != version) {
                                     appliedVersion[0] = version
                                     ed.setText(text)
                                     ed.setSelection(0, 0, true)
                                     // 撤销 / 重做按钮态由 ContentChangeEvent 回调同步（这里不写 Compose 状态）
+                                    applyText[0] = null
                                 }
                             }
                         },

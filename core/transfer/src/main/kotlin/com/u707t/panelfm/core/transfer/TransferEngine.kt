@@ -64,6 +64,9 @@ class TransferEngine(
     /** 每个任务的自动收场协程句柄：任务被移除时必须能取消，否则会一直等一个不会发生的终态。 */
     private val watchers = java.util.concurrent.ConcurrentHashMap<String, Job>()
 
+    /** Per-engine destination entity locks (never process-global; see [DestinationDirectoryLocks]). */
+    private val destinationLocks = DestinationDirectoryLocks()
+
     /** 正在运行的任务数（严格按 [maxConcurrent] 限流，支持运行中调整） */
     private val runningCount = java.util.concurrent.atomic.AtomicInteger(0)
 
@@ -103,12 +106,18 @@ class TransferEngine(
                 } finally {
                     runningCount.decrementAndGet()
                 }
-                // 并发下调：多余 worker 在完成手头任务后退出
-                if (workers.get() > maxConcurrent) {
-                    workers.decrementAndGet()
-                    return@launch
-                }
+                // Claim a retirement slot atomically; concurrent workers must never all retire
+                // based on the same stale workers/maxConcurrent observation.
+                if (retireWorkerIfAboveLimit()) return@launch
             }
+        }
+    }
+
+    private fun retireWorkerIfAboveLimit(): Boolean {
+        while (true) {
+            val current = workers.get()
+            if (current <= maxConcurrent) return false
+            if (workers.compareAndSet(current, current - 1)) return true
         }
     }
 
@@ -126,6 +135,7 @@ class TransferEngine(
             planner = planner,
             locator = locator,
             resumeStore = resumeStore,
+            destinationLocks = destinationLocks,
         )
         _tasks.update { it + task }
         // 暂停让出槽位后，恢复要能重新入队（并发限流由 worker 自己控）

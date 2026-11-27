@@ -85,12 +85,14 @@ fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetada
                         "大小",
                         when {
                             s == null -> "统计中…"
-                            s.truncated -> "${Fmt.size(s.bytes)} 以上（已达 5 万项上限）"
+                            s.truncated -> "至少 ${Fmt.size(s.bytes)}（已达 5 万项上限）"
+                            s.failedDirs > 0 -> "至少 ${Fmt.size(s.bytes)}（${s.failedDirs} 个目录无法读取）"
+                            s.unknownSizeItems > 0 -> "至少 ${Fmt.size(s.bytes)}（${s.unknownSizeItems} 项大小未知）"
                             else -> "${Fmt.size(s.bytes)} (${s.bytes})"
                         },
                     )
-                    InfoRow("文件数", s?.let { if (it.truncated) "${it.files}+" else it.files.toString() } ?: "统计中…")
-                    InfoRow("文件夹数", s?.let { if (it.truncated) "${it.dirs}+" else it.dirs.toString() } ?: "统计中…")
+                    InfoRow("文件数", s?.let { if (it.countIncomplete) "${it.files}+" else it.files.toString() } ?: "统计中…")
+                    InfoRow("文件夹数", s?.let { if (it.countIncomplete) "${it.dirs}+" else it.dirs.toString() } ?: "统计中…")
                 } else {
                     InfoRow("大小", if (meta.size >= 0) "${Fmt.size(meta.size)} (${meta.size})" else "—")
                 }
@@ -130,40 +132,77 @@ fun PropertiesDialog(container: com.u707t.panelfm.AppContainer, item: FileMetada
     )
 }
 
-/** 递归统计结果；[truncated] = 达到 5 万项上限提前停止（界面不能把它显示成精确值）。 */
-private data class FolderSummary(
+/** 递归统计结果；不能将不完整计数和未知大小显示为精确值。 */
+internal data class FolderSummary(
     val files: Int,
     val dirs: Int,
     val bytes: Long,
     val truncated: Boolean,
-)
+    val failedDirs: Int,
+    val unknownSizeItems: Int,
+) {
+    val countIncomplete: Boolean get() = truncated || failedDirs > 0
+}
 
-/** 递归统计文件夹：文件数 / 文件夹数 / 总字节（最多 5 万项，防超大目录卡界面） */
+internal class FolderSummaryAccumulator(private val itemLimit: Int = 50_000) {
+    private var seen = 0
+    private var files = 0
+    private var dirs = 0
+    private var bytes = 0L
+    private var truncated = false
+    private var failedDirs = 0
+    private var unknownSizeItems = 0
+
+    fun add(item: FileMetadata): Boolean {
+        if (seen >= itemLimit) {
+            truncated = true
+            return false
+        }
+        seen++
+        if (item.isDirectory) {
+            dirs++
+        } else {
+            files++
+            if (item.size < 0) unknownSizeItems++
+            else bytes = if (Long.MAX_VALUE - bytes < item.size) Long.MAX_VALUE else bytes + item.size
+        }
+        return true
+    }
+
+    fun markDirectoryFailure() { failedDirs++ }
+
+    fun snapshot(): FolderSummary = FolderSummary(files, dirs, bytes, truncated, failedDirs, unknownSizeItems)
+}
+
+/** 递归统计文件夹：遇到错误与未知大小显式标记，且每个子项前执行 5 万项硬上限。 */
 private suspend fun folderSummary(
     vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem?,
     uri: VfsUri,
 ): FolderSummary = withContext(Dispatchers.IO) {
-    if (vfs == null) return@withContext FolderSummary(0, 0, 0L, false)
-    var files = 0
-    var dirs = 0
-    var bytes = 0L
-    var seen = 0
+    val stats = FolderSummaryAccumulator()
+    if (vfs == null) {
+        stats.markDirectoryFailure()
+        return@withContext stats.snapshot()
+    }
     val queue = ArrayDeque<VfsUri>().apply { add(uri) }
-    while (queue.isNotEmpty() && seen < 50_000) {
+    var stop = false
+    while (queue.isNotEmpty() && !stop) {
         val dir = queue.removeFirst()
-        val children = runCatching { vfs.list(dir) }.getOrDefault(emptyList())
+        val children = try {
+            vfs.list(dir)
+        } catch (_: Exception) {
+            stats.markDirectoryFailure()
+            continue
+        }
         for (child in children) {
-            seen++
-            if (child.isDirectory) {
-                dirs++
-                queue.add(child.uri)
-            } else {
-                files++
-                bytes += child.size.coerceAtLeast(0)
+            if (!stats.add(child)) {
+                stop = true
+                break
             }
+            if (child.isDirectory) queue.add(child.uri)
         }
     }
-    FolderSummary(files, dirs, bytes, seen >= 50_000 && queue.isNotEmpty())
+    stats.snapshot()
 }
 
 /**

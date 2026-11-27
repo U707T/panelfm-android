@@ -53,6 +53,20 @@ class SearchPolicyTest {
     }
 
     @Test
+    fun `关闭高级搜索后隐藏的大小条件不再生效`() {
+        assertEquals(-1L to -1L, effectiveSearchSizeBounds(advanced = false, minBytes = 10L, maxBytes = 20L))
+        assertEquals(10L to 20L, effectiveSearchSizeBounds(advanced = true, minBytes = 10L, maxBytes = 20L))
+        assertEquals(-1L to 20L, effectiveSearchSizeBounds(advanced = true, minBytes = null, maxBytes = 20L))
+    }
+
+    @Test
+    fun `递归名称搜索允许目录命中但内容搜索不匹配目录`() {
+        assertTrue(searchItemEligible(isDirectory = true, nameMatches = true, sizeMatches = false, contentSearch = false))
+        assertFalse(searchItemEligible(isDirectory = true, nameMatches = true, sizeMatches = true, contentSearch = true))
+        assertFalse(searchItemEligible(isDirectory = true, nameMatches = false, sizeMatches = true, contentSearch = false))
+    }
+
+    @Test
     fun `大小解析：空串是不限制`() {
         assertEquals(-1L, parseSizeText(""))
         assertEquals(-1L, parseSizeText("   "))

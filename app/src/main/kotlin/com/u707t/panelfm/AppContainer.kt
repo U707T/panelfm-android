@@ -3,6 +3,7 @@ package com.u707t.panelfm
 import android.app.Application
 import com.u707t.panelfm.core.common.AppDirs
 import com.u707t.panelfm.core.common.Logx
+import com.u707t.panelfm.core.common.sha256Hex
 import com.u707t.panelfm.core.common.PanelDispatchers
 import com.u707t.panelfm.core.data.AppSettings
 import com.u707t.panelfm.core.data.BookmarkDao
@@ -19,6 +20,7 @@ import com.u707t.panelfm.core.transfer.TransferEngine
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsRegistry
+import com.u707t.panelfm.core.vfs.copyTo
 import com.u707t.panelfm.core.vfs.local.LocalVfs
 import com.u707t.panelfm.core.vfs.ftp.FtpVfsFactory
 import com.u707t.panelfm.core.vfs.archive.ArchiveVfs
@@ -133,15 +135,17 @@ class AppContainer(val app: Application) {
     private val heldLeases = ConcurrentHashMap<String, com.u707t.panelfm.core.vfs.VfsLease>()
     private val connectionIntents = ConnectionOpenIntents()
 
-    /** 已挂载的压缩包（hostUri → ArchiveVfs） */
     private val archives = ConcurrentHashMap<String, ArchiveVfs>()
+    private val archiveVersions = ConcurrentHashMap<String, CacheSourceVersion>()
+    /** Replaced mounts stay alive so background readers holding them are not interrupted. */
+    private val retiredArchives = ConcurrentHashMap.newKeySet<ArchiveVfs>()
 
-    /**
-     * 正在挂载中的压缩包（审计 U4）：同一 host 的并发请求共享同一个挂载任务。
-     * 解决的问题：远程包下载期间没有任何反馈，用户连点两次会**并发下载、并发写同一个临时文件**，
-     * 可能写出坏缓存。现在第二个调用直接 await 第一个的结果。
-     */
-    private val openingArchives = ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<ArchiveVfs>>()
+    private data class OpeningArchive(
+        val version: CacheSourceVersion,
+        val passwordFingerprint: String?,
+        val result: kotlinx.coroutines.CompletableDeferred<ArchiveVfs>,
+    )
+    private val openingArchives = ConcurrentHashMap<String, OpeningArchive>()
 
     val planner = FileOperationPlanner(locator)
 
@@ -389,9 +393,8 @@ class AppContainer(val app: Application) {
      * 测试未保存的连接配置：lease 只覆盖 connect + list 生命周期，
      * 不写入 mounted/heldLeases，也不 touch connection 表。
      */
-    suspend fun testConnection(config: ConnectionConfig, secretOverride: String? = null): Int {
+    suspend fun testConnection(config: ConnectionConfig, secretOverride: String?): Int {
         val secret = secretOverride
-            ?: withContext(Dispatchers.IO) { secretStore.get(connectionDao.secretRef(config.id)) }
         val lease = registry.acquire(config, secret)
         try {
             val vfs = lease.use()
@@ -447,38 +450,87 @@ class AppContainer(val app: Application) {
     fun archiveOf(hostUri: String): ArchiveVfs? = archives[hostUri]
         ?: runCatching { archives[com.u707t.panelfm.core.vfs.VfsUri.parse(hostUri).toString()] }.getOrNull()
 
+    private suspend fun archiveSourceVersion(
+        host: com.u707t.panelfm.core.vfs.VfsUri,
+    ): CacheSourceVersion = withContext(Dispatchers.IO) {
+        if (host.scheme == "local") {
+            val file = runCatching { java.io.File(localVfs.absolutePath(host)) }.getOrNull()
+            if (file?.isFile == true) CacheSourceVersion(file.length(), file.lastModified())
+            else CacheSourceVersion()
+        } else {
+            val vfs = locator.find(host) ?: return@withContext CacheSourceVersion()
+            runCatching { vfs.stat(host) }.getOrNull()?.let {
+                CacheSourceVersion(
+                    size = it.size,
+                    lastModified = it.lastModified,
+                    etag = it.etag,
+                )
+            } ?: CacheSourceVersion()
+        }
+    }
+
     /**
      * 挂载压缩包：本地文件直接随机访问；远程文件先下载到 cache（zip 才支持随机访问，7z/tar 顺序读）。
-     *
-     * 审计 U4：
-     *  - **单飞去重**：同一 host 只允许一个挂载在途（见 [openingArchives]），连点不会并发下载；
-     *  - **[onProgress]** 上报下载字节（done/total），供长操作状态条显示进度与「取消」。
+     * 归档复用必须通过源版本校验；未知版本每次都视为新版本，不能无条件复用旧句柄。
      */
     suspend fun openArchive(
         host: com.u707t.panelfm.core.vfs.VfsUri,
         onProgress: com.u707t.panelfm.core.vfs.ProgressCallback? = null,
         password: String? = null,
     ): ArchiveVfs {
-        archives[host.toString()]?.let { cached ->
-            // 口令匹配（或调用方不关心口令）直接复用；否则换新实例重挂（第 5 批 🔴1）
-            if (password == null || cached.password == password) return cached
-        }
         val key = host.toString()
-        val mine = kotlinx.coroutines.CompletableDeferred<ArchiveVfs>()
+        val sourceVersion = archiveSourceVersion(host)
+        archives[key]?.let { cached ->
+            val cachedVersion = archiveVersions[key]
+            if (sourceVersion.isReliable && cachedVersion == sourceVersion &&
+                (password == null || cached.password == password)
+            ) return cached
+        }
+        val mine = OpeningArchive(
+            version = sourceVersion,
+            passwordFingerprint = password?.let(::secretFingerprint),
+            result = kotlinx.coroutines.CompletableDeferred(),
+        )
         val inflight = openingArchives.putIfAbsent(key, mine)
-        if (inflight != null) return inflight.await()
+        if (inflight != null) {
+            if (!archivePasswordsCompatible(password, inflight.passwordFingerprint) ||
+                !archiveVersionsCompatible(sourceVersion, inflight.version)
+            ) {
+                // 在途挂载与本次请求不兼容（口令不同 / 源已变）：等它收尾后重试。
+                // 失败可以吞掉（由重试路径给出真实错误），取消必须透传。
+                awaitIgnoringFailure(inflight.result)
+                return openArchive(host, onProgress, password)
+            }
+            val result = inflight.result.await()
+            // A replacement can happen while the older download is in flight. Do not hand its
+            // mounted index to a caller that already observed a different reliable version.
+            val currentVersion = archiveSourceVersion(host)
+            if (!archiveVersionsCompatible(currentVersion, inflight.version)) {
+                return openArchive(host, onProgress, password)
+            }
+            return result
+        }
         try {
-            // 先丢弃口令不符的旧挂载，再重建 —— 否则 openArchiveInner 的复用检查会把
-            // 旧实例原样返回，口令永远换不上去。
+            // Do not close the prior mount: background decompression/readers may still hold it.
             forgetArchive(key)
             val vfs = openArchiveInner(host, onProgress, password)
-            mine.complete(vfs)
+            mine.result.complete(vfs)
             return vfs
         } catch (t: Throwable) {
-            mine.completeExceptionally(t)
+            mine.result.completeExceptionally(t)
             throw t
         } finally {
             openingArchives.remove(key, mine)
+        }
+    }
+
+    private suspend fun awaitIgnoringFailure(result: kotlinx.coroutines.Deferred<ArchiveVfs>) {
+        try {
+            result.await()
+        } catch (c: kotlinx.coroutines.CancellationException) {
+            throw c
+        } catch (_: Throwable) {
+            // 在途挂载失败：由本次调用的重试路径重建并给出真实错误。
         }
     }
 
@@ -487,59 +539,59 @@ class AppContainer(val app: Application) {
         onProgress: com.u707t.panelfm.core.vfs.ProgressCallback?,
         password: String?,
     ): ArchiveVfs {
-        archives[host.toString()]?.let { cached ->
-            if (password == null || cached.password == password) return cached
-        }
         val kind = ArchiveVfs.ArchiveKind.ofFileName(host.name)
             ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("不支持的压缩格式：${host.name}")
-        val local = withContext(Dispatchers.IO) {
+        val prepared = withContext(Dispatchers.IO) {
             if (host.scheme == "local") {
                 val path = localVfs.absolutePath(host)
-                java.io.File(path)
+                val file = java.io.File(path)
+                file to if (file.isFile) CacheSourceVersion(file.length(), file.lastModified()) else CacheSourceVersion()
             } else {
-                val vfs = locator.find(host) ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("会话不可用")
+                val vfs = locator.find(host)
+                    ?: throw com.u707t.panelfm.core.vfs.VfsException.Unsupported("会话不可用")
                 val meta = vfs.stat(host)
-                // 缓存名 = 完整 URI hash + 源文件修改时间 + 文件名。
-                // 旧实现只用「URI hash + 文件名」，且校验只看长度 —— 远端同名同大小的压缩包被替换后，
-                // 仍然会命中旧缓存，表现为「压缩包内容明明改了，打开还是旧的」。
-                val stamp = meta.lastModified.takeIf { it > 0 }?.toString() ?: "0"
+                val version = CacheSourceVersion(meta.size, meta.lastModified, meta.etag)
+                // The source version is part of the filename. Unknown versions get a unique key,
+                // so a failed/partial download can never be mistaken for a later cache hit.
                 val prefix = host.toString().hashCode().toString(16)
-                val name = "$prefix-$stamp-${host.name}"
+                val name = "$prefix-${version.cacheKey(host.toString())}-${host.name}"
                 val tmp = java.io.File(appDirs.tmpDir, name)
-                if (!tmp.exists() || tmp.length() != meta.size) {
-                    val reader = vfs.openRead(host)
-                    try {
-                        tmp.outputStream().use { out ->
-                            val buf = ByteArray(256 * 1024)
-                            var done = 0L
-                            while (true) {
-                                val n = reader.read(buf, 0, buf.size)
-                                if (n < 0) break
-                                out.write(buf, 0, n)
-                                done += n
-                                // 下载进度（审计 U4）：取消会在下一次回调时立刻生效
-                                onProgress?.onProgress(done, meta.size)
-                            }
+                val expected = meta.size.takeIf { it >= 0L }
+                if (!tmp.isFile || (expected != null && tmp.length() != expected)) {
+                    writeAtomically(tmp, expectedLength = expected) { out ->
+                        val reader = vfs.openRead(host)
+                        try {
+                            reader.copyTo(out) { done -> onProgress?.onProgress(done, meta.size) }
+                        } finally {
+                            runCatching { reader.close() }
                         }
-                    } finally {
-                        runCatching { reader.close() }
                     }
-                    // 清理同一压缩包的旧版本缓存，避免 cache 目录无限增长
-                    java.io.File(appDirs.tmpDir).listFiles()
-                        ?.filter { it.name.startsWith("$prefix-") && it.name != name }
-                        ?.forEach { runCatching { it.delete() } }
                 }
-                tmp
+                tmp to version
             }
         }
+        val local = prepared.first
+        val sourceVersion = prepared.second
         val vfs = ArchiveVfs(host, kind, local, env, password)
-        vfs.connect()
-        archives[host.toString()] = vfs
+        try {
+            vfs.connect()
+        } catch (t: Throwable) {
+            // connect() may have opened ZIP/7z/native resources before rejecting a bad archive.
+            runCatching { vfs.close() }
+            throw t
+        }
+        val key = host.toString()
+        archives[key] = vfs
+        archiveVersions[key] = sourceVersion
         return vfs
     }
 
     fun forgetArchive(host: String) {
-        archives.remove(host)?.let { runCatching { it.close() } }
+        val key = runCatching { com.u707t.panelfm.core.vfs.VfsUri.parse(host).toString() }.getOrDefault(host)
+        archives.remove(key)?.let {
+            archiveVersions.remove(key)
+            retiredArchives += it
+        }
     }
 
     /** 保存口令；返回 false = 写入失败（UI 必须提示，不能假装保存成功） */
@@ -556,6 +608,11 @@ class AppContainer(val app: Application) {
     fun close() {
         runCatching { remote.stop() }
         disconnectAll()
+        archives.values.toList().forEach { runCatching { it.close() } }
+        retiredArchives.toList().forEach { runCatching { it.close() } }
+        archives.clear()
+        archiveVersions.clear()
+        retiredArchives.clear()
         Logx.i("AppContainer", "closed")
     }
 }

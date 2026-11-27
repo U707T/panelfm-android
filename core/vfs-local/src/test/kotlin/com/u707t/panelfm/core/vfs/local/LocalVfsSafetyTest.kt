@@ -137,6 +137,46 @@ class LocalVfsSafetyTest {
     }
 
     @Test
+    fun `canonical identity unifies app incoming root aliases and symlinks`() {
+        val filesDir = Files.createTempDirectory("identity-files").toFile()
+        val cacheDir = Files.createTempDirectory("identity-cache").toFile()
+        val env = VfsEnv(
+            appDirs = AppDirs(filesDir.absolutePath, cacheDir.absolutePath),
+            dispatchers = PanelDispatchers(Dispatchers.IO, Dispatchers.IO, Dispatchers.Default, Dispatchers.Default),
+        )
+        val v = LocalVfs(env)
+        val appFile = File(filesDir, "identity.txt").apply { writeText("app") }
+        val incomingFile = File(File(cacheDir, AppDirs.INCOMING_SUBDIR), "received.txt").apply {
+            parentFile?.mkdirs()
+            writeText("incoming")
+        }
+        val appUri = VfsUri.of("local", LocalVolumes.AUTHORITY_APP, "/identity.txt")
+        val appRootAlias = uri(appFile.absolutePath)
+        val incomingUri = VfsUri.of("local", LocalVolumes.AUTHORITY_INCOMING, "/received.txt")
+        val incomingRootAlias = uri(incomingFile.absolutePath)
+
+        assertEquals(true, v.sameFileIdentity(appUri, appRootAlias))
+        assertEquals(appFile.canonicalPath, v.fileIdentityPath(appUri))
+        assertEquals(true, v.sameFileIdentity(incomingUri, incomingRootAlias))
+        assertEquals(incomingFile.canonicalPath, v.fileIdentityPath(incomingUri))
+
+        val symlink = File(filesDir, "identity-link.txt").toPath()
+        Files.createSymbolicLink(symlink, appFile.toPath())
+        assertEquals(true, v.sameFileIdentity(appUri, uri(symlink.toString())))
+        assertEquals(appFile.canonicalPath, v.fileIdentityPath(uri(symlink.toString())))
+    }
+
+    @Test
+    fun `missing destinations still share canonical identity paths`() {
+        val environment = env()
+        val v = LocalVfs(environment)
+        val appUri = VfsUri.of("local", LocalVolumes.AUTHORITY_APP, "/new/sub/file.bin")
+        val rootUri = uri(File(File(environment.appDirs.filesDir), "new/sub/file.bin").absolutePath)
+        assertEquals(v.fileIdentityPath(appUri), v.fileIdentityPath(rootUri))
+        assertEquals(true, v.sameFileIdentity(appUri, rootUri))
+    }
+
+    @Test
     fun `part 丢失时提交失败不得删除已有目标`() = runBlocking {
         val base = tempDir()
         val target = File(base, "keep.txt").apply { writeText("original") }

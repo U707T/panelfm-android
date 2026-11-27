@@ -75,4 +75,10 @@ class SigV4Test {
         assertEquals("a%2Fb", SigV4.uriEncode("a/b"))
         assertEquals("~-_.", SigV4.uriEncode("~-_."))
     }
+    @Test fun `non BMP keys encode as distinct UTF8 bytes`() {
+        assertEquals("%F0%9F%98%80.txt", SigV4.uriEncode("😀.txt"))
+        assertEquals("%F0%9F%98%83.txt", SigV4.uriEncode("😃.txt"))
+        assertEquals("%E4%B8%AD%E6%96%87%2F%F0%9F%98%80%20%2B%25", SigV4.uriEncode("中文/😀 +%"))
+        assertEquals("%E4%B8%AD%E6%96%87/%F0%9F%98%80", SigV4.uriEncode("中文/😀", encodeSlash = false))
+    }
 }

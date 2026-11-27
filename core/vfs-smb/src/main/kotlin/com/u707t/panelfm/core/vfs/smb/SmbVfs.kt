@@ -42,15 +42,38 @@ import java.io.IOException
 import java.util.EnumSet
 import java.util.concurrent.TimeUnit
 
+/** Creates every SMB path component and requires a directory check after each create attempt. */
+internal fun createSmbParentsChecked(
+    path: String,
+    createDirectory: (String) -> Unit,
+    isDirectory: (String) -> Boolean,
+    fail: (String, Exception) -> Nothing,
+) {
+    var current = ""
+    for (seg in path.split('\\').filter { it.isNotEmpty() }) {
+        current = if (current.isEmpty()) seg else "$current\\$seg"
+        val createFailure = try {
+            createDirectory(current)
+            null
+        } catch (e: Exception) {
+            e
+        }
+        val exists = try {
+            isDirectory(current)
+        } catch (e: Exception) {
+            fail(current, e)
+        }
+        if (!exists) fail(current, createFailure ?: IllegalStateException("SMB未创建目录：$current"))
+    }
+}
+
 /**
  * SMB2/3 实现（SMBJ）。
  *
  * 路径模型：`smb://host/share/a/b.txt` → authority = host[:port]，path = `/share/a/b.txt`。
- *  - 协议协商：3.1.1 → 3.0.2 → 2.1（SMBJ 自动）
- *  - NTLMv2（domain\user），SMB3 加密如服务器要求则自动启用
- *  - **偏移读写**：`File.read(buf, offset)` / `File.write(buf, offset)` → 断点续传 + 局域网流媒体
- *  - 写文件先落 `.name.panelfm.part`，commit 时服务端 rename
- *  - DFS 关闭（避免 JNA 本地库依赖），因此不走 \\domain\dfs 路径
+ * - 协议协商：3.1.1 → 3.0.2 → 2.1（SMBJ 自动）
+ * - NTLMv2（domain\\user），SMB3 加密如服务器要求则自动启用
+ * - 偏移读写及临时文件提交；DFS 关闭以避免 JNA 本地库依赖
  */
 class SmbVfs(
     private val cfg: SmbConfig,
@@ -228,13 +251,17 @@ class SmbVfs(
         withContext(env.dispatchers.vfs) {
             val share = shareOf(shareName)
             if (parents) {
-                var current = ""
-                for (seg in rel.split('\\').filter { it.isNotEmpty() }) {
-                    current = if (current.isEmpty()) seg else "$current\\$seg"
-                    if (!runCatching { share.folderExists(current) }.getOrDefault(false)) {
-                        runCatching { share.mkdir(current) }
-                    }
-                }
+                createSmbParentsChecked(
+                    path = rel,
+                    createDirectory = share::mkdir,
+                    isDirectory = share::folderExists,
+                    fail = { current, e ->
+                        if (e is IllegalStateException) {
+                            throw VfsException.Io("创建目录失败：$current", e)
+                        }
+                        throw mapError(e, "创建目录失败：$current")
+                    },
+                )
             } else {
                 try {
                     share.mkdir(rel)

@@ -69,7 +69,25 @@ class MtRowGestureTest {
     }
 
     @Test
-    fun `按在列表空白处不会触发长按（不弹菜单）`() {
+    fun `超过长按容差但未到滑动阈值后继续按住不会弹菜单`() {
+        val m = machine()
+        m.begin(downIndex = 1)
+        assertEquals(Decision.None, m.update(14f, 0f, 100, true))
+        assertEquals(Decision.None, m.update(14f, 0f, 400, true))
+        assertEquals(Phase.PRESS, m.phase)
+        assertEquals(Decision.None, m.update(14f, 0f, 450, false))
+        assertEquals(Phase.DONE, m.phase)
+    }
+
+    @Test
+    fun `首次观察到的抬手位移也会取消过期长按`() {
+        val m = machine()
+        m.begin(downIndex = 1)
+        assertEquals(Decision.None, m.update(14f, 0f, 500, false))
+    }
+
+    @Test
+    fun `按在空白处不会弹长按菜单`() {
         val m = machine()
         m.begin(downIndex = -1)
         assertEquals(Decision.None, m.update(0f, 0f, 500, true))

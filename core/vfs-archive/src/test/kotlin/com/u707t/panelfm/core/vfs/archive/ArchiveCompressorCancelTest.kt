@@ -77,7 +77,8 @@ class ArchiveCompressorCancelTest {
             files[uri.path]?.let {
                 return FileMetadata(uri = uri, name = uri.name, isDirectory = false, size = it.size.toLong())
             }
-            return FileMetadata.dir(uri, uri.name)
+            if (files.keys.any { it.startsWith(uri.path.trimEnd('/') + "/") }) return FileMetadata.dir(uri, uri.name)
+            throw VfsException.NotFound(uri)
         }
 
         override suspend fun mkdir(uri: VfsUri, parents: Boolean) = Unit

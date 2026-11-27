@@ -259,25 +259,53 @@ class BrowserController(internal val container: AppContainer) {
 
     // ------------------------------------------------------------------ MT「选择当前目录」模式（0x7f0c0025）
 
-    /** 进入「选择当前目录」模式：底栏上方浮出「选择当前目录」按钮 */
-    fun startPickDir(purpose: PickDirPurpose) = update { it.copy(pickDirFor = purpose) }
+    /** 进入「选择当前目录」模式，并冻结启动时的操作源，避免导航清空选择后丢失源项。 */
+    fun startPickDir(
+        purpose: PickDirPurpose,
+        sourceSide: PaneSide = _state.value.focused,
+        sources: List<VfsUri> = targetSources(sourceSide),
+    ) {
+        pendingPickDirSources = capturePickDirSources(sourceSide, sources)
+        update { it.copy(pickDirFor = purpose) }
+    }
+
+    @Volatile
+    private var pendingPickDirSources: PickDirSourceSnapshot? = null
 
     /** 取消「选择当前目录」模式 */
     fun cancelPickDir() {
         pendingArchiveExtract = null
+        pendingPickDirSources = null
         update { it.copy(pickDirFor = null) }
     }
 
     /**
-     * 确认「选择当前目录」：把活动窗格当前路径交给对应流程。
-     * 返回选中的目录（UI 侧据此调用具体动作），并退出该模式。
+     * 确认「选择当前目录」：返回用户启动该流程时冻结的来源，以及当前选中的目标目录。
      */
-    fun confirmPickDir(): Pair<PickDirPurpose, VfsUri>? {
+    internal fun confirmPickDir(): PickDirSelection? {
         val st = _state.value
         val purpose = st.pickDirFor ?: return null
         val dir = st.focusedPane.uri
+        val source = pendingPickDirSources ?: PickDirSourceSnapshot(st.focused, emptyList())
+        pendingPickDirSources = null
         update { it.copy(pickDirFor = null) }
-        return purpose to dir
+        return pickDirSelection(purpose, source.sourceSide, source.sources, dir)
+    }
+
+    /** 执行目录选择模式冻结的复制 / 移动源，不能从已导航到的目标目录重新取源。 */
+    internal fun transferToPickedDir(selection: PickDirSelection) {
+        val op = when (selection.purpose) {
+            PickDirPurpose.COPY_TO -> com.u707t.panelfm.core.model.TransferOp.COPY
+            PickDirPurpose.MOVE_TO -> com.u707t.panelfm.core.model.TransferOp.MOVE
+            PickDirPurpose.EXTRACT -> return
+        }
+        if (selection.sources.isEmpty()) {
+            showStatus("当前目录没有可操作的项")
+            return
+        }
+        showStatus("${if (op == com.u707t.panelfm.core.model.TransferOp.COPY) "复制" else "移动"} ${selection.sources.size} 项 → ${selection.destDir.displayPath}")
+        enqueueChecked(transferRequest(selection.sources, selection.destDir, op))
+        clearSelection(selection.sourceSide)
     }
 
     /**

@@ -5,6 +5,10 @@ import android.graphics.Canvas
 import com.caverock.androidsvg.SVG
 import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.common.PreviewLimitedInputStream
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.BufferedInputStream
@@ -45,16 +49,31 @@ internal fun isGzipMagic(b0: Int, b1: Int): Boolean = b0 == 0x1F && b1 == 0x8B
 /** 解析 + 渲染 SVG/SVGZ 为位图。失败抛 [IllegalStateException]（调用方统一成「图片预览失败：…」）。 */
 internal suspend fun decodeSvg(container: AppContainer, uri: VfsUri): Bitmap =
     withContext(Dispatchers.IO) {
+        val context = currentCoroutineContext()
         val svg = try {
             openPreviewStream(container, uri).use { raw ->
-                val buffered = BufferedInputStream(raw, 64 * 1024)
+                val boundedRaw = PreviewLimitedInputStream(raw, 8L * 1024 * 1024) { context.ensureActive() }
+                val buffered = BufferedInputStream(boundedRaw, 64 * 1024)
                 buffered.mark(2)
                 val b0 = buffered.read()
                 val b1 = buffered.read()
                 buffered.reset()
                 val source = if (isGzipMagic(b0, b1)) GZIPInputStream(buffered) else buffered
-                SVG.getFromInputStream(source)
+                val decoded = BufferedInputStream(
+                    PreviewLimitedInputStream(source, 8L * 1024 * 1024) { context.ensureActive() },
+                )
+                decoded.use {
+                    // AndroidSVG can auto-detect gzip itself. Reject a nested gzip layer
+                    // so parser-side decompression cannot bypass our decoded-byte budget.
+                    it.mark(2)
+                    val nestedGzip = isGzipMagic(it.read(), it.read())
+                    it.reset()
+                    check(!nestedGzip) { "不支持嵌套压缩的 SVG" }
+                    SVG.getFromInputStream(it)
+                }
             }
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: IllegalArgumentException) {
             throw IllegalStateException("SVG 文档为空或根元素缺失")
         } catch (e: Exception) {

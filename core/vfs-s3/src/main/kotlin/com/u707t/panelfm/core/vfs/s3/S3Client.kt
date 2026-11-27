@@ -17,6 +17,8 @@ import okhttp3.Response
 import okhttp3.ResponseBody
 import org.xmlpull.v1.XmlPullParser
 import java.io.IOException
+import java.io.InputStream
+import java.io.ByteArrayOutputStream
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 import java.time.Instant
@@ -42,8 +44,8 @@ class S3Client(private val cfg: S3Config) {
 
     val http: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(cfg.timeoutMs, TimeUnit.MILLISECONDS)
-        .readTimeout(0, TimeUnit.MILLISECONDS)
-        .writeTimeout(0, TimeUnit.MILLISECONDS)
+        .readTimeout(cfg.timeoutMs.coerceAtLeast(30_000L), TimeUnit.MILLISECONDS)
+        .writeTimeout(cfg.timeoutMs.coerceAtLeast(30_000L), TimeUnit.MILLISECONDS)
         .callTimeout(0, TimeUnit.MILLISECONDS)
         .apply {
             // 自签 HTTPS（自建 MinIO / 私有 S3 网关）必须显式放开校验。
@@ -127,7 +129,7 @@ class S3Client(private val cfg: S3Config) {
             else -> builder.method(method, body)
         }
         try {
-            http.newCall(builder.build()).execute()
+            http.newCall(builder.build()).awaitS3Response()
         } catch (e: UnknownHostException) {
             throw VfsException.Network(VfsException.Network.Kind.DNS, "域名解析失败：${target.host}", e)
         } catch (e: SocketTimeoutException) {
@@ -216,11 +218,22 @@ class S3Client(private val cfg: S3Config) {
 
     suspend fun openGet(bucket: String, key: String, offset: Long = 0L): Response {
         val headers = if (offset > 0) mapOf("Range" to "bytes=$offset-") else emptyMap()
+        require(offset >= 0L)
         val r = execute("GET", bucket, key, extraHeaders = headers)
-        return check(r, key)
+        try {
+            check(r, key)
+            if (offset > 0L) validateS3RangeResponse(r.code, r.header("Content-Range"), offset, Long.MAX_VALUE)
+            return r
+        } catch (e: Exception) {
+            r.close()
+            throw e
+        }
     }
 
-    suspend fun getBytes(bucket: String, key: String, offset: Long = 0L, length: Long = -1L): ByteArray {
+    suspend fun getBytes(bucket: String, key: String, offset: Long = 0L, length: Long): ByteArray {
+        require(offset >= 0L && length >= 0L && length <= Int.MAX_VALUE.toLong()) { "Range bounds invalid" }
+        if (length == 0L) return ByteArray(0)
+        require(offset <= Long.MAX_VALUE - length + 1L) { "Range overflow" }
         val headers = when {
             offset > 0 && length > 0 -> mapOf("Range" to "bytes=$offset-${offset + length - 1}")
             offset > 0 -> mapOf("Range" to "bytes=$offset-")
@@ -230,7 +243,8 @@ class S3Client(private val cfg: S3Config) {
         val r = execute("GET", bucket, key, extraHeaders = headers)
         return r.use { resp ->
             check(resp, key)
-            resp.body.bytes()
+            validateS3RangeResponse(resp.code, resp.header("Content-Range"), offset, length)
+            readS3Cancellable({ resp.close() }) { readBounded(resp.body.byteStream(), length) }
         }
     }
 
@@ -334,8 +348,14 @@ class S3Client(private val cfg: S3Config) {
             }
             append("</CompleteMultipartUpload>")
         }
-        val body = xml.toRequestBody("application/xml".toMediaType())
-        val r = execute("POST", bucket, key, query = mapOf("uploadId" to uploadId), body = body)
+        val bytes = xml.toByteArray(Charsets.UTF_8)
+        val body = bytes.toRequestBody("application/xml".toMediaType())
+        val r = execute(
+            "POST", bucket, key,
+            query = mapOf("uploadId" to uploadId),
+            body = body,
+            payloadHash = SigV4.sha256Hex(bytes),
+        )
         r.use { resp ->
             check(resp, key)
             val text = runCatching { resp.body.string() }.getOrDefault("")
@@ -351,6 +371,7 @@ class S3Client(private val cfg: S3Config) {
     }
 
     fun close() {
+        runCatching { http.dispatcher.cancelAll() }
         runCatching { http.dispatcher.executorService.shutdown() }
         runCatching { http.connectionPool.evictAll() }
     }

@@ -262,6 +262,7 @@ class WebDavVfs(
     override fun close() {
         // 只释放连接，不销毁 dispatcher：会话被空闲回收后仍可复用（下次调用自动重连）
         _state.value = VfsState.Idle
+        runCatching { http.dispatcher.cancelAll() }
         runCatching { http.connectionPool.evictAll() }
     }
 
@@ -269,7 +270,7 @@ class WebDavVfs(
 
     private suspend fun execute(request: Request): Response = withContext(env.dispatchers.vfs) {
         try {
-            http.newCall(request).execute()
+            http.newCall(request).awaitDavResponse()
         } catch (e: UnknownHostException) {
             throw VfsException.Network(VfsException.Network.Kind.DNS, "域名解析失败：${cfg.host}", e)
         } catch (e: SocketTimeoutException) {
@@ -340,7 +341,7 @@ class WebDavVfs(
         override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int =
             withContext(env.dispatchers.vfs) {
                 ensureStream()
-                val n = stream!!.read(buffer, offset, length)
+                val active = stream!!; val n = readDavCancellable({ closeStream() }) { active.read(buffer, offset, length) }
                 if (n > 0) {
                     pos += n
                     streamPos += n
@@ -350,19 +351,16 @@ class WebDavVfs(
 
         override suspend fun readFullyAt(position: Long, length: Int): ByteArray =
             withContext(env.dispatchers.vfs) {
-                val end = position + length - 1
+                if (position < 0L || length <= 0) throw VfsException.ProtocolError("Range 长度或偏移无效")
+                val end = position + length.toLong() - 1L
+                if (end < position) throw VfsException.ProtocolError("Range 偏移溢出")
                 val req = Request.Builder().url(url)
                     .header("Range", "bytes=$position-$end")
                     .get()
                     .build()
-                http.newCall(req).execute().use { r ->
-                    // 只接受 206；200 仅当从 0 起读（服务器忽略 Range 时按请求窗口截取，
-                    // 绝不把「从头开始的全量数据」当成偏移窗口交给上层）
-                    if (r.code != 206 && !(r.code == 200 && position == 0L)) {
-                        throw VfsException.ProtocolError("Range 读取失败：HTTP ${r.code}")
-                    }
-                    val full = r.body.bytes()
-                    val bytes = if (r.code == 200 && full.size > length) full.copyOf(length) else full
+                http.newCall(req).awaitDavResponse().use { r ->
+                    validateDavRangeResponse(r.code, r.header("Content-Range"), position, length.toLong())
+                    val bytes = readDavCancellable({ r.close() }) { readDavBounded(r.body.byteStream(), length) }
                     if (size == null) size = parseTotal(r, position, bytes.size.toLong())
                     bytes
                 }
@@ -376,7 +374,7 @@ class WebDavVfs(
                 .get()
                 .build()
             val r = try {
-                http.newCall(req).execute()
+                http.newCall(req).awaitDavResponse()
             } catch (e: IOException) {
                 throw VfsException.Network(VfsException.Network.Kind.UNREACHABLE, e.message ?: "网络错误", e)
             }
@@ -393,6 +391,10 @@ class WebDavVfs(
             if (r.code == 200 && pos > 0L) {
                 r.close()
                 throw VfsException.ProtocolError("服务器未响应 Range 请求（HTTP 200），无法从偏移 $pos 读取")
+            }
+            if (r.code == 206) {
+                try { validateDavRangeResponse(r.code, r.header("Content-Range"), pos, Long.MAX_VALUE) }
+                catch (e: Exception) { r.close(); throw e }
             }
             response = r
             stream = r.body.byteStream()
@@ -461,9 +463,10 @@ class WebDavVfs(
             val c = http.newCall(Request.Builder().url(partUrl).put(body).build())
             call = c
             try {
-                c.execute()
+                c.awaitDavResponse()
             } finally {
                 call = null
+                runCatching { pipeIn.close() }
             }
         }
 
@@ -472,7 +475,7 @@ class WebDavVfs(
 
         override suspend fun write(buffer: ByteArray, offset: Int, length: Int) {
             try {
-                pipeOut.write(buffer, offset, length)
+                kotlinx.coroutines.runInterruptible(Dispatchers.IO) { pipeOut.write(buffer, offset, length) }
             } catch (e: IOException) {
                 throw VfsException.Io("上传中断：${e.message}", e)
             }
@@ -560,6 +563,9 @@ class WebDavVfs(
             if (!finished) {
                 finished = true
                 runCatching { call?.cancel() }
+                runCatching { pipeOut.close() }
+                runCatching { pipeIn.close() }
+                upload.cancel()
                 deletePart()
             }
         }

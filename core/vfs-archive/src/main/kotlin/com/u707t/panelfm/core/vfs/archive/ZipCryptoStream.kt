@@ -40,33 +40,45 @@ internal object ZipCryptoReader {
         checkByte: Byte?,
         method: Int,
     ): InputStream {
-        val keys = ZipCrypto.Keys(password)
-        val header = ByteArray(HEADER_LENGTH)
-        var filled = 0
-        while (filled < HEADER_LENGTH) {
-            val n = raw.read(header, filled, HEADER_LENGTH - filled)
-            if (n <= 0) {
-                raw.close()
-                throw VfsException.ProtocolError("加密条目数据不完整（读取加密头失败）")
+        return closeOnFailure(raw) {
+            val keys = ZipCrypto.Keys(password)
+            val header = ByteArray(HEADER_LENGTH)
+            var filled = 0
+            while (filled < HEADER_LENGTH) {
+                val n = raw.read(header, filled, HEADER_LENGTH - filled)
+                if (n <= 0) {
+                    throw VfsException.ProtocolError("加密条目数据不完整（读取加密头失败）")
+                }
+                filled += n
             }
-            filled += n
-        }
-        keys.decrypt(header)
+            keys.decrypt(header)
 
-        // 校验字节不匹配 = 口令错（ZipCrypto 唯一的「口令是否正确」判定手段）
-        if (checkByte != null && header[HEADER_LENGTH - 1] != checkByte) {
-            raw.close()
-            throw VfsException.Auth("压缩包口令不正确")
-        }
-
-        val decrypted = DecryptingInputStream(raw, keys)
-        return when (method) {
-            METHOD_STORED -> decrypted
-            METHOD_DEFLATED -> InflaterInputStream(decrypted, Inflater(true), 64 * 1024)
-            else -> {
-                raw.close()
-                throw VfsException.Unsupported("加密条目使用了不支持的压缩方法：$method")
+            // 校验字节不匹配 = 口令错（ZipCrypto 唯一的「口令是否正确」判定手段）
+            if (checkByte != null && header[HEADER_LENGTH - 1] != checkByte) {
+                throw VfsException.Auth("压缩包口令不正确")
             }
+
+            val decrypted = DecryptingInputStream(raw, keys)
+            when (method) {
+                METHOD_STORED -> decrypted
+                METHOD_DEFLATED -> OwnedInflaterInputStream(decrypted)
+                else -> {
+                    throw VfsException.Unsupported("加密条目使用了不支持的压缩方法：$method")
+                }
+            }
+        }
+    }
+
+    /** InflaterInputStream only ends inflaters it creates itself; this stream owns the explicit raw inflater. */
+    internal class OwnedInflaterInputStream(
+        source: InputStream,
+        private val ownedInflater: Inflater = Inflater(true),
+    ) : InflaterInputStream(source, ownedInflater, 64 * 1024) {
+        private var closed = false
+        override fun close() {
+            if (closed) return
+            closed = true
+            try { super.close() } finally { ownedInflater.end() }
         }
     }
 

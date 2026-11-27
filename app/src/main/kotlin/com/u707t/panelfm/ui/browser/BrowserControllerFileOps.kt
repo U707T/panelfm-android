@@ -31,6 +31,7 @@ import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsUris
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
+import com.u707t.panelfm.core.vfs.sameFileIdentity
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -139,7 +140,12 @@ fun BrowserController.deleteSelected(
             val localOnly = if (fastDelete) emptyList() else sources.filter { it.scheme == "local" }
             val remoteOnly = if (fastDelete) sources else sources.filter { it.scheme != "local" }
             var trashed = 0
-            if (localOnly.isNotEmpty()) trashed = container.trash.moveToTrash(localOnly)
+            var trashCleanupFailed = 0
+            if (localOnly.isNotEmpty()) {
+                val result = container.trash.moveToTrashDetailed(localOnly)
+                trashed = result.recoverable
+                trashCleanupFailed = result.sourceCleanupFailed
+            }
             if (remoteOnly.isNotEmpty()) {
                 // 按 VFS 会话分组删除（选中项可能来自不同会话，旧实现只用第一个的会话 → 其余报错）
                 val bySession = remoteOnly.groupBy { uri ->
@@ -153,6 +159,7 @@ fun BrowserController.deleteSelected(
             }
             showStatus(
                 when {
+                    trashCleanupFailed > 0 -> "回收站已保留 $trashed 项完整副本；另有 $trashCleanupFailed 项源清理不完整（原处可能仍有剩余内容）"
                     fastDelete -> "已极速删除 ${sources.size} 项"
                     remoteOnly.isEmpty() -> "已移入回收站 $trashed 项（可还原）"
                     trashed == 0 -> "已删除 ${remoteOnly.size} 项"
@@ -178,6 +185,10 @@ fun BrowserController.rename(uri: VfsUri, newName: String, side: PaneSide) {
         try {
             val vfs = container.locator.find(uri) ?: throw VfsException.Unsupported("会话不可用")
             val target = uri.parent?.child(newName) ?: throw VfsException.ProtocolError("无法重命名根目录")
+            if (sameFileIdentity(uri, target)) {
+                showStatus(if (uri.name == newName) "名称未更改" else "源与目标指向同一文件，无法安全重命名")
+                return@launch
+            }
             // MT：目标已存在且都不是文件夹时，弹「交换 / 删除 / 备份」选择
             val exists = runCatching { withContext(container.dispatchers.vfs) { vfs.stat(target) } }.getOrNull()
             if (exists != null && !exists.isDirectory) {
@@ -207,6 +218,10 @@ fun BrowserController.resolveRenameConflict(action: String) {
     container.scope.launch {
         try {
             val vfs = container.locator.find(conflict.from) ?: throw VfsException.Unsupported("会话不可用")
+            if (sameFileIdentity(conflict.from, conflict.target)) {
+                showStatus("源与目标指向同一文件，已取消冲突操作")
+                return@launch
+            }
             val side = _state.value.focused
             when (action) {
                 "swap" -> {

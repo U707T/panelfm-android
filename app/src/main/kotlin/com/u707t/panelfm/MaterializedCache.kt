@@ -1,12 +1,10 @@
 package com.u707t.panelfm
 
 import com.u707t.panelfm.core.common.Fmt
-import com.u707t.panelfm.core.common.sha256Hex
 import com.u707t.panelfm.core.common.sweepStaleFiles
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.copyTo
 import java.io.File
-import java.io.OutputStream
 
 /**
  * 「远端 / 包内文件先落盘，再交给只认文件路径的系统 API」的**唯一实现**。
@@ -41,36 +39,26 @@ internal suspend fun materializeToCache(
         val path = runCatching { container.localVfs.absolutePath(uri) }.getOrNull()
         if (path != null && File(path).isFile) return File(path)
     }
-    val dir = File(container.appDirs.cacheDir, subdir).apply { runCatching { mkdirs() } }
-    val key = sha256Hex(uri.toString().toByteArray(), takeBytes = 8)
-    val target = File(dir, "$prefix-$key-$size.$extension")
-    if (target.isFile && target.length() > 0) return target
-    sweepStaleFiles(dir, keep = target)
-
-    onStage("正在缓存到本地（${Fmt.sizeCompact(size)}）…")
     val vfs = container.resolveSession(uri)
         ?: throw IllegalStateException("会话不可用（存储已断开）")
-    writeAtomically(target) { out -> vfs.openRead(uri).use { it.copyTo(out) } }
-    return target
-}
+    // Stat before cache lookup: the caller's listed size can be stale, and equal size alone does
+    // not identify the bytes. An ETag can independently provide a reliable version when mtime is
+    // unavailable; otherwise unknown versions intentionally never hit a prior materialization.
+    val meta = runCatching { vfs.stat(uri) }.getOrNull()
+    val version = CacheSourceVersion(
+        size = meta?.size?.takeIf { it >= 0L } ?: size,
+        lastModified = meta?.lastModified ?: -1L,
+        etag = meta?.etag,
+    )
+    val dir = File(container.appDirs.cacheDir, subdir).apply { runCatching { mkdirs() } }
+    val key = version.cacheKey(uri.toString())
+    val target = File(dir, "$prefix-$key.$extension")
+    if (version.matches(target)) return target
+    sweepStaleFiles(dir, keep = target)
 
-/**
- * 先写 `<目标>.part`、成功后再 `rename` —— **缓存落盘的唯一写法**。
- *
- * 为什么必须原子：中途被杀 / 取消时留下半截文件，下次会因为「目标已存在且长度 > 0」
- * 直接命中缓存，用户看到的是**截断的包**（解析失败或更糟：装上一个坏 APK）。
- * 失败与取消都要把 `.part` 删掉，否则残片会一直占着存储。
- */
-internal suspend fun writeAtomically(target: File, block: suspend (OutputStream) -> Unit) {
-    val tmp = File(target.parentFile, "${target.name}.part")
-    try {
-        tmp.outputStream().use { block(it) }
-    } catch (t: Throwable) {
-        runCatching { tmp.delete() }
-        throw t
+    onStage("正在缓存到本地（${Fmt.sizeCompact(version.size.takeIf { it >= 0L } ?: size)}）…")
+    writeAtomically(target, expectedLength = version.size.takeIf { it >= 0L }) { out ->
+        vfs.openRead(uri).use { it.copyTo(out) }
     }
-    if (!tmp.renameTo(target)) {
-        tmp.copyTo(target, overwrite = true)
-        tmp.delete()
-    }
+    return target
 }

@@ -152,20 +152,23 @@ internal fun BrowserBottomBar(
                 TextButton(onClick = {
                     val picked = controller.confirmPickDir()
                     if (picked != null) {
-                        val (purposeNow, dir) = picked
-                        when (purposeNow) {
+                        when (picked.purpose) {
                             PickDirPurpose.EXTRACT -> {
                                 // 两种来源：长按压缩包文件的「解压到文件夹…」 / 压缩包内选中项的解压
                                 val pending = controller.pendingArchiveExtract
                                 if (pending != null) {
                                     controller.clearPendingArchiveExtract()
-                                    controller.extractArchiveTo(pending, dir)
+                                    controller.extractArchiveTo(pending, picked.destDir)
                                 } else {
-                                    controller.extractTo(focusSide, dir)
+                                    controller.extractTo(
+                                        side = picked.sourceSide,
+                                        destDir = picked.destDir,
+                                        overrideSources = picked.sources,
+                                    )
                                 }
                             }
-                            PickDirPurpose.COPY_TO -> controller.copyTo(side = focusSide, dest = dir)
-                            PickDirPurpose.MOVE_TO -> controller.moveTo(side = focusSide, dest = dir)
+                            PickDirPurpose.COPY_TO, PickDirPurpose.MOVE_TO ->
+                                controller.transferToPickedDir(picked)
                         }
                     }
                 }) { Text(purpose.label) }

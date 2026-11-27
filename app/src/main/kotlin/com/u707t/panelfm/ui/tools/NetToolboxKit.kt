@@ -305,49 +305,13 @@ object NetToolboxKit {
      * 请求调试时把一行压缩 JSON 展开看结构，比来回贴到别的工具快。
      * 非法 JSON（括号不配对 / 字符串未闭合）返回 null，界面提示「不是合法 JSON」。
      */
-    fun prettyJson(raw: String): String? {
+    fun prettyJson(raw: String, checkCancelled: () -> Unit = {}): String? {
+        if (raw.length > 512 * 1024) return null
         val s = raw.trim()
-        if (s.isEmpty()) return null
-        if (s.first() != '{' && s.first() != '[') return null
-        val out = StringBuilder(s.length * 2)
-        var depth = 0
-        var inString = false
-        var escaped = false
-        fun newline() {
-            out.append('\n')
-            repeat(depth) { out.append("  ") }
-        }
-        for (c in s) {
-            if (inString) {
-                out.append(c)
-                when {
-                    escaped -> escaped = false
-                    c == '\\' -> escaped = true
-                    c == '"' -> inString = false
-                }
-                continue
-            }
-            when (c) {
-                '"' -> { inString = true; out.append(c) }
-                '{', '[' -> {
-                    out.append(c)
-                    depth++
-                    newline()
-                }
-                '}', ']' -> {
-                    depth--
-                    if (depth < 0) return null
-                    newline()
-                    out.append(c)
-                }
-                ',' -> { out.append(c); newline() }
-                ':' -> out.append(": ")
-                ' ', '\n', '\r', '\t' -> Unit
-                else -> out.append(c)
-            }
-        }
-        if (inString || depth != 0) return null
-        return out.toString()
+        if (s.firstOrNull() != '{' && s.firstOrNull() != '[') return null
+        return try {
+            com.u707t.panelfm.core.common.CodeFormatter.formatJson(s, checkCancelled = checkCancelled)
+        } catch (e: IllegalArgumentException) { null }
     }
 }
 

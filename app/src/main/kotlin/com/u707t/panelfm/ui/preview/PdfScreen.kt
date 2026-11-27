@@ -43,6 +43,10 @@ import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
 import java.io.File
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import com.u707t.panelfm.core.common.pdfRenderSize
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -92,7 +96,7 @@ fun PdfScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit) {
 @Composable
 private fun PdfPager(file: File, onPageCount: (Int) -> Unit) {
     var renderer by remember(file) { mutableStateOf<PdfRenderer?>(null) }
-    var descriptor by remember(file) { mutableStateOf<ParcelFileDescriptor?>(null) }
+    val owned = remember(file) { arrayOfNulls<AutoCloseable>(2) }
     var pages by remember(file) { mutableStateOf(0) }
     var error by remember(file) { mutableStateOf<String?>(null) }
     val lock = remember(file) { Mutex() }
@@ -110,20 +114,41 @@ private fun PdfPager(file: File, onPageCount: (Int) -> Unit) {
         onDispose {
             scope.launch {
                 lock.withLock {
-                    runCatching { renderer?.close() }
-                    runCatching { descriptor?.close() }
+                    runCatching { owned[0]?.close() }; owned[0] = null
+                    runCatching { owned[1]?.close() }; owned[1] = null
                 }
             }
         }
     }
 
     LaunchedEffect(file) {
-        runCatching {
-            val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
-            descriptor = fd
-            renderer = PdfRenderer(fd).also { pages = it.pageCount }
-        }.onFailure { error = it.message ?: "PDF 解析失败" }
-        onPageCount(pages)
+        try {
+            val opened = withContext(Dispatchers.IO) {
+                lock.withLock {
+                    val fd = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+                    var pdf: PdfRenderer? = null
+                    try {
+                        val active = PdfRenderer(fd)
+                        pdf = active
+                        val count = active.pageCount
+                        currentCoroutineContext().ensureActive()
+                        // Ownership is published under the same lock used by disposal, even
+                        // if cancellation prevents withContext from delivering its result.
+                        owned[0] = active
+                        owned[1] = fd
+                        active to count
+                    } catch (e: Exception) {
+                        runCatching { pdf?.close() }
+                        runCatching { fd.close() }
+                        throw e
+                    }
+                }
+            }
+            renderer = opened.first
+            pages = opened.second
+            onPageCount(pages)
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "PDF 解析失败" }
     }
 
     when {
@@ -156,22 +181,26 @@ private fun PdfPage(
 
     LaunchedEffect(renderer, index) {
         val r = renderer ?: return@LaunchedEffect
-        runCatching {
-            withContext(kotlinx.coroutines.Dispatchers.IO) {
+        var pending: Bitmap? = null
+        try {
+            val rendered = withContext(Dispatchers.IO) {
                 lock.withLock {
+                    currentCoroutineContext().ensureActive()
                     r.openPage(index).use { page ->
-                        // 渲染宽度按 1600px 上限（清晰且不 OOM）
-                        val scale = (1600f / page.width).coerceAtMost(3f)
-                        val w = (page.width * scale).toInt().coerceAtLeast(1)
-                        val h = (page.height * scale).toInt().coerceAtLeast(1)
+                        val (w, h) = pdfRenderSize(page.width, page.height)
                         val bmp = createBitmap(w, h, Bitmap.Config.ARGB_8888)
+                        pending = bmp
                         bmp.eraseColor(AndroidColor.WHITE)
                         page.render(bmp, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                         bmp
                     }
                 }
             }
-        }.onSuccess { bitmap = it }.onFailure { failed = true }
+            bitmap = rendered
+            pending = null
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { failed = true }
+        finally { pending?.recycle() }
     }
 
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {

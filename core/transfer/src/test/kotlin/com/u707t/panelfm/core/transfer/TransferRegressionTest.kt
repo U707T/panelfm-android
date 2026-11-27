@@ -140,14 +140,14 @@ class TransferRegressionTest {
     }
 
     @Test
-    fun `覆盖删除失败时不能继续写入目标`() = runBlocking {
+    fun `快路径覆盖文件失败时旧目标仍保留`() = runBlocking {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val vfs = FakeVfs()
             .dir("/src")
             .file("/src/a.txt", 3)
             .dir("/dst")
             .file("/dst/a.txt", 2)
-        vfs.failDelete = true
+        vfs.failRead = true
         val locator = FakeLocator(mapOf("one" to vfs))
         val engine = engine(scope, locator)
         val task = engine.enqueue(
@@ -158,10 +158,12 @@ class TransferRegressionTest {
                 conflict = ConflictPolicy.OVERWRITE,
             )
         )
-        withTimeout(10_000) { while (task.state.value !is TaskState.Failed) delay(10) }
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
 
+        val done = task.state.value as TaskState.Done
+        assertEquals(1, done.failed)
         assertTrue("源文件必须仍在", vfs.nodes.containsKey("/src/a.txt"))
-        assertEquals("目标不能在删除失败后被打开写入", 2L, vfs.nodes["/dst/a.txt"]?.size)
+        assertEquals("传输失败不得先删除旧目标", 2L, vfs.nodes["/dst/a.txt"]?.size)
         scope.cancel()
     }
 
@@ -211,6 +213,74 @@ class TransferRegressionTest {
         assertEquals(0, state.failed)
         assertTrue("校验后的目标内容应存在", dstVfs.nodes.containsKey("/dst/a.bin"))
         assertTrue(srcVfs.nodes["/src/a.bin"]!!.content.toByteArray().contentEquals(dstVfs.nodes["/dst/a.bin"]!!.content.toByteArray()))
+        scope.cancel()
+    }
+
+    @Test
+    fun `多源 MOVE 暂停后恢复跳过已删除源并继续剩余项`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val source = FakeVfs().dir("/src").file("/src/first.txt", 8).file("/src/second.txt", 9)
+        val destination = FakeVfs().dir("/dst")
+        val locator = FakeLocator(mapOf("source" to source, "destination" to destination))
+        val engine = engine(scope, locator)
+        val readGate = CompletableDeferred<Unit>()
+        source.readGate = readGate
+        val taskRef = java.util.concurrent.atomic.AtomicReference<TransferTask?>()
+        source.afterDelete = {
+            source.afterDelete = null
+            taskRef.get()?.pause()
+        }
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("source", "/src/first.txt"), uri("source", "/src/second.txt")),
+                destDir = uri("destination", "/dst"),
+                op = TransferOp.MOVE,
+                conflict = ConflictPolicy.OVERWRITE,
+            )
+        )
+        taskRef.set(task)
+        withTimeout(10_000) { while (source.readsStarted.get() == 0) delay(5) }
+        readGate.complete(Unit)
+        withTimeout(10_000) { while (task.state.value != TaskState.Paused) delay(5) }
+        assertTrue("首项删除成功后必须已记录完成", !source.nodes.containsKey("/src/first.txt"))
+        assertTrue("第二项暂停时仍须保留", source.nodes.containsKey("/src/second.txt"))
+
+        task.resume()
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(5) }
+        val done = task.state.value as TaskState.Done
+        assertEquals(0, done.failed)
+        assertTrue(destination.nodes.containsKey("/dst/first.txt"))
+        assertTrue(destination.nodes.containsKey("/dst/second.txt"))
+        assertTrue("恢复后剩余源也应移动", !source.nodes.containsKey("/src/second.txt"))
+        scope.cancel()
+    }
+
+    @Test
+    fun `HASH 读取期间取消必须在删源前终止`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val source = FakeVfs().dir("/src").file("/src/hash.bin", 4096)
+        val destination = FakeVfs().dir("/dst")
+        val locator = FakeLocator(mapOf("source" to source, "destination" to destination))
+        val engine = engine(scope, locator)
+        val taskRef = java.util.concurrent.atomic.AtomicReference<TransferTask?>()
+        val hashReadGate = CompletableDeferred<Unit>()
+        destination.afterCommit = {
+            source.readGate = hashReadGate
+            source.onRead = { taskRef.get()?.cancel() }
+        }
+        val task = engine.enqueue(
+            TransferRequest(
+                sources = listOf(uri("source", "/src/hash.bin")),
+                destDir = uri("destination", "/dst"),
+                op = TransferOp.MOVE,
+                conflict = ConflictPolicy.OVERWRITE,
+                verify = VerifyMode.HASH,
+            )
+        )
+        taskRef.set(task)
+        withTimeout(10_000) { while (task.state.value != TaskState.Cancelled) delay(5) }
+        assertTrue("HASH 取消后源必须保留，删源前必须最终确认取消", source.nodes.containsKey("/src/hash.bin"))
+        assertTrue("已提交目标可留待用户确认", destination.nodes.containsKey("/dst/hash.bin"))
         scope.cancel()
     }
 
@@ -348,7 +418,8 @@ class TransferRegressionTest {
             .dir("/src")
             .file("/src/a.txt", 3)
             .dir("/dst")
-            .file("/dst/a.txt", 2)
+            .dir("/dst/a.txt")
+            .file("/dst/a.txt/inner.txt", 2)
         vfs.silentlyIgnoreDelete = true
         val locator = FakeLocator(mapOf("one" to vfs))
         val engine = engine(scope, locator)
@@ -360,10 +431,12 @@ class TransferRegressionTest {
                 conflict = ConflictPolicy.OVERWRITE,
             )
         )
-        withTimeout(10_000) { while (task.state.value !is TaskState.Failed) delay(10) }
+        withTimeout(10_000) { while (task.state.value !is TaskState.Done) delay(10) }
 
+        val done = task.state.value as TaskState.Done
+        assertEquals(1, done.failed)
         assertTrue("源文件必须仍在", vfs.nodes.containsKey("/src/a.txt"))
-        assertEquals("目标不能在「删除静默失败」后被覆盖写入", 2L, vfs.nodes["/dst/a.txt"]?.size)
+        assertTrue("目标目录不能在静默删除后被覆盖写入", vfs.nodes.containsKey("/dst/a.txt/inner.txt"))
         scope.cancel()
     }
 

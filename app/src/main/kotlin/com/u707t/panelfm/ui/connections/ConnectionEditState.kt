@@ -155,7 +155,7 @@ internal class ConnectionEditState(
         // `secure` 键只有 WebDAV / S3 消费，**无条件写布尔值**：只在 true 时写会让 443 端口的
         // 「关闭 HTTPS / 显式 http://」被 Config 的 port == 443 fallback 覆盖
         if (type == ConnectionType.WEBDAV || type == ConnectionType.S3) put("secure", secure.toString())
-        if (trustSelfSigned) put(ConnectionConfig.OPT_TRUST_SELF_SIGNED, "true")
+        put(ConnectionConfig.OPT_TRUST_SELF_SIGNED, trustSelfSigned.toString())
         if (implicitTls) put(ConnectionConfig.OPT_IMPLICIT_TLS, "true")
         if (!passive) put(ConnectionConfig.OPT_PASSIVE, "false")
         if (userAgent.isNotBlank()) put(ConnectionConfig.OPT_USER_AGENT, userAgent.trim())

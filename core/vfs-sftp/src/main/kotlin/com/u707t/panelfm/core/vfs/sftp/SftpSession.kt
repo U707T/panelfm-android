@@ -52,110 +52,133 @@ internal class SftpSession(
     }
 
     private fun connectBlocking() {
+        if (session?.isOpen == true && metaClient != null) return
+        // Dispose any stale generation before retrying. New resources below remain local
+        // until authentication and SFTP channel creation have all succeeded.
+        close()
+
         val timeout = Duration.ofMillis(cfg.timeoutMs)
         var targetHost = cfg.host
         var targetPort = cfg.port
-
-        // ---- 跳板机
-        cfg.jumpHost?.let { jump ->
-            val jc = SshClient.setUpDefaultClient()
-            val jumpVerifier = TofuServerKeyVerifier(hostKeys, jump.host, jump.port)
-            jc.serverKeyVerifier = jumpVerifier
-            jc.start()
-            jumpClient = jc
-            val js = try {
-                jc.connect(jump.user, jump.host, jump.port).verify(timeout).session
-            } catch (e: Exception) {
-                runCatching { jc.stop() }
-                jumpVerifier.lastRejection?.let { throw VfsException.Auth(it) }
-                throw mapError(e, "跳板机连接失败")
-            }
-            if (!jump.password.isNullOrEmpty()) js.addPasswordIdentity(jump.password)
-            try {
-                js.auth().verify(timeout)
-            } catch (e: Exception) {
-                runCatching { js.close() }
-                runCatching { jc.stop() }
-                // 认证阶段按定义归类为 Auth（sshd 2.x 无独立的认证异常类，区分只能靠调用阶段）
-                throw if (e is VfsException) e else VfsException.Auth("跳板机认证失败：${e.message}")
-            }
-            jumpSession = js
-
-            // 本地端口转发：127.0.0.1:随机端口 → 目标主机:端口（等价 ssh -L）
-            // 注意：必须真正 break（早先误用 return@repeat，会连开 5 个转发并泄漏）
-            var tracker: ExplicitPortForwardingTracker? = null
-            var lastError: Exception? = null
-            for (attempt in 0 until 5) {
-                val port = Random.nextInt(30000, 60000)
-                try {
-                    tracker = js.createLocalPortForwardingTracker(
-                        SshdSocketAddress("127.0.0.1", port),
-                        SshdSocketAddress(cfg.host, cfg.port),
-                    )
-                    break
-                } catch (e: Exception) {
-                    lastError = e
-                }
-            }
-            val active = tracker ?: throw VfsException.ProtocolError("跳板机端口转发失败：${lastError?.message}")
-            jumpTracker = active
-            // 注意：localAddress 是 MINA 的 SshdSocketAddress（不是 java.net.InetSocketAddress），
-            // 之前 as? InetSocketAddress 永远失败 → 回落到 cfg.port，跳板机连不上
-            val boundPort = active.localAddress?.port ?: cfg.port
-            targetHost = "127.0.0.1"
-            targetPort = boundPort
-            Logx.i("SftpSession", "jump host ready: 127.0.0.1:$boundPort → ${cfg.host}:${cfg.port} via ${jump.host}")
-        }
-
-        // ---- 目标连接
-        val client = SshClient.setUpDefaultClient()
-        val verifier = TofuServerKeyVerifier(hostKeys, cfg.host, cfg.port)
-        client.serverKeyVerifier = verifier
-        client.start()
-        sshClient = client
-
-        val s = try {
-            client.connect(cfg.user, targetHost, targetPort).verify(timeout).session
-        } catch (e: Exception) {
-            runCatching { client.stop() }
-            throw mapError(e, "连接失败")
-        }
-        verifier.lastRejection?.let {
-            runCatching { s.close() }
-            runCatching { client.stop() }
-            throw VfsException.Auth(it)
-        }
-
-        when (cfg.auth) {
-            SftpAuth.PASSWORD -> {
-                if (cfg.password.isNullOrEmpty()) throw VfsException.Auth("未填写密码")
-                s.addPasswordIdentity(cfg.password)
-            }
-            SftpAuth.KEY -> {
-                val keyPath = cfg.keyPath ?: throw VfsException.Auth("未选择私钥文件")
-                val pairs = try {
-                    SshKeys.loadKeyPairs(keyPath, cfg.keyPassphrase)
-                } catch (e: Exception) {
-                    throw VfsException.Auth("私钥加载失败：${e.message}")
-                }
-                if (pairs.isEmpty()) throw VfsException.Auth("私钥文件里没有可用的密钥")
-                pairs.forEach { s.addPublicKeyIdentity(it) }
-            }
-        }
+        var ownedJumpClient: SshClient? = null
+        var ownedJumpSession: ClientSession? = null
+        var ownedJumpTracker: ExplicitPortForwardingTracker? = null
+        var ownedClient: SshClient? = null
+        var ownedSession: ClientSession? = null
+        var ownedMetaClient: SftpClient? = null
 
         try {
-            s.auth().verify(timeout)
-        } catch (e: Exception) {
-            runCatching { s.close() }
-            runCatching { client.stop() }
-            // 认证阶段按定义归类为 Auth（sshd 2.x 无独立的认证异常类，区分只能靠调用阶段）
-            throw if (e is VfsException) e else VfsException.Auth("认证失败：${e.message}")
-        }
+            // ---- 跳板机
+            cfg.jumpHost?.let { jump ->
+                val jc = SshClient.setUpDefaultClient()
+                ownedJumpClient = jc
+                val jumpVerifier = TofuServerKeyVerifier(hostKeys, jump.host, jump.port)
+                jc.serverKeyVerifier = jumpVerifier
+                jc.start()
+                val js = try {
+                    jc.connect(jump.user, jump.host, jump.port).verify(timeout).session
+                } catch (e: Exception) {
+                    jumpVerifier.lastRejection?.let { throw VfsException.Auth(it) }
+                    throw mapError(e, "跳板机连接失败")
+                }
+                ownedJumpSession = js
+                jumpVerifier.lastRejection?.let { throw VfsException.Auth(it) }
+                if (!jump.password.isNullOrEmpty()) js.addPasswordIdentity(jump.password)
+                try {
+                    js.auth().verify(timeout)
+                } catch (e: Exception) {
+                    // 认证阶段按定义归类为 Auth（sshd 2.x 无独立的认证异常类，区分只能靠调用阶段）
+                    throw if (e is VfsException) e else VfsException.Auth("跳板机认证失败：${e.message}")
+                }
 
-        session = s
-        // 已经在 vfs 调度器上，直接阻塞式建立 SFTP channel
-        metaClient = SftpClientFactory.instance().createSftpClient(s)
-        Logx.i("SftpSession", "connected ${cfg.user}@${cfg.host}:${cfg.port} (${cfg.auth})")
+                // 本地端口转发：127.0.0.1:随机端口 → 目标主机:端口（等价 ssh -L）
+                // 注意：必须真正 break（早先误用 return@repeat，会连开 5 个转发并泄漏）
+                var tracker: ExplicitPortForwardingTracker? = null
+                var lastError: Exception? = null
+                for (attempt in 0 until 5) {
+                    val port = Random.nextInt(30000, 60000)
+                    try {
+                        tracker = js.createLocalPortForwardingTracker(
+                            SshdSocketAddress("127.0.0.1", port),
+                            SshdSocketAddress(cfg.host, cfg.port),
+                        )
+                        break
+                    } catch (e: Exception) {
+                        lastError = e
+                    }
+                }
+                val active = tracker ?: throw VfsException.ProtocolError("跳板机端口转发失败：${lastError?.message}")
+                ownedJumpTracker = active
+                // 注意：localAddress 是 MINA 的 SshdSocketAddress（不是 java.net.InetSocketAddress），
+                // 之前 as? InetSocketAddress 永远失败 → 回落到 cfg.port，跳板机连不上
+                val boundPort = active.localAddress?.port ?: cfg.port
+                targetHost = "127.0.0.1"
+                targetPort = boundPort
+                Logx.i("SftpSession", "jump host ready: 127.0.0.1:$boundPort → ${cfg.host}:${cfg.port} via ${jump.host}")
+            }
+
+            // ---- 目标连接
+            val client = SshClient.setUpDefaultClient()
+            ownedClient = client
+            val verifier = TofuServerKeyVerifier(hostKeys, cfg.host, cfg.port)
+            client.serverKeyVerifier = verifier
+            client.start()
+
+            val s = try {
+                client.connect(cfg.user, targetHost, targetPort).verify(timeout).session
+            } catch (e: Exception) {
+                verifier.lastRejection?.let { throw VfsException.Auth(it) }
+                throw mapError(e, "连接失败")
+            }
+            ownedSession = s
+            verifier.lastRejection?.let { throw VfsException.Auth(it) }
+
+            // 准备凭据也必须处在局部资源所有权范围内：缺少密码、读取/解析密钥
+            // 或加入 identity 失败时，下面的统一失败清理会关闭已握手的 session/client。
+            when (cfg.auth) {
+                SftpAuth.PASSWORD -> {
+                    if (cfg.password.isNullOrEmpty()) throw VfsException.Auth("未填写密码")
+                    s.addPasswordIdentity(cfg.password)
+                }
+                SftpAuth.KEY -> {
+                    val keyPath = cfg.keyPath ?: throw VfsException.Auth("未选择私钥文件")
+                    val pairs = try {
+                        SshKeys.loadKeyPairs(keyPath, cfg.keyPassphrase)
+                    } catch (e: Exception) {
+                        throw VfsException.Auth("私钥加载失败：${e.message}")
+                    }
+                    if (pairs.isEmpty()) throw VfsException.Auth("私钥文件里没有可用的密钥")
+                    pairs.forEach { s.addPublicKeyIdentity(it) }
+                }
+            }
+
+            try {
+                s.auth().verify(timeout)
+            } catch (e: Exception) {
+                // 认证阶段按定义归类为 Auth（sshd 2.x 无独立的认证异常类，区分只能靠调用阶段）
+                throw if (e is VfsException) e else VfsException.Auth("认证失败：${e.message}")
+            }
+
+            // 已经在 vfs 调度器上，直接阻塞式建立 SFTP channel。
+            // Channel 建立失败同样属于未完成的连接，不能发布半初始化字段。
+            ownedMetaClient = SftpClientFactory.instance().createSftpClient(s)
+            Logx.i("SftpSession", "connected ${cfg.user}@${cfg.host}:${cfg.port} (${cfg.auth})")
+
+            jumpClient = ownedJumpClient
+            jumpSession = ownedJumpSession
+            jumpTracker = ownedJumpTracker
+            sshClient = ownedClient
+            session = ownedSession
+            metaClient = ownedMetaClient
+        } catch (e: Exception) {
+            runCatching { ownedMetaClient?.close() }
+            runCatching { ownedSession?.close(true) }
+            runCatching { ownedClient?.stop() }
+            runCatching { ownedJumpTracker?.close() }
+            runCatching { ownedJumpSession?.close(true) }
+            runCatching { ownedJumpClient?.stop() }
+            throw e
+        }
     }
 
     suspend fun meta(): SftpClient {

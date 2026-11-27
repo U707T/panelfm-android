@@ -429,6 +429,13 @@ fun BrowserController.tapSelect(side: PaneSide, item: FileMetadata): Boolean {
  * 失败语义：根目录列举失败直接抛给调用方（不能显示成「没搜到」）；子目录失败计入
  * [SearchOutcome.failedDirs]，内容读取失败单独计数，不污染「未命中」。
  */
+internal fun searchItemEligible(
+    isDirectory: Boolean,
+    nameMatches: Boolean,
+    sizeMatches: Boolean,
+    contentSearch: Boolean,
+): Boolean = nameMatches && if (isDirectory) !contentSearch else sizeMatches
+
 private class SearchHit(val item: FileMetadata, val rank: Int, val lowerName: String)
 
 suspend fun BrowserController.searchTree(
@@ -589,8 +596,16 @@ suspend fun BrowserController.searchTree(
             if (stopped) return
             if (isCancelled()) { stopped = true; return }
             if (!allowMore()) return
-            if (item.isDirectory) continue
-            if (!nameOk(item) || !sizeOk(item)) continue
+            val nameMatches = nameOk(item)
+            val sizeMatches = sizeOk(item)
+            if (!searchItemEligible(item.isDirectory, nameMatches, sizeMatches, contentSearch = contentQuery.isNotBlank())) continue
+            if (item.isDirectory) {
+                // 目录没有可搜索内容，且大小元数据口径不统一；内容搜索排除目录，大小范围仅约束文件。
+                val rank = if (ranked) matcher.rank(item.name) ?: 2 else 2
+                out.add(SearchHit(item, rank, item.name.lowercase()))
+                if (out.size % 20 == 0) onPartial?.invoke(snapshot())
+                continue
+            }
             if (!contentOk(item)) {
                 if (stopped) return
                 continue

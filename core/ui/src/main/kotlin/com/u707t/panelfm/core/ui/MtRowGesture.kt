@@ -76,6 +76,8 @@ class MtRowGesture(
 
     var phase: Phase = Phase.DONE
         private set
+    private var tapEligible = false
+    private var longPressEligible = false
 
     /** 按下时所在行（-1 = 没按在真实行上）；判定用它的项 */
     var downIndex: Int = -1
@@ -84,6 +86,8 @@ class MtRowGesture(
     /** 一次新手势开始（在 `awaitFirstDown` 之后调用） */
     fun begin(downIndex: Int) {
         this.downIndex = downIndex
+        tapEligible = true
+        longPressEligible = true
         phase = Phase.PRESS
     }
 
@@ -113,41 +117,43 @@ class MtRowGesture(
                 Decision.None
             }
 
-            Phase.PRESS -> when {
-                // 松手：先定性（长按 / 点按 / 拖过一段距离后松手 = 什么都不做）。
-                // 必须放在长按阈值之前：事件可能很稀疏（按住 500ms 后直接松手、
-                // 中途一个 MOVE 都没有），这时要在这一帧里把长按判掉。
-                !pressed -> {
-                    phase = Phase.DONE
-                    when {
-                        downIndex >= 0 && elapsedMs >= longPressMs -> Decision.LongPressMenu
-                        // 防误触：判定「拖动过」用长按位移容差（12dp）而不是系统 touchSlop（约 8dp）
-                        abs(dx) > longPressSlopDp || abs(dy) > longPressSlopDp -> Decision.None
-                        else -> Decision.Tap
+            Phase.PRESS -> {
+                if (abs(dx) > longPressSlopDp || abs(dy) > longPressSlopDp) {
+                    // 失去长按资格是粘性的：即使手指随后回到按下点，也不再弹菜单或判作点按。
+                    longPressEligible = false
+                    tapEligible = false
+                }
+                when {
+                    // 松手：事件可能很稀疏，长按只在移动资格一直保留时成立。
+                    !pressed -> {
+                        phase = Phase.DONE
+                        when {
+                            downIndex >= 0 && longPressEligible && elapsedMs >= longPressMs -> Decision.LongPressMenu
+                            tapEligible -> Decision.Tap
+                            else -> Decision.None
+                        }
                     }
-                }
 
-                // 长按阈值到达 → 立即弹菜单（MT 是"快速出来二级菜单"，不等松手）。
-                // 只有按在**真实行**上才算：按在列表空白处不该弹菜单。
-                downIndex >= 0 && elapsedMs >= longPressMs -> {
-                    phase = Phase.MENU
-                    Decision.LongPressMenu
-                }
+                    // 长按阈值到达 → 立即弹菜单（MT 是"快速出来二级菜单"，不等松手）。
+                    downIndex >= 0 && longPressEligible && elapsedMs >= longPressMs -> {
+                        phase = Phase.MENU
+                        Decision.LongPressMenu
+                    }
 
-                // 纵向过 touchSlop 且纵向占优 → 列表滚动（不消费事件，让 LazyColumn 接管）
-                abs(dy) > touchSlopDp && abs(dy) >= abs(dx) -> {
-                    phase = Phase.HANDOFF
-                    Decision.HandOff
-                }
+                    // 纵向过 touchSlop 且纵向占优 → 列表滚动（不消费事件，让 LazyColumn 接管）
+                    abs(dy) > touchSlopDp && abs(dy) >= abs(dx) -> {
+                        phase = Phase.HANDOFF
+                        Decision.HandOff
+                    }
 
-                // 左右滑动（≥ 24dp 且横向 > 纵向×2）→ 选中（或连区间）。
-                // 必须「按在真实行上」——按在列表空白处滑动不算。
-                downIndex >= 0 && MtGesture.isSwipeSelect(dx, dy) -> {
-                    phase = Phase.SWIPED
-                    Decision.SwipeSelect(towardRight = dx > 0f)
-                }
+                    // 左右滑动（≥ 24dp 且横向占优）→ 选中；在长按容差与滑动阈值之间继续等待。
+                    downIndex >= 0 && MtGesture.isSwipeSelect(dx, dy) -> {
+                        phase = Phase.SWIPED
+                        Decision.SwipeSelect(towardRight = dx > 0f)
+                    }
 
-                else -> Decision.None
+                    else -> Decision.None
+                }
             }
         }
 }

@@ -379,13 +379,15 @@ private fun BrowserController.stepHistory(side: PaneSide, backwards: Boolean) {
     load(side)
 }
 
+internal fun archiveUpLeavesToHost(innerPath: String): Boolean = innerPath.isEmpty()
+
 fun BrowserController.up(side: PaneSide) {
     val uri = pane(side).uri
     flushScroll(side)
     // 压缩包内部：回到压缩包所在目录
     if (uri.scheme == "archive") {
         val inner = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseInner(uri.path)
-        if (inner.isEmpty() || !inner.contains('/')) {
+        if (archiveUpLeavesToHost(inner)) {
             val encoded = com.u707t.panelfm.core.vfs.archive.ArchiveVfs.parseEncodedHost(uri.path)
             val host = encoded?.let { runCatching { VfsUri.parse(VfsUri.decodeHost(it)) }.getOrNull() }
             val parent = host?.parent

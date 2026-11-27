@@ -402,14 +402,19 @@ private suspend fun exportApk(
         val fileName = AppList.exportFileName(app.label, app.versionName, isBundle)
         val source: File = if (isBundle) {
             val tmp = File(context.cacheDir, "panelfm-export-${System.currentTimeMillis()}.apks")
-            java.util.zip.ZipOutputStream(tmp.outputStream().buffered(256 * 1024)).use { zos ->
-                parts.forEach { part ->
-                    zos.putNextEntry(java.util.zip.ZipEntry(part.name))
-                    part.inputStream().use { it.copyTo(zos, 256 * 1024) }
-                    zos.closeEntry()
+            try {
+                java.util.zip.ZipOutputStream(tmp.outputStream().buffered(256 * 1024)).use { zos ->
+                    parts.forEach { part ->
+                        zos.putNextEntry(java.util.zip.ZipEntry(part.name))
+                        part.inputStream().use { it.copyTo(zos, 256 * 1024) }
+                        zos.closeEntry()
+                    }
                 }
+                tmp
+            } catch (e: Exception) {
+                runCatching { tmp.delete() }
+                throw e
             }
-            tmp
         } else {
             parts.first()
         }

@@ -222,19 +222,23 @@ class S3Vfs(
     }
 
     override suspend fun rename(from: VfsUri, to: VfsUri): Boolean {
-        val bucket = bucketOf(from) ?: return false
+        val sourceBucket = bucketOf(from) ?: return false
+        val destinationBucket = bucketOf(to) ?: return false
+        if (sourceBucket != destinationBucket) return false
         val fromKey = keyOf(from)
         val toKey = keyOf(to)
         withContext(env.dispatchers.vfs) {
-            copyRecursive(bucket, fromKey, toKey)
-            deleteRecursive(bucket, fromKey)
+            copyRecursive(sourceBucket, fromKey, toKey)
+            deleteRecursive(sourceBucket, fromKey)
         }
         return true
     }
 
     override suspend fun serverSideCopy(from: VfsUri, to: VfsUri): Boolean {
-        val bucket = bucketOf(from) ?: return false
-        withContext(env.dispatchers.vfs) { copyRecursive(bucket, keyOf(from), keyOf(to)) }
+        val sourceBucket = bucketOf(from) ?: return false
+        val destinationBucket = bucketOf(to) ?: return false
+        if (sourceBucket != destinationBucket) return false
+        withContext(env.dispatchers.vfs) { copyRecursive(sourceBucket, keyOf(from), keyOf(to)) }
         return true
     }
 
@@ -301,7 +305,7 @@ class S3Vfs(
 
         override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int = withContext(env.dispatchers.vfs) {
             ensureStream()
-            val n = stream!!.read(buffer, offset, length)
+            val active = stream!!; val n = readS3Cancellable({ closeStream() }) { active.read(buffer, offset, length) }
             if (n > 0) pos += n
             n
         }

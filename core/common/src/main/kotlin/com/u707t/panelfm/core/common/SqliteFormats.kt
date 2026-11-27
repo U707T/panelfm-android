@@ -8,6 +8,22 @@ package com.u707t.panelfm.core.common
  */
 object SqliteFormats {
 
+    const val PREVIEW_CELL_CHARS = 1024
+    const val PREVIEW_MAX_COLUMNS = 64
+    const val PREVIEW_TABLE_CHARS = 256 * 1024
+
+    /** Truncate in SQLite, before raw TEXT / BLOB can enter CursorWindow or JVM strings. */
+    fun previewQuery(table: String, columns: List<String>, limit: Int): String {
+        require(columns.isNotEmpty() && columns.size <= PREVIEW_MAX_COLUMNS)
+        require(limit in 1..200)
+        val projection = columns.joinToString(",") { name ->
+            val q = quoteIdentifier(name)
+            "CASE typeof($q) WHEN 'blob' THEN 'BLOB' WHEN 'null' THEN 'NULL' " +
+                "ELSE substr(CAST($q AS TEXT),1,${PREVIEW_CELL_CHARS + 1}) END"
+        }
+        return "SELECT $projection FROM ${quoteIdentifier(table)} LIMIT $limit"
+    }
+
     val EXTENSIONS = setOf("db", "sqlite", "sqlite3")
 
     fun isSqlite(extension: String): Boolean = extension.lowercase() in EXTENSIONS

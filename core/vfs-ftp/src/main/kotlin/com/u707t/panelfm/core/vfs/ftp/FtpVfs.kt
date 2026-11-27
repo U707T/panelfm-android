@@ -37,6 +37,29 @@ import java.io.OutputStream
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
 
+internal fun createFtpParentsChecked(
+    path: String,
+    createDirectory: (String) -> Boolean,
+    isDirectory: (String) -> Boolean,
+    fail: (String, Exception) -> Nothing,
+) {
+    var current = ""
+    for (seg in path.trim('/').split('/').filter { it.isNotEmpty() }) {
+        current = "$current/$seg"
+        val createFailure = try {
+            if (createDirectory(current)) null else IllegalStateException("FTP拒绝创建目录：$current")
+        } catch (e: Exception) {
+            e
+        }
+        val exists = try {
+            isDirectory(current)
+        } catch (e: Exception) {
+            fail(current, e)
+        }
+        if (!exists) fail(current, createFailure ?: IllegalStateException("FTP未创建目录：$current"))
+    }
+}
+
 internal const val FTPS_ENDPOINT_CHECKING_ENABLED = true
 
 internal fun ftpsTrustManager(
@@ -289,15 +312,39 @@ class FtpVfs(
     override suspend fun mkdir(uri: VfsUri, parents: Boolean) = withControl { c ->
         withContext(env.dispatchers.vfs) {
             if (parents) {
-                var current = ""
-                for (seg in uri.path.trim('/').split('/').filter { it.isNotEmpty() }) {
-                    current = "$current/$seg"
-                    runCatching { c.makeDirectory(current) }
-                }
+                mkdirParentsChecked(c, uri.path)
             } else if (!c.makeDirectory(uri.path)) {
                 throw VfsException.Io("创建目录失败：${uri.path}")
             }
         }
+    }
+
+    private fun mkdirParentsChecked(c: FTPClient, path: String) {
+        createFtpParentsChecked(
+            path = path,
+            createDirectory = c::makeDirectory,
+            isDirectory = { ftpDirectoryExists(c, it) },
+            fail = { current, e ->
+                if (e is IllegalStateException) {
+                    throw VfsException.Io("创建目录失败：$current", e)
+                }
+                throw wrap(e)
+            },
+        )
+    }
+
+    /** MLST when available; otherwise CWD + PWD verifies a directory without leaving the session there. */
+    private fun ftpDirectoryExists(c: FTPClient, path: String): Boolean {
+        val mlst = runCatching { c.mlistFile(path) }.getOrNull()
+        if (mlst != null) return mlst.isDirectory
+
+        val previous = c.printWorkingDirectory()
+            ?: throw VfsException.Io("无法读取FTP当前目录，不能确认目标目录：$path")
+        if (!c.changeWorkingDirectory(path)) return false
+        if (!c.changeWorkingDirectory(previous)) {
+            throw VfsException.Io("已检查目录但无法恢复FTP当前目录：$previous")
+        }
+        return true
     }
 
     override suspend fun touch(uri: VfsUri) = withControl { c ->
@@ -332,7 +379,7 @@ class FtpVfs(
 
     override suspend fun rename(from: VfsUri, to: VfsUri): Boolean = withControl { c ->
         withContext(env.dispatchers.vfs) {
-            to.parent?.let { parent -> runCatching { mkdirBlocking(c, parent.path) } }
+            to.parent?.let { parent -> mkdirBlocking(c, parent.path) }
             val ok = c.rename(from.path, to.path)
             if (!ok) throw VfsException.ProtocolError("重命名失败（${c.replyCode} ${c.replyString}）")
             true
@@ -341,11 +388,7 @@ class FtpVfs(
 
     private fun mkdirBlocking(c: FTPClient, path: String) {
         if (path.isBlank() || path == "/") return
-        var current = ""
-        for (seg in path.trim('/').split('/').filter { it.isNotEmpty() }) {
-            current = "$current/$seg"
-            runCatching { c.makeDirectory(current) }
-        }
+        mkdirParentsChecked(c, path)
     }
 
     override suspend fun setPermissions(uri: VfsUri, mode: Int) = withControl { c ->

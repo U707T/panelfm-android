@@ -25,4 +25,14 @@ class SqliteFormatsTest {
         // 内部双引号按 SQL 规则翻倍（防把语句拼坏）
         assertEquals("\"a\"\"b\"", SqliteFormats.quoteIdentifier("a\"b"))
     }
+
+    @Test fun `preview query bounds values before cursor materialization`() {
+        val sql = SqliteFormats.previewQuery("t\"x", listOf("c\"x"), 200)
+        assertTrue(sql.contains("CASE typeof(\"c\"\"x\")"))
+        assertTrue(sql.contains("WHEN 'blob' THEN 'BLOB'"))
+        assertTrue(sql.contains("substr(CAST(\"c\"\"x\" AS TEXT),1,1025)"))
+        assertTrue(sql.endsWith("FROM \"t\"\"x\" LIMIT 200"))
+        assertTrue(runCatching { SqliteFormats.previewQuery("t", List(65) { "c$it" }, 200) }.isFailure)
+        assertTrue(runCatching { SqliteFormats.previewQuery("t", listOf("c"), 201) }.isFailure)
+    }
 }

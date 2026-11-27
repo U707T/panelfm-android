@@ -116,7 +116,7 @@ class SftpVfs(
                 }
             }
             val attrs = try {
-                client.stat(uri.path)
+                client.lstat(uri.path)
             } catch (e: SftpException) {
                 throw mapSftp(e, uri)
             }
@@ -156,7 +156,27 @@ class SftpVfs(
                 var current = ""
                 for (seg in uri.path.trim('/').split('/').filter { it.isNotEmpty() }) {
                     current = "$current/$seg"
-                    runCatching { client.mkdir(current) }
+                    var createFailure: Exception? = null
+                    try {
+                        client.mkdir(current)
+                    } catch (e: Exception) {
+                        createFailure = e
+                    }
+                    val existing = try {
+                        client.lstat(current)
+                    } catch (e: SftpException) {
+                        if (e.status == SftpConstants.SSH_FX_NO_SUCH_FILE ||
+                            e.status == SftpConstants.SSH_FX_NO_SUCH_PATH
+                        ) {
+                            null
+                        } else {
+                            throw mapSftp(e, uri)
+                        }
+                    }
+                    if (existing == null || !isDir(existing) || isLink(existing)) {
+                        if (createFailure != null) throw mapSftp(createFailure, uri)
+                        throw VfsException.Conflict(uri)
+                    }
                 }
             } else {
                 try {
@@ -193,9 +213,9 @@ class SftpVfs(
         }
 
     private suspend fun deleteRecursive(client: SftpClient, uri: VfsUri) {
-        val attrs = runCatching { client.stat(uri.path) }.getOrNull()
-        if (attrs != null && isDir(attrs)) {
-            val children = runCatching { client.readDir(uri.path).toList() }.getOrNull().orEmpty()
+        val attrs = runCatching { client.lstat(uri.path) }.getOrNull()
+        if (attrs != null && isDir(attrs) && !isLink(attrs)) {
+            val children = try { client.readDir(uri.path).toList() } catch (e: Exception) { throw mapSftp(e, uri) }
             for (child in children) {
                 if (child.filename == "." || child.filename == "..") continue
                 deleteRecursive(client, uri.child(child.filename))

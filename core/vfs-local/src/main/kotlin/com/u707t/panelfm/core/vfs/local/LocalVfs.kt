@@ -20,6 +20,7 @@ import com.u707t.panelfm.core.vfs.VfsState
 import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.VfsWriter
 import com.u707t.panelfm.core.vfs.VirtualFileSystem
+import com.u707t.panelfm.core.vfs.VfsFileIdentityResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,7 +39,7 @@ import java.nio.file.StandardCopyOption
  *  - 权限/属主通过 android.system.Os.stat 读取，chmod 通过 Os.chmod；
  *  - 支持按偏移读写（断点续传）。
  */
-class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
+class LocalVfs(private val env: VfsEnv) : VirtualFileSystem, VfsFileIdentityResolver {
 
     override val id: String = "local"
     override val scheme: String = "local"
@@ -86,6 +87,34 @@ class LocalVfs(private val env: VfsEnv) : VirtualFileSystem {
                 uri.path.trimEnd('/').ifEmpty { "/" }
             }
         }
+    }
+
+    /**
+     * Canonical path key for destructive-operation locks. `canonicalFile` resolves existing
+     * symlinks and normalizes non-existent suffixes against the nearest existing ancestor.
+     */
+    override fun fileIdentityPath(uri: VfsUri): String? {
+        if (uri.scheme != scheme) return null
+        return runCatching { toFile(uri).canonicalPath.normalizeLocalIdentityPath() }.getOrNull()
+    }
+
+    /** Uses inode-aware identity when both entities exist, with canonical-path fallback for new targets. */
+    override fun sameFileIdentity(left: VfsUri, right: VfsUri): Boolean? {
+        if (left.scheme != scheme || right.scheme != scheme) return null
+        return runCatching {
+            val leftPath = toFile(left).canonicalFile.toPath()
+            val rightPath = toFile(right).canonicalFile.toPath()
+            if (Files.exists(leftPath) && Files.exists(rightPath)) {
+                Files.isSameFile(leftPath, rightPath)
+            } else {
+                leftPath.toString().normalizeLocalIdentityPath() == rightPath.toString().normalizeLocalIdentityPath()
+            }
+        }.getOrNull()
+    }
+
+    private fun String.normalizeLocalIdentityPath(): String {
+        val normalized = replace('\\', '/')
+        return if (normalized == "/") normalized else normalized.trimEnd('/')
     }
 
     fun uriOf(authority: String, absolutePath: String): VfsUri {

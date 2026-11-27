@@ -597,8 +597,11 @@ fun MediaScreen(container: AppContainer, uri: VfsUri, title: String, onBack: () 
                     if (targetIsAudio) "audio/*" else "video/*",
                 )
                 .addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
-            context.startActivity(android.content.Intent.createChooser(intent, "用其他应用打开"))
-        }
+            val chooser = android.content.Intent.createChooser(intent, "用其他应用打开")
+                .putExtra(android.content.Intent.EXTRA_EXCLUDE_COMPONENTS,
+                    com.u707t.panelfm.open.selfExclusion(context))
+            context.startActivity(chooser)
+        }.onFailure { container.browser.showStatus("外部打开失败：${it.message ?: "没有可用应用"}") }
     }
 
     // 载入媒体 + 同目录播放列表

@@ -18,7 +18,7 @@ class ArchiveTraversalSafetyTest {
         var reads = 0
         var committed = false
         override suspend fun connect() = Unit
-        override suspend fun stat(uri: VfsUri): FileMetadata = FileMetadata(
+        override suspend fun stat(uri: VfsUri): FileMetadata = if (uri.path.startsWith("/out.")) throw VfsException.NotFound(uri) else FileMetadata(
             uri = uri, name = uri.name, isDirectory = true, isSymlink = shape == "root-link")
         override suspend fun list(uri: VfsUri, options: ListOptions): List<FileMetadata> = when (shape) {
             "file-link" -> listOf(FileMetadata(uri.child("link"), "link", isDirectory = false, isSymlink = true, size = 6))

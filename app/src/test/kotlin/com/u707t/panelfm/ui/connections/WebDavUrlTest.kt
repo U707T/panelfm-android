@@ -103,4 +103,13 @@ class WebDavUrlTest {
         assertEquals("::1", parts.host)
         assertEquals(80, parts.port)
     }
+    @Test fun reservedPathCharactersSurviveEditingAndSaving() {
+        for (path in listOf("/a?b", "/a#b", "/literal%2F", "/a+b c/中文😀", "/100%/last")) {
+            val encoded = WebDavUrl.build("host", 443, true, path)
+            assertEquals(path, WebDavUrl.parse(encoded)!!.path)
+            val parsed = WebDavUrl.parse(encoded)!!
+            assertEquals(parsed, WebDavUrl.parse(WebDavUrl.build(parsed.host, parsed.port, parsed.secure, parsed.path)))
+        }
+        assertEquals("https://host:443/a%3Fb", WebDavUrl.build("host", 443, true, "/a?b"))
+    }
 }

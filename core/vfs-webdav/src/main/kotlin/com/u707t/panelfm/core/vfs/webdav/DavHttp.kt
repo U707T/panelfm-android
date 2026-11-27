@@ -87,8 +87,8 @@ object DavHttp {
     fun client(cfg: DavConfig): OkHttpClient {
         val builder = OkHttpClient.Builder()
             .connectTimeout(cfg.timeoutMs, TimeUnit.MILLISECONDS)
-            .readTimeout(0, TimeUnit.MILLISECONDS)      // 大文件下载不设读超时，靠连接与写超时
-            .writeTimeout(0, TimeUnit.MILLISECONDS)
+            .readTimeout(cfg.timeoutMs.coerceAtLeast(30_000L), TimeUnit.MILLISECONDS)
+            .writeTimeout(cfg.timeoutMs.coerceAtLeast(30_000L), TimeUnit.MILLISECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS)
             .followRedirects(false)                     // 交给 DavRedirectInterceptor 精确控制
             .followSslRedirects(false)

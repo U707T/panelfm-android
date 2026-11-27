@@ -83,12 +83,13 @@ fun MtSearchDialog(
     val sizeBad = minSizeBad || maxSizeBad || sizeRangeBad
     val submit = {
         if (!sizeBad) {
+            val sizeBounds = effectiveSearchSizeBounds(advanced, minBytes, maxBytes)
             onSearch(
                 query.trim(),
                 field,
                 recursive,
-                minBytes ?: -1L,
-                maxBytes ?: -1L,
+                sizeBounds.first,
+                sizeBounds.second,
             )
             onDismiss()
         }
@@ -321,6 +322,17 @@ fun MtSearchResultsDialog(
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("关闭") } },
     )
+}
+
+/** 高级搜索关闭时，隐藏的大小输入不应继续参与检索。 */
+internal fun effectiveSearchSizeBounds(
+    advanced: Boolean,
+    minBytes: Long?,
+    maxBytes: Long?,
+): Pair<Long, Long> = if (advanced) {
+    (minBytes ?: -1L) to (maxBytes ?: -1L)
+} else {
+    -1L to -1L
 }
 
 /**

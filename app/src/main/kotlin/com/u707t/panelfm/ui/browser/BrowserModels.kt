@@ -343,6 +343,31 @@ enum class PickDirPurpose(val label: String) {
     MOVE_TO("移动到所选目录"),
 }
 
+/** 启动目录选择时冻结的源窗格与源 URI；导航到目标目录后仍保留原始操作源。 */
+internal data class PickDirSourceSnapshot(
+    val sourceSide: PaneSide,
+    val sources: List<VfsUri>,
+)
+
+internal fun capturePickDirSources(sourceSide: PaneSide, sources: List<VfsUri>): PickDirSourceSnapshot =
+    PickDirSourceSnapshot(sourceSide, sources.toList())
+
+/** 目录选择确认结果：目标目录取确认时当前窗格，源快照取操作发起时。 */
+internal data class PickDirSelection(
+    val purpose: PickDirPurpose,
+    val sourceSide: PaneSide,
+    val sources: List<VfsUri>,
+    val destDir: VfsUri,
+)
+
+/** 纯函数用于锁定“浏览后仍保留原源”的快照语义。 */
+internal fun pickDirSelection(
+    purpose: PickDirPurpose,
+    sourceSide: PaneSide,
+    sources: List<VfsUri>,
+    destDir: VfsUri,
+): PickDirSelection = PickDirSelection(purpose, sourceSide, sources.toList(), destDir)
+
 /**
  * 浏览模式（复刻 MT 的「单列 / 双列 / 自动切换」，文案 `0x7f1101fb/1fc/1fd/1fe`）。
  *  - [AUTO]：窄屏单列、宽屏双列（由界面按屏宽判定，见 `DualPaneScreen`）

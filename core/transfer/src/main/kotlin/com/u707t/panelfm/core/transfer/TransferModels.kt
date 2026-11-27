@@ -104,8 +104,15 @@ val TaskState.isActive: Boolean
 val TaskState.isFinished: Boolean
     get() = this is TaskState.Done || this is TaskState.Cancelled || this is TaskState.Failed
 
-val TaskState.dismissesAutomatically: Boolean
-    get() = this is TaskState.Done || this is TaskState.Cancelled
+    val TaskState.dismissesAutomatically: Boolean
+    get() = when (this) {
+        is TaskState.Done -> !hasFailures
+        TaskState.Cancelled -> true
+        else -> false
+    }
+
+val TaskState.Done.hasFailures: Boolean
+    get() = failed > 0 || failureTotal > 0 || failures.isNotEmpty()
 
 /**
  * 总体进度 0..1（未知总大小时为 0；「已完成」视为 1）。
@@ -161,7 +168,10 @@ private fun TaskState.displayRank(): Int = when (this) {
  * 任务页仍会短暂展示它们的完成结果（引擎保留期过后自动收走）。
  */
 fun List<TransferTaskSnapshot>.forBrowserBar(): List<TransferTaskSnapshot> =
-    sortedForDisplay().filter { it.state.isActive || it.state is TaskState.Failed }
+    sortedForDisplay().filter { snapshot ->
+        snapshot.state.isActive || snapshot.state is TaskState.Failed ||
+            (snapshot.state is TaskState.Done && snapshot.state.hasFailures)
+    }
 
 data class FailedItem(
     val source: VfsUri,

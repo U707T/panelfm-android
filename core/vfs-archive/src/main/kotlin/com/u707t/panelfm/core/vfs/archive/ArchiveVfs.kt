@@ -179,6 +179,7 @@ class ArchiveVfs(
 
     /** 索引已就绪（与「索引为空」区分：0 条目的压缩包也只应构建一次，第 5 批审计 🔵7） */
     private var indexed = false
+    private var uncheckableEntries = false
 
     /** ZIP：是否存在加密条目（决定是否需要口令、探测能否走中央目录，第 5 批 🔴1） */
     private var zipHasEncryptedEntries = false
@@ -226,13 +227,16 @@ class ArchiveVfs(
             indexed = true
             _state.value = VfsState.Ready
         } catch (e: kotlinx.coroutines.CancellationException) {
+            close()
             _state.value = VfsState.Idle
             throw e
         } catch (e: VfsException) {
+            close()
             // 口令类错误原样上抛：应用侧据此弹「输入压缩包口令」（第 5 批 🔴1）
             _state.value = VfsState.Error(e.message ?: "无法打开压缩包")
             throw e
         } catch (e: Exception) {
+            close()
             _state.value = VfsState.Error(e.message ?: "无法打开压缩包")
             throw VfsException.ProtocolError("无法打开压缩包：${e.message}", e)
         }
@@ -247,6 +251,7 @@ class ArchiveVfs(
         sevenZ = null
         zipHasEncryptedEntries = false
         index.clear()
+        uncheckableEntries = false
         when (kind) {
             ArchiveKind.ZIP -> {
                 // 列目录只需中央目录，加密包也能列出（但内容读不出来 → 由 openEntryStream 解密）
@@ -257,6 +262,7 @@ class ArchiveVfs(
                     currentCoroutineContext().ensureActive()
                     if (e.generalPurposeBit.usesEncryption()) zipHasEncryptedEntries = true
                     val path = normalize(e.name, e.isDirectory)
+                    if (path == null || index.containsKey(path)) uncheckableEntries = true
                     if (path != null) {
                         index[path] = Entry(
                             path = path,
@@ -279,6 +285,7 @@ class ArchiveVfs(
                 while (e != null) {
                     currentCoroutineContext().ensureActive()
                     val path = normalize(e.name, e.isDirectory)
+                    if (path == null || index.containsKey(path)) uncheckableEntries = true
                     if (path != null) {
                         index[path] = Entry(
                             path = path,
@@ -301,6 +308,7 @@ class ArchiveVfs(
                     while (e != null) {
                         currentCoroutineContext().ensureActive()
                         val path = normalize(e.name, e.isDirectory)
+                        if (path == null || index.containsKey(path)) uncheckableEntries = true
                         if (path != null) {
                             index[path] = Entry(
                                 path = path,
@@ -325,6 +333,7 @@ class ArchiveVfs(
                         while (e != null) {
                             currentCoroutineContext().ensureActive()
                             val path = normalize(e.name, e.isDirectory)
+                            if (path == null || index.containsKey(path)) uncheckableEntries = true
                             if (path != null) {
                                 index[path] = Entry(
                                     path = path,
@@ -350,6 +359,7 @@ class ArchiveVfs(
                         while (e != null) {
                             currentCoroutineContext().ensureActive()
                             val path = normalize(e.name, e.isDirectory)
+                            if (path == null || index.containsKey(path)) uncheckableEntries = true
                             if (path != null) {
                                 index[path] = Entry(
                                     path = path,
@@ -375,6 +385,7 @@ class ArchiveVfs(
                     while (e != null) {
                         currentCoroutineContext().ensureActive()
                         val path = normalize(e.fileName, e.isDirectory)
+                        if (path == null || index.containsKey(path)) uncheckableEntries = true
                         if (path != null) {
                             index[path] = Entry(
                                 path = path,
@@ -474,12 +485,12 @@ class ArchiveVfs(
 
     private fun openTar(): TarArchiveInputStream {
         val raw = BufferedInputStream(localFile.inputStream(), 64 * 1024)
-        return when (kind) {
+        return closeOnFailure(raw) { when (kind) {
             ArchiveKind.TAR_GZ -> TarArchiveInputStream(GzipCompressorInputStream(raw))
             ArchiveKind.TAR_BZ2 -> TarArchiveInputStream(BZip2CompressorInputStream(raw))
             ArchiveKind.TAR_XZ -> TarArchiveInputStream(XZCompressorInputStream(raw))
             else -> TarArchiveInputStream(raw)
-        }
+        } }
     }
 
     /**
@@ -748,6 +759,16 @@ class ArchiveVfs(
         throw VfsException.NotFound(uri)
     }
 
+    /** Flat index traversal has no UI directory-depth cutoff. Hidden entries make a full check impossible. */
+    suspend fun integrityEntries(): List<FileMetadata> {
+        connect()
+        if (uncheckableEntries) throw VfsException.Unsupported("压缩包包含重复或不安全路径，无法完成全部内容检查")
+        return index.values.map { entry ->
+            FileMetadata(uriFor(host, kind, entry.path), entry.name, entry.isDirectory, size = entry.size,
+                lastModified = entry.modified)
+        }
+    }
+
     // ------------------------------------------------------------------ 只读
 
     override suspend fun mkdir(uri: VfsUri, parents: Boolean) = throw readOnly()
@@ -768,7 +789,7 @@ class ArchiveVfs(
         private var pos = start
 
         /**
-         * 加密 ZIP 条目的 CRC 校验器。
+         * ZIP 条目的 CRC 校验器（普通与加密条目都必须校验）。
          *
          * ZipCrypto 的「口令是否正确」只靠加密头里**一个字节**判定，256 次里有 1 次会放过错误口令，
          * 之后读出的是乱码；数据损坏也一样无声。CRC 是唯一能真正判定内容对错的手段，
@@ -806,9 +827,9 @@ class ArchiveVfs(
         private fun verifyCrcOnce() {
             val c = crc ?: return
             crc = null
-            if (crcExpected >= 0 && c.value != crcExpected) {
+            if ((crcExpected >= 0 && c.value != crcExpected) || (size != null && pos != size)) {
                 throw VfsException.ProtocolError(
-                    "加密条目内容校验失败：${path.substringAfterLast('/')}（口令错误或数据已损坏）",
+                    "条目内容校验失败：${path.substringAfterLast('/')}（口令错误或数据已损坏）",
                 )
             }
         }
@@ -841,10 +862,11 @@ class ArchiveVfs(
             // 顺序读：只要流还开着就继续读（之前用 `pos == start` 判断，
             // 导致每读一块都重开流并 skip 到当前位置 → 大文件 O(n²) 灾难）
             if (stream != null) return
+            crc = null
             stream = withContext(env.dispatchers.io) { openEntryStream(path, pos) }
             // 只在「从头顺序读到尾」时校验 CRC；seek 后续读会重开流、CRC 不完整，不校验
             val ze = index[path]?.source as? org.apache.commons.compress.archivers.zip.ZipArchiveEntry
-            if (pos == 0L && ze != null && ze.generalPurposeBit.usesEncryption() && !ze.isDirectory) {
+            if (pos == 0L && ze != null && !ze.isDirectory) {
                 crc = java.util.zip.CRC32()
                 crcExpected = ze.crc
             }
@@ -866,6 +888,7 @@ class ArchiveVfs(
                 if (ze.generalPurposeBit.usesEncryption()) {
                     // 加密条目：commons-compress 读不了（1.27.1 无加密读实现），走自研解密。
                     // getRawInputStream 给出的正是「12 字节加密头 + 密文」，与写侧格式对齐。
+                    val entryPassword = password ?: throw VfsException.Auth("该压缩包已加密，请输入口令")
                     val rawStream = zf.getRawInputStream(ze)
                     val check = if (ze.generalPurposeBit.usesDataDescriptor()) {
                         // bit3 置位时校验字节是 **DOS 时间的高字节**（APPNOTE 允许的写法，写侧即如此）。
@@ -877,7 +900,7 @@ class ArchiveVfs(
                     }
                     ZipCryptoReader.decrypt(
                         raw = rawStream,
-                        password = password ?: throw VfsException.Auth("该压缩包已加密，请输入口令"),
+                        password = entryPassword,
                         checkByte = check,
                         method = ze.method,
                     )
@@ -888,87 +911,91 @@ class ArchiveVfs(
             ArchiveKind.SEVEN_Z -> {
                 // 以原始序号定位最后一个索引条目；同名同尺寸也可能是不同内容。
                 val sz = sevenZFile()
-                val target = entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
-                var ordinal = 0
-                var e = sz.nextEntry
-                var found: org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry? = null
-                while (e != null) {
-                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
-                        found = e
-                        break
-                    }
-                    e = sz.nextEntry
+                closeOnFailure(sz) {
+                    val target = entry.source as org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry
+                    var ordinal = 0
+                    var e = sz.nextEntry
+                    var found: org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry? = null
+                    while (e != null) {
+                        if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
+                            found = e
+                            break
+                        }
+                        e = sz.nextEntry
                 }
                 if (found == null) {
-                    runCatching { sz.close() }
                     throw VfsException.NotFound(VfsUri.of("archive", kind.id, "/$path"))
                 }
                 SevenZInputStream(sz, password)
+                }
             }
             ArchiveKind.TAR, ArchiveKind.TAR_GZ, ArchiveKind.TAR_BZ2, ArchiveKind.TAR_XZ -> {
                 val tar = openTar()
-                val target = entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry
-                var ordinal = 0
-                var e = tar.nextEntry
-                var found: org.apache.commons.compress.archivers.tar.TarArchiveEntry? = null
-                while (e != null) {
-                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
-                        found = e
-                        break
-                    }
-                    e = tar.nextEntry
+                closeOnFailure(tar) {
+                    val target = entry.source as org.apache.commons.compress.archivers.tar.TarArchiveEntry
+                    var ordinal = 0
+                    var e = tar.nextEntry
+                    var found: org.apache.commons.compress.archivers.tar.TarArchiveEntry? = null
+                    while (e != null) {
+                        if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
+                            found = e
+                            break
+                        }
+                        e = tar.nextEntry
                 }
                 // 找不到时旧实现直接返回已到 EOF 的流：上层读到 0 字节，像「文件本来就是空的」
                 if (found == null) {
-                    runCatching { tar.close() }
                     throw VfsException.NotFound(VfsUri.of("archive", kind.id, "/$path"))
                 }
                 tar
+                }
             }
             ArchiveKind.CPIO -> {
                 val cpio = CpioArchiveInputStream(BufferedInputStream(localFile.inputStream(), 64 * 1024))
-                val target = entry.source as CpioArchiveEntry
-                var match: CpioArchiveEntry? = null
-                var ordinal = 0
-                var e = cpio.nextEntry
-                while (e != null) {
-                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
-                        match = e
-                        break
-                    }
-                    e = cpio.nextEntry
+                closeOnFailure(cpio) {
+                    val target = entry.source as CpioArchiveEntry
+                    var match: CpioArchiveEntry? = null
+                    var ordinal = 0
+                    var e = cpio.nextEntry
+                    while (e != null) {
+                        if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
+                            match = e
+                            break
+                        }
+                        e = cpio.nextEntry
                 }
                 if (match == null) {
-                    runCatching { cpio.close() }
                     throw VfsException.ProtocolError("CPIO 条目在重新打开后找不到了：${entry.name}")
                 }
                 cpio
+                }
             }
             ArchiveKind.AR -> {
                 val ar = ArArchiveInputStream(BufferedInputStream(localFile.inputStream(), 64 * 1024))
-                val target = entry.source as ArArchiveEntry
-                var match: ArArchiveEntry? = null
-                var ordinal = 0
-                var e = ar.nextEntry
-                while (e != null) {
-                    if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
-                        match = e
-                        break
-                    }
-                    e = ar.nextEntry
+                closeOnFailure(ar) {
+                    val target = entry.source as ArArchiveEntry
+                    var match: ArArchiveEntry? = null
+                    var ordinal = 0
+                    var e = ar.nextEntry
+                    while (e != null) {
+                        if (ordinal++ == entry.ordinal && e.name == target.name && e.size == target.size) {
+                            match = e
+                            break
+                        }
+                        e = ar.nextEntry
                 }
                 if (match == null) {
-                    runCatching { ar.close() }
                     throw VfsException.ProtocolError("AR 条目在重新打开后找不到了：${entry.name}")
                 }
                 ar
+                }
             }
             ArchiveKind.GZIP, ArchiveKind.XZ, ArchiveKind.BZIP2, ArchiveKind.LZMA,
             ArchiveKind.UNIX_COMPRESS, ArchiveKind.LZ4,
             -> {
                 check(kind.isSingleStream) { "未处理的压缩类型：$kind" }
                 val rawIn = BufferedInputStream(localFile.inputStream(), 64 * 1024)
-                when (kind) {
+                closeOnFailure(rawIn) { when (kind) {
                     ArchiveKind.GZIP -> GzipCompressorInputStream(rawIn)
                     ArchiveKind.XZ -> XZCompressorInputStream(rawIn)
                     ArchiveKind.BZIP2 -> BZip2CompressorInputStream(rawIn)
@@ -976,30 +1003,32 @@ class ArchiveVfs(
                     ArchiveKind.UNIX_COMPRESS -> ZCompressorInputStream(rawIn)
                     ArchiveKind.LZ4 -> FramedLZ4CompressorInputStream(rawIn)
                     else -> error("unreachable")
-                }
+                } }
             }
             ArchiveKind.RAR -> {
                 // junrar 的 FileHeader 跨实例用原始序号定位，并校验名称/大小；
                 // 顺序扫描到目标条目由 Junrar 的 solid 逻辑负责（solid 包会从头重放）。
                 val ra = rarArchive()
-                val target = entry.source as FileHeader
-                var match: FileHeader? = null
-                var ordinal = 0
-                var e = ra.nextFileHeader()
-                while (e != null) {
-                    if (ordinal++ == entry.ordinal && e.fileName == target.fileName && e.fullUnpackSize == target.fullUnpackSize) {
-                        match = e
-                        break
-                    }
-                    e = ra.nextFileHeader()
+                closeOnFailure(ra) {
+                    val target = entry.source as FileHeader
+                    var match: FileHeader? = null
+                    var ordinal = 0
+                    var e = ra.nextFileHeader()
+                    while (e != null) {
+                        if (ordinal++ == entry.ordinal && e.fileName == target.fileName && e.fullUnpackSize == target.fullUnpackSize) {
+                            match = e
+                            break
+                        }
+                        e = ra.nextFileHeader()
                 }
                 if (match == null) {
-                    runCatching { ra.close() }
                     throw VfsException.ProtocolError("RAR 条目在重新打开后找不到了：${entry.name}")
                 }
                 RarEntryStream(ra, match) { t -> mapRarError(t) }
+                }
             }
         }
+        return closeOnFailure(raw) {
         if (skip > 0) {
             var skipped = 0L
             val scratch = ByteArray(64 * 1024)
@@ -1016,7 +1045,8 @@ class ArchiveVfs(
                 skipped += n
             }
         }
-        return raw
+        raw
+        }
     }
 
     override fun close() {

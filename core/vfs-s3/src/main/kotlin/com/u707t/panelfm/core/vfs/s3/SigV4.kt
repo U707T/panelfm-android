@@ -1,8 +1,6 @@
 package com.u707t.panelfm.core.vfs.s3
 
 import com.u707t.panelfm.core.common.toHex
-
-import java.net.URLEncoder
 import java.security.MessageDigest
 import javax.crypto.Mac
 import javax.crypto.spec.SecretKeySpec
@@ -50,14 +48,15 @@ object SigV4 {
 
     /** RFC3986 编码（'+' 用 %20，空格用 %20，'/' 保留） */
     fun uriEncode(value: String, encodeSlash: Boolean = true): String {
-        val sb = StringBuilder()
-        value.forEach { ch ->
-            val c = ch
+        val bytes = value.toByteArray(Charsets.UTF_8)
+        val sb = StringBuilder(bytes.size)
+        for (byte in bytes) {
+            val b = byte.toInt() and 0xff
             when {
-                c.isLetterOrDigit() && c.code < 128 -> sb.append(c)
-                c == '-' || c == '_' || c == '.' || c == '~' -> sb.append(c)
-                c == '/' && !encodeSlash -> sb.append(c)
-                else -> sb.append(URLEncoder.encode(c.toString(), "UTF-8").replace("+", "%20"))
+                b in 'A'.code..'Z'.code || b in 'a'.code..'z'.code || b in '0'.code..'9'.code ||
+                    b == '-'.code || b == '_'.code || b == '.'.code || b == '~'.code -> sb.append(b.toChar())
+                b == '/'.code && !encodeSlash -> sb.append('/')
+                else -> sb.append('%').append("0123456789ABCDEF"[b ushr 4]).append("0123456789ABCDEF"[b and 0x0f])
             }
         }
         return sb.toString()

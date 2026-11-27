@@ -3,6 +3,8 @@ package com.u707t.panelfm.core.vfs.archive
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.vfs.ProgressCallback
 import com.u707t.panelfm.core.vfs.VfsException
+import com.u707t.panelfm.core.vfs.VfsFileIdentityResolver
+import com.u707t.panelfm.core.vfs.sameFileIdentity
 import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
@@ -29,21 +31,6 @@ import java.io.OutputStream
  * 因为写侧是统一的 [com.u707t.panelfm.core.vfs.VfsWriter]，所以「压缩到网络」天然可用。
  */
 class ArchiveCompressor(private val locator: VfsLocator) {
-
-    /** 所有创建格式统一拒绝链接；不把用户选取边界外的内容悄悄打进归档。 */
-    private class Traversal {
-        private val directories = HashSet<VfsUri>()
-        private var entries = 0
-        suspend fun check(meta: com.u707t.panelfm.core.vfs.FileMetadata, depth: Int) {
-            kotlinx.coroutines.currentCoroutineContext().ensureActive()
-            if (meta.isSymlink) throw VfsException.Unsupported("暂不支持压缩符号链接：${meta.name}")
-            if (depth > 64) throw VfsException.ProtocolError("压缩目录层级过深（> 64）")
-            if (++entries > 200_000) throw VfsException.ProtocolError("压缩条目超过 200000，请分批操作")
-            if (meta.isDirectory && !directories.add(meta.uri)) {
-                throw VfsException.ProtocolError("压缩目录重复或形成环：${meta.name}")
-            }
-        }
-    }
 
     /** MT 支持的创建格式：zip / 7z / tar / tar.gz / tar.bz2 / tar.xz */
     enum class Format(val id: String, val label: String, val ext: String) {
@@ -89,7 +76,8 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         level: Level = Level.NORMAL,
         password: String? = null,
     ) {
-        val traversal = Traversal()
+        validateDestination(sources, destFile)
+        val traversal = ArchiveTraversal()
         val pwd = password?.takeIf { it.isNotEmpty() }
         if (pwd != null && !format.supportsPassword) {
             throw VfsException.Unsupported("${format.label} 不支持加密（仅 ZIP / 7z 支持）")
@@ -166,13 +154,42 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         }
     }
 
+    /** Refuse implicit replacement and self-containing output before any writer is opened. */
+    private suspend fun validateDestination(sources: List<VfsUri>, dest: VfsUri) {
+        val destVfs = locator.find(dest) ?: throw VfsException.Unsupported("目标不可用")
+        for (source in sources) {
+            val sourceVfs = locator.find(source) ?: throw VfsException.Unsupported("源位置不可用：${source.name}")
+            val meta = sourceVfs.stat(source)
+            val sourcePath = (sourceVfs as? VfsFileIdentityResolver)?.fileIdentityPath(source)
+            val destPath = (destVfs as? VfsFileIdentityResolver)?.fileIdentityPath(dest)
+            if (meta.isDirectory && sourcePath != null && destPath != null &&
+                (destPath == sourcePath || destPath.startsWith(sourcePath.trimEnd('/') + "/"))) {
+                throw VfsException.IllegalArgument("压缩目标不能位于源目录内（含路径别名）")
+            }
+            var candidate: VfsUri? = dest
+            while (candidate != null) {
+                val same = (sourceVfs as? VfsFileIdentityResolver)?.sameFileIdentity(source, candidate)
+                    ?: (destVfs as? VfsFileIdentityResolver)?.sameFileIdentity(source, candidate)
+                    ?: sameFileIdentity(source, candidate)
+                if (same) {
+                    if (candidate == dest || meta.isDirectory) {
+                        throw VfsException.IllegalArgument("压缩目标不能是源文件或位于源目录内")
+                    }
+                }
+                candidate = candidate.parent
+            }
+        }
+        val existing = try { destVfs.stat(dest) } catch (_: VfsException.NotFound) { null }
+        if (existing != null) throw VfsException.IllegalArgument("目标已存在，请使用其他压缩文件名：${dest.name}")
+    }
+
     private suspend fun compressSevenZ(
         sources: List<VfsUri>,
         destFile: VfsUri,
         onProgress: ProgressCallback?,
         level: Level,
         password: String?,
-        traversal: Traversal,
+        traversal: ArchiveTraversal,
     ) {
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
         val tmp = File.createTempFile("panelfm-7z-", ".7z")
@@ -205,6 +222,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
                     val buf = ByteArray(256 * 1024)
                     tmp.inputStream().use { input ->
                         while (true) {
+                            kotlinx.coroutines.currentCoroutineContext().ensureActive()
                             val n = input.read(buf)
                             if (n < 0) break
                             writer.write(buf, 0, n)
@@ -237,6 +255,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         try {
             val buf = ByteArray(64 * 1024)
             while (true) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val n = reader.read(buf, 0, buf.size)
                 if (n < 0) break
                 out.write(buf, 0, n)
@@ -253,9 +272,15 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         dir: VfsUri,
         prefix: String,
         onProgress: ProgressCallback?,
-        traversal: Traversal,
+        traversal: ArchiveTraversal,
         depth: Int,
     ) {
+        out.putArchiveEntry(SevenZArchiveEntry().apply {
+            name = "$prefix/"
+            isDirectory = true
+            lastModifiedDate = java.util.Date()
+        })
+        out.closeArchiveEntry()
         var bytes = 0L
         vfs.list(dir).forEach { child ->
             traversal.check(child, depth + 1)
@@ -275,7 +300,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
         dir: VfsUri,
         prefix: String,
-        traversal: Traversal,
+        traversal: ArchiveTraversal,
         depth: Int,
         onBytes: (Long) -> Unit,
     ): Int {
@@ -323,6 +348,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         try {
             val buffer = ByteArray(64 * 1024)
             while (true) {
+                kotlinx.coroutines.currentCoroutineContext().ensureActive()
                 val n = reader.read(buffer, 0, buffer.size)
                 if (n < 0) break
                 zip.write(buffer, 0, n)
@@ -350,7 +376,7 @@ class ArchiveCompressor(private val locator: VfsLocator) {
         onProgress: ProgressCallback?,
         level: Level,
         password: String,
-        traversal: Traversal,
+        traversal: ArchiveTraversal,
     ) {
         val destVfs = locator.find(destFile) ?: throw VfsException.Unsupported("目标不可用")
         val writer = destVfs.openWrite(destFile, size = null, offset = 0L)

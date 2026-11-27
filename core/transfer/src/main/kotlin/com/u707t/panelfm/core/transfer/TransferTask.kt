@@ -14,12 +14,16 @@ import com.u707t.panelfm.core.vfs.VfsWriter
 import com.u707t.panelfm.core.vfs.VfsException
 import com.u707t.panelfm.core.vfs.VfsLocator
 import com.u707t.panelfm.core.vfs.VfsUri
+import com.u707t.panelfm.core.vfs.VfsFileIdentityResolver
+import com.u707t.panelfm.core.vfs.sameFileIdentity
 import com.u707t.panelfm.core.vfs.partNameOf
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.UUID
 
 /**
@@ -31,6 +35,7 @@ class TransferTask internal constructor(
     private val planner: FileOperationPlanner,
     private val locator: VfsLocator,
     private val resumeStore: ResumeStore,
+    private val destinationLocks: DestinationDirectoryLocks = DestinationDirectoryLocks(),
     val id: String = UUID.randomUUID().toString(),
 ) {
     private val _state = MutableStateFlow<TaskState>(TaskState.Queued)
@@ -57,6 +62,12 @@ class TransferTask internal constructor(
     /** 取消时已完成的部分（进快照文案，避免「已取消」让用户以为什么都没做）。 */
     private var cancelledNote: String? = null
 
+    /** Only sources whose MOVE deletion actually succeeded are excluded on resume. */
+    private val movedSources = linkedSetOf<VfsUri>()
+
+    /** Active stream is closed on user pause/cancel to interrupt blocking protocol reads. */
+    private val activeReader = java.util.concurrent.atomic.AtomicReference<com.u707t.panelfm.core.vfs.VfsReader?>(null)
+
     val title: String get() = request.describe()
 
     // ------------------------------------------------------------------ 控制
@@ -71,6 +82,9 @@ class TransferTask internal constructor(
         val s = _state.value
         if (s is TaskState.Running || s == TaskState.Queued) {
             gate.pause()
+            // Closing the active reader interrupts a stalled socket/read; the resulting exception is
+            // converted back to PauseSignal after transferFile performs its normal cleanup.
+            runCatching { activeReader.get()?.close() }
             _state.value = TaskState.Paused
         }
     }
@@ -89,6 +103,7 @@ class TransferTask internal constructor(
 
     fun cancel() {
         gate.cancel()
+        runCatching { activeReader.get()?.close() }
         // 立即反馈「正在取消操作…」（MT 同款文案）：真正的停止发生在传输循环的下一个
         // checkpoint，路径长时（服务端快路径 / 大目录收尾）可能还要一小会儿。
         val s = _state.value
@@ -127,7 +142,21 @@ class TransferTask internal constructor(
         _state.value = state
     }
 
-    internal suspend fun run() {
+    internal suspend fun run() = destinationLocks.withLock(destinationIdentity()) { runLocked() }
+
+    private fun destinationIdentity(): DestinationIdentity {
+        val uri = request.destDir
+        val vfs = locator.find(uri)
+        val resolver = vfs as? VfsFileIdentityResolver
+        val canonical = resolver?.fileIdentityPath(uri)
+        return if (canonical != null) {
+            DestinationIdentity(if (uri.scheme == "local") "local" else "${uri.scheme}://${uri.authority}", canonical)
+        } else {
+            DestinationIdentity("${uri.scheme}://${uri.authority}", uri.path)
+        }
+    }
+
+    private suspend fun runLocked() {
         // 每次真正开跑都清一次：上一轮的「待重新入队」标记不能带进来
         requeuePending.set(false)
         val startedAt = System.currentTimeMillis()
@@ -149,7 +178,10 @@ class TransferTask internal constructor(
             // 暂停挂起等待恢复（状态已由 pause() 置为「已暂停」）。
             gate.checkpoint()
             running(TaskState.Running(0, 0, "正在统计…", 0, 0, 0, -1))
-            val plan = planner.plan(request, checkpoint = gate::checkpoint) { count, bytes ->
+            val planRequest = if (request.op == TransferOp.MOVE && movedSources.isNotEmpty()) {
+                request.copy(sources = request.sources.filterNot { it in movedSources })
+            } else request
+            val plan = planner.plan(planRequest, checkpoint = gate::checkpoint) { count, bytes ->
                 running(TaskState.Running(0, count, "正在统计…", 0, bytes, 0, -1))
             }
             val totalPlannedBytes = plan.totalBytes
@@ -167,7 +199,7 @@ class TransferTask internal constructor(
                 FastPath.SERVER_COPY -> request.verify == VerifyMode.NONE
             }
             if (fastPathUsable) {
-                val roots = rootItems()
+                val roots = rootItems(planRequest.sources)
                 val fallbackRoots = mutableListOf<FallbackRoot>()
                 roots.forEachIndexed { i, (src, dst) ->
                     gate.checkpoint()
@@ -189,6 +221,7 @@ class TransferTask internal constructor(
                                 FastPath.NONE -> false
                             }
                             if (success) {
+                                if (plan.fastPath == FastPath.SERVER_MOVE) movedSources += src
                                 ok += itemCountForRoot(plan, src)
                                 doneBytes += bytesForRoot(plan, src)
                                 // rename 天然保留 mtime；服务端复制则显式补回文件 mtime（支持时）。
@@ -216,7 +249,7 @@ class TransferTask internal constructor(
 
                 if (fallbackRoots.isNotEmpty()) {
                     val fallbackSources = fallbackRoots.map { it.source }
-                    val fallbackRequest = request.copy(sources = fallbackSources)
+                    val fallbackRequest = planRequest.copy(sources = fallbackSources)
                     val rawFallbackPlan = planner.plan(fallbackRequest, checkpoint = gate::checkpoint)
                     val rewrittenItems = rawFallbackPlan.items.map { item ->
                         val root = fallbackRoots
@@ -333,10 +366,17 @@ class TransferTask internal constructor(
                             if (copied) {
                                 ok++
                                 if (request.op == TransferOp.MOVE) {
-                                    runCatching { vfsSrc.delete(listOf(item.source)) }
-                                        .onFailure {
-                                            recordFailure(item.source, "已复制但删除源失败：${it.message}", sourceCopied = true)
-                                        }
+                                    gate.checkpoint()
+                                    try {
+                                        vfsSrc.delete(listOf(item.source))
+                                        movedSources += item.source
+                                    } catch (c: VfsException.Cancelled) {
+                                        throw c
+                                    } catch (p: PauseSignal) {
+                                        throw p
+                                    } catch (e: Exception) {
+                                        recordFailure(item.source, "已复制但删除源失败：${e.message}", sourceCopied = true)
+                                    }
                                 }
                             } else {
                                 skipped++
@@ -360,13 +400,24 @@ class TransferTask internal constructor(
                     .filter { it.isDirectory && skippedRoots.none { root -> isSameOrDescendant(it.source, root) } }
                     .sortedByDescending { it.depth }
                 for (dir in dirs) {
-                    runCatching {
-                        val vfs = locator.find(dir.source) ?: return@runCatching
-                        if (vfs.list(dir.source).isEmpty()) vfs.delete(listOf(dir.source))
+                    gate.checkpoint()
+                    try {
+                        val vfs = locator.find(dir.source) ?: continue
+                        if (vfs.list(dir.source).isEmpty()) {
+                            vfs.delete(listOf(dir.source))
+                            movedSources += dir.source
+                        }
+                    } catch (c: VfsException.Cancelled) {
+                        throw c
+                    } catch (p: PauseSignal) {
+                        throw p
+                    } catch (_: Exception) {
+                        // Empty-directory cleanup is best-effort; file-level failures remain recorded.
                     }
                 }
             }
 
+            gate.checkpoint()
             _state.value = TaskState.Done(
                 ok = ok,
                 skipped = skipped,
@@ -490,34 +541,14 @@ class TransferTask internal constructor(
         vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
         sourceMeta: FileMetadata,
     ): FastPathTarget {
-        val sameAsSource = source.sameMount(desired) &&
-            source.path.trimEnd('/') == desired.path.trimEnd('/')
+        val sameAsSource = sameEntity(source, desired, vfs)
         if (sameAsSource) return FastPathTarget.Skip
 
         val existing = existingOrNull(vfs, desired) ?: return FastPathTarget.Execute(desired)
-        val decision = decideConflict(source, desired, existing, null, sourceIsDirectory = sourceMeta.isDirectory)
-
-        // 目录覆盖目录不能走「删除目标再服务端复制」：慢路径语义是目录合并，
-        // 需要逐项按冲突策略处理。保留原目标，交给慢路径。
-        if (sourceMeta.isDirectory && existing.isDirectory) {
-            return when (decision) {
-                ConflictPolicy.SKIP -> FastPathTarget.Skip
-                ConflictPolicy.KEEP_BOTH -> FastPathTarget.Execute(keepBoth(vfs, desired))
-                ConflictPolicy.OVERWRITE -> FastPathTarget.Fallback(desired)
-                ConflictPolicy.ASK -> error("未解析的冲突策略")
-            }
-        }
-
-        return when (decision) {
-            ConflictPolicy.SKIP -> FastPathTarget.Skip
-            ConflictPolicy.KEEP_BOTH -> FastPathTarget.Execute(keepBoth(vfs, desired))
-            ConflictPolicy.OVERWRITE -> {
-                // 文件/目录类型冲突：覆盖语义确实要求先移除异型目标。
-                deleteForOverwrite(vfs, desired)
-                FastPathTarget.Execute(desired)
-            }
-            ConflictPolicy.ASK -> error("未解析的冲突策略")
-        }
+        // 目标已存在：冲突判断 / 覆盖 / 目录合并统一交给慢路径。快路径在这里先问一次再降级
+        // 会让同一个冲突问两遍（appliedPolicy 只对「全部应用」生效），也会为了 rename 先删旧目标。
+        // 慢路径对同类型文件覆盖使用临时文件 + commit 原子替换，对目录采用合并语义。
+        return FastPathTarget.Fallback(desired)
     }
 
     private fun itemCountForRoot(plan: OperationPlan, root: VfsUri): Int =
@@ -539,9 +570,9 @@ class TransferTask internal constructor(
     )
 
     /** 顶层条目（服务端快路径按顶层操作，目录内部由协议递归处理） */
-    private suspend fun rootItems(): List<Pair<VfsUri, VfsUri>> {
+    private suspend fun rootItems(sources: List<VfsUri>): List<Pair<VfsUri, VfsUri>> {
         val result = mutableListOf<Pair<VfsUri, VfsUri>>()
-        for (src in request.sources) {
+        for (src in sources) {
             val vfs = locator.find(src) ?: throw VfsException.Unsupported("源位置不可用：${src.authority}")
             val meta = vfs.stat(src)
             result += src to request.destDir.child(meta.name)
@@ -572,8 +603,7 @@ class TransferTask internal constructor(
                     return@forEach
                 }
 
-                val sameAsSource = root.source.sameMount(desired) &&
-                    root.source.path.trimEnd('/') == desired.path.trimEnd('/')
+                val sameAsSource = sameEntity(root.source, desired, destVfs)
                 if (sameAsSource) {
                     skipped += root.source
                     return@forEach
@@ -635,8 +665,17 @@ class TransferTask internal constructor(
         null
     }
 
+    private fun sameEntity(
+        left: VfsUri,
+        right: VfsUri,
+        vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
+    ): Boolean = sameFileIdentity(left, right) ||
+        (vfs as? VfsFileIdentityResolver)?.sameFileIdentity(left, right) == true
+
     /**
-     * 覆盖前的整目标删除。**只应在这三条路径上使用**：
+     * 覆盖前的整目标删除。**只应在这些类型不兼容的路径上使用**；同类型文件覆盖
+     * 始终由 openWrite 的临时文件和 commit 替换，不能提前丢掉旧目标。
+     *
      *  - 快路径：rename / serverSideCopy 需要一个不存在的目标名腾位；
      *  - 源目类型冲突（文件↔文件夹）：改名语义上无法「替换」异型目标；
      *  - 不可续传目标：没有 `.part` 可回退，替换语义由预删保证。
@@ -664,8 +703,7 @@ class TransferTask internal constructor(
         destVfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
     ): VfsUri? {
         val source = item.source
-        val sameAsSource = source.sameMount(desired) &&
-            source.path.trimEnd('/') == desired.path.trimEnd('/')
+        val sameAsSource = sameEntity(source, desired, destVfs)
         // 先判断自身复制，避免对某些 VFS 再 stat 一次后误删源文件。
         if (sameAsSource) return null
         val existing = existingOrNull(destVfs, desired) ?: return desired
@@ -762,6 +800,7 @@ class TransferTask internal constructor(
         val srcVfs = locator.find(item.source) ?: throw VfsException.Unsupported("源会话已关闭")
         val dstVfs = locator.find(target) ?: throw VfsException.Unsupported("目标会话已关闭")
         val targetMeta = dstVfs.stat(target)
+        gate.checkpoint()
         if (targetMeta.isDirectory || (item.size >= 0 && targetMeta.size != item.size)) {
             throw VfsException.ProtocolError(
                 "传输校验失败：${item.source.name} 大小 ${item.size}，目标大小 ${targetMeta.size}",
@@ -770,6 +809,7 @@ class TransferTask internal constructor(
         if (request.verify == VerifyMode.HASH) {
             val sourceHash = digest(srcVfs, item.source)
             val targetHash = digest(dstVfs, target)
+            gate.checkpoint()
             if (!sourceHash.contentEquals(targetHash)) {
                 throw VfsException.ProtocolError("传输校验失败：${item.source.name} 内容不一致")
             }
@@ -782,10 +822,12 @@ class TransferTask internal constructor(
     ): ByteArray {
         val digest = java.security.MessageDigest.getInstance("SHA-256")
         val reader = vfs.openRead(uri)
+        activeReader.set(reader)
         try {
             val buffer = ByteArray(BUFFER_SIZE)
             var emptyReads = 0
             while (true) {
+                gate.checkpoint()
                 val n = reader.read(buffer, 0, buffer.size)
                 if (n < 0) break
                 if (n == 0) {
@@ -797,8 +839,13 @@ class TransferTask internal constructor(
                 emptyReads = 0
                 digest.update(buffer, 0, n)
             }
+            gate.checkpoint()
             return digest.digest()
+        } catch (e: Exception) {
+            if (gate.isCancelled || gate.paused.value) gate.checkpoint()
+            throw e
         } finally {
+            activeReader.compareAndSet(reader, null)
             runCatching { reader.close() }
         }
     }
@@ -836,11 +883,13 @@ class TransferTask internal constructor(
         }
 
         val reader = srcVfs.openRead(item.source, offset = startOffset)
+        activeReader.set(reader)
         try {
             if (item.size in 1 until startOffset) {
                 throw VfsException.ProtocolError("续传偏移异常：$startOffset > ${item.size}")
             }
         } catch (e: Exception) {
+            activeReader.compareAndSet(reader, null)
             runCatching { reader.close() }
             throw e
         }
@@ -880,6 +929,7 @@ class TransferTask internal constructor(
             out.flush()
             out.commit()
             // 先释放源流再做校验：FTP 等协议的控制/数据通道不能嵌套占用。
+            activeReader.compareAndSet(reader, null)
             runCatching { reader.close() }
             readerClosed = true
 
@@ -888,6 +938,7 @@ class TransferTask internal constructor(
                 runCatching { dstVfs.setModified(target, item.lastModified) }
             }
             verifyFile(item, target)
+            gate.checkpoint()
             resumeStore.clearFor(item.source, target)
             return true
         } catch (e: Exception) {
@@ -908,8 +959,10 @@ class TransferTask internal constructor(
                     }
                 }
             }
+            if (gate.isCancelled || gate.paused.value) gate.checkpoint()
             throw e
         } finally {
+            activeReader.compareAndSet(reader, null)
             if (!readerClosed) runCatching { reader.close() }
             runCatching { writer?.close() }
         }

@@ -40,6 +40,9 @@ import com.u707t.panelfm.core.common.TextDiffEngine
 import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.VfsUri
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -111,6 +114,8 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
     // 读取两侧文本（只读一次，切换忽略档位时本地重算，不重新读网络）
     LaunchedEffect(left, right) {
         ready = false
+        result = null
+        error = null
         try {
             val pair = withContext(Dispatchers.IO) {
                 val leftVfs = container.locator.find(left) ?: throw IllegalStateException("左侧会话不可用")
@@ -121,6 +126,8 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
             rawLeft = com.u707t.panelfm.core.common.TextEncodings.decode(pair.first.first).text
             rawRight = com.u707t.panelfm.core.common.TextEncodings.decode(pair.second.first).text
             ready = true
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             error = e.message
         }
@@ -129,10 +136,20 @@ fun TextDiffScreen(container: AppContainer, left: VfsUri, right: VfsUri, onBack:
     // 档位变化 → 重算（后台线程）
     LaunchedEffect(rawLeft, rawRight, ignore, caseSensitive, ready) {
         if (!ready) return@LaunchedEffect
-        result = withContext(Dispatchers.Default) {
-            TextDiffEngine.diff(rawLeft, rawRight, ignore = ignore, caseSensitive = caseSensitive)
+        result = null
+        error = null
+        try {
+            result = withContext(Dispatchers.Default) {
+                val context = currentCoroutineContext()
+                TextDiffEngine.diff(rawLeft, rawRight, ignore = ignore, caseSensitive = caseSensitive,
+                    checkCancelled = { context.ensureActive() })
+            }
+            hunkIndex = -1
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            error = e.message ?: "无法完成对比"
         }
-        hunkIndex = -1
     }
 
     /** 跳到第 [dir] 个差异块（1 = 下一个，-1 = 上一个） */
@@ -308,30 +325,19 @@ private fun DiffRow(line: DiffLine, wideEnough: Boolean) {
  * 读取 [max] 字节上限的文本；返回 (字节, 是否触顶截断)。
  * 触顶后多做一次试探读：还有数据 = 文件超过上限（此前是静默截断，>2MB 的文件会给出不完整的对比结论）。
  */
-private fun readAll(
+private suspend fun readAll(
     vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
     uri: VfsUri,
     max: Long = 2L * 1024 * 1024,
 ): Pair<ByteArray, Boolean> {
     val reader = vfs.openRead(uri)
-    val out = java.io.ByteArrayOutputStream()
-    var truncated = false
-    try {
-        val buf = ByteArray(64 * 1024)
-        var total = 0L
-        while (total < max) {
-            val n = kotlinx.coroutines.runBlocking { reader.read(buf, 0, minOf(buf.size.toLong(), max - total).toInt()) }
-            if (n < 0) break
-            out.write(buf, 0, n)
-            total += n
+    return try {
+        val out = java.io.ByteArrayOutputStream()
+        val truncated = com.u707t.panelfm.core.common.copyPreviewBounded(max, reader::read) { bytes, count ->
+            out.write(bytes, 0, count)
         }
-        if (total >= max) {
-            truncated = kotlinx.coroutines.runBlocking { reader.read(buf, 0, 1) } >= 0
-        }
+        out.toByteArray() to truncated
     } finally {
         runCatching { reader.close() }
     }
-    return out.toByteArray() to truncated
 }
-
-

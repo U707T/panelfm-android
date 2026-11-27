@@ -28,7 +28,16 @@ object CodeFormatter {
      * JSON 缩进重排（2 空格）。
      * 只按字符扫描，不解析结构 —— 因此**不会**破坏字符串里的 `{}[],:`。
      */
-    fun formatJson(text: String, indentUnit: String = "  "): String {
+    fun formatJson(
+        text: String,
+        indentUnit: String = "  ",
+        maxDepth: Int = 128,
+        maxOutputChars: Int = 1024 * 1024,
+        checkCancelled: () -> Unit = {},
+    ): String {
+        require(maxDepth in 1..128 && maxOutputChars in 1..1024 * 1024)
+        require(text.length <= maxOutputChars) { "JSON 输入超过格式化预算" }
+        val brackets = ArrayDeque<Char>()
         val sb = StringBuilder()
         var depth = 0
         var inString = false
@@ -37,11 +46,15 @@ object CodeFormatter {
         val n = text.length
 
         fun newline() {
+            require(sb.length.toLong() + 1 + depth.toLong() * indentUnit.length <= maxOutputChars) {
+                "JSON 格式化输出超过预算"
+            }
             sb.append('\n')
             repeat(depth) { sb.append(indentUnit) }
         }
 
         while (i < n) {
+            if (i % 256 == 0) checkCancelled()
             val c = text[i]
             when {
                 inString -> {
@@ -58,6 +71,8 @@ object CodeFormatter {
                 }
                 c == '{' || c == '[' -> {
                     // 空的 {} / [] 不换行
+                    require(brackets.size < maxDepth) { "JSON 嵌套超过 $maxDepth 层上限" }
+                    brackets.addLast(c)
                     val next = nextNonSpace(text, i + 1)
                     sb.append(c)
                     depth++
@@ -68,6 +83,8 @@ object CodeFormatter {
                     }
                 }
                 c == '}' || c == ']' -> {
+                    val expected = if (c == '}') '{' else '['
+                    require(brackets.removeLastOrNull() == expected) { "JSON 括号不匹配" }
                     val prev = prevNonSpace(text, i - 1)
                     depth = (depth - 1).coerceAtLeast(0)
                     if (prev >= 0 && (text[prev] == '{' || text[prev] == '[')) {
@@ -87,8 +104,11 @@ object CodeFormatter {
                 }
                 else -> sb.append(c)
             }
+            require(sb.length <= maxOutputChars) { "JSON 格式化输出超过预算" }
             i++
         }
+        require(!inString && brackets.isEmpty()) { "JSON 字符串或括号未闭合" }
+        checkCancelled()
         return sb.toString().trimEnd()
     }
 
@@ -112,16 +132,46 @@ object CodeFormatter {
      * 不做属性换行（MT 也不做）。
      *
      * 「开标签 + 文本 + 对应闭标签」会**合并到一行**（`<b>t</b>`），与 MT / 常见格式化器一致；
-     * 只有元素之间才换行。
+     * 仅排版没有现存文本节点的元素容器；混合内容 / xml:space / CDATA / DTD 保留原文。
      */
     fun formatXml(text: String, indentUnit: String = "  "): String {
-        val tokens = mergeInlineText(tokenizeXml(text))
+        // Without a schema, mixed content / xml:space / DTD / CDATA cannot be
+        // re-indented safely. Keep the exact original document in these cases.
+        if (text.contains("xml:space") || text.contains("<!DOCTYPE", ignoreCase = true) ||
+            text.contains("<![CDATA[")) return text
+        val rawTokens = tokenizeXml(text)
+        data class Content(var child: Boolean = false, var text: Boolean = false)
+        val stack = ArrayDeque<Content>()
+        for (token in rawTokens) {
+            when {
+                token.startsWith("</") -> {
+                    val content = stack.removeLastOrNull() ?: return text
+                    if (content.child && content.text) return text
+                }
+                token.startsWith("<?") || token.startsWith("<!") -> {
+                    // Comments / PI alongside text also belong to mixed content.
+                    stack.lastOrNull()?.child = true
+                }
+                token.startsWith("<") -> {
+                    stack.lastOrNull()?.child = true
+                    if (!token.endsWith("/>")) stack.addLast(Content())
+                    if (stack.size > 128) return text
+                }
+                token.isNotEmpty() -> stack.lastOrNull()?.let {
+                    // Whitespace-only leaf content is retained by mergeInlineText.
+                    it.text = true
+                }
+            }
+        }
+        if (stack.isNotEmpty()) return text
+        val tokens = mergeInlineText(rawTokens)
         val sb = StringBuilder()
         var depth = 0
         var first = true
         tokens.forEach { tok ->
-            val raw = tok.trim()
-            if (raw.isEmpty()) return@forEach
+            val raw = tok
+            if (sb.length.toLong() + raw.length + depth.toLong() * indentUnit.length + 1 > 1024 * 1024) return text
+            if (raw.isBlank()) return@forEach
             val isClose = raw.startsWith("</")
             val isSelfClose = raw.endsWith("/>")
             val isDecl = raw.startsWith("<?") || raw.startsWith("<!")
@@ -145,7 +195,10 @@ object CodeFormatter {
             val cur = tokens[i]
             val isOpen = cur.startsWith("<") && !cur.startsWith("</") && !cur.startsWith("<?") &&
                 !cur.startsWith("<!") && !cur.endsWith("/>")
-            if (isOpen && i + 2 < tokens.size &&
+            if (isOpen && i + 1 < tokens.size && tokens[i + 1].startsWith("</")) {
+                out.add(cur + tokens[i + 1])
+                i += 2
+            } else if (isOpen && i + 2 < tokens.size &&
                 !tokens[i + 1].startsWith("<") &&
                 tokens[i + 2].startsWith("</")
             ) {
@@ -167,7 +220,7 @@ object CodeFormatter {
         val buf = StringBuilder()
 
         fun flushText() {
-            if (buf.isNotBlank()) out.add(buf.toString().trim())
+            if (buf.isNotEmpty()) out.add(buf.toString())
             buf.clear()
         }
 
@@ -202,7 +255,7 @@ object CodeFormatter {
                         j++
                     }
                     val stop = (j + 1).coerceAtMost(n)
-                    out.add(text.substring(i, stop).replace(Regex("\\s+"), " "))
+                    out.add(text.substring(i, stop))
                     i = stop
                 }
                 else -> {

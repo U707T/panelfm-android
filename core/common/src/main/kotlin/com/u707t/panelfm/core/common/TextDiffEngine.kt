@@ -17,9 +17,11 @@ data class DiffLine(
  * 关键语义（与 MT 一致）：
  *  - **归一化只影响比较**，展示的始终是原文；
  *  - 「忽略空格和空行」会把空行整体丢掉（行号仍指原文行号）；
- *  - 大文件先截断到 [maxLines]（避免 LCS 的 O(n·m) 内存爆掉），并在返回的 [DiffResult.truncated] 里标记。
+ *  - 行数与矩阵分别受预算约束；超出矩阵预算明确拒绝，不给出不完整的相等结论。
  */
 object TextDiffEngine {
+    /** 约 4 MiB 的 Int 矩阵；行数组开销另计。调用方不能抬高此硬上限。 */
+    const val MAX_MATRIX_CELLS = 1_000_000L
 
     data class DiffResult(
         val lines: List<DiffLine>,
@@ -30,12 +32,13 @@ object TextDiffEngine {
         val sameCount: Int get() = lines.count { it.kind == DiffLineKind.SAME }
 
         /** 差异块数量（连续 ADD/REMOVE 视为一块）——用于「上一个 / 下一个差异」 */
-        val hunks: List<Int> get() = lines.withIndex()
-            .filter { it.value.kind != DiffLineKind.SAME }
-            .map { it.index }
-            .fold(emptyList()) { acc, idx ->
-                if (acc.isNotEmpty() && acc.last() + 1 == idx) acc else acc + idx
+        val hunks: List<Int> get() = buildList {
+            var inHunk = false
+            lines.forEachIndexed { index, line ->
+                if (line.kind == DiffLineKind.SAME) inHunk = false
+                else if (!inHunk) { add(index); inHunk = true }
             }
+        }
     }
 
     fun diff(
@@ -44,9 +47,13 @@ object TextDiffEngine {
         ignore: DiffIgnore = DiffIgnore.NONE,
         caseSensitive: Boolean = true,
         maxLines: Int = 20000,
+        checkCancelled: () -> Unit = {},
     ): DiffResult {
-        val leftRaw = leftText.split('\n')
-        val rightRaw = rightText.split('\n')
+        require(maxLines in 1..20000) { "对比行数上限必须在 1..20000" }
+        checkCancelled()
+        // Only materialize one lookahead line beyond the cap, even for newline-heavy input.
+        val leftRaw = leftText.splitToSequence('\n').take(maxLines + 1).toList()
+        val rightRaw = rightText.splitToSequence('\n').take(maxLines + 1).toList()
         val leftTruncated = leftRaw.size > maxLines
         val rightTruncated = rightRaw.size > maxLines
 
@@ -62,8 +69,12 @@ object TextDiffEngine {
 
         val n = a.size
         val m = b.size
-        val dp = Array(n + 1) { IntArray(m + 1) }
+        require((n + 1L) * (m + 1L) <= MAX_MATRIX_CELLS) {
+            "文本对比规模过大（矩阵上限 $MAX_MATRIX_CELLS 单元），请减少参与对比的行数"
+        }
+        val dp = Array(n + 1) { checkCancelled(); IntArray(m + 1) }
         for (i in n - 1 downTo 0) {
+            checkCancelled()
             for (j in m - 1 downTo 0) {
                 dp[i][j] = if (ka[i] == kb[j]) dp[i + 1][j + 1] + 1 else maxOf(dp[i + 1][j], dp[i][j + 1])
             }
@@ -73,6 +84,7 @@ object TextDiffEngine {
         var i = 0
         var j = 0
         while (i < n && j < m) {
+            checkCancelled()
             when {
                 ka[i] == kb[j] -> {
                     out.add(DiffLine(DiffLineKind.SAME, a[i].first, a[i].second, b[j].second)); i++; j++

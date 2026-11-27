@@ -107,10 +107,14 @@ class ZipEditor(
                         }
                     }
                     // 追加新文件（源会话缺失不再静默跳过——与压缩器同口径，第 5 批 🔵9 同类）
+                    val traversal = ArchiveTraversal()
                     additions.forEach { (entryName, sourceUri) ->
                         val vfs = locator.find(sourceUri)
                             ?: throw VfsException.Unsupported("源位置不可用（会话可能已断开）：${sourceUri.name}")
-                        addEntry(out, vfs, sourceUri, safeEntryName(entryName))
+                        addEntry(out, vfs, sourceUri, safeEntryName(entryName), traversal, 0) { n ->
+                            done += n
+                            onProgress?.onProgress(done, -1)
+                        }
                     }
                     out.finish()
                 }
@@ -218,14 +222,19 @@ class ZipEditor(
         vfs: VirtualFileSystem,
         source: VfsUri,
         entryName: String,
+        traversal: ArchiveTraversal,
+        depth: Int,
+        onChunk: (Long) -> Unit,
     ) {
         val safeName = safeEntryName(entryName)
         val meta = vfs.stat(source)
+        traversal.check(meta, depth)
         if (meta.isDirectory) {
             out.putArchiveEntry(ZipArchiveEntry("${safeName.trimEnd('/')}/").apply { time = System.currentTimeMillis() })
             out.closeArchiveEntry()
             vfs.list(source).forEach { child ->
-                addEntry(out, vfs, child.uri, "$safeName/${child.name}")
+                if (child.isSymlink) throw VfsException.Unsupported("暂不支持压缩符号链接：${child.name}")
+                addEntry(out, vfs, child.uri, "$safeName/${child.name}", traversal, depth + 1, onChunk)
             }
             return
         }
@@ -235,9 +244,11 @@ class ZipEditor(
         try {
             val buf = ByteArray(128 * 1024)
             while (true) {
+                currentCoroutineContext().ensureActive()
                 val n = reader.read(buf, 0, buf.size)
                 if (n < 0) break
                 out.write(buf, 0, n)
+                onChunk(n.toLong())
             }
         } finally {
             runCatching { reader.close() }

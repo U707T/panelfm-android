@@ -83,6 +83,10 @@ object WebDavUrl {
         // IPv6 字面量必须带方括号再拼端口；parse 存的是剥括号的裸地址，这里必须还原——
         // 否则「编辑-保存」会把 host 落成 "fe80::1:5244" 这类坏值（parse 不再认识）
         val h = if (host.contains(':') && !host.startsWith("[")) "[$host]" else host
-        return "$scheme://$h:$port${basePath.ifBlank { "/" }}"
+        val path = basePath.ifBlank { "/" }.let { if (it.startsWith('/')) it else "/$it" }
+        val encodedPath = path.split('/').joinToString("/") {
+            java.net.URLEncoder.encode(it, "UTF-8").replace("+", "%20")
+        }
+        return "$scheme://$h:$port$encodedPath"
     }
 }

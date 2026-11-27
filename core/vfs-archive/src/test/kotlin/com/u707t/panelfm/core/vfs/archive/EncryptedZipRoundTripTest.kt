@@ -85,7 +85,7 @@ class EncryptedZipRoundTripTest {
                 """.trimIndent()
             )
         }
-        val proc = ProcessBuilder("python3", script.absolutePath).redirectErrorStream(true).start()
+        val proc = ProcessBuilder(System.getenv("PANELFM_TEST_PYTHON") ?: "python3", script.absolutePath).redirectErrorStream(true).start()
         val output = proc.inputStream.bufferedReader().readText().trim()
         proc.waitFor()
         // 解析极简 JSON：{ "name": "base64", ... }

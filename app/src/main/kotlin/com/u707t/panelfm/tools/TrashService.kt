@@ -15,6 +15,19 @@ import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
+/** A copied payload is recoverable before source cleanup starts. */
+internal enum class TrashCopyFinish { NOT_PUBLISHED, SOURCE_REMOVED, SOURCE_CLEANUP_FAILED }
+
+internal data class TrashMoveResult(val recoverable: Int, val sourceCleanupFailed: Int)
+
+internal fun finishCompletedTrashCopy(
+    publishRecoverablePayload: () -> Boolean,
+    deleteSource: () -> Boolean,
+): TrashCopyFinish {
+    if (!publishRecoverablePayload()) return TrashCopyFinish.NOT_PUBLISHED
+    return if (deleteSource()) TrashCopyFinish.SOURCE_REMOVED else TrashCopyFinish.SOURCE_CLEANUP_FAILED
+}
+
 /**
  * 本地回收站：删除的本地文件/目录先进 `files/trash/`，可还原或彻底删除。
  * 索引是 `files/trash/index.json`（不依赖数据库，避免破坏性迁移）。
@@ -155,51 +168,71 @@ class TrashService(
         }.getOrDefault(false)
     }
 
-    /** 把本地文件移入回收站；返回成功数量（非本地 URI 会被忽略） */
-    suspend fun moveToTrash(uris: List<VfsUri>): Int = withContext(Dispatchers.IO) {
+    /** Compatibility count API: counts complete, recoverable trash payloads. */
+    suspend fun moveToTrash(uris: List<VfsUri>): Int = moveToTrashDetailed(uris).recoverable
+
+    suspend fun moveToTrashDetailed(uris: List<VfsUri>): TrashMoveResult = withContext(Dispatchers.IO) {
         indexMutex.withLock {
             val entries = list().toMutableList()
-            val pending = ArrayList<Entry>()      // 本轮新增
-            val movedPairs = ArrayList<Pair<File, File>>()   // (源, 回收站内位置) 用于失败回滚
+            val pending = ArrayList<Entry>()
+            val renamedPairs = ArrayList<Pair<File, File>>()
+            val copiedEntries = ArrayList<Entry>()
+            var cleanupFailed = 0
 
             uris.forEach { uri ->
                 if (uri.scheme != "local") return@forEach
-                val src = File(localVfs.absolutePath(uri))
+                val originalPath = localVfs.absolutePath(uri)
+                val src = File(originalPath)
                 if (!src.exists()) return@forEach
-                // 随机短名避免超长源文件名让 payload/sidecar 无法创建。
                 val trashName = "${System.currentTimeMillis()}-${java.util.UUID.randomUUID()}"
                 val dest = File(dir, trashName)
                 val entry = Entry(
-                    id = trashName,
-                    name = src.name,
-                    originalPath = localVfs.absolutePath(uri),
-                    trashName = trashName,
-                    size = diskBytes(src),
-                    deletedAt = System.currentTimeMillis(),
-                    isDirectory = src.isDirectory,
+                    id = trashName, name = src.name, originalPath = originalPath, trashName = trashName,
+                    size = diskBytes(src), deletedAt = System.currentTimeMillis(), isDirectory = src.isDirectory,
                 )
                 if (!saveMetadata(entry, pending = true)) return@forEach
-                val moved = moveFile(src, dest)
-                if (moved) {
-                    // 即使确认元数据写失败，pending sidecar + 源消失也足以恢复条目。
+
+                if (runCatching { src.renameTo(dest) }.getOrDefault(false)) {
+                    // Source is already gone, so the pending marker itself is sufficient crash recovery.
                     saveMetadata(entry, pending = false)
                     pending += entry
-                    movedPairs += src to dest
+                    renamedPairs += src to dest
+                    return@forEach
                 }
-            }
-            if (pending.isEmpty()) return@withLock 0
 
-            // 一次性写索引（旧实现每个文件写一次 = O(n²) IO）。
-            // 写失败必须把已移动的文件**全部放回原处**：否则文件既不在原目录、也不在索引里，
-            // 用户看到的是「删掉了但回收站里没有」= 事实上的静默丢数据。
+                val copied = runCatching { src.copyRecursively(dest, overwrite = false); true }.getOrDefault(false)
+                if (!copied) {
+                    runCatching { dest.deleteRecursively() }
+                    return@forEach
+                }
+                // Publish the complete copy before deleting any source child. If deletion is partial,
+                // the intact payload remains visible and can be restored without overwriting the source.
+                val finish = finishCompletedTrashCopy(
+                    publishRecoverablePayload = { saveMetadata(entry, pending = false) },
+                    deleteSource = { runCatching { src.deleteRecursively() }.getOrDefault(false) },
+                )
+                if (finish == TrashCopyFinish.NOT_PUBLISHED) {
+                    runCatching { dest.deleteRecursively() }
+                    return@forEach
+                }
+                pending += entry
+                copiedEntries += entry
+                if (finish == TrashCopyFinish.SOURCE_CLEANUP_FAILED) cleanupFailed++
+            }
+            if (pending.isEmpty()) return@withLock TrashMoveResult(0, cleanupFailed)
+
             if (save(entries + pending)) {
-                pending.size
+                TrashMoveResult(pending.size, cleanupFailed)
             } else {
-                // 回滚用 moveFile：只试 renameTo 时，跨卷（外部存储 → 内部回收站）回滚必失败，
-                // 恰好是它最该起作用的场景 —— 必须带复制兜底。
-                movedPairs.asReversed().forEach { (src, dest) -> moveFile(dest, src) }
-                Logx.e("TrashService", "index save failed, rolled back ${movedPairs.size} item(s)")
-                0
+                // Keep copied complete payloads: their completed sidecars make them recoverable even
+                // when index.json cannot be written. Only roll back same-volume renames.
+                var renameRollbackFailed = 0
+                renamedPairs.asReversed().forEach { (src, dest) ->
+                    val restored = runCatching { dest.renameTo(src) }.getOrDefault(false) || moveFile(dest, src)
+                    if (!restored) renameRollbackFailed++
+                }
+                Logx.e("TrashService", "index save failed; retained ${copiedEntries.size} recoverable copied payload(s)")
+                TrashMoveResult(copiedEntries.size + renameRollbackFailed, cleanupFailed)
             }
         }
     }

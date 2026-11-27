@@ -33,6 +33,7 @@ import com.u707t.panelfm.AppContainer
 import com.u707t.panelfm.core.common.Logx
 import com.u707t.panelfm.core.transfer.TaskState
 import com.u707t.panelfm.core.transfer.TransferTaskSnapshot
+import com.u707t.panelfm.core.transfer.hasFailures
 import com.u707t.panelfm.core.transfer.isActive
 import com.u707t.panelfm.core.transfer.isFinished
 import com.u707t.panelfm.core.transfer.itemProgress
@@ -77,7 +78,9 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
     // 全算进去会让「暂停全部」之后标题仍写着「2 个进行中」。
     val runningCount = ordered.count { it.state is TaskState.Running }
     val finishedCount = ordered.count { it.state.isFinished }
-    val failedCount = ordered.count { it.state is TaskState.Failed }
+    val failedCount = ordered.count {
+        it.state is TaskState.Failed || (it.state is TaskState.Done && it.state.hasFailures)
+    }
     var confirmClear by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
@@ -179,7 +182,7 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
             title = { Text("清空任务列表？") },
-            text = { Text("其中 $failedCount 个失败任务也会被一并移除，错误信息不再保留。") },
+            text = { Text("其中 $failedCount 个任务有失败项，也会被一并移除，错误信息不再保留。") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmClear = false
@@ -265,8 +268,8 @@ private fun TaskCard(
                 is TaskState.Paused -> TextButton(onClick = onResume) { Text("继续") }
                 else -> {}
             }
-            // 有失败项时才出现「重试失败项」：全成功的任务不显示这个按钮
-            if (state is TaskState.Done && state.failures.any { !it.sourceCopied }) {
+            // 有任何失败明细就显示重试：全是「已复制但删源失败」时也要能补删源。
+            if (state is TaskState.Done && state.failures.isNotEmpty()) {
                 TextButton(onClick = onRetry) { Text("重试失败项") }
             }
             when (state) {

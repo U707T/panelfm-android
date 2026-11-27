@@ -9,6 +9,8 @@ import com.u707t.panelfm.core.vfs.VfsEnv
 import com.u707t.panelfm.core.vfs.VfsUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.test.runTest
+import org.apache.sshd.common.session.Session
+import org.apache.sshd.common.session.SessionListener
 import org.apache.sshd.common.file.virtualfs.VirtualFileSystemFactory
 import org.apache.sshd.server.SshServer
 import org.apache.sshd.server.auth.password.PasswordAuthenticator
@@ -16,11 +18,14 @@ import org.apache.sshd.server.keyprovider.SimpleGeneratorHostKeyProvider
 import org.apache.sshd.sftp.server.SftpSubsystemFactory
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assume
 import org.junit.Before
 import org.junit.Test
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * SFTP 端到端测试：测试内起一个真的 MINA SSHD 服务端（虚拟文件系统挂到临时目录），
@@ -32,6 +37,8 @@ class SftpVfsTest {
     private lateinit var root: Path
     private lateinit var vfs: SftpVfs
     private var port: Int = 0
+    private val createdSessions = AtomicInteger()
+    private val activeSessions = AtomicInteger()
 
     private class MemoryHostKeys : HostKeyStore {
         val map = mutableMapOf<String, String>()
@@ -54,6 +61,16 @@ class SftpVfsTest {
         server.passwordAuthenticator = PasswordAuthenticator { user, pass, _ -> user == "tester" && pass == "secret" }
         server.subsystemFactories = listOf(SftpSubsystemFactory())
         server.fileSystemFactory = VirtualFileSystemFactory(root)
+        server.addSessionListener(object : SessionListener {
+            override fun sessionCreated(session: Session) {
+                createdSessions.incrementAndGet()
+                activeSessions.incrementAndGet()
+            }
+
+            override fun sessionClosed(session: Session) {
+                activeSessions.decrementAndGet()
+            }
+        })
         server.start()
         port = server.port
 
@@ -192,6 +209,77 @@ class SftpVfsTest {
         }
         assertTrue("应当抛出认证失败，而不是超时或崩溃", authFailed)
         runCatching { badVfs.close() }
+    }
+
+    @Test
+    fun `删除目录符号链接不递归删除链接目标`() = runTest {
+        val target = Files.createDirectories(root.resolve("link-target"))
+        val keep = Files.write(target.resolve("keep.txt"), byteArrayOf(1, 2, 3))
+        val link = root.resolve("directory-link")
+        try {
+            Files.createSymbolicLink(link, target)
+        } catch (e: Exception) {
+            Assume.assumeNoException("当前运行环境不允许创建符号链接", e)
+        }
+
+        vfs.connect()
+        assertTrue(vfs.stat(uri("/directory-link")).isSymlink)
+        vfs.delete(listOf(uri("/directory-link")))
+
+        assertTrue("链接目标的内容必须保留", Files.exists(keep))
+        assertFalse("链接本身应被删除", Files.isSymbolicLink(link))
+    }
+
+    @Test
+    fun `parents递归mkdir确认每一级并传播真实创建失败`() = runTest {
+        Files.write(root.resolve("not-a-directory"), byteArrayOf(1))
+        vfs.connect()
+
+        vfs.mkdir(uri("/created/child/grandchild"), parents = true)
+        assertTrue(Files.isDirectory(root.resolve("created/child/grandchild")))
+        assertTrue(vfs.stat(uri("/created/child/grandchild")).isDirectory)
+
+        assertTrue(runCatching { vfs.mkdir(uri("/not-a-directory/child"), parents = true) }.isFailure)
+        assertFalse(Files.exists(root.resolve("not-a-directory/child")))
+    }
+
+    @Test
+    fun `握手后密码或密钥准备失败重复重试不会遗留SSH会话`() = runTest {
+        val env = VfsEnv(
+            appDirs = AppDirs(Files.createTempDirectory("prepare-fail-files").toString(), Files.createTempDirectory("prepare-fail-cache").toString()),
+            dispatchers = PanelDispatchers(Dispatchers.IO, Dispatchers.IO, Dispatchers.Default, Dispatchers.Default),
+        )
+        val noPassword = ConnectionConfig(type = ConnectionType.SFTP, name = "missing-password", host = "127.0.0.1", port = port, user = "tester")
+        val noKeyPath = ConnectionConfig(
+            type = ConnectionType.SFTP,
+            name = "missing-key-path",
+            host = "127.0.0.1",
+            port = port,
+            user = "tester",
+            options = mapOf(SftpConfig.OPT_AUTH to SftpAuth.KEY.name),
+        )
+        val candidates = listOf(
+            SftpVfs(SftpConfig.from(noPassword, null), env, MemoryHostKeys()),
+            SftpVfs(SftpConfig.from(noKeyPath, null), env, MemoryHostKeys()),
+        )
+
+        try {
+            for (badVfs in candidates) {
+                repeat(2) {
+                    val createdBefore = createdSessions.get()
+                    val failure = runCatching { badVfs.connect() }.exceptionOrNull()
+                    assertTrue("凭据准备失败应返回认证错误", failure is com.u707t.panelfm.core.vfs.VfsException.Auth)
+                    for (attempt in 0 until 40) {
+                        if (activeSessions.get() == 0) break
+                        Thread.sleep(25)
+                    }
+                    assertEquals("每次确实完成了握手", createdBefore + 1, createdSessions.get())
+                    assertEquals("握手后凭据准备失败必须关闭服务端会话", 0, activeSessions.get())
+                }
+            }
+        } finally {
+            candidates.forEach { it.close() }
+        }
     }
 
     @Test

@@ -157,24 +157,19 @@ private suspend fun BrowserController.compressInto(
     level: com.u707t.panelfm.core.vfs.archive.ArchiveCompressor.Level,
     password: String?,
 ) {
-    // 目标是否是「本次新建」：取消时据此决定是否清理半成品
-    val existedBefore = runCatching { container.locator.find(dest)?.stat(dest) != null }.getOrDefault(false)
-    try {
-        com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
-            .compress(
-                sources, dest, format,
-                onProgress = { done, total ->
-                    report.report(done, total, "已处理 " + Fmt.transferred(done, total))
-                },
-                level = level,
-                password = password,
-            )
-    } catch (e: CancellationException) {
-        // 取消后目标只剩半成品：仅当目标是「本次新建」时才清理
-        if (!existedBefore) runCatching { container.locator.find(dest)?.delete(listOf(dest)) }
-        throw e
-    }
-    showStatus("已压缩为 $name")
+    // Creating an archive is always save-as; existing backups must not be replaced implicitly.
+    val parent = dest.parent ?: throw VfsException.IllegalArgument("目标目录无效")
+    val target = container.uniqueChild(parent, name)
+    com.u707t.panelfm.core.vfs.archive.ArchiveCompressor(container.locator)
+        .compress(
+            sources, target, format,
+            onProgress = { done, total ->
+                report.report(done, total, "已处理 " + Fmt.transferred(done, total))
+            },
+            level = level,
+            password = password,
+        )
+    showStatus("已压缩为 ${target.name}")
 }
 
 /**
@@ -205,8 +200,8 @@ fun BrowserController.extractToOwnFolder(side: PaneSide, parentDir: VfsUri) {
 }
 
 /** 解压：把当前（压缩包内）选中项复制到指定目录 */
-fun BrowserController.extractTo(side: PaneSide, destDir: VfsUri) {
-    val sources = targetSources(side)
+fun BrowserController.extractTo(side: PaneSide, destDir: VfsUri, overrideSources: List<VfsUri>? = null) {
+    val sources = overrideSources ?: targetSources(side)
     if (sources.isEmpty()) {
         showStatus("当前目录没有可解压的项")
         return
@@ -305,9 +300,7 @@ fun BrowserController.testArchive(side: PaneSide) {
         }
         report.note("正在列出压缩包内容…")
         val vfs = mountArchiveInteractive(host, host.name) ?: return@launchBusy
-        val all = withContext(container.dispatchers.vfs) {
-            listRecursive(vfs, com.u707t.panelfm.core.vfs.archive.ArchiveVfs.uriFor(host, vfs.kind))
-        }
+        val all = withContext(container.dispatchers.vfs) { vfs.integrityEntries() }
         val files = all.filter { !it.isDirectory }
         val totalBytes = files.sumOf { it.size.coerceAtLeast(0) }
         var doneBytes = 0L
@@ -349,20 +342,6 @@ fun BrowserController.testArchive(side: PaneSide) {
             }
         )
     }
-}
-
-private suspend fun BrowserController.listRecursive(
-    vfs: com.u707t.panelfm.core.vfs.VirtualFileSystem,
-    dir: VfsUri,
-    depth: Int = 0,
-): List<FileMetadata> {
-    if (depth > 16) return emptyList()
-    val out = ArrayList<FileMetadata>()
-    withContext(container.dispatchers.vfs) { vfs.list(dir) }.forEach { item ->
-        out.add(item)
-        if (item.isDirectory) out.addAll(listRecursive(vfs, item.uri, depth + 1))
-    }
-    return out
 }
 
 // ------------------------------------------------------------------ 压缩包内写操作（MT：添加/删除/重命名）

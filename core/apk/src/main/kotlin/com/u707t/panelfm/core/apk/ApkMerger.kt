@@ -59,7 +59,7 @@ internal object ApkMerger {
             val storeLibs = info?.extractNativeLibs == false
             var dexNext = nextDexIndex(baseZip)
 
-            ZipOutputStream(BufferedOutputStream(FileOutputStream(output), 512 * 1024)).use { zos ->
+            AlignedZipOutputStream(BufferedOutputStream(FileOutputStream(output), 512 * 1024)).use { zos ->
                 for (entry in baseZip.entries()) {
                     if (entry.isDirectory) continue
                     val name = entry.name
@@ -70,8 +70,8 @@ internal object ApkMerger {
                     if (name == "AndroidManifest.xml") {
                         writeBytes(zos, name, entry.time, patch.bytes, store = false) { done += it; onProgress(done, total) }
                     } else {
-                        val store = storeLibs && isNativeLib(name)
-                        if (store) libs++
+                        val store = name == "resources.arsc" || (storeLibs && isNativeLib(name))
+                        if (storeLibs && isNativeLib(name)) libs++
                         writeFromZip(zos, baseZip, entry, name, store) { done += it; onProgress(done, total) }
                     }
                 }
@@ -109,6 +109,31 @@ internal object ApkMerger {
             }
             return Stats(written, libs, dexes, patch.changes)
         }
+    }
+
+    /** Keep the resource table mmap-ready even before apksig realigns the final APK. */
+    private class AlignedZipOutputStream private constructor(private val counter: CountingOutputStream) : ZipOutputStream(counter) {
+        constructor(output: java.io.OutputStream) : this(CountingOutputStream(output))
+        override fun putNextEntry(entry: ZipEntry) {
+            if (entry.name == "resources.arsc" && entry.method == ZipEntry.STORED) {
+                // Pre-1980 times generate an implicit UT extra field; normalize before computing the header.
+                if (entry.time < 315532800000L) entry.time = 315532800000L
+                val existing = entry.extra ?: ByteArray(0)
+                val offset = counter.count + 30 + entry.name.toByteArray(Charsets.UTF_8).size + existing.size
+                val padding = ((4 - (offset + 4) % 4) % 4).toInt()
+                entry.extra = existing + byteArrayOf(0x35, 0xd9.toByte(), padding.toByte(), 0) + ByteArray(padding)
+            }
+            super.putNextEntry(entry)
+        }
+    }
+
+    private class CountingOutputStream(private val output: java.io.OutputStream) : java.io.OutputStream() {
+        var count = 0L
+            private set
+        override fun write(value: Int) { output.write(value); count++ }
+        override fun write(bytes: ByteArray, offset: Int, length: Int) { output.write(bytes, offset, length); count += length }
+        override fun flush() = output.flush()
+        override fun close() = output.close()
     }
 
     private fun isNativeLib(name: String): Boolean = name.startsWith("lib/") && name.endsWith(".so")

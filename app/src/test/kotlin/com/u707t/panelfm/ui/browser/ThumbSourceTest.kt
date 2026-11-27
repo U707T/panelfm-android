@@ -22,6 +22,23 @@ class ThumbSourceTest {
     }
 
     @Test
+    fun `极长图采样并缩至目标长边`() {
+        val target = 96
+        val sample = thumbnailSampleSize(width = 1080, height = 60_000, targetPx = target)
+        assertTrue(sample > 1)
+        val output = thumbnailDimensions(width = 1080 / sample, height = 60_000 / sample, targetPx = target)
+        assertTrue(output.width <= target)
+        assertTrue(output.height <= target)
+        assertTrue(output.width > 0 && output.height > 0)
+    }
+
+    @Test
+    fun `目标小于原图边长时缩小，原本较小位图不放大`() {
+        assertEquals(ThumbnailDimensions(96, 96), thumbnailDimensions(400, 400, 96))
+        assertEquals(ThumbnailDimensions(32, 20), thumbnailDimensions(32, 20, 96))
+    }
+
+    @Test
     fun `本地视频走本地取帧`() {
         assertEquals(ThumbSource.VIDEO_LOCAL, thumbSourceOf("mp4", isDirectory = false, scheme = "local"))
         assertEquals(ThumbSource.VIDEO_LOCAL, thumbSourceOf("MKV", isDirectory = false, scheme = "local"))

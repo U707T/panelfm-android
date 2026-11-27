@@ -88,4 +88,10 @@ class ConnectionSecretsTest {
             assertNull(ConnectionSecrets.build(t, "", "", ""))
         }
     }
+    @Test fun clearingAnEditedSecretProducesExplicitNullForTestAndSave() {
+        for (type in listOf(ConnectionType.FTP, ConnectionType.FTPS, ConnectionType.WEBDAV, ConnectionType.SMB, ConnectionType.S3)) {
+            assertEquals("saved", ConnectionSecrets.passwordForEdit(type, "saved"))
+            assertNull(ConnectionSecrets.build(type, "", "", ""))
+        }
+    }
 }

@@ -51,6 +51,9 @@ class FakeVfs(
      * 任务先变 Done 就永远等不到「已取消」——v1.5.0 首次 CI 上撞到的竞态。
      */
     var readGate: kotlinx.coroutines.CompletableDeferred<Unit>? = null
+    var onRead: (() -> Unit)? = null
+    var afterDelete: (() -> Unit)? = null
+    var afterCommit: (() -> Unit)? = null
 
     /** 已被 [readGate] 拦住的读次数（测试用它确认「第一次读已经开始」）。 */
     val readsStarted = java.util.concurrent.atomic.AtomicInteger(0)
@@ -131,6 +134,7 @@ class FakeVfs(
                 .toList()
                 .forEach { nodes.remove(it) }
         }
+        afterDelete?.invoke()
     }
 
     override suspend fun rename(from: VfsUri, to: VfsUri): Boolean {
@@ -158,6 +162,7 @@ class FakeVfs(
         val gate = readGate
         return object : VfsReader by delegate {
             override suspend fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+                onRead?.invoke()
                 gate?.let {
                     readsStarted.incrementAndGet()
                     it.await()
@@ -168,6 +173,7 @@ class FakeVfs(
 
             override fun close() {
                 closedReaders++
+                gate?.complete(Unit)
                 delegate.close()
             }
         }
@@ -211,6 +217,7 @@ class FakeVfs(
                 part.size = written
                 nodes[uri.path] = part
                 nodes.remove(partPath)
+                afterCommit?.invoke()
             }
 
             override suspend fun abort() {

@@ -37,7 +37,10 @@ import java.security.MessageDigest
  */
 object ThumbCache {
 
-    private val memory = android.util.LruCache<String, Bitmap>(120)
+    private const val MAX_MEMORY_BYTES = 24 * 1024 * 1024
+    private val memory = object : android.util.LruCache<String, Bitmap>(MAX_MEMORY_BYTES) {
+        override fun sizeOf(key: String, value: Bitmap): Int = value.allocationByteCount.coerceAtLeast(1)
+    }
     private var cacheDir: File? = null
 
     /**
@@ -145,7 +148,7 @@ object ThumbCache {
         memory.get(key)?.let { return it }
         val cached = fileOf(key)?.takeIf { it.exists() }
         if (cached != null) {
-            val bm = withContext(Dispatchers.IO) { BitmapFactory.decodeFile(cached.absolutePath) }
+            val bm = withContext(Dispatchers.IO) { decodeThumbnailFile(cached.absolutePath, targetPx) }
             if (bm != null) {
                 memory.put(key, bm)
                 return bm
@@ -156,14 +159,9 @@ object ThumbCache {
 
         val bitmap = withContext(Dispatchers.IO) {
             runCatching {
-                val bytes = if (item.uri.scheme == "local") {
-                    // 本地：先读边界再采样，避免大图 OOM
+                if (item.uri.scheme == "local") {
                     val path = container.localVfs.absolutePath(item.uri)
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeFile(path, bounds)
-                    val sample = sampleSize(bounds.outWidth, bounds.outHeight, targetPx)
-                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                    BitmapFactory.decodeFile(path, opts)
+                    decodeThumbnailFile(path, targetPx)
                 } else {
                     val vfs = container.locator.find(item.uri) ?: return@runCatching null
                     val reader = vfs.openRead(item.uri)
@@ -172,22 +170,19 @@ object ThumbCache {
                         val buf = ByteArray(64 * 1024)
                         var total = 0L
                         while (maxBytes <= 0 || total < maxBytes) {
-                            val n = reader.read(buf, 0, buf.size)
+                            val remaining = if (maxBytes > 0) (maxBytes - total).coerceAtMost(buf.size.toLong()).toInt() else buf.size
+                            if (remaining <= 0) break
+                            val n = reader.read(buf, 0, remaining)
                             if (n < 0) break
+                            if (n == 0) continue
                             out.write(buf, 0, n)
                             total += n
                         }
                     } finally {
                         runCatching { reader.close() }
                     }
-                    val bytes = out.toByteArray()
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-                    val sample = sampleSize(bounds.outWidth, bounds.outHeight, targetPx)
-                    val opts = BitmapFactory.Options().apply { inSampleSize = sample }
-                    BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+                    decodeThumbnailBytes(out.toByteArray(), targetPx)
                 }
-                bytes
             }.getOrNull()
         } ?: return null
 
@@ -461,19 +456,65 @@ object ThumbCache {
         return scaled
     }
 
+    private fun decodeThumbnailFile(path: String, targetPx: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(path, bounds)
+        val sample = thumbnailSampleSize(bounds.outWidth, bounds.outHeight, targetPx)
+        val decoded = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
+            ?: return null
+        return fitImageThumbnail(decoded, targetPx)
+    }
+
+    private fun decodeThumbnailBytes(bytes: ByteArray, targetPx: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val sample = thumbnailSampleSize(bounds.outWidth, bounds.outHeight, targetPx)
+        val decoded = BitmapFactory.decodeByteArray(
+            bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample },
+        ) ?: return null
+        return fitImageThumbnail(decoded, targetPx)
+    }
+
+    private fun fitImageThumbnail(bitmap: Bitmap, targetPx: Int): Bitmap {
+        val dimensions = thumbnailDimensions(bitmap.width, bitmap.height, targetPx)
+        if (dimensions.width == bitmap.width && dimensions.height == bitmap.height) return bitmap
+        val scaled = Bitmap.createScaledBitmap(bitmap, dimensions.width, dimensions.height, true)
+        if (scaled !== bitmap) bitmap.recycle()
+        return scaled
+    }
+
     fun clear() {
         memory.evictAll()
         cacheDir?.listFiles()?.forEach { runCatching { it.delete() } }
     }
 
-    private fun sampleSize(width: Int, height: Int, target: Int): Int {
-        if (width <= 0 || height <= 0) return 1
-        var sample = 1
-        while (width / (sample * 2) >= target && height / (sample * 2) >= target) sample *= 2
-        return sample
-    }
-
     private const val MAX_REMOTE_SIZE = 3L * 1024 * 1024
+}
+
+internal data class ThumbnailDimensions(val width: Int, val height: Int)
+
+/** Largest power-of-two decode sample that keeps the longest side near the requested thumbnail edge. */
+internal fun thumbnailSampleSize(width: Int, height: Int, targetPx: Int): Int {
+    if (width <= 0 || height <= 0) return 1
+    val target = targetPx.coerceAtLeast(1)
+    var sample = 1
+    while (sample <= (1 shl 29) && maxOf(width / (sample * 2), height / (sample * 2)) >= target) {
+        sample *= 2
+    }
+    return sample
+}
+
+/** Final dimensions are always bounded by the target long edge, including panoramic/tall images. */
+internal fun thumbnailDimensions(width: Int, height: Int, targetPx: Int): ThumbnailDimensions {
+    if (width <= 0 || height <= 0) return ThumbnailDimensions(1, 1)
+    val longest = maxOf(width, height)
+    val target = targetPx.coerceAtLeast(1)
+    if (longest <= target) return ThumbnailDimensions(width, height)
+    val ratio = target.toDouble() / longest.toDouble()
+    return ThumbnailDimensions(
+        width = (width * ratio).toInt().coerceAtLeast(1),
+        height = (height * ratio).toInt().coerceAtLeast(1),
+    )
 }
 
 /**
@@ -579,6 +620,9 @@ fun rememberThumb(
     val state = produceState<ImageBitmap?>(
         initialValue = null,
         item.uri.toString(),
+        item.lastModified,
+        item.size,
+        targetPx,
         skip,
         policy,
     ) {

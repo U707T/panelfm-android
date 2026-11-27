@@ -1,6 +1,5 @@
 package com.u707t.panelfm.ui.preview
 
-import android.database.Cursor
 import android.database.sqlite.SQLiteDatabase
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -41,6 +40,9 @@ import com.u707t.panelfm.core.ui.LoadingState
 import com.u707t.panelfm.core.ui.MtScreenTopBar
 import com.u707t.panelfm.core.ui.safeAreaPadding
 import com.u707t.panelfm.core.vfs.FileMetadata
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -55,6 +57,9 @@ import java.io.File
 private const val SQLITE_MAX_BYTES = 256L * 1024 * 1024
 private const val ROW_LIMIT = 200
 private const val CELL_WIDTH_DP = 160
+private const val CELL_MAX_CHARS = SqliteFormats.PREVIEW_CELL_CHARS
+private const val TABLE_MAX_CHARS = SqliteFormats.PREVIEW_TABLE_CHARS
+private const val TABLE_MAX_COLUMNS = SqliteFormats.PREVIEW_MAX_COLUMNS
 
 private class SqliteHandle(val db: SQLiteDatabase, val tempFile: File?)
 
@@ -80,9 +85,11 @@ fun SqliteScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
     }
 
     LaunchedEffect(item.uri) {
+        var opening: SqliteHandle? = null
         try {
-            val opened = withContext(Dispatchers.IO) { openSqlite(container, item) }
+            val opened = withContext(Dispatchers.IO) { openSqlite(container, item).also { opening = it } }
             handle = opened
+            opening = null
             val listed = withContext(Dispatchers.IO) {
                 listTables(opened.db).map { SqliteTable(it, null) }
             }
@@ -96,6 +103,11 @@ fun SqliteScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
             throw e
         } catch (e: Exception) {
             error = e.message ?: "打开数据库失败"
+        } finally {
+            opening?.let { orphan ->
+                runCatching { orphan.db.close() }
+                runCatching { orphan.tempFile?.delete() }
+            }
         }
     }
 
@@ -103,17 +115,17 @@ fun SqliteScreen(container: AppContainer, item: FileMetadata, onBack: () -> Unit
         val table = selectedTable ?: return@LaunchedEffect
         val db = handle?.db ?: return@LaunchedEffect
         rows = null
-        runCatching {
-            withContext(Dispatchers.IO) { readRows(db, table, ROW_LIMIT) }
-        }.onSuccess { rows = it }
-            .onFailure { error = it.message ?: "读取表失败" }
+        try {
+            rows = withContext(Dispatchers.IO) { readRows(db, table, ROW_LIMIT) }
+        } catch (e: CancellationException) { throw e }
+        catch (e: Exception) { error = e.message ?: "读取表失败" }
     }
 
     Column(Modifier.fillMaxSize().safeAreaPadding()) {
         MtScreenTopBar(
             title = item.name,
             subtitle = when {
-                selectedTable != null -> "表 ${selectedTable} · 前 $ROW_LIMIT 行 · 只读"
+                selectedTable != null -> "表 ${selectedTable} · ≤$ROW_LIMIT 行 / $TABLE_MAX_COLUMNS 列 · 文本预览受限 · 只读"
                 tables != null -> "SQLite · ${tables!!.size} 张表 · 只读"
                 else -> "SQLite · 只读"
             },
@@ -252,12 +264,10 @@ private suspend fun openSqlite(container: AppContainer, item: FileMetadata): Sql
             val reader = vfs.openRead(item.uri)
             try {
                 target.outputStream().use { out ->
-                    val buf = ByteArray(256 * 1024)
-                    while (true) {
-                        val n = reader.read(buf, 0, buf.size)
-                        if (n < 0) break
-                        out.write(buf, 0, n)
-                    }
+                    val truncated = com.u707t.panelfm.core.common.copyPreviewBounded(
+                        SQLITE_MAX_BYTES, reader::read,
+                    ) { bytes, count -> out.write(bytes, 0, count) }
+                    check(!truncated) { "数据库实际内容超过 ${Fmt.size(SQLITE_MAX_BYTES)}，已停止复制" }
                 }
             } finally {
                 runCatching { reader.close() }
@@ -294,21 +304,29 @@ private fun countRows(db: SQLiteDatabase, table: String): Long? = runCatching {
     }
 }.getOrNull()
 
-private fun readRows(db: SQLiteDatabase, table: String, limit: Int): SqliteRows {
-    db.rawQuery("SELECT * FROM ${SqliteFormats.quoteIdentifier(table)} LIMIT $limit", null).use { cursor ->
-        val columns = cursor.columnNames.toList()
+private suspend fun readRows(db: SQLiteDatabase, table: String, limit: Int): SqliteRows {
+    val quotedTable = SqliteFormats.quoteIdentifier(table)
+    // LIMIT 0 obtains names only. Truncate in SQLite before data enters CursorWindow / JVM.
+    val allColumns = db.rawQuery("SELECT * FROM $quotedTable LIMIT 0", null).use { it.columnNames.toList() }
+    val columns = allColumns.take(TABLE_MAX_COLUMNS)
+    if (columns.isEmpty()) return SqliteRows(emptyList(), emptyList())
+    db.rawQuery(SqliteFormats.previewQuery(table, columns, limit), null).use { cursor ->
         val rows = ArrayList<List<String>>(minOf(limit, 256))
+        var remaining = TABLE_MAX_CHARS
         while (cursor.moveToNext()) {
-            rows.add(columns.indices.map { i -> cursorValue(cursor, i) })
+            currentCoroutineContext().ensureActive()
+            // Reserve one full bounded row; stop rather than accumulate unbounded cells.
+            if (remaining < columns.size * (CELL_MAX_CHARS + 1)) {
+                rows.add(List(columns.size) { "…（达到表文本预览上限）" })
+                break
+            }
+            val row = columns.indices.map { i ->
+                val value = cursor.getString(i).orEmpty()
+                if (value.length > CELL_MAX_CHARS) value.take(CELL_MAX_CHARS) + "…" else value
+            }
+            remaining -= row.sumOf { it.length }
+            rows.add(row)
         }
         return SqliteRows(columns, rows)
     }
-}
-
-/** 单元格取值：BLOB 不读取内容（避免大字段撑爆内存），只标类型与长度未知。 */
-private fun cursorValue(cursor: Cursor, index: Int): String = when (cursor.getType(index)) {
-    Cursor.FIELD_TYPE_NULL -> "NULL"
-    Cursor.FIELD_TYPE_BLOB -> "BLOB"
-    Cursor.FIELD_TYPE_FLOAT -> runCatching { cursor.getString(index) }.getOrNull() ?: ""
-    else -> runCatching { cursor.getString(index) }.getOrNull() ?: ""
 }

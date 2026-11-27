@@ -21,6 +21,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +40,8 @@ import com.u707t.panelfm.core.common.Fmt
 import com.u707t.panelfm.core.data.PrefsStore
 import com.u707t.panelfm.core.ui.HistoryTextField
 import com.u707t.panelfm.core.ui.MtSpec
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -110,11 +113,13 @@ internal fun HttpPane(container: AppContainer) {
     var showRespHeaders by remember { mutableStateOf(true) }
 
     // HEX 视图只在字节或视图变化时算一次（编辑 URL 时不该重算）。
-    // 美化同理：`prettyJson` 对 8MB 响应是几十毫秒的活，绝不能放在每次重组里跑。
-    val prettyBody = remember(respBody) {
-        // 超过 512KB 不提供「美化」：缩进要遍历全串，放在组合期会让滚动明显掉帧
-        if (respBody.isEmpty() || respBody.length > 512 * 1024) null
-        else NetToolboxKit.prettyJson(respBody)
+    // JSON 美化在 Default 上执行，输入、深度与输出都有硬预算，响应变化会取消旧任务。
+    var prettyBody by remember(respBody) { mutableStateOf<String?>(null) }
+    LaunchedEffect(respBody) {
+        prettyBody = withContext(Dispatchers.Default) {
+            val context = currentCoroutineContext()
+            NetToolboxKit.prettyJson(respBody) { context.ensureActive() }
+        }
     }
     val shownBody = remember(respBytes, bodyView, respBody, pretty, prettyBody) {
         val b = respBytes
