@@ -78,8 +78,9 @@ fun TasksScreen(container: AppContainer, onBack: () -> Unit) {
     // 全算进去会让「暂停全部」之后标题仍写着「2 个进行中」。
     val runningCount = ordered.count { it.state is TaskState.Running }
     val finishedCount = ordered.count { it.state.isFinished }
-    val failedCount = ordered.count {
-        it.state is TaskState.Failed || (it.state is TaskState.Done && it.state.hasFailures)
+    val failedCount = ordered.count { snapshot ->
+        val done = snapshot.state as? TaskState.Done
+        snapshot.state is TaskState.Failed || done?.hasFailures == true
     }
     var confirmClear by remember { mutableStateOf(false) }
 

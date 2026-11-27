@@ -71,7 +71,7 @@
 - 其余模块本地实跑：preview 64 / archive 122 / protocol 78 / ui-pure 6 / pure-jvm 15 /
   cache 5 / MtRowGesture 15 = 305 用例全绿（脚本与日志见审计目录）。
 - PSI 语法检查：86 个改动/新增 Kotlin 文件 0 错误。
-- CI（GitHub Actions）：`testDebugUnitTest` + preview + 三 ABI 签名包 + 16KB 页对齐门。
+- GitHub Actions 首次全量 `workflow_dispatch`（run `46013665854`，SHA `965c80f`）：preview job 通过；`testDebugUnitTest` 在 `:app:compileDebugKotlin` 失败，暴露两处 Kotlin 可见性/智能转换错误，android 与 release jobs 被跳过。修复已应用，等待同分支复跑；目前不能记作 CI 通过。
 
 ## 已知限制（不在本版处理）
 

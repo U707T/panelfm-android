@@ -171,7 +171,7 @@ class TrashService(
     /** Compatibility count API: counts complete, recoverable trash payloads. */
     suspend fun moveToTrash(uris: List<VfsUri>): Int = moveToTrashDetailed(uris).recoverable
 
-    suspend fun moveToTrashDetailed(uris: List<VfsUri>): TrashMoveResult = withContext(Dispatchers.IO) {
+    internal suspend fun moveToTrashDetailed(uris: List<VfsUri>): TrashMoveResult = withContext(Dispatchers.IO) {
         indexMutex.withLock {
             val entries = list().toMutableList()
             val pending = ArrayList<Entry>()
