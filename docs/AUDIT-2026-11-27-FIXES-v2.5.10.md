@@ -71,7 +71,7 @@
 - 其余模块本地实跑：preview 64 / archive 122 / protocol 78 / ui-pure 6 / pure-jvm 15 /
   cache 5 / MtRowGesture 15 = 305 用例全绿（脚本与日志见审计目录）。
 - PSI 语法检查：86 个改动/新增 Kotlin 文件 0 错误。
-- GitHub Actions 首次全量 `workflow_dispatch`（run `46013665854`，SHA `965c80f`）：preview job 通过；`testDebugUnitTest` 在 `:app:compileDebugKotlin` 失败，发现回收站返回类型可见性与任务状态智能转换两处问题，已在 `bd5d708` 修复。第二次运行（run `46017452680`）主源码编译通过，但 `ThumbSourceTest` 因缺少 `assertTrue` 导入在测试编译失败，已在 `8b1b112` 补齐。两轮均跳过 android/release，不能视作门禁通过；最终提交仍须重新全量 CI。
+- GitHub Actions 首两次完整 `workflow_dispatch` 分别发现并修复两处 app 编译问题与 `ThumbSourceTest` 缺少 `assertTrue` 导入（提交 `bd5d708`、`8b1b112`；失败 run 见 46013665854、46017452680）。最终分支验证 run [46019195232](https://github.com/U707T/panelfm-android/actions/runs/46019195232)，SHA `4badbcd13ab3005748a990cb8d49fcec6f593b00`：`test`、`preview`、`android` 全部通过；签名 release/debug APK 构建、artifact 上传与 16KB 页大小硬校验通过。`workflow_dispatch` 下 `release` job 按配置跳过；正式 Release 待推送 `main` 触发。
 
 ## 已知限制（不在本版处理）
 
