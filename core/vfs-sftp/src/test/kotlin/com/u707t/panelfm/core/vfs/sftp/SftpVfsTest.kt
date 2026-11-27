@@ -268,13 +268,22 @@ class SftpVfsTest {
                 repeat(2) {
                     val createdBefore = createdSessions.get()
                     val failure = runCatching { badVfs.connect() }.exceptionOrNull()
-                    assertTrue("凭据准备失败应返回认证错误", failure is com.u707t.panelfm.core.vfs.VfsException.Auth)
-                    for (attempt in 0 until 40) {
-                        if (activeSessions.get() == 0) break
+                    assertTrue("凭据准备失败应返回认证错误，实际=${failure?.javaClass?.name}: ${failure?.message}", failure is com.u707t.panelfm.core.vfs.VfsException.Auth)
+                    val expectedCreated = createdBefore + 1
+                    val deadline = System.nanoTime() + java.util.concurrent.TimeUnit.SECONDS.toNanos(10)
+                    // The server listener may be scheduled just after the client-side failure is returned.
+                    // Wait for both observations rather than treating the initial active=0 as completed cleanup.
+                    while (System.nanoTime() < deadline &&
+                        (createdSessions.get() < expectedCreated || activeSessions.get() != 0)
+                    ) {
                         Thread.sleep(25)
                     }
-                    assertEquals("每次确实完成了握手", createdBefore + 1, createdSessions.get())
-                    assertEquals("握手后凭据准备失败必须关闭服务端会话", 0, activeSessions.get())
+                    assertEquals("每次确实完成了握手", expectedCreated, createdSessions.get())
+                    assertEquals(
+                        "握手后凭据准备失败必须关闭服务端会话（created=${createdSessions.get()}）",
+                        0,
+                        activeSessions.get(),
+                    )
                 }
             }
         } finally {
