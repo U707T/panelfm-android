@@ -71,7 +71,7 @@
 - 其余模块本地实跑：preview 64 / archive 122 / protocol 78 / ui-pure 6 / pure-jvm 15 /
   cache 5 / MtRowGesture 15 = 305 用例全绿（脚本与日志见审计目录）。
 - PSI 语法检查：86 个改动/新增 Kotlin 文件 0 错误。
-- GitHub Actions 首次全量 `workflow_dispatch`（run `46013665854`，SHA `965c80f`）：preview job 通过；`testDebugUnitTest` 在 `:app:compileDebugKotlin` 失败，暴露两处 Kotlin 可见性/智能转换错误，android 与 release jobs 被跳过。修复已应用，等待同分支复跑；目前不能记作 CI 通过。
+- GitHub Actions 首次全量 `workflow_dispatch`（run `46013665854`，SHA `965c80f`）：preview job 通过；`testDebugUnitTest` 在 `:app:compileDebugKotlin` 失败，发现回收站返回类型可见性与任务状态智能转换两处问题，已在 `bd5d708` 修复。第二次运行（run `46017452680`）主源码编译通过，但 `ThumbSourceTest` 因缺少 `assertTrue` 导入在测试编译失败，已在 `8b1b112` 补齐。两轮均跳过 android/release，不能视作门禁通过；最终提交仍须重新全量 CI。
 
 ## 已知限制（不在本版处理）
 
