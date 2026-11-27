@@ -71,7 +71,9 @@
 - 其余模块本地实跑：preview 64 / archive 122 / protocol 78 / ui-pure 6 / pure-jvm 15 /
   cache 5 / MtRowGesture 15 = 305 用例全绿（脚本与日志见审计目录）。
 - PSI 语法检查：86 个改动/新增 Kotlin 文件 0 错误。
-- GitHub Actions 首两次完整 `workflow_dispatch` 分别发现并修复两处 app 编译问题与 `ThumbSourceTest` 缺少 `assertTrue` 导入（提交 `bd5d708`、`8b1b112`；失败 run 见 46013665854、46017452680）。最终分支验证 run [46019195232](https://github.com/U707T/panelfm-android/actions/runs/46019195232)，SHA `4badbcd13ab3005748a990cb8d49fcec6f593b00`：`test`、`preview`、`android` 全部通过；签名 release/debug APK 构建、artifact 上传与 16KB 页大小硬校验通过。`workflow_dispatch` 下 `release` job 按配置跳过；正式 Release 待推送 `main` 触发。
+- GitHub Actions 第一次完整 `workflow_dispatch` 因两处 app 编译问题失败；第二次因 `ThumbSourceTest` 缺少 `assertTrue` 导入失败，均已修复（失败 run：46013665854、46017452680）。随后分支 dispatch run [46019195232](https://github.com/U707T/panelfm-android/actions/runs/46019195232)，SHA `4badbcd13ab3005748a990cb8d49fcec6f593b00`，`test`、`preview`、`android` 成功；其后 main push run [46021542507](https://github.com/U707T/panelfm-android/actions/runs/46021542507) 暴露 SFTP 重试测试的会话清理等待竞态，修正测试为先等预期 session-created 再等 active session 清零。最终候选分支 run [46022998190](https://github.com/U707T/panelfm-android/actions/runs/46022998190)，SHA `6b3dff36364d975608c6987b421e9a51d300d422`，全量 CI 成功：`test`、`preview`、`android` 均通过，签名三 ABI APK 构建、artifact 上传和 16 KB 页大小硬校验通过；dispatch 的 `release` 按配置跳过。
+- 该 SHA 快进到 `main` 后，正式 push run [46025314474](https://github.com/U707T/panelfm-android/actions/runs/46025314474) 的 `test`、`preview`、`android`、`release` 四个 job 均成功。正式 Release [v2.5.10](https://github.com/U707T/panelfm-android/releases/tag/v2.5.10) 为非预发布，tag 与 Release 均指向 `6b3dff36364d975608c6987b421e9a51d300d422`。
+- 已核对正式 Release 的三 ABI 附件（GitHub Release API SHA-256）：`PanelFM-release-arm64-v8a.apk`，23,420,986 bytes，`65709b19dc4a747d1bd057ea8193056e2a5cfa15eb76529e76b74ef852b27c99`；`PanelFM-release-armeabi-v7a.apk`，23,419,062 bytes，`d378bb8956db38243cbc60e6c40e87abab8a22244b41a570eabe317ba9a46e37`；`PanelFM-release-x86_64.apk`，23,420,044 bytes，`e80baebe3248d5a8c33335a430ac747136b0ec6e94f7c2093086fa38692a0bd6`。
 
 ## 已知限制（不在本版处理）
 
