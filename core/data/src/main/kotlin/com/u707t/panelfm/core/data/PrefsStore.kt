@@ -104,6 +104,14 @@ data class AppSettings(
     /** MT「保存文件时自动将原文件重命名为 .bak 备份文件」 */
     val backupOnSave: Boolean = false,
     /**
+     * 外部「打开方式 / 分享」交来的文件：能反查到真实路径时**定位原文件**而不是复制副本。
+     *
+     * 默认开启 —— 用户点「用 PanelFM 打开」多半是想知道这个文件在哪；
+     * 反查不到（微信等 provider 只给数字 id）时自动降级为复制到「接收文件」，行为与旧版一致。
+     * 关掉后完全保持旧行为（总是复制 + 预览）。
+     */
+    val locateIncomingOriginal: Boolean = true,
+    /**
      * MT 的输入框历史（`app:recordKey`）：键名照抄 MT（`filter_record` / `rename_multi_pattern` /
      * `editor_find` …），值 = 最近使用在前、去重、最多 12 条。
      */
@@ -186,6 +194,7 @@ class PrefsStore(private val context: Context) {
         val thumbMaxBytes = androidx.datastore.preferences.core.longPreferencesKey("thumb_max_bytes")
         val confirmExit = booleanPreferencesKey("confirm_exit")
         val backupOnSave = booleanPreferencesKey("backup_on_save")
+        val locateIncomingOriginal = booleanPreferencesKey("locate_incoming_original")
         val tapRangeSelect = booleanPreferencesKey("tap_range_select")
         // 编辑器「语法」手动选择（ext|scope 行；scope 空串 = 纯文本）
         val editorLangOverrides = androidx.datastore.preferences.core.stringSetPreferencesKey("editor_lang_overrides")
@@ -275,6 +284,7 @@ class PrefsStore(private val context: Context) {
             thumbnailMaxBytes = p[Keys.thumbMaxBytes] ?: (3L * 1024 * 1024),
             confirmExit = p[Keys.confirmExit] ?: false,
             backupOnSave = p[Keys.backupOnSave] ?: false,
+            locateIncomingOriginal = p[Keys.locateIncomingOriginal] ?: true,
             tapRangeSelect = p[Keys.tapRangeSelect] ?: false,
             editorLangOverrides = (p[Keys.editorLangOverrides] ?: emptySet())
                 .mapNotNull { line -> parseLangOverride(line) }
@@ -356,6 +366,8 @@ class PrefsStore(private val context: Context) {
     suspend fun setThumbnailMaxBytes(bytes: Long) = context.panelDataStore.edit { it[Keys.thumbMaxBytes] = bytes.coerceAtLeast(0) }
     suspend fun setConfirmExit(on: Boolean) = context.panelDataStore.edit { it[Keys.confirmExit] = on }
     suspend fun setBackupOnSave(on: Boolean) = context.panelDataStore.edit { it[Keys.backupOnSave] = on }
+    suspend fun setLocateIncomingOriginal(on: Boolean) =
+        context.panelDataStore.edit { it[Keys.locateIncomingOriginal] = on }
     suspend fun setTapRangeSelect(on: Boolean) = context.panelDataStore.edit { it[Keys.tapRangeSelect] = on }
 
     /** 编辑器「语法」：按扩展名记一条手动选择；[scope] 为 null 表示恢复自动识别。 */

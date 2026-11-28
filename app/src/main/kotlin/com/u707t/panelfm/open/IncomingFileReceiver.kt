@@ -6,7 +6,6 @@ import android.content.Intent
 import android.net.Uri
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
-import android.os.ParcelFileDescriptor
 import android.provider.OpenableColumns
 import android.webkit.MimeTypeMap
 import com.u707t.panelfm.core.common.AppDirs
@@ -34,16 +33,13 @@ import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.atomic.AtomicInteger
 
-sealed interface IncomingState {
-    data object Idle : IncomingState
-    data class Copying(val name: String, val copied: Long, val total: Long) : IncomingState
-    data class Ready(val uri: VfsUri, val name: String, val mime: String?, val size: Long) : IncomingState
-    data class Error(val message: String) : IncomingState
-}
 
 /**
- * Receives one ACTION_VIEW content URI into the private incoming cache.
- * Provider operations use CancellationSignal; active descriptors are also closed on cancellation.
+ * 接收外部 App 交来的文件（`content://`）：
+ *  - `ACTION_VIEW` 单文件：能反查到真实路径就定位原文件，否则复制到接收目录；
+ *  - `ACTION_SEND` / `ACTION_SEND_MULTIPLE`：多文件，逐项同样处理。
+ *
+ * Provider 操作用 CancellationSignal；取消时同时关闭已打开的描述符。
  */
 class IncomingFileReceiver(
     private val context: Context,
@@ -51,6 +47,15 @@ class IncomingFileReceiver(
     private val dispatchers: PanelDispatchers,
     private val scope: CoroutineScope,
 ) {
+    /**
+     * 外部文件能反查到真实路径时，是「定位原文件」还是「照旧复制一份预览」。
+     *
+     * 默认开启（用户要的就是「定位此文件」）；设置页可关，关掉后行为与 v2.5.x 完全一致。
+     * 只在 `ACTION_VIEW` / `ACTION_SEND` 的入口读一次，运行中改设置下一次生效。
+     */
+    @Volatile
+    var preferLocate: Boolean = true
+
     private val _state = MutableStateFlow<IncomingState>(IncomingState.Idle)
     val state: StateFlow<IncomingState> = _state
 
@@ -100,9 +105,19 @@ class IncomingFileReceiver(
         var job: Job? = null
     }
 
-    /** Returns true when an ACTION_VIEW intent was accepted or reported to the UI. */
+    /**
+     * Returns true when an ACTION_VIEW / ACTION_SEND intent was accepted or reported to the UI.
+     *
+     * 两条入口共用：
+     *  - `ACTION_VIEW`（打开方式，单文件）：先尝试反查真实路径，能定位就定位原文件；
+     *  - `ACTION_SEND` / `ACTION_SEND_MULTIPLE`（分享面板）：多文件，逐项定位或复制。
+     */
     fun handle(intent: Intent?, resumePersisted: Boolean = false): Boolean {
-        if (intent?.action != Intent.ACTION_VIEW) return false
+        val action = intent?.action
+        if (action == Intent.ACTION_SEND || action == Intent.ACTION_SEND_MULTIPLE) {
+            return handleSend(intent)
+        }
+        if (action != Intent.ACTION_VIEW) return false
         val uri = intent.data
             ?: intent.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
             ?: run {
@@ -177,6 +192,14 @@ class IncomingFileReceiver(
                             failIfCurrent(gen, "文件超过 ${Fmt.size(MAX_BYTES)}，暂不支持直接打开")
                             return@withContext
                         }
+                        // 先试「定位原文件」：能拿到可浏览的真实路径就不复制。
+                        // 这一步失败一律降级为原来的复制流程，绝不让它影响收文件。
+                        val located = if (preferLocate) locate(uri, name, mime, size) else null
+                        if (located != null) {
+                            if (generation.get() == gen && !operation.cancelled) _state.value = located
+                            clearPersistedRequest()
+                            return@withContext
+                        }
                         copy(uri, name, mime, size, gen, operation)
                     }
                 } catch (e: CancellationException) {
@@ -197,6 +220,174 @@ class IncomingFileReceiver(
         }
         return true
     }
+
+    /**
+     * 分享面板入口（`ACTION_SEND` / `ACTION_SEND_MULTIPLE`）。
+     *
+     * 与 `ACTION_VIEW` 的差别：
+     *  - 可能是多个文件，逐项处理；
+     *  - 每一项仍然「能定位就定位、不能定位就复制」，所以最终状态是 [IncomingState.Batch]；
+     *  - 单项失败不影响其他项，失败原因按文件名汇总。
+     *
+     * 这里不落 `pending/ready` 偏好（那是给单文件重建恢复用的）；批量接收是显式用户动作，
+     * 重建时重放会造成重复复制。
+     */
+    private fun handleSend(intent: Intent): Boolean {
+        val uris = collectSendUris(intent)
+        if (uris.isEmpty()) {
+            _state.value = IncomingState.Error("没有收到文件")
+            return true
+        }
+        val contentUris = uris.filter { it.scheme == "content" }
+        if (contentUris.isEmpty()) {
+            _state.value = IncomingState.Error("只支持 content:// 文件（收到 ${uris.first().scheme}://）")
+            return true
+        }
+        val gen = generation.incrementAndGet()
+        _state.value = IncomingState.Copying("正在接收 ${contentUris.size} 个文件…", 0, -1)
+        scope.launch {
+            val items = mutableListOf<IncomingState.BatchItem>()
+            val failed = mutableListOf<String>()
+            try {
+                withContext(dispatchers.io) {
+                    contentUris.forEachIndexed { index, uri ->
+                        currentCoroutineContext().ensureActive()
+                        if (generation.get() != gen) throw CancellationException("send cancelled")
+                        _state.value = IncomingState.Copying("正在接收 ${index + 1}/${contentUris.size}…", 0, -1)
+                        // 每项用一个独立 operation 并确保收尾：queryNameAndSize 会把游标登记进去，
+                        // 不 finish() 就会把 Cursor 一直挂在这个临时对象上等 GC。
+                        val operation = ReceiveOperation()
+                        val (rawName, size) = try {
+                            queryNameAndSize(uri, operation)
+                        } catch (e: Exception) {
+                            null to -1L
+                        } finally {
+                            operation.finish()
+                        }
+                        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+                        val name = displayName(rawName, uri, mime)
+                        if (size > MAX_BYTES) {
+                            failed += "$name：超过 ${Fmt.size(MAX_BYTES)}"
+                            return@forEachIndexed
+                        }
+                        val located = locate(uri, name, mime, size)
+                        if (located != null) {
+                            items += IncomingState.BatchItem(
+                                name = located.name,
+                                uri = located.uri,
+                                isCopy = false,
+                                mime = located.mime,
+                                size = located.size,
+                            )
+                            return@forEachIndexed
+                        }
+                        val copied = runCatching { copyForBatch(uri, name, mime) }
+                        copied.onSuccess { items += it }
+                            .onFailure { failed += "$name：${friendlyMessage(it)}" }
+                    }
+                }
+                if (generation.get() == gen) {
+                    _state.value = batchResultOf(items, failed)
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation.get() == gen) {
+                    Logx.w("Incoming", "send failed: ${e.message}", e)
+                    _state.value = IncomingState.Error(friendlyMessage(e))
+                }
+            }
+        }
+        return true
+    }
+
+    /** `ACTION_SEND_MULTIPLE` 的 `EXTRA_STREAM` 列表 + `clipData` 里的 URI，去重保序。 */
+    private fun collectSendUris(intent: Intent): List<Uri> {
+        val out = LinkedHashSet<Uri>()
+        intent.clipData?.let { clip ->
+            for (i in 0 until clip.itemCount) clip.getItemAt(i)?.uri?.let(out::add)
+        }
+        when (intent.action) {
+            Intent.ACTION_SEND -> {
+                @Suppress("DEPRECATION")
+                (intent.getParcelableExtra<Uri>(Intent.EXTRA_STREAM))?.let(out::add)
+                intent.data?.let(out::add)
+            }
+            else -> {
+                @Suppress("DEPRECATION")
+                intent.getParcelableArrayListExtra<Uri>(Intent.EXTRA_STREAM)?.forEach { out.add(it) }
+                intent.data?.let(out::add)
+            }
+        }
+        return out.toList()
+    }
+
+    /**
+     * 反查并构造「定位原文件」状态。返回 null = 不能定位（调用方走复制）。
+     *
+     * 判定逻辑在 [decideLocate]（纯函数，有单测）：受保护目录、未知路径、开关关闭
+     * 全部降级为复制，绝不因为「定位」这个可选功能让收文件失败。
+     */
+    private fun locate(uri: Uri, name: String, mime: String?, size: Long): IncomingState.Located? {
+        if (!preferLocate) return null
+        val resolved = when (val location = ContentPathResolver(context.contentResolver).resolve(uri)) {
+            is ContentLocation.Located -> location.absolutePath
+            is ContentLocation.Protected -> {
+                Logx.i("Incoming", "path is protected, falling back to copy: ${location.absolutePath}")
+                null
+            }
+            ContentLocation.Unknown -> null
+        }
+        return when (val decision = decideLocate(preferLocate, resolved)) {
+            is LocateDecision.Locate -> {
+                Logx.i("Incoming", "located original file: ${decision.authority}${decision.relativePath}")
+                IncomingState.Located(
+                    VfsUri.of("local", decision.authority, decision.relativePath),
+                    name,
+                    mime,
+                    size,
+                )
+            }
+            LocateDecision.Copy -> null
+        }
+    }
+
+    /** 批量接收用：复制到接收目录并直接返回条目（不写单文件的 pending/ready 偏好）。 */
+    private fun copyForBatch(uri: Uri, name: String, mime: String?): IncomingState.BatchItem {
+        val dir = File(appDirs.incomingDir)
+        if (!dir.exists() && !dir.mkdirs()) throw IOException("无法创建缓存目录")
+        IncomingCache.cleanup(dir)
+        val target = uniqueIncomingTarget(dir, name)
+        val part = File(dir, "${target.name}.${generation.get()}$PART_SUFFIX")
+        try {
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(part).use { output ->
+                    val buffer = ByteArray(BUFFER_BYTES)
+                    var copied = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (count == 0) continue
+                        copied += count
+                        if (copied > MAX_BYTES) throw IOException("文件超过 ${Fmt.size(MAX_BYTES)}")
+                        output.write(buffer, 0, count)
+                    }
+                }
+            } ?: throw IOException("无法读取文件")
+            if (!moveNoReplace(part, target)) throw IOException("无法保存接收文件")
+            return IncomingState.BatchItem(
+                name = target.name,
+                uri = VfsUri.of("local", LocalVolumes.AUTHORITY_INCOMING, "/${target.name}"),
+                isCopy = true,
+                mime = mime,
+                size = target.length(),
+            )
+        } catch (e: Exception) {
+            part.delete()
+            throw e
+        }
+    }
+
 
     private fun cancelOutsideLock(entries: List<Pair<ActiveReceive, List<Closeable>>>) {
         entries.forEach { (entry, resources) ->
@@ -446,8 +637,6 @@ class IncomingFileReceiver(
         is java.io.FileNotFoundException -> "文件不存在或已被移动"
         else -> e.message ?: "接收失败"
     }
-
-    private class CancellationSignalCompat
 
     private fun CancellationSignal.throwIfCanceledCompat() {
         if (isCanceled) throw OperationCanceledException()

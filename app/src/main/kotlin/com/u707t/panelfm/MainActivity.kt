@@ -36,10 +36,17 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val container = (application as PanelApp).container
-        // ACTION_VIEW 总是交给接收器：同进程重建由其活动请求去重，进程重建则从持久化的
-        // pending URI / Ready 缓存记录恢复。不能把 savedInstanceState 当成文件已接收的证据。
+        // ACTION_VIEW / ACTION_SEND(_MULTIPLE) 总是交给接收器：同进程重建由其活动请求去重，
+        // 进程重建则从持久化的 pending URI / Ready 缓存记录恢复。
+        // 不能把 savedInstanceState 当成文件已接收的证据。
         val incomingView = intent?.action == Intent.ACTION_VIEW
-        if (incomingView) container.incoming.handle(intent, resumePersisted = savedInstanceState != null)
+        val incomingSend = intent?.action == Intent.ACTION_SEND ||
+            intent?.action == Intent.ACTION_SEND_MULTIPLE
+        if (incomingView || incomingSend) {
+            container.incoming.handle(intent, resumePersisted = savedInstanceState != null)
+        }
+        // 分享 / 打开方式进来时同样不要再叠「恢复上次预览」。
+        val incomingIntent = incomingView || incomingSend
         setContent {
             val settings by container.settings.collectAsState()
             val dark = when (settings.themeMode) {
@@ -74,7 +81,7 @@ class MainActivity : ComponentActivity() {
                     AppRoot(
                         container,
                         // 冷启动由 VIEW intent 拉起时，不要让「恢复上次预览」再叠一层。
-                        suppressAutoResume = incomingView,
+                        suppressAutoResume = incomingIntent,
                     )
                 }
             }

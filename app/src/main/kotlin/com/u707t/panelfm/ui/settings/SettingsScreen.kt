@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -168,6 +169,15 @@ fun SettingsScreen(container: AppContainer, onBack: () -> Unit) {
                     title = "保存时生成 .bak",
                     checked = settings.backupOnSave,
                     onCheckedChange = { on -> scope.launch { container.prefs.setBackupOnSave(on) } },
+                )
+                SettingsSwitchRow(
+                    title = "外部打开时定位原文件",
+                    // 说明放在副标题：用户需要知道「关掉会变成复制一份副本」
+                    subtitle = "能查到真实路径就直接定位，查不到仍会复制到「接收文件」",
+                    checked = settings.locateIncomingOriginal,
+                    onCheckedChange = { on ->
+                        scope.launch { container.prefs.setLocateIncomingOriginal(on) }
+                    },
                 )
                 SettingsSwitchRow(
                     title = "退出前二次确认",
@@ -528,6 +538,8 @@ private fun SettingsSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
     divider: Boolean = true,
+    /** 可选说明行（放不下时优先省略的是说明，不是标题）。 */
+    subtitle: String? = null,
 ) {
     Column {
         Row(
@@ -535,14 +547,23 @@ private fun SettingsSwitchRow(
                 .fillMaxWidth()
                 // 整行是一个 Switch 语义节点；Switch 自己不接点击，避免 TalkBack 出现两个开关
                 .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
-                .height(48.dp),
+                .heightIn(min = 48.dp)
+                .padding(vertical = if (subtitle == null) 0.dp else 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(
-                title,
-                style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
-                modifier = Modifier.weight(1f),
-            )
+            Column(Modifier.weight(1f)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.bodyLarge.copy(fontSize = 15.sp),
+                )
+                if (subtitle != null) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp, lineHeight = 14.sp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
             Switch(checked = checked, onCheckedChange = null)
         }
         if (divider) DividerPx(color = MaterialTheme.colorScheme.outlineVariant)

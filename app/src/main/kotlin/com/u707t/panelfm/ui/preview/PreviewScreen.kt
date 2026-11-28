@@ -266,6 +266,25 @@ private fun PreviewRequestContent(container: AppContainer, request: PreviewReque
                             saveIncomingToCurrentPane(container, item)
                         }
                     }
+                    // 「定位此文件」：任何本地文件都能跳回列表并选中它。
+                    // 外部收来的副本（接收卷）与普通文件同一套行为，只是文案区分来源。
+                    if (uri.scheme == "local") {
+                        ClaudeMenuItem(label = "定位到文件", icon = MtIcon.FOLDER) {
+                            modeMenu = false
+                            val parent = uri.parent
+                            if (parent == null) {
+                                error = "该文件位于根目录，无法定位"
+                            } else {
+                                container.browser.revealIn(
+                                    container.browser.state.value.focused,
+                                    parent,
+                                    uri,
+                                    connectionId = null,
+                                    label = null,
+                                )
+                            }
+                        }
+                    }
                     if (uri.scheme == "local") {
                         ClaudeMenuItem(label = "外部应用", icon = MtIcon.SHARE) {
                             modeMenu = false

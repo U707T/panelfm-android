@@ -206,6 +206,8 @@ class AppContainer(val app: Application) {
             var concurrencyApplied = false
             prefs.settings.collect { s ->
                 _settings.value = s
+                // 「定位此文件」开关：外部收文件时优先定位原文件而不是复制副本。
+                incoming.preferLocate = s.locateIncomingOriginal
                 // 并发数必须在这里落地：设置页只在「点按钮那一刻」调 updateConcurrency，
                 // 冷启动不补这一步的话，用户选的 1/3/4 会在重启后悄悄回到默认 2。
                 if (!concurrencyApplied) {

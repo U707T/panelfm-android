@@ -11,6 +11,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
@@ -49,6 +52,7 @@ import com.u707t.panelfm.open.IncomingState
 import com.u707t.panelfm.ui.bookmarks.BookmarksScreen
 import com.u707t.panelfm.ui.browser.DualPaneScreen
 import com.u707t.panelfm.ui.browser.openArchiveInPane
+import com.u707t.panelfm.ui.browser.revealIn
 import com.u707t.panelfm.ui.connections.ConnectionEditScreen
 import com.u707t.panelfm.ui.connections.LanScanScreen
 import com.u707t.panelfm.ui.connections.connectionTypeForScanPort
@@ -124,6 +128,28 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
     val push: (Screen) -> Unit = { stack = stack + it }
     val pop: () -> Unit = { if (stack.size > 1) stack = stack.dropLast(1) }
 
+    /**
+     * 「定位此文件」：打开所在目录并选中它。
+     *
+     * 复用浏览器已有的定位链路（`revealIn` → `revealUri` → 列表加载完成后选中并滚动），
+     * 不在 AppRoot 里另写一套导航。根目录或拿不到父目录时只给提示，不硬跳。
+     */
+    val locateInBrowser: (VfsUri, String) -> Unit = { uri, name ->
+        val parent = uri.parent
+        if (parent == null) {
+            container.browser.showStatus("「$name」位于根目录，无法定位")
+        } else {
+            container.browser.revealIn(
+                container.browser.state.value.focused,
+                parent,
+                uri,
+                connectionId = null,
+                label = null,
+            )
+            container.browser.showStatus("已定位到「$name」")
+        }
+    }
+
     BackHandler(enabled = stack.size > 1) { pop() }
 
     // 退出：栈底时由这里兜底。
@@ -174,14 +200,49 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
     val incomingTerminal = when (incoming) {
         is IncomingState.Ready -> incoming
         is IncomingState.Error -> incoming
+        is IncomingState.Located -> incoming
+        is IncomingState.Batch -> incoming
         else -> null
     }
     var pendingIncoming by remember { mutableStateOf<IncomingState.Ready?>(null) }
     var approvedIncoming by remember { mutableStateOf<IncomingState.Ready?>(null) }
-    LaunchedEffect(incomingTerminal, approvedIncoming) {
+    // 定位请求也可能在预览页里到达：同样要问一句，避免把用户正在编辑的窗格切走。
+    var pendingLocate by remember { mutableStateOf<IncomingState.Located?>(null) }
+    var approvedLocate by remember { mutableStateOf<IncomingState.Located?>(null) }
+    // 分享面板一次收到多个文件时，先让用户挑一个再进预览/定位。
+    var batchPicker by remember { mutableStateOf<IncomingState.Batch?>(null) }
+    LaunchedEffect(incomingTerminal, approvedIncoming, approvedLocate) {
         val approved = approvedIncoming
+        val approvedLoc = approvedLocate
         approvedIncoming = null
-        when (val s = approved ?: incomingTerminal) {
+        approvedLocate = null
+        when (val s = approved ?: approvedLoc ?: incomingTerminal) {
+            // 反查到原文件：直接定位，不复制、不开预览。
+            // 与 Ready 同样要先保护「当前预览里可能有未保存修改」——定位会切走窗格，
+            // 但不离开预览页，所以只需在预览页时让用户确认。
+            is IncomingState.Located -> {
+                if (approved == null && stack.lastOrNull() is Screen.Preview) {
+                    pendingLocate = s
+                    return@LaunchedEffect
+                }
+                pendingLocate = null
+                container.incoming.consume()
+                stack = listOf(Screen.Browser)
+                locateInBrowser(s.uri, s.name)
+            }
+            is IncomingState.Batch -> {
+                container.incoming.consume()
+                if (s.items.size == 1 && s.failed.isEmpty()) {
+                    val only = s.items.first()
+                    stack = listOf(Screen.Browser)
+                    locateInBrowser(only.uri, only.name)
+                    if (!only.isCopy) {
+                        container.browser.showStatus("已定位到「${only.name}」（原文件）")
+                    }
+                } else {
+                    batchPicker = s
+                }
+            }
             is IncomingState.Ready -> {
                 if (approved == null && stack.lastOrNull() is Screen.Preview) {
                     pendingIncoming = s
@@ -257,6 +318,69 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
                     container.incoming.consume()
                     container.browser.showStatus("新文件已保留在「接收文件」，当前文件未切换")
                 }) { Text("留在当前文件") }
+            },
+        )
+    }
+
+    // 预览页收到「定位到原文件」：先确认，避免把正在编辑的窗格直接切走。
+    pendingLocate?.let { located ->
+        AlertDialog(
+            onDismissRequest = {
+                pendingLocate = null
+                container.incoming.consume()
+                container.browser.showStatus("已保留当前文件；「${located.name}」的原位置未切换")
+            },
+            title = { Text("定位到收到的文件？") },
+            text = { Text("「${located.name}」在设备上的真实位置已找到。定位会切换文件窗格到它所在目录；当前预览里的未保存修改请先保存。") },
+            confirmButton = {
+                TextButton(onClick = { approvedLocate = located; pendingLocate = null }) { Text("定位") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    pendingLocate = null
+                    container.incoming.consume()
+                    container.browser.showStatus("已保留当前文件；「${located.name}」的原位置未切换")
+                }) { Text("留在当前文件") }
+            },
+        )
+    }
+
+    // 分享面板多文件：列出每一项，点哪项就定位/打开哪项。
+    batchPicker?.let { batch ->
+        AlertDialog(
+            onDismissRequest = {
+                batchPicker = null
+                container.browser.showStatus("已收到 ${batch.items.size} 个文件")
+            },
+            title = { Text("收到 ${batch.items.size} 个文件") },
+            text = {
+                Column(Modifier.verticalScroll(rememberScrollState())) {
+                    batch.items.forEach { item ->
+                        Text(
+                            text = "${item.name}${if (item.isCopy) "（副本）" else "（原文件）"}",
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    batchPicker = null
+                                    stack = listOf(Screen.Browser)
+                                    locateInBrowser(item.uri, item.name)
+                                }
+                                .padding(vertical = 10.dp),
+                        )
+                    }
+                    if (batch.failed.isNotEmpty()) {
+                        Text(
+                            text = "未能接收：\n" + batch.failed.joinToString("\n"),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier.padding(top = 8.dp),
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { batchPicker = null }) { Text("关闭") }
             },
         )
     }

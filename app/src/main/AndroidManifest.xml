@@ -68,6 +68,21 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:scheme="content" />
             </intent-filter>
+            <!--
+              分享面板：微信 / QQ / 浏览器等「分享到 PanelFM」。
+              单文件与多文件分开声明；仍然只接 content://（不接 file://）。
+              收到后同样是「能定位就定位原文件，否则复制到接收目录」。
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <provider
