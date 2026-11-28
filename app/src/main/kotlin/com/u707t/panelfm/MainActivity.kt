@@ -18,6 +18,7 @@ import com.u707t.panelfm.core.ui.MtViewConfiguration
 import com.u707t.panelfm.core.ui.PanelTheme
 import com.u707t.panelfm.core.ui.fontScaleFactor
 import com.u707t.panelfm.ui.AppRoot
+import kotlinx.coroutines.launch
 class MainActivity : ComponentActivity() {
 
     private val container: AppContainer
@@ -43,7 +44,16 @@ class MainActivity : ComponentActivity() {
         val incomingSend = intent?.action == Intent.ACTION_SEND ||
             intent?.action == Intent.ACTION_SEND_MULTIPLE
         if (incomingView || incomingSend) {
-            container.incoming.handle(intent, resumePersisted = savedInstanceState != null)
+            // 设置（含「定位原文件」开关）是异步首读。冷启动直接处理会用到保守初值，
+            // 用户关掉的开关会被忽略一次。这里等它就绪（最多 1.5 s，超时按当前值处理，
+            // 不把用户卡在启动画面）。
+            val incomingIntent = intent
+            container.scope.launch {
+                runCatching {
+                    kotlinx.coroutines.withTimeout(1_500) { container.settingsReady.await() }
+                }
+                container.incoming.handle(incomingIntent, resumePersisted = savedInstanceState != null)
+            }
         }
         // 分享 / 打开方式进来时同样不要再叠「恢复上次预览」。
         val incomingIntent = incomingView || incomingSend
@@ -89,8 +99,9 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 应用已经在运行时，系统「打开方式」会走这里（MainActivity 是 singleTop）。
+     * 应用已经在运行时，系统「打开方式 / 分享」会走这里（MainActivity 是 singleTop）。
      * 必须先 setIntent，否则后续 getIntent() 仍指向旧文件。
+     * 应用已运行时设置早已就绪，但为保持与冷启动同一条路径（含超时兜底），仍走 await。
      */
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)

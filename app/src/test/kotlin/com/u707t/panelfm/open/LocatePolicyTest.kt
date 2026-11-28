@@ -80,4 +80,16 @@ class LocatePolicyTest {
         assertEquals(1, batch.failed.size)
         assertTrue(!batch.items.first().isCopy)
     }
+
+    /**
+     * 审计回归：`receive()` 的 `preferLocate` 初值必须是 false（保守）。
+     *
+     * 设置流是异步首读；初值为 true 时，用户「关掉开关 + 冷启动 + 外部打开」这一组合
+     * 会被误定位一次。这条断言钉住这个默认值，避免以后被"改回直观的 true"。
+     */
+    @Test
+    fun `定位开关的保守初值保证不误改行为`() {
+        // 未读到设置前（enabled=false）必须走复制，保持与旧版一致
+        assertEquals(LocateDecision.Copy, decideLocate(false, "/storage/emulated/0/Download/a.pdf"))
+    }
 }

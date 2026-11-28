@@ -234,6 +234,11 @@ fun AppRoot(container: AppContainer, suppressAutoResume: Boolean = false) {
                 container.incoming.consume()
                 if (s.items.size == 1 && s.failed.isEmpty()) {
                     val only = s.items.first()
+                    // 与 Located 同口径：预览页里可能有未保存修改，不能直接 stack = listOf(Browser)。
+                    if (approved == null && stack.lastOrNull() is Screen.Preview) {
+                        pendingLocate = IncomingState.Located(only.uri, only.name, only.mime, only.size)
+                        return@LaunchedEffect
+                    }
                     stack = listOf(Screen.Browser)
                     locateInBrowser(only.uri, only.name)
                     if (!only.isCopy) {

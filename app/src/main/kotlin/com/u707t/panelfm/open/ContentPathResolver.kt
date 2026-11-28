@@ -48,8 +48,14 @@ internal class ContentPathResolver(private val resolver: ContentResolver) {
         return ContentLocation.Unknown
     }
 
+    /**
+     * ⚠️ 不能先调 `DocumentsContract.isDocumentUri(context, uri)` 再取 id：
+     * 那个方法在 scheme 为 content 时会走 `context.getPackageManager()`，
+     * 传 null Context 直接 NPE（被 runCatching 吞掉 → 反查永远失败，等于功能全废）。
+     * `getDocumentId` 本身只做 pathSegments 的字符串检查，不需要 Context；
+     * 不是 document URI 时它会抛 IllegalArgumentException，由外层降级。
+     */
     private fun documentIdPath(uri: Uri): String? = runCatching {
-        if (!DocumentsContract.isDocumentUri(null, uri)) return@runCatching null
         documentIdToAbsolutePath(DocumentsContract.getDocumentId(uri))
     }.onFailure {
         Logx.w("Incoming", "document id lookup failed: ${it.message}", it)

@@ -56,6 +56,7 @@ import com.u707t.panelfm.core.vfs.VfsUri
 import com.u707t.panelfm.core.vfs.local.LocalVolumes
 import com.u707t.panelfm.open.selfExclusion
 import com.u707t.panelfm.ui.browser.PaneSide
+import com.u707t.panelfm.ui.browser.revealIn
 import com.u707t.panelfm.ui.browser.transferRequest
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
@@ -266,8 +267,8 @@ private fun PreviewRequestContent(container: AppContainer, request: PreviewReque
                             saveIncomingToCurrentPane(container, item)
                         }
                     }
-                    // 「定位此文件」：任何本地文件都能跳回列表并选中它。
-                    // 外部收来的副本（接收卷）与普通文件同一套行为，只是文案区分来源。
+                    // 「定位此文件」：跳回列表并选中它。
+                    // 必须 onBack()：只改 browser 状态而不离开预览页，用户看不到任何变化。
                     if (uri.scheme == "local") {
                         ClaudeMenuItem(label = "定位到文件", icon = MtIcon.FOLDER) {
                             modeMenu = false
@@ -282,6 +283,7 @@ private fun PreviewRequestContent(container: AppContainer, request: PreviewReque
                                     connectionId = null,
                                     label = null,
                                 )
+                                onBack()
                             }
                         }
                     }

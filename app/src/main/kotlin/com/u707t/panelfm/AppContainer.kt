@@ -107,6 +107,15 @@ class AppContainer(val app: Application) {
     private val _settings = MutableStateFlow(AppSettings())
     val settings: StateFlow<AppSettings> = _settings
 
+    /**
+     * 设置第一次从 DataStore 读出后完成。
+     *
+     * 为什么需要它：`incoming.preferLocate` 依赖设置，而设置流是异步首读。
+     * 冷启动被「打开方式」拉起时，若在读到设置前就处理 intent，会拿到保守初值。
+     * 外部入口先等这个信号（有超时兜底，不让用户干等）。
+     */
+    val settingsReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+
     private val _connections = MutableStateFlow<List<ConnectionConfig>>(emptyList())
     val connections: StateFlow<List<ConnectionConfig>> = _connections
 
@@ -207,7 +216,10 @@ class AppContainer(val app: Application) {
             prefs.settings.collect { s ->
                 _settings.value = s
                 // 「定位此文件」开关：外部收文件时优先定位原文件而不是复制副本。
+                // preferLocate 初值是 false（保守），所以这里必须先把真实设置写进去，
+                // 再放行「设置已就绪」，否则冷启动首次外部打开会误判。
                 incoming.preferLocate = s.locateIncomingOriginal
+                settingsReady.complete(Unit)
                 // 并发数必须在这里落地：设置页只在「点按钮那一刻」调 updateConcurrency，
                 // 冷启动不补这一步的话，用户选的 1/3/4 会在重启后悄悄回到默认 2。
                 if (!concurrencyApplied) {

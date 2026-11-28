@@ -50,11 +50,13 @@ class IncomingFileReceiver(
     /**
      * 外部文件能反查到真实路径时，是「定位原文件」还是「照旧复制一份预览」。
      *
-     * 默认开启（用户要的就是「定位此文件」）；设置页可关，关掉后行为与 v2.5.x 完全一致。
-     * 只在 `ACTION_VIEW` / `ACTION_SEND` 的入口读一次，运行中改设置下一次生效。
+     * 初值 **false** 是刻意的保守值，不是产品默认：设置流是异步首读，
+     * 冷启动到第一次外部打开之间可能还没读到用户设置。此时若按「默认开启」处理，
+     * 用户明明关掉了开关却仍被定位一次。宁可先按旧行为复制（可由「保存到当前窗格」补救），
+     * 也不要违背用户的显式选择。设置读到后立即覆盖为真实值。
      */
     @Volatile
-    var preferLocate: Boolean = true
+    var preferLocate: Boolean = false
 
     private val _state = MutableStateFlow<IncomingState>(IncomingState.Idle)
     val state: StateFlow<IncomingState> = _state
@@ -229,8 +231,9 @@ class IncomingFileReceiver(
      *  - 每一项仍然「能定位就定位、不能定位就复制」，所以最终状态是 [IncomingState.Batch]；
      *  - 单项失败不影响其他项，失败原因按文件名汇总。
      *
-     * 这里不落 `pending/ready` 偏好（那是给单文件重建恢复用的）；批量接收是显式用户动作，
-     * 重建时重放会造成重复复制。
+     * 这里不落 `pending/ready` 偏好（那是给单文件重建恢复用的）；改为与 VIEW 同口径的
+     * 「同一批 URI 已有在跑的任务就不重复启动」，避免配置变化重建时把整批文件再复制一遍
+     * （那会产出 `a.pdf` + `a (1).pdf` 两份副本）。
      */
     private fun handleSend(intent: Intent): Boolean {
         val uris = collectSendUris(intent)
@@ -243,58 +246,76 @@ class IncomingFileReceiver(
             _state.value = IncomingState.Error("只支持 content:// 文件（收到 ${uris.first().scheme}://）")
             return true
         }
-        val gen = generation.incrementAndGet()
-        _state.value = IncomingState.Copying("正在接收 ${contentUris.size} 个文件…", 0, -1)
-        scope.launch {
-            val items = mutableListOf<IncomingState.BatchItem>()
-            val failed = mutableListOf<String>()
-            try {
-                withContext(dispatchers.io) {
-                    contentUris.forEachIndexed { index, uri ->
-                        currentCoroutineContext().ensureActive()
-                        if (generation.get() != gen) throw CancellationException("send cancelled")
-                        _state.value = IncomingState.Copying("正在接收 ${index + 1}/${contentUris.size}…", 0, -1)
-                        // 每项用一个独立 operation 并确保收尾：queryNameAndSize 会把游标登记进去，
-                        // 不 finish() 就会把 Cursor 一直挂在这个临时对象上等 GC。
-                        val operation = ReceiveOperation()
-                        val (rawName, size) = try {
-                            queryNameAndSize(uri, operation)
-                        } catch (e: Exception) {
-                            null to -1L
-                        } finally {
-                            operation.finish()
+        val batchKey = contentUris.joinToString("|") { it.toString() }
+        synchronized(operationLock) {
+            // 同一批文件已有任务在跑（Activity 重建 / 系统重复投递）：不重复复制。
+            if (active.values.any { it.uri.toString() == batchKey && it.job?.isActive == true }) return true
+            if (active.size >= MAX_IN_FLIGHT) {
+                _state.value = IncomingState.Error("接收任务过多：请等待当前文件处理结束后重试")
+                return true
+            }
+            val gen = generation.incrementAndGet()
+            val operation = ReceiveOperation()
+            // 用批量的「聚合 URI」登记进 active：cancel() 靠它才能停掉正在跑的批量复制。
+            val entry = ActiveReceive(gen, Uri.parse("content://panelfm.batch/${batchKey.hashCode()}"), operation)
+            active[gen] = entry
+            _state.value = IncomingState.Copying("正在接收 ${contentUris.size} 个文件…", 0, -1)
+            entry.job = scope.launch {
+                val items = mutableListOf<IncomingState.BatchItem>()
+                val failed = mutableListOf<String>()
+                try {
+                    withContext(dispatchers.io) {
+                        contentUris.forEachIndexed { index, uri ->
+                            currentCoroutineContext().ensureActive()
+                            if (generation.get() != gen || operation.cancelled) {
+                                throw CancellationException("send cancelled")
+                            }
+                            _state.value = IncomingState.Copying("正在接收 ${index + 1}/${contentUris.size}…", 0, -1)
+                            // 每项用一个独立 operation 并确保收尾：queryNameAndSize 会把游标登记进去，
+                            // 不 finish() 就会把 Cursor 一直挂在这个临时对象上等 GC。
+                            val itemOperation = ReceiveOperation()
+                            val (rawName, size) = try {
+                                queryNameAndSize(uri, itemOperation)
+                            } catch (e: Exception) {
+                                null to -1L
+                            } finally {
+                                itemOperation.finish()
+                            }
+                            val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+                            val name = displayName(rawName, uri, mime)
+                            if (size > MAX_BYTES) {
+                                failed += "$name：超过 ${Fmt.size(MAX_BYTES)}"
+                                return@forEachIndexed
+                            }
+                            val located = locate(uri, name, mime, size)
+                            if (located != null) {
+                                items += IncomingState.BatchItem(
+                                    name = located.name,
+                                    uri = located.uri,
+                                    isCopy = false,
+                                    mime = located.mime,
+                                    size = located.size,
+                                )
+                                return@forEachIndexed
+                            }
+                            val copied = runCatching { copyForBatch(uri, name, mime, gen) }
+                            copied.onSuccess { items += it }
+                                .onFailure { failed += "$name：${friendlyMessage(it)}" }
                         }
-                        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
-                        val name = displayName(rawName, uri, mime)
-                        if (size > MAX_BYTES) {
-                            failed += "$name：超过 ${Fmt.size(MAX_BYTES)}"
-                            return@forEachIndexed
-                        }
-                        val located = locate(uri, name, mime, size)
-                        if (located != null) {
-                            items += IncomingState.BatchItem(
-                                name = located.name,
-                                uri = located.uri,
-                                isCopy = false,
-                                mime = located.mime,
-                                size = located.size,
-                            )
-                            return@forEachIndexed
-                        }
-                        val copied = runCatching { copyForBatch(uri, name, mime) }
-                        copied.onSuccess { items += it }
-                            .onFailure { failed += "$name：${friendlyMessage(it)}" }
                     }
-                }
-                if (generation.get() == gen) {
-                    _state.value = batchResultOf(items, failed)
-                }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                if (generation.get() == gen) {
-                    Logx.w("Incoming", "send failed: ${e.message}", e)
-                    _state.value = IncomingState.Error(friendlyMessage(e))
+                    if (generation.get() == gen && !operation.cancelled) {
+                        _state.value = batchResultOf(items, failed)
+                    }
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    if (generation.get() == gen && !operation.cancelled) {
+                        Logx.w("Incoming", "send failed: ${e.message}", e)
+                        _state.value = IncomingState.Error(friendlyMessage(e))
+                    }
+                } finally {
+                    synchronized(operationLock) { active.remove(gen) }
+                    operation.finish()
                 }
             }
         }
@@ -352,26 +373,54 @@ class IncomingFileReceiver(
         }
     }
 
-    /** 批量接收用：复制到接收目录并直接返回条目（不写单文件的 pending/ready 偏好）。 */
-    private fun copyForBatch(uri: Uri, name: String, mime: String?): IncomingState.BatchItem {
+    /**
+     * 批量接收用：复制到接收目录并直接返回条目（不写单文件的 pending/ready 偏好）。
+     *
+     * 空间与取消保护必须与单文件 [copy] 同口径 —— 这是从它复制出来的一段，
+     * 早期版本漏掉了起始空间预检、逐块剩余空间、逐块取消和连续零读保护，
+     * 结果「分享 3 个 1.5 GB 文件」能把应用私有目录写满，点取消也要等整项写完。
+     *
+     * @param gen 本次批量接收的代际号；用它做 `.part` 后缀，避免与其它批次撞名。
+     */
+    private fun copyForBatch(
+        uri: Uri,
+        name: String,
+        mime: String?,
+        gen: Int,
+    ): IncomingState.BatchItem {
         val dir = File(appDirs.incomingDir)
         if (!dir.exists() && !dir.mkdirs()) throw IOException("无法创建缓存目录")
         IncomingCache.cleanup(dir)
+        val initialFree = dir.usableSpace
+        if (initialFree <= 0L) throw IOException("无法确认缓存可用空间，已停止接收以保护设备存储")
         val target = uniqueIncomingTarget(dir, name)
-        val part = File(dir, "${target.name}.${generation.get()}$PART_SUFFIX")
+        val part = File(dir, "${target.name}.$gen$PART_SUFFIX")
         try {
             context.contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(part).use { output ->
                     val buffer = ByteArray(BUFFER_BYTES)
                     var copied = 0L
+                    var zeroReads = 0
                     while (true) {
+                        // 与 copy() 同口径：取消要能在块之间生效，不能等整项写完。
+                        if (generation.get() != gen) throw CancellationException("send cancelled")
                         val count = input.read(buffer)
                         if (count < 0) break
-                        if (count == 0) continue
+                        if (count == 0) {
+                            if (++zeroReads >= MAX_EMPTY_READS) throw IOException("来源应用连续返回空数据")
+                            continue
+                        }
+                        zeroReads = 0
                         copied += count
                         if (copied > MAX_BYTES) throw IOException("文件超过 ${Fmt.size(MAX_BYTES)}")
+                        val freeNow = dir.usableSpace
+                        if (freeNow > 0 && count.toLong() + MIN_FREE_BYTES > freeNow) {
+                            throw IOException("缓存空间不足：至少保留 ${Fmt.size(MIN_FREE_BYTES)} 可用空间")
+                        }
                         output.write(buffer, 0, count)
                     }
+                    output.flush()
+                    output.fd.sync()
                 }
             } ?: throw IOException("无法读取文件")
             if (!moveNoReplace(part, target)) throw IOException("无法保存接收文件")
@@ -632,7 +681,12 @@ class IncomingFileReceiver(
         return if (extension == null) sanitized else "$sanitized.$extension"
     }
 
-    private fun friendlyMessage(e: Exception): String = when (e) {
+    /**
+     * 收 [Throwable] 而不是 [Exception]：`Result.onFailure` 的 lambda 参数是 Throwable，
+     * 传 Exception 会在编译期报 argument type mismatch。四个调用点传的都是 Exception 子类，
+     * 放宽不会影响既有语义。
+     */
+    private fun friendlyMessage(e: Throwable): String = when (e) {
         is SecurityException -> "没有读取权限（来源应用未授权）"
         is java.io.FileNotFoundException -> "文件不存在或已被移动"
         else -> e.message ?: "接收失败"
