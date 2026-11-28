@@ -42,7 +42,7 @@ internal fun TopActionItems(
     onCompress: () -> Unit,
     onCopyTo: () -> Unit,
     onMoveTo: () -> Unit,
-    onProperties: (FileMetadata) -> Unit,
+    onProperties: (List<FileMetadata>) -> Unit,
     onShare: (List<FileMetadata>) -> Unit,
     /** 按类型的二级动作（压缩包解压 / APK 安装 / APK 信息 / 内置查看） */
     onTypedAction: (String, FileMetadata) -> Unit = { _, _ -> },
@@ -104,8 +104,10 @@ internal fun TopActionItems(
     MtActionButton(MtIcon.FOLDER, "移动到…", enabled = !inArchive, onClick = onMoveTo)
     MtActionButton(MtIcon.PASTE, "复制到剪贴板") { controller.copySelectionToClipboard(focusSide) }
     MtActionButton(MtIcon.BOOKMARK, "添加书签") { controller.addBookmark(focusSide) }
-    MtActionButton(MtIcon.INFO, "属性", enabled = picked.size == 1) {
-        picked.firstOrNull()?.let(onProperties)
+    // 多选也能看属性：已有的 MultiPropertiesDialog 只挂在长按菜单里，顶栏这里直接复用，
+    // 不再把「选了 3 个文件想看合计大小」逼回长按路径。
+    MtActionButton(MtIcon.INFO, "属性", enabled = picked.isNotEmpty()) {
+        if (picked.isNotEmpty()) onProperties(picked)
     }
     MtActionButton(MtIcon.SHARE, "分享", enabled = !anyDirectory && !inArchive && picked.isNotEmpty()) {
         onShare(picked)

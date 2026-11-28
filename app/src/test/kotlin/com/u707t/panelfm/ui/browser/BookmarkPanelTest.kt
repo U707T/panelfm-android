@@ -61,6 +61,28 @@ class BookmarkPanelTest {
         assertEquals("dav@nas /Vedios", bookmarkRowSubtitle(dav, null, pathOf))
     }
 
+    // ------------------------------------------------------------------ 复制路径
+
+    @Test
+    fun `本地复制路径是真实文件系统路径`() {
+        assertEquals("/storage/emulated/0/Download", bookmarkCopyText(local, pathOf))
+    }
+
+    @Test
+    fun `网络复制路径是可还原的完整 URI 而不是展示串`() {
+        val copied = bookmarkCopyText(dav, pathOf)
+        // 不能是「协议@连接名 路径」那种给人看的串
+        assertEquals("dav://nas/Vedios?c=7", copied)
+        assertEquals(dav, VfsUri.parse(copied))
+    }
+
+    @Test
+    fun `网络复制路径保留连接号以免同主机多账号跳错`() {
+        val other = VfsUris.withConnection(VfsUri("dav", "nas", "/Vedios"), 9)
+        assertEquals(7L, VfsUris.connectionId(VfsUri.parse(bookmarkCopyText(dav, pathOf))))
+        assertEquals(9L, VfsUris.connectionId(VfsUri.parse(bookmarkCopyText(other, pathOf))))
+    }
+
     // ------------------------------------------------------------------ 拖动排序
 
     private val ids = listOf(11L, 22L, 33L, 44L)

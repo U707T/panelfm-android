@@ -113,6 +113,17 @@ fun bookmarkRowSubtitle(uri: VfsUri, connectionName: String?, pathOf: (VfsUri) -
 }
 
 /**
+ * 「复制路径」复制的文本：**必须能直接拿来用**，不能复制 [bookmarkRowSubtitle] 的展示串。
+ *
+ * 旧实现复制 `dav@我的 NAS /Vedios` —— 既不是文件系统路径，也不是可解析 URI，
+ * 粘贴到输入框/地址栏都无法跳转。这里改为：
+ *  - 本地 / 压缩包：真实文件系统路径（与列表显示一致，可直接粘到其他应用）；
+ *  - 网络：完整 `VfsUri`（带 `?c=<连接号>`），粘回路径输入框能还原成同一连接同一目录。
+ */
+fun bookmarkCopyText(uri: VfsUri, pathOf: (VfsUri) -> String): String =
+    if (uri.scheme == "local" || uri.scheme == "archive") pathOf(uri) else uri.toString()
+
+/**
  * 拖动排序：把 [id] 从当前位置移动 [moved] 行，返回新顺序。
  *
  * 落点夹取到 `0..lastIndex`（拖出列表边界不外溢）；`id` 不在列表里或没移动时**原样返回**
@@ -439,7 +450,7 @@ private fun BookmarkList(
                     }
                     MtMenuRow(MtIcon.COPY, "复制路径") {
                         menuFor = null
-                        clipboard.setText(AnnotatedString(subtitle))
+                        clipboard.setText(AnnotatedString(bookmarkCopyText(bookmark.uri, pathOf)))
                         controller.showStatus("路径已复制")
                     }
                     MtMenuRow(MtIcon.DELETE, "删除书签") {
@@ -497,7 +508,7 @@ private fun RecentList(
                     }
                     MtMenuRow(MtIcon.COPY, "复制路径") {
                         menuFor = null
-                        clipboard.setText(AnnotatedString(subtitle))
+                        clipboard.setText(AnnotatedString(bookmarkCopyText(uri, pathOf)))
                         controller.showStatus("路径已复制")
                     }
                     MtMenuRow(MtIcon.DELETE, "从最近中移除") {

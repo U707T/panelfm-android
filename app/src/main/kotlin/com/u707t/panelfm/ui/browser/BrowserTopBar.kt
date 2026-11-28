@@ -232,7 +232,7 @@ internal fun BrowserTopBar(
                             },
                             onCopyTo = { controller.startPickDir(PickDirPurpose.COPY_TO) },
                             onMoveTo = { controller.startPickDir(PickDirPurpose.MOVE_TO) },
-                            onProperties = { item: FileMetadata -> controller.showProperties(item) },
+                            onProperties = { items: List<FileMetadata> -> controller.showProperties(items) },
                             onShare = { items: List<FileMetadata> ->
                                 // F9：顶栏「分享」与长按菜单共用多选实现（旧入口只取第一个文件）
                                 shareItems(container, context, items) { msg -> controller.showStatus(msg) }
